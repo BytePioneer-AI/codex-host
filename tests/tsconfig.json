@@ -1,5 +1,5 @@
 {
-  "extends": "./tsconfig.base.json",
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
     "declaration": false,
@@ -7,5 +7,5 @@
     "sourceMap": false,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["packages/**/test/**/*.ts", "tests/**/*.ts"]
+  "include": ["../packages/**/test/**/*.ts", "./**/*.ts"]
 }

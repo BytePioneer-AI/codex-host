@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "fixtureType": "fake-pi-hermetic",
+  "scenarios": [
+    {
+      "id": "request-correlation",
+      "profile": "hermetic",
+      "status": "PASS",
+      "required": true,
+      "checks": { "boundedCompletion": true, "expectedResultObserved": true },
+      "evidence": ["fake-pi:interleaved"]
+    },
+    {
+      "id": "malformed-frame",
+      "profile": "hermetic",
+      "status": "FAIL",
+      "required": true,
+      "checks": { "boundedCompletion": true, "expectedResultObserved": true },
+      "evidence": ["fake-pi:malformed"],
+      "error": { "code": "MALFORMED_FRAME", "message": "Pi RPC stdout contained malformed JSON" }
+    },
+    {
+      "id": "unknown-response",
+      "profile": "hermetic",
+      "status": "FAIL",
+      "required": true,
+      "checks": { "boundedCompletion": true, "expectedResultObserved": true },
+      "evidence": ["fake-pi:unknown-response"],
+      "error": {
+        "code": "UNKNOWN_RESPONSE",
+        "message": "Pi RPC response id 'req-unknown' is not pending"
+      }
+    }
+  ]
+}

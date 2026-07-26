@@ -38,6 +38,13 @@
     "gate:a:macos:differential:live": "node tools/gate-a/run.mjs live-differential",
     "gate:a:macos": "node tools/gate-a/run.mjs gate",
     "gate:a:macos:finalize": "node tools/gate-a/run.mjs finalize",
+    "gate:c:hermetic": "node tools/gate-c/run.mjs hermetic",
+    "gate:c:fixture": "node tools/gate-c/run.mjs generate-fixture",
+    "gate:c:isolated": "node tools/gate-c/run.mjs isolated",
+    "gate:c:extension": "node tools/gate-c/run.mjs extension",
+    "gate:c:live": "node tools/gate-c/run.mjs live",
+    "gate:c:finalize": "node tools/gate-c/run.mjs finalize",
+    "gate:c": "node tools/gate-c/run.mjs gate",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools -- -D warnings && cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:typescript && npm run check:rust",
     "clean": "node tools/clean.mjs"
@@ -46,12 +53,14 @@
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.62.0",
     "@types/node": "24.13.3",
+    "diff": "8.0.2",
     "esbuild": "0.28.1",
     "eslint": "10.8.0",
     "globals": "17.7.0",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
   }
 }

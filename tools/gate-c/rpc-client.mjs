@@ -11,6 +11,7 @@ const DEFAULTS = {
   forceGraceMs: 2_000,
   protocolEofGraceMs: 25,
   stderrLimitBytes: 16 * 1024,
+  maxFrameBytes: 16 * 1024 * 1024,
 };
 
 function delay(milliseconds) {
@@ -70,7 +71,9 @@ export class PiRpcClient {
     this.#exit = new Promise((resolve) => {
       this.#exitResolve = resolve;
     });
-    this.#decoder = new StrictJsonlDecoder((line, metadata) => this.#handleFrame(line, metadata));
+    this.#decoder = new StrictJsonlDecoder((line, metadata) => this.#handleFrame(line, metadata), {
+      maxFrameBytes: this.#options.maxFrameBytes,
+    });
   }
 
   get commandSource() {

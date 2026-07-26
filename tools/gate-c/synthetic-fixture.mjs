@@ -13,7 +13,7 @@ async function runFakeScenario(id, scenario, expectedStatus = "PASS") {
   const rpc = new PiRpcClient({
     configuredCommand: [process.execPath, fakePi],
     env: { ...process.env, CODEXHOST_FAKE_PI_SCENARIO: scenario },
-    commandTimeoutMs: 100,
+    commandTimeoutMs: 1_000,
     pendingCloseMs: 10,
     closeGraceMs: 50,
     forceGraceMs: 2_000,

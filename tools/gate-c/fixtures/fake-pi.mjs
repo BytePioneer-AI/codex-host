@@ -24,6 +24,10 @@ function handle(command) {
     process.stdout.write("{not-json}\n");
     return;
   }
+  if (scenario === "oversized-frame") {
+    process.stdout.write("x".repeat(65));
+    return;
+  }
   if (scenario === "stderr") process.stderr.write("bounded fake diagnostic\n");
   if (scenario === "unknown-response") {
     output({ id: "req-unknown", type: "response", command: command.type, success: true });

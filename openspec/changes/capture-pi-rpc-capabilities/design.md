@@ -46,7 +46,7 @@ Windows 命令脚本、带空格路径、PATH 发现和直接可执行文件使�
 
 ### 3. 自持严格 LF JSONL 客户端，不导入 Pi 包内 RpcClient
 
-Gate Client 直接启动所选命令并追加 `--mode rpc`。stdout 作为唯一协议通道，以字节 `0x0A` 分帧，使用流式 UTF-8 解码处理跨 chunk 字符，不使用会识别 Unicode 行分隔符的通用 Line Reader。每个 Command 使用唯一请求 ID，Response 与异步 Event 分流；stderr 只进入有界诊断缓冲。
+Gate Client 直接启动所选命令并追加 `--mode rpc`。stdout 作为唯一协议通道，以字节 `0x0A` 分帧，使用流式 UTF-8 解码处理跨 chunk 字符，不使用会识别 Unicode 行分隔符的通用 Line Reader。EOF 非空尾帧按 Pi 官方 Reader 行为保留`unterminated`标记后解析；未遇到 LF 的单帧缓冲具有可配置字节上限。每个 Command 使用唯一请求 ID，Response 与异步 Event 分流；stderr 只进入有界诊断缓冲。
 
 无法解析的非空 stdout Frame、重复/未知 Response ID、协议 stdout EOF 和进程提前退出必须使相关请求以结构化协议或进程错误收敛。输出写入尊重背压；关闭先停止新请求，再有界结束 stdin、等待进程，必要时升级清理。未知但合法的 Event 或新增字段可以被本地 Capture 原样保存，不得仅因不认识就破坏已关联请求。
 
@@ -57,7 +57,7 @@ Gate Client 直接启动所选命令并追加 `--mode rpc`。stdout 作为唯一
 1. Hermetic Profile 启动 Fake Pi，覆盖 Chunk、UTF-8、LF/CRLF 输入容忍、并发 Response/Event、Malformed Frame、stderr、背压、EOF、超时、Crash 和关闭。
 2. Isolated Pi Profile 使用临时 cwd、独立 Session 目录和显式资源开关验证真实 Pi 控制面、Session、Entry Tree 和进程行为，不要求模型调用。
 3. Gate Extension Profile 只显式加载仓库内受控 Extension，确定性触发早到 Question、`select`/`confirm`/`input`/`editor`、超时/取消和无 Agent Loop Command；它不加载成生产默认 Extension。
-4. Native Live Profile 使用用户当前 Pi 配置、Provider 和认证，在临时项目和独立 Session 中运行真实 Stream、Tool、Edit、Cancel、History、Model 和 Fork。
+4. Native Live Profile 使用用户当前 Provider、认证、Model 和未被显式资源开关禁用的适用设置快照，在临时项目和独立 Session 中运行真实 Stream、Tool、Edit、Cancel、History、Model 和 Fork；不加载任意用户 Extension、Skill、Prompt Template 或 Theme。
 
 Hermetic 测试进入普通质量门禁。依赖本地 Pi、认证、网络或模型调用的 Profile 只能通过显式 Gate 命令运行；命令执行前显示将使用 Native Mode 和临时目录，结束后清理 Gate 创建的进程及非证据临时文件。
 
@@ -113,7 +113,7 @@ Native Live Profile 调用当前进程的 Model Catalog，选择两个实际可�
 
 仓库中的 Fixture 只能由 Fake Pi 和固定合成数据生成，用于验证 Envelope、事件顺序、字段存在性、错误收敛和 Gate 判定逻辑。合成 Golden 不得在测试失败路径自动更新，更新必须使用显式命令。
 
-本地 Gate 报告包含代码提交、操作系统/架构、命令来源类别、场景状态、能力矩阵、证据路径和结论，但不主动执行 Pi/Harness 版本查询。
+本地 Gate 报告包含代码提交、操作系统/架构、命令来源类别、场景状态、能力矩阵、证据路径和结论，但不主动执行 Pi/Harness 版本查询。权威报告要求干净且执行前后提交不变的 Git 工作树，只由一次显式 `gate:c`进程内的完整 Profile 结果生成；独立 Profile 运行仅用于诊断，不按各自“最新目录”自动拼接。
 
 ### 12. Gate 只以必需行为和完整证据判定
 
@@ -126,7 +126,7 @@ FAIL 表示可执行程序和必要环境可用，但已证明任一必需行为
 ## Risks / Trade-offs
 
 - [用户 Native Mode 可能访问付费模型或私有 Provider] → 真实场景必须显式运行，使用最小固定 Prompt，并在运行前展示边界；原始响应不提交。
-- [用户 Extension 或项目资源使结果不确定] → 隔离、Gate Extension 和 Native Live Profile 分开；只在 Native Profile 验证用户配置继承。
+- [用户 Extension 或项目资源使结果不确定] → 隔离、Gate Extension 和 Native Live Profile 分开；Native Live 只继承 Provider、认证、Model 和未被显式禁用的适用设置，不加载任意用户资源。
 - [Gate Extension 证明通道却被误认为生产方案] → 报告分别标记默认 RPC 与显式 Extension 证据，生产注入必须另行决策。
 - [模型可能不按 Prompt 调用指定 Tool] → 使用最小明确 Prompt、可重复场景和结果断言；无法稳定触发时标记 BLOCKED，不伪造事件。
 - [Session/Model 响应包含本地配置] → 所有真实证据和报告只写入 Git 忽略目录，不生成可提交的真实 Fixture。

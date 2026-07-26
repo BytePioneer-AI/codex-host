@@ -30,13 +30,19 @@ Pi RPC Probe MUST 按内部显式命令、`PI_COMMAND`、默认 `pi` 的优先�
 
 ### Requirement: 严格处理 LF JSONL 和请求关联
 
-Probe MUST 将 Pi stdout 作为严格 LF JSONL 协议通道，以字节 LF 分帧并支持跨 Chunk UTF-8 解码。Probe MUST 为 Command 分配唯一请求 ID，区分 Response 与异步 Event，隔离 stderr，并对写入背压、Malformed Frame、未知 Response 和 stdout EOF 给出有界结果。
+Probe MUST 将 Pi stdout 作为严格 LF JSONL 协议通道，以字节 LF 分帧并支持跨 Chunk UTF-8 解码。Probe MUST 为未遇到 LF 的单个 Frame Buffer 设置可配置字节上限。Probe MUST 为 Command 分配唯一请求 ID，区分 Response 与异步 Event，隔离 stderr，并对写入背压、Malformed Frame、未知 Response 和 stdout EOF 给出有界结果。
 
 #### Scenario: Frame 跨任意 Chunk 和 UTF-8 边界
 
 - **WHEN** Fake Pi 将多个 JSON 对象、单个对象或多字节字符拆分到任意 stdout Chunk
 - **THEN** Probe MUST 只按字节 LF 恢复完整 Frame
 - **AND** 每个 JSON 对象 MUST 恰好解析一次且内容不损坏
+
+#### Scenario: Frame 超过缓冲上限
+
+- **WHEN** stdout 持续输出超过配置上限的字节且没有 LF 分隔符
+- **THEN** Probe MUST 产生结构化 Frame 过大错误并释放残余缓冲
+- **AND**相关 Pending Command MUST 有界失败而不是继续增长内存
 
 #### Scenario: 收到并发 Response 和 Event
 
@@ -103,7 +109,8 @@ Probe SHALL 监督自己创建的 Pi 进程及测试后代，停止接收新请�
 #### Scenario: 执行 Native Live 场景
 
 - **WHEN** 操作者显式启动需要真实 Agent Loop 的 Gate 命令
-- **THEN** Pi MUST 使用用户当前 Native Mode 的 Model、Provider、认证和适用配置
+- **THEN** Pi MUST 使用用户当前 Native Mode 的 Model、Provider、认证和未被显式资源开关禁用的适用设置快照
+- **AND** Probe MUST NOT 据此声明任意用户 Extension、Skill、Prompt Template、Theme 或项目资源已经继承
 - **AND** Probe MUST 在运行前明确该场景可能访问模型或网络
 - **AND** 所有文件修改 MUST 限于 Gate 临时工作目录
 
@@ -356,7 +363,7 @@ Gate SHALL 将真实 RPC Frame、Session、Prompt、模型文本、Tool 输出�
 
 ### Requirement: 分层执行并明确判定 Gate C
 
-工程 MUST 提供进入普通质量门禁的 Hermetic/Fixture 测试和独立显式运行的真实 Pi Gate。Gate 报告 MUST 对每个场景给出 `PASS`、`FAIL`或 `BLOCKED`，并 MUST 只在所有 MVP 必需 Pi RPC 行为均有真实通过证据时将总体结果标记为 `PASS`。
+工程 MUST 提供进入普通质量门禁的 Hermetic/Fixture 测试和独立显式运行的真实 Pi Gate。Gate 报告 MUST 对每个场景给出 `PASS`、`FAIL`或 `BLOCKED`，并 MUST 只在所有 MVP 必需 Pi RPC 行为均有真实通过证据时将总体结果标记为 `PASS`。权威报告 MUST 来自干净且执行前后提交不变的 Git 工作树中的同一次显式 Gate 执行，MUST NOT 自动拼接各 Profile 独立运行的最新目录。
 
 #### Scenario: 所有必需能力成立
 

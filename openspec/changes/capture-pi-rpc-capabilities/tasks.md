@@ -8,7 +8,7 @@
 
 ## 2. LF JSONL Client 与进程监督
 
-- [x] 2.1 实现按字节 LF 分帧和跨 Chunk UTF-8 解码，覆盖拆分 JSON、多 Frame、CRLF 输入容忍、Unicode 行分隔符和尾部残帧
+- [x] 2.1 实现按字节 LF 分帧、跨 Chunk UTF-8 解码和可配置单帧缓冲上限，覆盖拆分 JSON、多 Frame、CRLF 输入容忍、Unicode 行分隔符和尾部残帧
 - [x] 2.2 实现唯一请求 ID、Pending Request、Response/Event 分流和有序事件订阅
 - [x] 2.3 实现未知合法 Event/附加字段隔离、Malformed Frame、重复/未知 Response 和协议 stdout EOF 错误
 - [x] 2.4 实现 stdin 写入背压、stderr 有界诊断缓冲、Command 超时和取消 Pending Request
@@ -91,7 +91,7 @@
 
 - [x] 11.1 运行全部 Hermetic、隔离、Gate Extension 和 Native Live 场景，逐项生成 PASS、FAIL 或 BLOCKED 结果
 - [x] 11.2 生成能力矩阵，区分 MVP 必需能力与 Approval、Reasoning、可靠 Patch 等观察能力
-- [x] 11.3 在本地忽略目录生成 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和真实证据位置，不执行 Harness 版本查询
+- [x] 11.3 只从干净且执行前后提交不变的工作树中的同一次显式 Gate 执行生成本地忽略 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和真实证据位置，不自动拼接独立 Profile 最新目录且不执行 Harness 版本查询
 - [x] 11.4 复核仓库内 Fixture 和 Golden 全部来自 Fake Pi 固定合成场景，真实报告和 Capture 未进入版本控制
 - [x] 11.5 根据证据修正 `docs/开发步骤清单.md` 中 Gate C 范围、终态、发布 E2E 和执行顺序，不机械保留不准确清单
 - [x] 11.6 删除相关正式设计中的 Harness 版本字段/版本行为，并按证据更新 Native Ref、Fork、Question、Cancel、Patch 和命令目录未决项

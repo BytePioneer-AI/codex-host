@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { GATE_C_SCHEMA_VERSION, gateReportSchema } from "./contracts.mjs";
+import { GateCError } from "./errors.mjs";
 import { assertLocalEvidencePath } from "./workspace.mjs";
 
 export function overallStatus(scenarios) {
@@ -24,6 +25,17 @@ export function repositoryCommit(repositoryRoot) {
     encoding: "utf8",
   });
   return `${revision.stdout.trim()}${status.stdout.trim() ? "-dirty" : ""}`;
+}
+
+export function requireReproducibleCommit(repositoryRoot) {
+  const revision = repositoryCommit(repositoryRoot);
+  if (revision === "unknown" || revision.endsWith("-dirty")) {
+    throw new GateCError(
+      "EVIDENCE_SOURCE",
+      "An authoritative Gate C report requires a clean Git worktree with a known commit",
+    );
+  }
+  return revision;
 }
 
 export function writeGateReport(repositoryRoot, outputPath, input) {

@@ -1,12 +1,10 @@
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 
 import { deriveCapabilities } from "./capabilities.mjs";
-import { rawCaptureSchema } from "./contracts.mjs";
 import { runExtensionProfile } from "./extension-scenarios.mjs";
 import { runIsolatedProfile } from "./isolated-scenarios.mjs";
-import { writeGateReport } from "./report.mjs";
+import { requireReproducibleCommit, writeGateReport } from "./report.mjs";
 import { writeSyntheticFixture } from "./synthetic-fixture.mjs";
 import { createGateWorkspace, removeNonEvidenceWorkspace } from "./workspace.mjs";
 
@@ -86,71 +84,22 @@ async function nativeLive() {
   }
 }
 
-function latestProfileRoot(profile) {
-  const platformRoot = path.join(
-    repositoryRoot,
-    ".codexhost",
-    "gate-c",
-    `${process.platform}-${process.arch}`,
-    profile,
-  );
-  const runs = fs
-    .readdirSync(platformRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map(({ name }) => name)
-    .sort()
-    .reverse();
-  if (runs.length === 0) throw new Error(`no local Gate C ${profile} run exists`);
-  return path.join(platformRoot, runs[0]);
-}
-
-function resultsFromProfile(profile) {
-  const root = latestProfileRoot(profile);
-  const raw = path.join(root, "raw");
-  const results = fs
-    .readdirSync(raw)
-    .filter((name) => name.endsWith(".capture.json"))
-    .sort()
-    .map((name) => {
-      const outputPath = path.join(raw, name);
-      const capture = rawCaptureSchema.parse(JSON.parse(fs.readFileSync(outputPath, "utf8")));
-      return { result: capture.result, outputPath, commandSource: capture.commandSource };
-    });
-  return { root, results };
-}
-
-function finalize() {
-  const profiles = ["isolated", "extension", "native-live"].map(resultsFromProfile);
-  const all = profiles.flatMap(({ results }) => results);
-  const scenarios = all.map(({ result }) => result);
-  const platformRoot = path.dirname(path.dirname(profiles[0].root));
-  const reportPath = path.join(platformRoot, "reports", "gate-c-report.local.json");
-  const report = writeGateReport(repositoryRoot, reportPath, {
-    commandSource: all[0]?.commandSource ?? "path",
-    evidenceRoot: path.relative(repositoryRoot, platformRoot),
-    scenarios,
-    capabilities: deriveCapabilities(scenarios),
-    impact:
-      "Gate Extension evidence proves the RPC Question channel only; production Extension installation remains a separate product decision.",
-    nextDecision:
-      "Use PASS evidence for a separate Shared Contracts/PiAdapter change; stop and revise architecture on FAIL or BLOCKED required capabilities.",
-  });
-  console.log(JSON.stringify(report, null, 2));
-  console.error(`[gate:c] local report: ${reportPath}`);
-  process.exitCode = report.status === "PASS" ? 0 : report.status === "FAIL" ? 1 : 2;
-  return report;
-}
-
 async function gate() {
+  const repositoryRevision = requireReproducibleCommit(repositoryRoot);
   const isolatedRun = await isolated();
   const extensionRun = await extension();
   const liveRun = await nativeLive();
   const all = [...isolatedRun.results, ...extensionRun.results, ...liveRun.results];
   const scenarios = all.map(({ result }) => result);
-  const reportPath = path.join(liveRun.workspace.reports, "gate-c-report.local.json");
+  if (requireReproducibleCommit(repositoryRoot) !== repositoryRevision) {
+    throw new Error("repository commit changed during the authoritative Gate C run");
+  }
+  const platformRoot = path.dirname(path.dirname(liveRun.workspace.root));
+  const reportPath = path.join(platformRoot, "reports", "gate-c-report.local.json");
   const report = writeGateReport(repositoryRoot, reportPath, {
+    repositoryCommit: repositoryRevision,
     commandSource: all[0]?.commandSource ?? "path",
-    evidenceRoot: path.relative(repositoryRoot, liveRun.workspace.root),
+    evidenceRoot: path.relative(repositoryRoot, platformRoot),
     scenarios,
     capabilities: deriveCapabilities(scenarios),
     impact:
@@ -184,8 +133,9 @@ switch (command) {
     await gate();
     break;
   case "finalize":
-    finalize();
-    break;
+    throw new Error(
+      "gate:c:finalize no longer combines independent profile runs; run 'npm run gate:c' to produce an authoritative report",
+    );
   default:
     throw new Error(`unknown Gate C command '${command}'`);
 }

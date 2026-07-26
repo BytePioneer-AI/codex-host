@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import { StrictJsonlDecoder } from "./jsonl.mjs";
 
-function decode(chunks) {
+function decodeWithOptions(chunks, options) {
   const frames = [];
-  const decoder = new StrictJsonlDecoder((line, metadata) => frames.push({ line, metadata }));
+  const decoder = new StrictJsonlDecoder(
+    (line, metadata) => frames.push({ line, metadata }),
+    options,
+  );
   for (const chunk of chunks) decoder.push(chunk);
   decoder.end();
   return frames;
+}
+
+function decode(chunks) {
+  return decodeWithOptions(chunks);
 }
 
 describe("Gate C strict LF JSONL decoder", () => {
@@ -24,6 +31,19 @@ describe("Gate C strict LF JSONL decoder", () => {
     expect(decode([Buffer.from('{"a":1}\r\n{"b":2}')])).toEqual([
       { line: '{"a":1}', metadata: { unterminated: false } },
       { line: '{"b":2}', metadata: { unterminated: true } },
+    ]);
+  });
+
+  it("rejects a frame that exceeds the configured byte limit", () => {
+    const decoder = new StrictJsonlDecoder(() => {}, { maxFrameBytes: 8 });
+    expect(() => decoder.push(Buffer.from("123456789"))).toThrow(
+      expect.objectContaining({ code: "FRAME_TOO_LARGE" }),
+    );
+  });
+
+  it("accepts a frame exactly at the configured byte limit", () => {
+    expect(decodeWithOptions([Buffer.from("12345678\n")], { maxFrameBytes: 8 })).toEqual([
+      { line: "12345678", metadata: { unterminated: false } },
     ]);
   });
 

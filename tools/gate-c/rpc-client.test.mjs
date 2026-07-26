@@ -68,6 +68,15 @@ describe("Gate C Pi RPC client", () => {
     await rpc.close();
   });
 
+  it("fails pending requests when a frame exceeds the configured byte limit", async () => {
+    const rpc = client("oversized-frame", { maxFrameBytes: 64 });
+    await rpc.start();
+    await expect(rpc.send({ type: "echo" })).rejects.toMatchObject({
+      code: "FRAME_TOO_LARGE",
+    });
+    await rpc.close();
+  });
+
   it("rejects unknown response ids instead of hanging", async () => {
     const rpc = client("unknown-response");
     await rpc.start();

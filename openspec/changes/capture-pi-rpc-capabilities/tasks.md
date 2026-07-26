@@ -57,11 +57,11 @@
 - [x] 7.2 在长时间 Tool 执行期间 Abort，验证 Tool 终态、子进程清理和 Agent 稳定收敛
 - [x] 7.3 在 Pending Question 期间 Abort，验证 Interaction 回调关闭且不会响应到其他请求
 - [x] 7.4 在取消收敛后使用同一 Session 完成下一普通 Turn，验证旧事件和 ID 不污染新请求
-- [x] 7.5 验证空闲重复 Abort、鉴权失败、Model 错误、Pi Crash 和强制关闭均有唯一可解释结果
+- [x] 7.5 验证空闲重复 Abort、非法 Command/参数、Fake Pi Crash 和强制关闭均有唯一可解释结果；真实鉴权/Model 错误留给后续 Adapter 场景
 
 ## 8. History 与 Native Turn Ref
 
-- [x] 8.1 为成功、失败和取消 Agent Run 捕获完成前后 Entries/Tree 差异，并列出 Native Turn Ref 候选
+- [x] 8.1 为成功和取消 Agent Run 捕获完成前后 Entries/Tree 差异并列出 Native Turn Ref 候选；不把该结论外推到尚未确定性验证的失败 Agent Run
 - [x] 8.2 验证候选在同一 Session 中唯一，且实时完成、重复读取、关闭/恢复后保持一致
 - [x] 8.3 使用同一 Pi 可执行程序在 RPC 关闭后通过原生客户端追加 Turn，再恢复 RPC 并验证既有候选不变、新 Turn 可读
 - [x] 8.4 构造 Session Tree 分支并验证 active leaf/祖先链决定当前历史，append 顺序中的非 active 分支不进入当前投影
@@ -84,7 +84,7 @@
 - [x] 10.2 在两个实际已认证 Model 之间执行 Turn 间切换，并通过状态回读和后续 Turn 验证生效
 - [x] 10.3 环境没有第二个可调用 Model 时将场景标记为 BLOCKED，并记录与 Harness 版本无关的解除条件
 - [x] 10.4 验证 Thinking 切换的接受、实际状态和与 Model 切换的副作用顺序
-- [x] 10.5 采集 Extension Command、Prompt Template 和 Skill Catalog，验证未返回的内置 TUI 命令不会被补造
+- [x] 10.5 采集资源禁用时的命令目录并执行受控 Extension Command，验证未返回的 Prompt Template、Skill 和内置 TUI 命令不会被补造
 - [x] 10.6 验证 Model、状态和命令结果只进入本地真实 Capture，仓库合成 Fixture 不读取这些本机值
 
 ## 11. Gate 结论与文档收敛
@@ -93,8 +93,8 @@
 - [x] 11.2 生成能力矩阵，区分 MVP 必需能力与 Approval、Reasoning、可靠 Patch 等观察能力
 - [x] 11.3 只从干净且执行前后提交不变的工作树中的同一次显式 Gate 执行生成本地忽略 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和真实证据位置，不自动拼接独立 Profile 最新目录且不执行 Harness 版本查询
 - [x] 11.4 复核仓库内 Fixture 和 Golden 全部来自 Fake Pi 固定合成场景，真实报告和 Capture 未进入版本控制
-- [x] 11.5 根据证据修正 `docs/开发步骤清单.md` 中 Gate C 范围、终态、发布 E2E 和执行顺序，不机械保留不准确清单
-- [x] 11.6 删除相关正式设计中的 Harness 版本字段/版本行为，并按证据更新 Native Ref、Fork、Question、Cancel、Patch 和命令目录未决项
+- [x] 11.5 将 Gate C 范围、终态、发布 E2E 和执行顺序固化到已跟踪 OpenSpec，并同步本地 `docs/开发步骤清单.md`
+- [x] 11.6 在已跟踪 OpenSpec 禁止 Harness 版本字段/版本行为，并同步本地设计中的 Native Ref、Fork、Question、Cancel、Patch 和命令目录边界
 - [x] 11.7 Gate 非 PASS 时记录产品影响和下一决策，并确保后续 Change 不把 Pi RPC 闭环标记为已验证
 
 ## 12. 质量与范围验收

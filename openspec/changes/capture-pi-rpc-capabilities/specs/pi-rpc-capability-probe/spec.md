@@ -249,9 +249,15 @@ Probe SHALL 使用 Pi RPC 的 Session 状态、Entries、Tree 和 active leaf �
 
 #### Scenario: 实时 Turn 对齐历史 Entry
 
-- **WHEN** 一个成功、失败或取消的 Agent Run 达到稳定终态
+- **WHEN** 一个成功或取消的 Agent Run 达到稳定终态
 - **THEN** Probe MUST 通过完成后的 Entries/Tree 找到其稳定 Native Turn Ref 候选
 - **AND** 重复读取 MUST 返回相同候选而不依赖 Message 文本匹配
+
+#### Scenario: 失败 Agent Run 缺少确定性证据
+
+- **WHEN** 当前 Gate 环境无法确定性构造并恢复失败 Agent Run
+- **THEN** Probe MUST 将失败 Turn 的稳定 Native Turn Ref 标记为后续 Adapter 未决项
+- **AND** MUST NOT 从成功或取消 Turn 的结果推断失败 Turn 已验证
 
 #### Scenario: 原生客户端追加 Turn
 
@@ -326,6 +332,12 @@ Probe SHALL 从当前 Pi RPC Session 读取实际 Model、Thinking 和命令目�
 - **WHEN**当前 Session 加载 Extension Command、Prompt Template 或 Skill
 - **THEN**Probe MUST 捕获 RPC 实际返回的命令种类和必要结构
 - **AND**未返回的内置 TUI 命令 MUST NOT 被加入能力结果
+
+#### Scenario: 资源被显式禁用
+
+- **WHEN**隔离或 Native Live Profile 显式禁用 Prompt Template、Skill 或用户 Extension
+- **THEN**Probe MUST 只记录 RPC 实际返回的受控命令目录
+- **AND** MUST NOT 将缺失资源声明为已加载或已验证
 
 #### Scenario: Catalog 包含本地敏感配置
 

@@ -89,7 +89,7 @@ Gate Extension 证明的是官方 RPC/Extension 通道的技术可行性。是�
 
 每个真实场景使用 Pi 自己创建和持久化的独立 Native Session。Probe 通过 RPC 获取 Session 状态、Entries、Tree 和 active leaf，不直接修改 Session JSONL。原始 Session 文件只用于诊断、原生客户端互操作和证据交叉检查，不成为生产读取方案。
 
-Native Turn Ref 候选必须满足：同一 Native Session 中唯一；实时 Agent Run 完成后可定位；关闭/恢复和重复读取后不变；追加后既有 Ref 不变；成功、失败或取消的可重建 Turn 都有稳定身份。Probe 应重点验证 user Entry ID，但报告必须以实测结果为准。
+Native Turn Ref 候选必须满足：同一 Native Session 中唯一；实时 Agent Run 完成后可定位；关闭/恢复和重复读取后不变；追加后既有 Ref 不变。Gate C 已确定性验证成功和取消 Turn 的 User Entry ID；失败 Agent Run 的稳定身份仍是后续 PiAdapter 未决项，不从已验证终态外推。
 
 历史实验覆盖 RPC 创建、关闭后 RPC Resume、使用同一 Pi 可执行程序在原生客户端追加 Turn、再次 RPC Resume，以及 Tree 分支切换后的 active branch。`get_messages`只能作为当前上下文对照，完整身份结论必须来自 Entries/Tree。
 
@@ -105,7 +105,7 @@ Probe 可以比较 `fork(nextUserEntry)`、`clone()`和官方 RPC 暴露的其�
 
 Native Live Profile 调用当前进程的 Model Catalog，选择两个实际可用且已认证的 Model 执行 Turn 间切换，并通过状态回读和后续 Turn 证明生效。环境只有一个可用 Model 时，该场景记为 BLOCKED 并说明解除条件，不按版本推断不支持。Thinking 选项和命令目录同样只写入本地忽略 Capture。
 
-命令目录验证 Extension Command、Prompt Template 和 Skill 的实际结构，并单独捕获无 Agent Loop Command。内置 TUI 命令若未出现在 RPC Catalog 中，不得由 codexhost 补造。Catalog、状态和 Model 对象中的 base URL、路径、价格、自定义配置和认证信息不得进入提交 Fixture。
+命令目录验证资源禁用时的实际返回值和受控 Extension Command 的执行，并单独捕获无 Agent Loop Command。Gate C 未加载 Prompt Template 或 Skill，因此不声明其 Catalog 已验证；内置 TUI 命令和未加载资源不得由 codexhost 补造。Catalog、状态和 Model 对象中的 base URL、路径、价格、自定义配置和认证信息不得进入提交 Fixture。
 
 ### 11. 真实证据只保存在本地忽略目录
 
@@ -151,3 +151,5 @@ FAIL 表示可执行程序和必要环境可用，但已证明任一必需行为
 - 官方 `fork`/`clone`组合能否精确覆盖任意当前可见的已完成 Turn？
 - 成功 Edit Patch 在多编辑块、CRLF 和失败场景中是否保持可应用和可归因？
 - Question 是否只能通过 Extension UI 提供，以及若生产 MVP 需要受控 Extension，应采用什么安装和信任边界？
+- 失败 Agent Run 的 User Entry ID 能否在关闭、恢复和追加后保持稳定？
+- 正式 PiAdapter 应如何映射真实鉴权失败、Model 错误以及 Prompt Template/Skill Command Catalog？

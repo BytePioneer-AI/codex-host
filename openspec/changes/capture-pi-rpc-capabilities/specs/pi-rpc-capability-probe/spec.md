@@ -324,35 +324,34 @@ Probe SHALL 从当前 Pi RPC Session 读取实际 Model、Thinking 和命令目�
 
 - **WHEN** Model、状态或命令对象包含 base URL、价格、绝对路径、自定义配置或认证信息
 - **THEN**原始值 MUST 保持在本地忽略证据中
-- **AND**可提交 Fixture MUST 只保留脱敏标识、结构和能力结果
+- **AND**这些本机值 MUST 只进入本地忽略 Capture，仓库合成 Fixture MUST NOT 读取它们
 
-### Requirement: 最小化并脱敏 Gate 证据
+### Requirement: 隔离真实 Gate 证据并只提交合成 Fixture
 
-Gate SHALL 将原始 RPC Frame、Session、Prompt、模型文本、Tool 输出、路径和配置写入 Git 忽略目录。仓库只可接收使用固定合成数据、确定性 ID/路径替换和字段 allowlist 生成的 Fixture、能力矩阵及验证报告；这些资产 MUST NOT 包含 Harness 版本。
+Gate SHALL 将真实 RPC Frame、Session、Prompt、模型文本、Tool 输出、路径、配置、能力矩阵和报告写入 Git 忽略目录。仓库只可接收由 Fake Pi 和固定合成数据生成的确定性 Fixture；开发阶段 MUST NOT 实现或依赖真实证据脱敏流程。
 
-#### Scenario: 生成原始 Capture
+#### Scenario: 生成真实 Capture
 
-- **WHEN**任一真实 Pi 场景保存未脱敏协议或 Session 证据
-- **THEN**证据 MUST 写入专用 Git 忽略目录
-- **AND** MUST NOT 由普通测试或报告命令自动加入仓库
+- **WHEN**任一真实 Pi 场景保存协议、Session 或报告证据
+- **THEN**证据 MUST 写入 `.codexhost/gate-c/`或其他专用 Git 忽略目录
+- **AND** MUST NOT 由普通测试、Fixture 或报告命令复制到可提交路径
 
-#### Scenario: 生成可提交 Fixture
+#### Scenario: 生成合成 Fixture
 
-- **WHEN**脱敏器处理真实 Capture
-- **THEN** Session、Entry、Request 和 Tool ID MUST 替换为稳定占位符
-- **AND** Prompt、完整消息、Tool 内容、模型标识、base URL 和绝对路径 MUST 被删除或替换
-- **AND** Fixture MUST NOT 包含 Pi/Harness 版本字段
+- **WHEN**显式 Fixture 命令从 Fake Pi 场景生成确定性证据
+- **THEN** Fixture MUST 只包含固定合成 ID、路径、消息和 Tool 输出
+- **AND** MUST NOT 读取本机 Pi、用户 Session、用户配置或真实模型响应
 
-#### Scenario: 执行隐私回归测试
+#### Scenario: 普通检查读取 Fixture
 
 - **WHEN**普通检查验证 Gate Fixture
-- **THEN**测试 MUST 检测凭据键、Authorization、API Key、用户目录、真实 Prompt、完整 Transcript 和非合成 Tool 输出
-- **AND**任何命中 MUST 使检查失败
+- **THEN**测试 MUST 只读取仓库内的 Fake Pi 合成 Fixture
+- **AND** MUST NOT 访问 `.codexhost/gate-c/`中的真实证据
 
-#### Scenario: 更新 Golden
+#### Scenario: 更新合成 Golden
 
-- **WHEN**协议或能力结果与已评审 Golden 不同
-- **THEN**测试 MUST 失败并要求人工审查
+- **WHEN**协议或 Gate 判定逻辑与已评审合成 Golden 不同
+- **THEN**测试 MUST 失败并要求显式更新
 - **AND** MUST NOT 在测试失败路径自动覆盖 Golden
 
 ### Requirement: 分层执行并明确判定 Gate C
@@ -363,7 +362,7 @@ Gate SHALL 将原始 RPC Frame、Session、Prompt、模型文本、Tool 输出�
 
 - **WHEN**真实 Pi 启动/关闭、Stream、Tool、Question、Cancel、History/Resume、稳定 Native Turn Ref、两个实际 Model 间切换和精确 Fork 均通过
 - **THEN**Gate 报告 MUST 标记总体 `PASS`
-- **AND**报告 MUST 指向脱敏 Fixture、自动化检查和人工验证证据
+- **AND**本地报告 MUST 指向本地真实 Capture 和仓库内的 Hermetic 自动化检查
 - **AND**报告 MUST 说明 Agent Loop 由 Pi 执行
 
 #### Scenario: 必需行为被证明不成立

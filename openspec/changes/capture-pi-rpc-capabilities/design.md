@@ -14,7 +14,7 @@ Gate C 必须先回答用户本机 Pi 官方 RPC 的可观察事实。产品已�
 - 通过真实 Pi 证明或否定 MVP 所需的 Stream、Tool、Question、Cancel、History、Model 和 Fork 能力。
 - 找到可在实时完成和历史重读之间保持稳定的 Native Session、Native Turn Ref 和 Native Checkpoint 候选。
 - 明确 Agent Loop、无 Agent Loop Command、重试、Compaction、取消和进程退出的终态条件。
-- 只提交脱敏能力证据，并把结果固化为 Fixture、自动化断言和 Gate 报告。
+- 真实能力证据和 Gate 报告只保存在本地忽略目录；仓库只用 Fake Pi 合成 Fixture 固化自动化断言。
 - 为后续最小 Shared Contracts 和 PiAdapter 提供事实输入，而不是提前设计它们。
 
 **Non-Goals:**
@@ -40,7 +40,7 @@ Windows 命令脚本、带空格路径、PATH 发现和直接可执行文件使�
 
 ### 2. Gate 代码只进入 tools/tests，不进入生产模块
 
-`tools/gate-c/`承载命令解析、进程启动、LF JSONL、请求关联、场景编排、脱敏和报告生成。Fake Pi、Gate Extension 和测试输入作为 Gate 专用 Fixture 或辅助程序存在。可提交协议样本位于 `tests/fixtures/`，行为回归由 Gate 专用测试读取。
+`tools/gate-c/`承载命令解析、进程启动、LF JSONL、请求关联、场景编排、Capture 和本地报告生成。Fake Pi、Gate Extension 和测试输入作为 Gate 专用 Fixture 或辅助程序存在。仓库协议样本只由 Fake Pi 固定合成场景生成，行为回归由 Gate 专用测试读取。
 
 本变更不从 `packages/adapters/pi` 导出 RPC 类型，也不向 `shared-contracts` 增加 Native Ref。Gate 结束后的独立 change 再依据 Fixture 固化最小正式契约。这样可以允许 Probe 保存 Pi 专属细节，而不把单一 Harness 的协议泄漏到公共接口。
 
@@ -48,7 +48,7 @@ Windows 命令脚本、带空格路径、PATH 发现和直接可执行文件使�
 
 Gate Client 直接启动所选命令并追加 `--mode rpc`。stdout 作为唯一协议通道，以字节 `0x0A` 分帧，使用流式 UTF-8 解码处理跨 chunk 字符，不使用会识别 Unicode 行分隔符的通用 Line Reader。每个 Command 使用唯一请求 ID，Response 与异步 Event 分流；stderr 只进入有界诊断缓冲。
 
-无法解析的非空 stdout Frame、重复/未知 Response ID、协议 stdout EOF 和进程提前退出必须使相关请求以结构化协议或进程错误收敛。输出写入尊重背压；关闭先停止新请求，再有界结束 stdin、等待进程，必要时升级清理。未知但合法的 Event 或新增字段可以被 Capture 保存为脱敏的未知形状，不得仅因不认识就破坏已关联请求。
+无法解析的非空 stdout Frame、重复/未知 Response ID、协议 stdout EOF 和进程提前退出必须使相关请求以结构化协议或进程错误收敛。输出写入尊重背压；关闭先停止新请求，再有界结束 stdin、等待进程，必要时升级清理。未知但合法的 Event 或新增字段可以被本地 Capture 原样保存，不得仅因不认识就破坏已关联请求。
 
 导入全局 Pi 包内 `RpcClient`会依赖 npm 安装布局、隐藏本变更需要验证的 Framing 行为并产生包版本耦合，因此拒绝。
 
@@ -103,17 +103,17 @@ Probe 可以比较 `fork(nextUserEntry)`、`clone()`和官方 RPC 暴露的其�
 
 ### 10. Model、Thinking 和命令目录只按当前 Session 实际结果判定
 
-Native Live Profile 调用当前进程的 Model Catalog，选择两个实际可用且已认证的 Model 执行 Turn 间切换，并通过状态回读和后续 Turn 证明生效。环境只有一个可用 Model 时，该场景记为 BLOCKED 并说明解除条件，不按版本推断不支持。Thinking 选项和命令目录同样只保存结构、数量和脱敏标识。
+Native Live Profile 调用当前进程的 Model Catalog，选择两个实际可用且已认证的 Model 执行 Turn 间切换，并通过状态回读和后续 Turn 证明生效。环境只有一个可用 Model 时，该场景记为 BLOCKED 并说明解除条件，不按版本推断不支持。Thinking 选项和命令目录同样只写入本地忽略 Capture。
 
 命令目录验证 Extension Command、Prompt Template 和 Skill 的实际结构，并单独捕获无 Agent Loop Command。内置 TUI 命令若未出现在 RPC Catalog 中，不得由 codexhost 补造。Catalog、状态和 Model 对象中的 base URL、路径、价格、自定义配置和认证信息不得进入提交 Fixture。
 
-### 11. 原始证据与可提交证据严格分离
+### 11. 真实证据只保存在本地忽略目录
 
-原始 RPC Frame、Session、Prompt、模型文本、Tool 输出、路径和本地配置写入已忽略的 Gate 目录。可提交 Fixture 使用固定合成 Prompt/文件，规范化 Session/Entry/Request/Tool ID，替换消息文本、模型标识和绝对路径，只保留验证 Requirement 所需的 Envelope、事件顺序、字段存在性和布尔结果。
+真实 RPC Frame、Session、Prompt、模型文本、Tool 输出、路径、本地配置、能力矩阵和 Gate 报告全部写入 `.codexhost/gate-c/`，不得提交。开发阶段不实现真实证据脱敏、Golden 生成或可提交报告流程。
 
-脱敏器采用 allowlist 输出并配套泄漏测试，检查凭据键、Authorization、API Key、base URL、用户目录、真实 Prompt、完整 Transcript 和非测试 Tool 输出。Golden 不得在测试失败时自动更新；生成后必须人工复核。
+仓库中的 Fixture 只能由 Fake Pi 和固定合成数据生成，用于验证 Envelope、事件顺序、字段存在性、错误收敛和 Gate 判定逻辑。合成 Golden 不得在测试失败路径自动更新，更新必须使用显式命令。
 
-Gate 报告包含代码提交、操作系统/架构、命令来源类别、场景状态、能力矩阵、证据路径和结论，但不包含 Pi/Harness 版本、可执行绝对路径或用户配置。
+本地 Gate 报告包含代码提交、操作系统/架构、命令来源类别、场景状态、能力矩阵、证据路径和结论，但不主动执行 Pi/Harness 版本查询。
 
 ### 12. Gate 只以必需行为和完整证据判定
 
@@ -121,7 +121,7 @@ Gate C 结论为 `PASS`、`FAIL`或 `BLOCKED`。PASS 要求真实 Pi 的启动/�
 
 FAIL 表示可执行程序和必要环境可用，但已证明任一必需行为或安全不变量不成立。BLOCKED 仅用于未安装/不可执行、缺少认证/第二个可用 Model、网络或外部环境条件导致无法判定。Approval、Reasoning 或可靠 Patch 不存在属于能力矩阵结果，不单独导致 FAIL。
 
-普通 `npm run check`只运行 Hermetic、脱敏和 Fixture 回归，不要求本机安装 Pi。真实 Gate 使用独立命令，并在报告前运行受影响的格式、Lint、类型、测试和构建检查。
+普通 `npm run check`只运行 Hermetic 和合成 Fixture 回归，不要求本机安装 Pi。真实 Gate 使用独立命令，并在报告前运行受影响的格式、Lint、类型、测试和构建检查。
 
 ## Risks / Trade-offs
 
@@ -129,7 +129,7 @@ FAIL 表示可执行程序和必要环境可用，但已证明任一必需行为
 - [用户 Extension 或项目资源使结果不确定] → 隔离、Gate Extension 和 Native Live Profile 分开；只在 Native Profile 验证用户配置继承。
 - [Gate Extension 证明通道却被误认为生产方案] → 报告分别标记默认 RPC 与显式 Extension 证据，生产注入必须另行决策。
 - [模型可能不按 Prompt 调用指定 Tool] → 使用最小明确 Prompt、可重复场景和结果断言；无法稳定触发时标记 BLOCKED，不伪造事件。
-- [Session/Model 响应泄露本地配置] → 原始证据忽略、提交结构 allowlist、自动泄漏扫描和人工复核。
+- [Session/Model 响应包含本地配置] → 所有真实证据和报告只写入 Git 忽略目录，不生成可提交的真实 Fixture。
 - [Fork 表面成功但包含目标之后上下文] → 对比新旧 Entry Tree 和 active branch，继续 Turn 前先断言精确截止位置。
 - [未知新增事件使严格 Schema 拒绝可用 Pi] → Gate 传输层先识别 Envelope，未知 Event 隔离记录；只有破坏必需状态机时才影响结论。
 - [真实 Gate 仅在一个操作系统执行] → 协议能力结论不维护平台矩阵；进程启动/清理由双平台 Hermetic 测试覆盖，发布前仍执行双平台完整 E2E。
@@ -138,7 +138,7 @@ FAIL 表示可执行程序和必要环境可用，但已证明任一必需行为
 
 1. 增加 Gate-only 命令、Fake Pi、忽略目录和 Hermetic 测试，不改变任何生产入口。
 2. 完成隔离 Pi、Gate Extension 和 Native Live 场景，生成本地原始证据。
-3. 脱敏并人工评审 Fixture，运行回归和 Gate 判定，形成 Pi RPC 能力验证记录。
+3. 使用本地真实 Capture 运行 Gate 判定并形成本地能力验证记录；仓库回归只读取 Fake Pi 合成 Fixture。
 4. 按证据修正开发步骤和技术设计；若 Gate 非 PASS，停止把受影响能力作为后续实现前提。
 5. Gate PASS 后，由独立 change 定义最小 Shared Contracts 和 PiAdapter 契约；Gate 工具仍不进入发布包。
 

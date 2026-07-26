@@ -1,28 +1,28 @@
 ## 1. Gate C 安全基线与入口
 
 - [ ] 1.1 建立 `tools/gate-c/` 模块、独立真实 Gate 命令和 Hermetic 测试入口，确保普通检查不会启动本机 Pi
-- [ ] 1.2 实现内部注入命令、`PI_COMMAND`、默认 `pi` 的解析优先级，以 argv 数组追加 RPC 参数且不解析 Shell 命令行
+- [x] 1.2 实现内部注入命令、`PI_COMMAND`、默认 `pi` 的解析优先级，以 argv 数组追加 RPC 参数且不解析 Shell 命令行
 - [ ] 1.3 为直接可执行文件、PATH 命令、带空格路径和 Windows 命令脚本增加跨平台启动测试
-- [ ] 1.4 增加断言，确保 Gate 不调用或保存 Harness 版本、不导入 Pi SDK，并且不把 ACP、Print/JSON 或 TUI 用作 RPC/生产接入路径
+- [x] 1.4 增加断言，确保 Gate 不调用或保存 Harness 版本、不导入 Pi SDK，并且不把 ACP、Print/JSON 或 TUI 用作 RPC/生产接入路径
 - [ ] 1.5 定义临时 cwd、独立 Session 目录、原始证据目录和清理策略，并将所有原始 Capture/Session/日志路径加入 Git 忽略
 
 ## 2. LF JSONL Client 与进程监督
 
-- [ ] 2.1 实现按字节 LF 分帧和跨 Chunk UTF-8 解码，覆盖拆分 JSON、多 Frame、CRLF 输入容忍、Unicode 行分隔符和尾部残帧
-- [ ] 2.2 实现唯一请求 ID、Pending Request、Response/Event 分流和有序事件订阅
+- [x] 2.1 实现按字节 LF 分帧和跨 Chunk UTF-8 解码，覆盖拆分 JSON、多 Frame、CRLF 输入容忍、Unicode 行分隔符和尾部残帧
+- [x] 2.2 实现唯一请求 ID、Pending Request、Response/Event 分流和有序事件订阅
 - [ ] 2.3 实现未知合法 Event/附加字段隔离、Malformed Frame、重复/未知 Response 和协议 stdout EOF 错误
 - [ ] 2.4 实现 stdin 写入背压、stderr 有界诊断缓冲、Command 超时和取消 Pending Request
 - [ ] 2.5 实现停止新请求、stdin 半关闭、输出排空、正常等待、超时升级和进程退出后的统一收敛
 - [ ] 2.6 建立 Fake Pi，覆盖交错 Response/Event、任意 Chunk、Malformed JSON、stderr、延迟、Crash、拒绝关闭和后代进程
 - [ ] 2.7 在 Windows/macOS Hermetic 测试中验证正常关闭、强制关闭和无本次 Gate 创建的孤儿进程
 
-## 3. Capture、脱敏与 Fixture 契约
+## 3. Capture、本地证据与合成 Fixture 契约
 
-- [ ] 3.1 定义原始 Capture、脱敏 Fixture、场景结果、能力矩阵和 Gate 报告的最小结构，所有结构排除 Harness 版本
-- [ ] 3.2 实现 Session/Entry/Request/Tool ID 的确定性占位符映射和字段 allowlist 输出
-- [ ] 3.3 实现 Prompt、完整消息、Tool 内容、模型标识、base URL、绝对路径、凭据和本地配置脱敏
-- [ ] 3.4 增加正反例隐私测试，命中 Authorization、API Key、用户目录、真实 Prompt、Transcript 或非合成 Tool 输出时失败
-- [ ] 3.5 实现只读 Golden 比较和显式生成命令，测试失败路径不得自动覆盖已评审 Fixture
+- [ ] 3.1 定义原始 Capture、场景结果、能力矩阵和本地 Gate 报告的最小结构，不执行 Harness 版本查询
+- [ ] 3.2 实现真实 Capture、Session、能力矩阵和报告只写入 `.codexhost/gate-c/`的路径约束
+- [ ] 3.3 定义只允许 Fake Pi 固定合成数据进入仓库 Fixture 的生成边界
+- [ ] 3.4 增加测试，确认普通检查和 Fixture 生成不会读取本机 Pi、用户 Session、用户配置或本地真实证据
+- [ ] 3.5 实现只读合成 Golden 比较和显式生成命令，测试失败路径不得自动覆盖已评审 Fixture
 
 ## 4. 真实 Pi 隔离控制面
 
@@ -80,19 +80,19 @@
 
 ## 10. Model、Thinking 与命令目录
 
-- [ ] 10.1 脱敏采集当前 Session 的 Model Catalog、有效 Model、Thinking 选项和状态结构
+- [ ] 10.1 在本地忽略 Capture 中采集当前 Session 的 Model Catalog、有效 Model、Thinking 选项和状态结构
 - [ ] 10.2 在两个实际已认证 Model 之间执行 Turn 间切换，并通过状态回读和后续 Turn 验证生效
 - [ ] 10.3 环境没有第二个可调用 Model 时将场景标记为 BLOCKED，并记录与 Harness 版本无关的解除条件
 - [ ] 10.4 验证 Thinking 切换的接受、实际状态和与 Model 切换的副作用顺序
 - [ ] 10.5 采集 Extension Command、Prompt Template 和 Skill Catalog，验证未返回的内置 TUI 命令不会被补造
-- [ ] 10.6 验证 Model、状态和命令 Fixture 不包含 base URL、价格、本地 Source Path、配置或认证信息
+- [ ] 10.6 验证 Model、状态和命令结果只进入本地真实 Capture，仓库合成 Fixture 不读取这些本机值
 
 ## 11. Gate 结论与文档收敛
 
 - [ ] 11.1 运行全部 Hermetic、隔离、Gate Extension 和 Native Live 场景，逐项生成 PASS、FAIL 或 BLOCKED 结果
 - [ ] 11.2 生成能力矩阵，区分 MVP 必需能力与 Approval、Reasoning、可靠 Patch 等观察能力
-- [ ] 11.3 生成 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和脱敏证据位置，但不包含 Harness 版本或可执行绝对路径
-- [ ] 11.4 人工评审所有可提交 Fixture、Golden 和报告，确认不存在凭据、Prompt、Transcript、Tool 内容、本地配置或用户路径
+- [ ] 11.3 在本地忽略目录生成 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和真实证据位置，不执行 Harness 版本查询
+- [ ] 11.4 复核仓库内 Fixture 和 Golden 全部来自 Fake Pi 固定合成场景，真实报告和 Capture 未进入版本控制
 - [ ] 11.5 根据证据修正 `docs/开发步骤清单.md` 中 Gate C 范围、终态、发布 E2E 和执行顺序，不机械保留不准确清单
 - [ ] 11.6 删除相关正式设计中的 Harness 版本字段/版本行为，并按证据更新 Native Ref、Fork、Question、Cancel、Patch 和命令目录未决项
 - [ ] 11.7 Gate 非 PASS 时记录产品影响和下一决策，并确保后续 Change 不把 Pi RPC 闭环标记为已验证

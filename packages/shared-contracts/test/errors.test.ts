@@ -2,10 +2,19 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import { codexhostErrorSchema } from "../src/index.js";
+import type { CodexhostError } from "../src/index.js";
 
-const mappingStoreErrorSchema = codexhostErrorSchema.extend({
+const mappingStoreErrorSchema = codexhostErrorSchema.safeExtend({
   code: z.enum(["IO_ERROR", "MAPPING_CONFLICT"]),
 });
+
+function assertExactOptionalDiagnostic(error: CodexhostError): void {
+  // @ts-expect-error Explicit undefined is not an optional diagnostic.
+  const invalidError: CodexhostError = { ...error, diagnostic: undefined };
+  void invalidError;
+}
+
+void assertExactOptionalDiagnostic;
 
 describe("codexhost cross-boundary error contract", () => {
   it("accepts the minimal shared structure without fixing a global code enum", () => {
@@ -26,6 +35,7 @@ describe("codexhost cross-boundary error contract", () => {
     { code: "INVALID", message: "missing retryable" },
     { code: "INVALID", message: "wrong retryable", retryable: "no" },
     { code: "INVALID", message: "empty diagnostic", retryable: false, diagnostic: "" },
+    { code: "INVALID", message: "undefined diagnostic", retryable: false, diagnostic: undefined },
     { code: "INVALID", message: "extended", retryable: false, extra: true },
   ])("rejects incomplete or extended errors %#", (value) => {
     expect(codexhostErrorSchema.safeParse(value).success).toBe(false);

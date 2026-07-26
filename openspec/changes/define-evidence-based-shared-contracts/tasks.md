@@ -18,6 +18,8 @@
 - [x] 3.3 用已评审 Gate A `official-app-server.fixture.json`逐项验证无 `jsonrpc`的 Request、Notification、成功 Response和错误 Response
 - [x] 3.4 增加 string/integer ID、Server/Desktop 共用 Request、未知 Method、未知字段保留和 JSON round-trip测试
 - [x] 3.5 增加 result/error并存、Notification带 id、Response带 method、null ID和畸形 Error等校验失败测试
+- [x] 3.6 保留并使用 `JsonValue`校验顶层 Envelope和Error未知扩展字段，拒绝不可序列化及循环扩展值
+- [x] 3.7 区分字段缺省与显式 `undefined`，使Envelope互斥字段、JSON可选字段、Native Ref locator和错误diagnostic在Runtime及命名类型中保持精确
 
 ## 4. Native Ref 与跨边界错误
 
@@ -44,8 +46,8 @@
 
 ## 7. 实际验证结果
 
-- Shared Contracts、边界门禁和Browser bundle最窄测试：`8`个测试文件、`78`个用例通过；生产TypeScript构建、测试类型检查和真实仓库边界扫描通过。
-- `npm run check`：通过；Prettier、ESLint、边界检查、TypeScript、`30`个Vitest文件共`142`个用例、Rust fmt、Clippy和Rust测试全部成功。
+- Shared Contracts、边界门禁和Browser bundle最窄测试：`8`个测试文件、`83`个用例通过；生产TypeScript构建、测试类型检查和真实仓库边界扫描通过。
+- `npm run check`：通过；Prettier、ESLint、边界检查、TypeScript、`30`个Vitest文件共`147`个用例、Rust fmt、Clippy和Rust测试全部成功。
 - `npm run build`：通过；TypeScript、Renderer Browser Bundle和三个生产Rust package构建成功。
 - `npm run test:e2e`：通过；Playwright `1/1`用例成功，未启动真实Codex Desktop或Pi。
 - `openspec validate define-evidence-based-shared-contracts --strict`：通过。

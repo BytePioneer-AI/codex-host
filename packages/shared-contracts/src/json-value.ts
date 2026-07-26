@@ -5,6 +5,20 @@ export type JsonArray = JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonArray | JsonObject;
 
+export function rejectExplicitUndefined(keys: readonly string[]) {
+  return (value: object, context: z.RefinementCtx): void => {
+    for (const key of keys) {
+      if (Object.hasOwn(value, key) && (value as Record<string, unknown>)[key] === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Explicit undefined is not valid JSON",
+        });
+      }
+    }
+  };
+}
+
 export const jsonPrimitiveSchema: z.ZodType<JsonPrimitive> = z.union([
   z.string(),
   z.number(),

@@ -10,6 +10,7 @@ import {
   jsonRpcRequestSchema,
   jsonRpcSuccessResponseSchema,
 } from "../src/index.js";
+import type { JsonRpcNotification, JsonRpcRequest } from "../src/index.js";
 
 interface GateAAppServerFixture {
   requests: unknown[];
@@ -25,6 +26,21 @@ const gateAFixture = JSON.parse(readFileSync(fixturePath, "utf8")) as GateAAppSe
 function hasOwn(value: unknown, key: string): boolean {
   return typeof value === "object" && value !== null && Object.hasOwn(value, key);
 }
+
+function assertExactEnvelopeFields(
+  notification: JsonRpcNotification,
+  request: JsonRpcRequest,
+): void {
+  // @ts-expect-error A Notification ID must be absent, not undefined.
+  const invalidNotification: JsonRpcNotification = { ...notification, id: undefined };
+  // @ts-expect-error A Request result must be absent, not undefined.
+  const invalidRequest: JsonRpcRequest = { ...request, result: undefined };
+
+  void invalidNotification;
+  void invalidRequest;
+}
+
+void assertExactEnvelopeFields;
 
 describe("Codex-compatible JSON-RPC envelope contracts", () => {
   it("parses every reviewed Gate A envelope without requiring jsonrpc", () => {
@@ -83,6 +99,30 @@ describe("Codex-compatible JSON-RPC envelope contracts", () => {
     expect(jsonRpcErrorResponseSchema.parse(errorResponse)).toEqual(errorResponse);
   });
 
+  it("rejects non-JSON envelope and error extension values", () => {
+    const cyclicExtension: Record<string, unknown> = {};
+    cyclicExtension.self = cyclicExtension;
+    const requests = [
+      { id: 1, method: "bigint-extension", future: 1n },
+      { id: 2, method: "function-extension", future: () => 1 },
+      { id: 3, method: "cyclic-extension", future: cyclicExtension },
+    ];
+    const errorResponses = [
+      { id: 4, error: { code: -1, message: "bigint extension", future: 1n } },
+      { id: 5, error: { code: -1, message: "function extension", future: () => 1 } },
+      { id: 6, error: { code: -1, message: "cyclic extension", future: cyclicExtension } },
+    ];
+
+    for (const request of requests) {
+      expect(jsonRpcRequestSchema.safeParse(request).success).toBe(false);
+      expect(jsonRpcEnvelopeSchema.safeParse(request).success).toBe(false);
+    }
+    for (const response of errorResponses) {
+      expect(jsonRpcErrorResponseSchema.safeParse(response).success).toBe(false);
+      expect(jsonRpcEnvelopeSchema.safeParse(response).success).toBe(false);
+    }
+  });
+
   it("preserves JSON round-trips for every envelope kind", () => {
     const envelopes = [
       { id: 1, method: "request", params: null },
@@ -94,6 +134,25 @@ describe("Codex-compatible JSON-RPC envelope contracts", () => {
     for (const envelope of envelopes) {
       const parsed = jsonRpcEnvelopeSchema.parse(envelope);
       expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+    }
+  });
+
+  it("rejects explicit undefined in optional and forbidden fields", () => {
+    const values = [
+      { method: "notification", id: undefined },
+      { id: 1, method: "request", result: undefined },
+      { id: 2, method: "request", params: undefined },
+      { id: 3, result: null, error: undefined },
+      { id: 4, error: { code: -1, message: "failed", data: undefined } },
+    ];
+
+    expect(jsonRpcNotificationSchema.safeParse(values[0]).success).toBe(false);
+    expect(jsonRpcRequestSchema.safeParse(values[1]).success).toBe(false);
+    expect(jsonRpcRequestSchema.safeParse(values[2]).success).toBe(false);
+    expect(jsonRpcSuccessResponseSchema.safeParse(values[3]).success).toBe(false);
+    expect(jsonRpcErrorResponseSchema.safeParse(values[4]).success).toBe(false);
+    for (const value of values) {
+      expect(jsonRpcEnvelopeSchema.safeParse(value).success).toBe(false);
     }
   });
 

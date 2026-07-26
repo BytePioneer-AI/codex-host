@@ -5,7 +5,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "../src/index.js";
-import type { NativeCheckpointRef, NativeTurnRef } from "../src/index.js";
+import type { NativeCheckpointRef, NativeSessionRef, NativeTurnRef } from "../src/index.js";
 
 function assertNativeRefIsolation(
   turnRef: NativeTurnRef,
@@ -20,7 +20,21 @@ function assertNativeRefIsolation(
   void invalidTurn;
 }
 
+function assertExactOptionalLocators(
+  session: NativeSessionRef,
+  checkpoint: NativeCheckpointRef,
+): void {
+  // @ts-expect-error Explicit undefined is not an optional Session locator.
+  const invalidSession: NativeSessionRef = { ...session, locator: undefined };
+  // @ts-expect-error Explicit undefined is not an optional Checkpoint locator.
+  const invalidCheckpoint: NativeCheckpointRef = { ...checkpoint, locator: undefined };
+
+  void invalidSession;
+  void invalidCheckpoint;
+}
+
 void assertNativeRefIsolation;
+void assertExactOptionalLocators;
 
 const sessionRef = {
   harnessId: "pi",
@@ -60,10 +74,12 @@ describe("opaque native reference contracts", () => {
     [nativeSessionRefSchema, { ...sessionRef, formatVersion: 2 }],
     [nativeSessionRefSchema, { ...sessionRef, nativeSessionId: "   " }],
     [nativeSessionRefSchema, { ...sessionRef, extra: true }],
+    [nativeSessionRefSchema, { ...sessionRef, locator: undefined }],
     [nativeSessionRefSchema, { ...sessionRef, locator: { invalid: undefined } }],
     [nativeTurnRefSchema, { ...turnRef, nativeTurnKey: "\t" }],
     [nativeTurnRefSchema, { ...turnRef, locator: {} }],
     [nativeCheckpointRefSchema, { ...checkpointRef, checkpointId: "" }],
+    [nativeCheckpointRefSchema, { ...checkpointRef, locator: undefined }],
     [nativeCheckpointRefSchema, { ...checkpointRef, locator: 1n }],
   ])("rejects invalid or extended V1 reference %#", (schema, value) => {
     expect(schema.safeParse(value).success).toBe(false);

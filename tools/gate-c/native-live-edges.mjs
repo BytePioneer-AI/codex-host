@@ -14,7 +14,7 @@ export async function runRuntimeEdgeScenario({ repositoryRoot, workspace, config
     profile: "native-live",
     scenario: "native-live-runtime-edges",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace),
     run: async (rpc) => {
       const start = rpc.events.length;

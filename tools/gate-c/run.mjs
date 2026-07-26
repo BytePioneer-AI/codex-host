@@ -73,6 +73,7 @@ async function nativeLive() {
     "[gate:c] Native Live uses the current Pi Provider/authentication and may access models or the network.",
   );
   console.error(`[gate:c] All file operations are restricted to ${workspace.cwd}`);
+  console.error("[gate:c] Mutable Pi settings use a temporary config copy removed after the run.");
   try {
     const results = await module.runNativeLiveProfile({ repositoryRoot, workspace });
     printResult(results);

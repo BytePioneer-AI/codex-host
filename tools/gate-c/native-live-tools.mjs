@@ -41,7 +41,7 @@ export async function runToolScenario({ repositoryRoot, workspace, configuredCom
     profile: "native-live",
     scenario: "native-live-tool",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: extensionArgs(workspace),
     run: async (rpc) => {
       const editRun = await promptAndSettle(
@@ -131,7 +131,7 @@ export async function runQuestionScenario({ repositoryRoot, workspace, configure
     profile: "native-live",
     scenario: "native-live-question",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: extensionArgs(workspace),
     run: async (rpc) => {
       const start = rpc.events.length;
@@ -235,7 +235,7 @@ export async function runCancelScenario({ repositoryRoot, workspace, configuredC
     profile: "native-live",
     scenario: "native-live-cancel",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: extensionArgs(workspace),
     run: async (rpc) => {
       const beforeEntries = requireSuccess(await rpc.send({ type: "get_entries" }));
@@ -314,7 +314,7 @@ export async function runCancelHistoryScenario({
     profile: "native-live",
     scenario: "native-live-cancel-history",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: extensionArgs(workspace, sessionArgument(sessionFile)),
     run: async (rpc) => {
       const state = requireSuccess(await rpc.send({ type: "get_state" }));

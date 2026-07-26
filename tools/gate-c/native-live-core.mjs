@@ -34,7 +34,7 @@ export async function runStreamScenario({ repositoryRoot, workspace, configuredC
     profile: "native-live",
     scenario: "native-live-stream",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace),
     run: async (rpc) => {
       const before = requireSuccess(await rpc.send({ type: "get_entries" }));
@@ -99,7 +99,7 @@ export async function runModelSwitchScenario({
     profile: "native-live",
     scenario: "native-live-model-switch",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace, sessionArgument(sessionFile)),
     run: async (rpc) => {
       const initial = requireSuccess(await rpc.send({ type: "get_state" }));
@@ -230,7 +230,7 @@ export async function runHistoryScenario({
     profile: "native-live",
     scenario: "native-live-history",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace, sessionArgument(sessionFile)),
     run: async (rpc) => {
       const firstRead = requireSuccess(await rpc.send({ type: "get_entries" }));
@@ -284,7 +284,7 @@ export async function runNativeAppendScenario({
   sessionFile,
   expectedUserIds,
 }) {
-  const env = liveEnvironment();
+  const env = liveEnvironment(workspace);
   let appendError;
   try {
     runNativeAppend({
@@ -356,7 +356,7 @@ export async function runForkScenario({
     profile: "native-live",
     scenario: "native-live-fork",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace, sessionArgument(sessionFile)),
     run: async (rpc) => {
       const sourceState = requireSuccess(await rpc.send({ type: "get_state" }));
@@ -475,7 +475,7 @@ export async function runTreeBranchScenario({
     profile: "native-live",
     scenario: "native-live-tree-branch",
     configuredCommand,
-    env: liveEnvironment(),
+    env: liveEnvironment(workspace),
     rpcArgs: liveRpcArgs(workspace, [
       "--extension",
       extensionPath,

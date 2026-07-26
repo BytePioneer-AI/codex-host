@@ -4,15 +4,16 @@ import path from "node:path";
 
 import { prepareSpawn, resolvePiCommand } from "./command.mjs";
 import { GateCError } from "./errors.mjs";
+import { isolateNativeEnvironment } from "./native-config.mjs";
 import { requireSuccess } from "./scenario-helpers.mjs";
 
-export function liveEnvironment(overrides = {}) {
-  return {
+export function liveEnvironment(workspace, overrides = {}) {
+  return isolateNativeEnvironment(workspace, {
     ...process.env,
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
     ...overrides,
-  };
+  });
 }
 
 export function liveRpcArgs(workspace, extra = []) {

@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../desktop-control/tsconfig.json" },
+    { "path": "../mapping-store/tsconfig.json" },
+    { "path": "../protocol-core/tsconfig.json" },
+    { "path": "../adapters/pi/tsconfig.json" }
+  ],
+  "include": ["src/**/*.ts"]
+}

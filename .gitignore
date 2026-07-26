@@ -1,0 +1,56 @@
+# Local-only references, private documentation, and agent state
+/docs/
+/reference/
+/.pi/
+/downloads/
+/.codexhost/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Dependencies and tool caches
+node_modules/
+.npm/
+.cache/
+.vite/
+.vitest/
+.eslintcache
+*.tsbuildinfo
+
+# Build, test, and coverage output
+target/
+dist/
+/build/
+coverage/
+playwright-report/
+blob-report/
+test-results/
+*.lcov
+*.profraw
+*.rs.bk
+*.chp
+/tests/differential/output/
+
+# Logs and process state
+*.log
+*.log.*
+npm-debug.log*
+*.pid
+*.pid.lock
+
+# Editors
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Operating systems
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini

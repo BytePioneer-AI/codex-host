@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows",
+  "capturedAt": "2026-07-25",
+  "desktopVersion": "26.721.4979.0",
+  "codexCliVersion": "0.146.0-alpha.3.1",
+  "windowsVersion": "10.0.26200 x64",
+  "scenarios": {
+    "isolatedLaunch": true,
+    "processScopedEnvironment": true,
+    "newThread": true,
+    "continueThread": true,
+    "streamingReply": true,
+    "toolExecution": true,
+    "userCancel": true,
+    "desktopNormalExit": true,
+    "stdinEof": true,
+    "officialCliCrash": true,
+    "shimTermination": true,
+    "noOrphanProcesses": true
+  },
+  "privacyReview": "Only version identifiers and scenario outcomes are retained; prompts, model text, command output, credentials, transcripts, process IDs, and local paths are excluded."
+}

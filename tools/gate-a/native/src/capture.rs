@@ -1,0 +1,210 @@
+use std::env;
+use std::ffi::OsString;
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{self, ExitStatus};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, parent_process_id};
+use codexhost_shim::ProxyObserver;
+
+#[cfg(target_os = "macos")]
+use crate::LAUNCH_MODE_ENV;
+use crate::{DESKTOP_VERSION_ENV, INSTALL_ROOT_ENV, PROBE_OUTPUT_ENV};
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn json_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character <= '\u{1f}' => {
+                write!(&mut output, "\\u{:04x}", character as u32).expect("write JSON escape");
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
+}
+
+fn classify_invocation(arguments: &[OsString]) -> &'static str {
+    if arguments.iter().any(|argument| argument == "app-server") {
+        "app-server"
+    } else {
+        "other"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_fields(process_id: u32) -> String {
+    let process_group_id = codexhost_platform::process_snapshot(process_id)
+        .map_or(0, |process| process.process_group_id);
+    format!(
+        "\"platform\":\"macos\",\"architecture\":{},\"process_group_id\":{},\"launch_mode\":{}",
+        json_string(std::env::consts::ARCH),
+        process_group_id,
+        json_string(&env::var(LAUNCH_MODE_ENV).unwrap_or_default()),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn platform_fields(_process_id: u32) -> String {
+    "\"platform\":\"windows\"".into()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn platform_fields(_process_id: u32) -> String {
+    format!("\"platform\":{}", json_string(std::env::consts::OS))
+}
+
+#[cfg(target_os = "macos")]
+fn exit_fields(status: &ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+
+    format!(
+        ",\"exit_signal\":{}",
+        status
+            .signal()
+            .map_or_else(|| "null".into(), |signal| signal.to_string())
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exit_fields(_status: &ExitStatus) -> String {
+    String::new()
+}
+
+#[derive(Debug, Clone)]
+pub struct ProbeCapture {
+    output_directory: PathBuf,
+}
+
+impl ProbeCapture {
+    pub fn from_environment() -> Result<Self, String> {
+        let output_directory = env::var_os(PROBE_OUTPUT_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("{PROBE_OUTPUT_ENV} is required for the Gate Shim"))?;
+        Ok(Self { output_directory })
+    }
+
+    fn write_raw_record(&self, kind: &str, record: &str) -> std::io::Result<PathBuf> {
+        fs::create_dir_all(&self.output_directory)?;
+        let timestamp = unix_timestamp_millis();
+        let process_id = process::id();
+        let stem = format!("{timestamp}-{process_id}-{kind}");
+        let temporary_path = self.output_directory.join(format!("{stem}.tmp"));
+        let final_path = self.output_directory.join(format!("{stem}.json"));
+        fs::write(&temporary_path, record)?;
+        fs::rename(&temporary_path, &final_path)?;
+        Ok(final_path)
+    }
+}
+
+impl ProxyObserver for ProbeCapture {
+    fn invocation(&self, arguments: &[OsString], stock_codex_path: &Path) {
+        let process_id = process::id();
+        let parent_id = parent_process_id(process_id)
+            .ok()
+            .flatten()
+            .map_or_else(|| "null".into(), |value| value.to_string());
+        let args = arguments
+            .iter()
+            .map(|argument| json_string(&argument.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let cwd = env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let record = format!(
+            concat!(
+                "{{\"schema_version\":1,{},\"record_type\":\"invocation\",",
+                "\"timestamp_ms\":{},\"process_id\":{},\"parent_process_id\":{},",
+                "\"invocation_kind\":{},\"args\":[{}],\"cwd\":{},",
+                "\"desktop_version\":{},\"install_root\":{},\"stock_codex_path\":{},",
+                "\"environment_presence\":{{",
+                "\"CODEX_CLI_PATH\":{},\"CODEXHOST_STOCK_CODEX_PATH\":{},",
+                "\"CODEXHOST_PROBE_OUTPUT\":{},\"CODEXHOST_DESKTOP_VERSION\":{},",
+                "\"CODEXHOST_INSTALL_ROOT\":{}",
+                "}}}}"
+            ),
+            platform_fields(process_id),
+            unix_timestamp_millis(),
+            process_id,
+            parent_id,
+            json_string(classify_invocation(arguments)),
+            args,
+            json_string(&cwd),
+            json_string(&env::var(DESKTOP_VERSION_ENV).unwrap_or_default()),
+            json_string(&env::var(INSTALL_ROOT_ENV).unwrap_or_default()),
+            json_string(&stock_codex_path.to_string_lossy()),
+            env::var_os(CODEX_CLI_PATH_ENV).is_some(),
+            env::var_os(STOCK_CODEX_PATH_ENV).is_some(),
+            env::var_os(PROBE_OUTPUT_ENV).is_some(),
+            env::var_os(DESKTOP_VERSION_ENV).is_some(),
+            env::var_os(INSTALL_ROOT_ENV).is_some(),
+        );
+        if let Err(error) = self.write_raw_record("invocation", &record) {
+            eprintln!("codexhost Gate Shim: failed to write probe invocation: {error}");
+        }
+    }
+
+    fn exit(&self, child_id: u32, status: &ExitStatus, elapsed: Duration) {
+        let exit_code = status
+            .code()
+            .map_or_else(|| "null".into(), |value| value.to_string());
+        let record = format!(
+            concat!(
+                "{{\"schema_version\":1,{},\"record_type\":\"exit\",",
+                "\"timestamp_ms\":{},\"process_id\":{},\"child_process_id\":{},",
+                "\"exit_code\":{},\"success\":{},\"elapsed_ms\":{}{} }}"
+            ),
+            platform_fields(process::id()),
+            unix_timestamp_millis(),
+            process::id(),
+            child_id,
+            exit_code,
+            status.success(),
+            elapsed.as_millis(),
+            exit_fields(status),
+        );
+        if let Err(error) = self.write_raw_record("exit", &record) {
+            eprintln!("codexhost Gate Shim: failed to write probe exit: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_invocation, json_string};
+    use std::ffi::OsString;
+
+    #[test]
+    fn escapes_json_control_characters() {
+        assert_eq!(json_string("a\n\"b\\c"), "\"a\\n\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn classifies_app_server_invocations() {
+        assert_eq!(
+            classify_invocation(&[OsString::from("-c"), OsString::from("app-server")]),
+            "app-server"
+        );
+        assert_eq!(classify_invocation(&[OsString::from("--version")]), "other");
+    }
+}

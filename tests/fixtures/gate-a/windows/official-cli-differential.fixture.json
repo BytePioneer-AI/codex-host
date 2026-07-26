@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-25",
+  "directVersion": "codex-cli 0.146.0-alpha.3.1",
+  "shimVersion": "codex-cli 0.146.0-alpha.3.1",
+  "byteLayerEqual": true,
+  "normalization": {
+    "omittedObjectKeys": ["createdAt", "updatedAt", "timestamp", "recencyAt"],
+    "pathReplacements": [
+      "direct/shim temporary CODEX_HOME -> <CODEX_HOME>",
+      "temporary workspace -> <TEMP>",
+      "rollout filename timestamp -> <TIMESTAMP>",
+      "per-run Thread ID -> <THREAD_ID>"
+    ]
+  },
+  "protocolScenarios": [
+    {
+      "name": "initialize",
+      "equal": true
+    },
+    {
+      "name": "modelList",
+      "equal": true
+    },
+    {
+      "name": "threadList",
+      "equal": true
+    },
+    {
+      "name": "threadStart",
+      "equal": true
+    },
+    {
+      "name": "threadRead",
+      "equal": true
+    },
+    {
+      "name": "threadResume",
+      "equal": true
+    },
+    {
+      "name": "unknownMethod",
+      "equal": true
+    },
+    {
+      "name": "liveStream",
+      "equal": true
+    },
+    {
+      "name": "liveToolContinuation",
+      "equal": true
+    },
+    {
+      "name": "liveCancel",
+      "equal": true
+    }
+  ],
+  "unknownDifferences": [],
+  "privacyReview": "Only scenario names and equality outcomes are retained; model text, test prompts, command output, credentials, dynamic model catalog, and local paths are excluded."
+}

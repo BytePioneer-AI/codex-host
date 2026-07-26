@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "desktopVersion": "26.721.4979.0",
+    "codexCliVersion": "0.146.0-alpha.3.1",
+    "platform": "Windows 10.0.26200 x86_64",
+    "capturedAt": "2026-07-25",
+    "privacyReview": "No credentials, user prompts, transcript, tool output, or absolute local paths."
+  },
+  "transport": "LF-delimited JSON objects over stdio",
+  "requests": [
+    {
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "clientInfo": {
+          "name": "codex_app_server_daemon",
+          "title": "codexhost Gate A differential",
+          "version": "0.0.0"
+        },
+        "capabilities": {
+          "experimentalApi": true,
+          "mcpServerOpenaiFormElicitation": true
+        }
+      }
+    },
+    {
+      "method": "initialized",
+      "params": {}
+    },
+    {
+      "id": 2,
+      "method": "model/list",
+      "params": {}
+    },
+    {
+      "id": 3,
+      "method": "thread/list",
+      "params": {
+        "limit": 1
+      }
+    },
+    {
+      "id": 4,
+      "method": "thread/start",
+      "params": {
+        "model": "<DEFAULT_MODEL>",
+        "cwd": "<TEMP>",
+        "approvalPolicy": "on-request",
+        "sandbox": "read-only"
+      }
+    },
+    {
+      "id": 5,
+      "method": "thread/read",
+      "params": {
+        "threadId": "<THREAD_ID>",
+        "includeTurns": true
+      }
+    },
+    {
+      "id": 6,
+      "method": "thread/resume",
+      "params": {
+        "threadId": "<THREAD_ID>"
+      }
+    },
+    {
+      "id": 7,
+      "method": "codexhost/unknown-method",
+      "params": {}
+    }
+  ],
+  "responseShapes": [
+    {
+      "id": 1,
+      "result": {
+        "userAgent": "codex_cli_rs/<VERSION> (Windows <VERSION>; x86_64) WindowsTerminal",
+        "codexHome": "<TEMP>/codex-home",
+        "platformFamily": "windows",
+        "platformOs": "windows"
+      }
+    },
+    {
+      "id": 2,
+      "result": {
+        "data": "<DYNAMIC_MODEL_CATALOG>",
+        "nextCursor": null
+      }
+    },
+    {
+      "id": 3,
+      "result": {
+        "data": [],
+        "nextCursor": null,
+        "backwardsCursor": null
+      }
+    },
+    {
+      "id": 4,
+      "result": {
+        "thread": {
+          "id": "<THREAD_ID>",
+          "sessionId": "<THREAD_ID>",
+          "path": "<CODEX_HOME>/sessions/<DATE>/rollout-<TIMESTAMP>-<THREAD_ID>.jsonl",
+          "status": {
+            "type": "idle"
+          },
+          "turns": []
+        },
+        "model": "<DEFAULT_MODEL>",
+        "cwd": "<TEMP>",
+        "approvalPolicy": "on-request",
+        "sandbox": {
+          "type": "readOnly",
+          "networkAccess": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "error": {
+        "code": -32600,
+        "message": "thread <THREAD_ID> is not materialized yet; includeTurns is unavailable before first user message"
+      }
+    },
+    {
+      "id": 6,
+      "error": {
+        "code": -32600,
+        "message": "no rollout found for thread id <THREAD_ID>"
+      }
+    },
+    {
+      "id": 7,
+      "error": {
+        "code": -32600,
+        "message": "<UNKNOWN_METHOD_ERROR_WITH_SUPPORTED_METHODS>"
+      }
+    }
+  ]
+}

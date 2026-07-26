@@ -1,0 +1,57 @@
+{
+  "name": "codexhost",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.8.0",
+  "engines": {
+    "node": "24.13.1",
+    "npm": "11.8.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "packages/adapters/*"
+  ],
+  "scripts": {
+    "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
+    "build:typescript": "tsc -b",
+    "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
+    "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.tests.json --noEmit --pretty false",
+    "lint": "eslint . && node tools/check-boundaries.mjs",
+    "format": "prettier --write . && cargo fmt --all",
+    "format:check": "prettier --check . && cargo fmt --all --check",
+    "test:typescript": "npm run build:typescript && vitest run",
+    "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
+    "test": "npm run test:typescript && npm run test:rust",
+    "test:e2e": "playwright test",
+    "gate:a:preflight": "node tools/gate-a/run.mjs preflight",
+    "gate:a:probe": "node tools/gate-a/run.mjs probe",
+    "gate:a:differential": "node tools/gate-a/run.mjs differential",
+    "gate:a:differential:live": "node tools/gate-a/run.mjs live-differential",
+    "gate:a": "node tools/gate-a/run.mjs gate",
+    "gate:a:finalize": "node tools/gate-a/run.mjs finalize",
+    "gate:a:macos:preflight": "node tools/gate-a/run.mjs preflight",
+    "gate:a:macos:probe:launch-services": "node tools/gate-a/run.mjs probe launch-services",
+    "gate:a:macos:probe:direct": "node tools/gate-a/run.mjs probe direct-executable",
+    "gate:a:macos:differential": "node tools/gate-a/run.mjs differential",
+    "gate:a:macos:differential:live": "node tools/gate-a/run.mjs live-differential",
+    "gate:a:macos": "node tools/gate-a/run.mjs gate",
+    "gate:a:macos:finalize": "node tools/gate-a/run.mjs finalize",
+    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools -- -D warnings && cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:typescript && npm run check:rust",
+    "clean": "node tools/clean.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.0",
+    "@types/node": "24.13.3",
+    "esbuild": "0.28.1",
+    "eslint": "10.8.0",
+    "globals": "17.7.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  }
+}

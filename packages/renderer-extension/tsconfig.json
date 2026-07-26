@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "rootDir": "src",
+    "outDir": "dist/types",
+    "tsBuildInfoFile": "dist/types/tsconfig.tsbuildinfo",
+    "emitDeclarationOnly": true
+  },
+  "references": [{ "path": "../shared-contracts/tsconfig.json" }],
+  "include": ["src/**/*.ts"]
+}

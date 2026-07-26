@@ -1,0 +1,24 @@
+{
+  "name": "@codexhost/host-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@codexhost/adapter-pi": "0.0.0",
+    "@codexhost/desktop-control": "0.0.0",
+    "@codexhost/mapping-store": "0.0.0",
+    "@codexhost/protocol-core": "0.0.0"
+  }
+}

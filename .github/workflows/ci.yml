@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Enable pinned npm
+        run: corepack enable npm
+
+      - name: Verify toolchains
+        run: |
+          node --version
+          npm --version
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run quality checks and unit tests
+        run: npm run check
+
+      - name: Run end-to-end tests
+        run: npm run test:e2e
+
+      - name: Build all workspaces
+        run: npm run build

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos",
+  "capturedAt": "2026-07-26",
+  "architecture": "arm64",
+  "desktopVersion": "26.721.41059",
+  "directVersion": "codex-cli 0.146.0-alpha.3.1",
+  "shimVersion": "codex-cli 0.146.0-alpha.3.1",
+  "byteLayerEqual": true,
+  "protocolScenarios": [
+    {
+      "name": "initialize",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "modelList",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "threadList",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "threadStart",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "threadRead",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "threadResume",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "unknownMethod",
+      "equal": true,
+      "directPassed": null,
+      "shimPassed": null
+    },
+    {
+      "name": "liveStream",
+      "equal": true,
+      "directPassed": true,
+      "shimPassed": true
+    },
+    {
+      "name": "liveToolContinuation",
+      "equal": true,
+      "directPassed": true,
+      "shimPassed": true
+    },
+    {
+      "name": "liveCancel",
+      "equal": true,
+      "directPassed": true,
+      "shimPassed": true
+    }
+  ],
+  "unknownDifferences": [],
+  "privacyReview": "Only platform and version identifiers, scenario names, equality outcomes, and per-side pass booleans are retained; model catalogs, prompts, model text, command output, credentials, Thread identifiers, local paths, and process identifiers are excluded."
+}

@@ -1,0 +1,24 @@
+[package]
+name = "codexhost-gate-a-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+gate-tools = ["dep:codexhost-platform", "dep:codexhost-shim"]
+
+[[bin]]
+name = "codexhost-probe"
+path = "src/bin/codexhost-probe.rs"
+required-features = ["gate-tools"]
+
+[[bin]]
+name = "codexhost-shim-probe"
+path = "src/bin/codexhost-shim-probe.rs"
+required-features = ["gate-tools"]
+
+[dependencies]
+codexhost-platform = { path = "../../../crates/platform", optional = true }
+codexhost-shim = { path = "../../../crates/shim", optional = true }

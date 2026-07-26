@@ -1,0 +1,21 @@
+{
+  "name": "@codexhost/renderer-extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=browser --format=esm --target=es2024 --outfile=dist/index.js"
+  },
+  "dependencies": {
+    "@codexhost/shared-contracts": "0.0.0"
+  }
+}

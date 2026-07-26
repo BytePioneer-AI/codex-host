@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos",
+  "capturedAt": "2026-07-26",
+  "architecture": "arm64",
+  "desktopVersion": "26.721.41059",
+  "codexCliVersion": "0.146.0-alpha.3.1",
+  "launchMode": "launch-services",
+  "scenarios": {
+    "desktopNormalExit": true,
+    "externalSigterm": true,
+    "externalSigint": true,
+    "externalSighup": true,
+    "concurrentShutdownSingleTerminal": true,
+    "ignoredSignalEscalation": true,
+    "stdinEof": true,
+    "officialCliCrash": true,
+    "shimForcedTermination": true,
+    "desktopForcedTermination": true,
+    "observedEscapedDescendantCleanup": true,
+    "directGuiVisible": true,
+    "directSingleInstanceRefusal": true,
+    "directNormalExit": true,
+    "directErrorPropagation": true,
+    "noOrphanProcesses": true
+  },
+  "blockedScenarios": [],
+  "privacyReview": "Only version identifiers and boolean lifecycle outcomes are retained; prompts, transcripts, tool output, credentials, local paths, and process identifiers are excluded."
+}

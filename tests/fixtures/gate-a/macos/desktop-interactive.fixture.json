@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos",
+  "capturedAt": "2026-07-26",
+  "desktopVersion": "26.721.41059",
+  "codexCliVersion": "0.146.0-alpha.3.1",
+  "macosVersion": "15.6.1 (24G90)",
+  "architecture": "arm64",
+  "launchMode": "launch-services",
+  "scenarios": {
+    "isolatedLaunch": true,
+    "processScopedEnvironment": true,
+    "newThread": true,
+    "continueThread": true,
+    "streamingReply": true,
+    "toolExecution": true,
+    "userCancel": true,
+    "desktopNormalExit": true,
+    "stdinEof": true,
+    "officialCliCrash": true,
+    "shimTermination": true,
+    "noOrphanProcesses": true
+  },
+  "privacyReview": "Only version identifiers and boolean scenario outcomes are retained; prompts, model text, command output, credentials, transcripts, thread identifiers, process identifiers, screenshots, and local paths are excluded."
+}

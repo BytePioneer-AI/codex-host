@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "recordType": "invocation",
+  "timestampMs": 1785042036579,
+  "processId": 4817,
+  "parentProcessId": 4357,
+  "invocationKind": "app-server",
+  "args": ["-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled"],
+  "cwd": "<WORKING_DIRECTORY>",
+  "desktopVersion": "26.721.41059",
+  "stockCodexPath": "<STOCK_CODEX>",
+  "environmentPresence": {
+    "CODEX_CLI_PATH": true,
+    "CODEXHOST_STOCK_CODEX_PATH": true,
+    "CODEXHOST_PROBE_OUTPUT": true,
+    "CODEXHOST_DESKTOP_VERSION": true,
+    "CODEXHOST_INSTALL_ROOT": true
+  },
+  "platform": "macos",
+  "architecture": "aarch64",
+  "processGroupId": 4357,
+  "launchMode": "launch-services"
+}

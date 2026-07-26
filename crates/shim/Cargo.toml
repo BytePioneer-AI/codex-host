@@ -1,0 +1,25 @@
+[package]
+name = "codexhost-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+test-utils = []
+
+[[bin]]
+name = "codexhost-shim"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-codex-cli"
+path = "tests/fixtures/fake-codex-cli.rs"
+required-features = ["test-utils"]
+
+[dependencies]
+codexhost-platform = { path = "../platform" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31.3", features = ["process", "signal"] }
+signal-hook = "0.4.4"

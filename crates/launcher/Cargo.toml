@@ -1,0 +1,13 @@
+[package]
+name = "codexhost-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "codexhost"
+path = "src/main.rs"
+
+[dependencies]
+codexhost-platform = { path = "../platform" }

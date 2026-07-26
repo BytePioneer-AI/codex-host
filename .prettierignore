@@ -1,0 +1,12 @@
+**/*.md
+.pi/
+reference/
+node_modules/
+target/
+**/dist/
+build/
+coverage/
+playwright-report/
+test-results/
+package-lock.json
+Cargo.lock

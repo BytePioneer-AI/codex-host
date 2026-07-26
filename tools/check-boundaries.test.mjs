@@ -3,6 +3,7 @@ import { findSourceBoundaryViolations } from "./check-boundaries.mjs";
 
 const packagesDirectory = "/repo/packages";
 const rendererDirectory = "/repo/packages/renderer-extension";
+const sharedContractsDirectory = "/repo/packages/shared-contracts/src";
 
 describe("source boundary checks", () => {
   it("rejects Node.js built-ins in the Renderer", () => {
@@ -57,6 +58,46 @@ describe("source boundary checks", () => {
     });
 
     expect(violations).toEqual([]);
+  });
+
+  it("allows browser-safe Shared Contracts imports", () => {
+    const violations = findSourceBoundaryViolations({
+      filePath: "/repo/packages/shared-contracts/src/index.ts",
+      packageRoot: "/repo/packages/shared-contracts",
+      packagesDirectory,
+      rendererDirectory,
+      sharedContractsDirectory,
+      sourceText: [
+        'import { z } from "zod";',
+        'export { jsonValueSchema } from "./json-value.js";',
+      ].join("\n"),
+    });
+
+    expect(violations).toEqual([]);
+  });
+
+  it.each([
+    "node:fs/promises",
+    "electron/renderer",
+    "@agentclientprotocol/sdk",
+    "@anthropic-ai/claude-agent-sdk",
+    "@openai/codex-sdk/client",
+    "@earendil-works/pi-coding-agent",
+    "pi-agent/core",
+    "@codexhost/protocol-core",
+  ])("rejects forbidden Shared Contracts import '%s'", (specifier) => {
+    const violations = findSourceBoundaryViolations({
+      filePath: "/repo/packages/shared-contracts/src/index.ts",
+      packageRoot: "/repo/packages/shared-contracts",
+      packagesDirectory,
+      rendererDirectory,
+      sharedContractsDirectory,
+      sourceText: `import value from ${JSON.stringify(specifier)};`,
+    });
+
+    expect(violations).toContain(
+      `/repo/packages/shared-contracts/src/index.ts: Shared Contracts cannot import '${specifier}'`,
+    );
   });
 
   it("rejects relative imports into another package source tree", () => {

@@ -8,9 +8,10 @@ import ts from "typescript";
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const packagesRoot = resolve(repositoryRoot, "packages");
 const rendererRoot = resolve(packagesRoot, "renderer-extension");
+const sharedContractsRoot = resolve(packagesRoot, "shared-contracts", "src");
 const builtins = new Set(builtinModules.map((name) => name.replace(/^node:/u, "")));
 
-const forbiddenRendererPackages = new Set([
+const forbiddenLocalRuntimePackages = new Set([
   "@agentclientprotocol/sdk",
   "@anthropic-ai/claude-agent-sdk",
   "@openai/codex-sdk",
@@ -71,10 +72,10 @@ function isPackageOrSubpath(specifier, packageName) {
   return specifier === packageName || specifier.startsWith(`${packageName}/`);
 }
 
-function isForbiddenRendererImport(specifier) {
+function isForbiddenLocalRuntimeImport(specifier) {
   const normalized = specifier.replace(/^node:/u, "");
   if (builtins.has(normalized)) return true;
-  for (const packageName of forbiddenRendererPackages) {
+  for (const packageName of forbiddenLocalRuntimePackages) {
     if (isPackageOrSubpath(specifier, packageName)) return true;
   }
   if (specifier.startsWith("@earendil-works/pi-")) return true;
@@ -87,12 +88,20 @@ export function findSourceBoundaryViolations({
   sourceText,
   packagesDirectory = packagesRoot,
   rendererDirectory = rendererRoot,
+  sharedContractsDirectory = sharedContractsRoot,
 }) {
   const violations = [];
 
   for (const specifier of moduleSpecifiers(sourceText, filePath)) {
-    if (isInside(filePath, rendererDirectory) && isForbiddenRendererImport(specifier)) {
+    if (isInside(filePath, rendererDirectory) && isForbiddenLocalRuntimeImport(specifier)) {
       violations.push(`${filePath}: Renderer cannot import '${specifier}'`);
+    }
+
+    if (
+      isInside(filePath, sharedContractsDirectory) &&
+      (isForbiddenLocalRuntimeImport(specifier) || specifier.startsWith("@codexhost/"))
+    ) {
+      violations.push(`${filePath}: Shared Contracts cannot import '${specifier}'`);
     }
 
     if (specifier.startsWith(".") || isAbsolute(specifier)) {

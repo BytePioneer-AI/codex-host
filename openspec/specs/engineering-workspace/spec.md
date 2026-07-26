@@ -3,7 +3,6 @@
 ## Purpose
 
 定义 codexhost 工程 Workspace、固定工具链、统一质量命令、模块边界和跨平台 CI 的可复现基线。
-
 ## Requirements
 ### Requirement: 固定且可复现的工具链
 
@@ -54,11 +53,16 @@
 
 ### Requirement: 自动保护模块边界
 
-工程 MUST 通过可在 CI 运行的静态规则保护 Renderer 和 Workspace 依赖边界，而不只依赖代码评审约定。
+工程 MUST 通过可在 CI 运行的静态规则保护 Renderer、Shared Contracts 和 Workspace 依赖边界，而不只依赖代码评审约定。`shared-contracts` MUST 保持浏览器安全，并 MUST NOT 依赖 Node.js built-in、Electron 私有 API、Harness SDK或其他内部 package。
 
 #### Scenario: Renderer 引入本地运行时能力
 
 - **WHEN** Renderer Extension 源码导入 Node.js built-in、Electron 私有 API 或 Harness SDK
+- **THEN** 类型检查、Lint 或专用边界检查 MUST 失败
+
+#### Scenario: Shared Contracts 引入本地运行时能力
+
+- **WHEN** Shared Contracts 源码导入 Node.js built-in、Electron 私有 API、Harness SDK或其他内部 package
 - **THEN** 类型检查、Lint 或专用边界检查 MUST 失败
 
 #### Scenario: Package 跨目录导入源码

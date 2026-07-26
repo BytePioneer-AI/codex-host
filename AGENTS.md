@@ -10,7 +10,6 @@ This repository contains the product and technical baselines for `codexhost` and
 - `docs/数据持久化设计文档.md` defines the Mapping Store implementation, atomic persistence, recovery, and migration baseline.
 - `docs/工程落地文档.md` defines the toolchain, workspace layout, module dependencies, and build outputs.
 - `docs/开发步骤清单.md` defines implementation priority, technical gates, development batches, and completion criteria.
-- `reference/` contains ignored local reference repositories such as CodexPlusPlus and Paseo; it is not codexhost source.
 
 If documents conflict, report the conflict explicitly. Follow the PRD as the current delivery baseline.
 
@@ -62,4 +61,3 @@ Use `docs/开发步骤清单.md`, active OpenSpec changes, source code, and test
 - Use concise, imperative commit subjects. Conventional Commit prefixes such as `feat:`, `fix:`, `docs:`, and `test:` are preferred.
 - Pull requests should explain purpose, affected requirements, validation performed, and linked issues. Include screenshots only for visible UI changes.
 - Never commit ignored reference repositories, secrets, logs, downloads, or local environment files.
-- Review license compatibility and AGPL obligations before copying anything from CodexPlusPlus or Paseo.

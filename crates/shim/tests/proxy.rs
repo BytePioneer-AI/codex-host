@@ -3,12 +3,12 @@ use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{self, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::thread;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::time::{Duration, Instant};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use codexhost_platform::process_exists;
@@ -23,13 +23,36 @@ fn fake_codex_path() -> PathBuf {
 }
 
 fn temporary_directory() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("codexhost-shim-test-{unique}"));
-    fs::create_dir_all(&path).expect("create temp directory");
-    path
+    static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    loop {
+        let directory_id = NEXT_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "codexhost-shim-test-{}-{directory_id}",
+            process::id(),
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create temporary directory {}: {error}", path.display()),
+        }
+    }
+}
+
+#[test]
+fn creates_unique_temporary_directories_concurrently() {
+    let workers = (0..16)
+        .map(|_| std::thread::spawn(temporary_directory))
+        .collect::<Vec<_>>();
+    let directories = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("create temporary directory"))
+        .collect::<std::collections::HashSet<_>>();
+
+    assert_eq!(directories.len(), 16);
+    for directory in directories {
+        fs::remove_dir(directory).expect("remove temporary directory");
+    }
 }
 
 fn run_shim(

@@ -4,7 +4,7 @@ import path from "node:path";
 import { deriveCapabilities } from "./capabilities.mjs";
 import { runExtensionProfile } from "./extension-scenarios.mjs";
 import { runIsolatedProfile } from "./isolated-scenarios.mjs";
-import { requireReproducibleCommit, writeGateReport } from "./report.mjs";
+import { writeGateReport } from "./report.mjs";
 import { writeSyntheticFixture } from "./synthetic-fixture.mjs";
 import { createGateWorkspace, removeNonEvidenceWorkspace } from "./workspace.mjs";
 
@@ -85,19 +85,14 @@ async function nativeLive() {
 }
 
 async function gate() {
-  const repositoryRevision = requireReproducibleCommit(repositoryRoot);
   const isolatedRun = await isolated();
   const extensionRun = await extension();
   const liveRun = await nativeLive();
   const all = [...isolatedRun.results, ...extensionRun.results, ...liveRun.results];
   const scenarios = all.map(({ result }) => result);
-  if (requireReproducibleCommit(repositoryRoot) !== repositoryRevision) {
-    throw new Error("repository commit changed during the authoritative Gate C run");
-  }
   const platformRoot = path.dirname(path.dirname(liveRun.workspace.root));
   const reportPath = path.join(platformRoot, "reports", "gate-c-report.local.json");
   const report = writeGateReport(repositoryRoot, reportPath, {
-    repositoryCommit: repositoryRevision,
     commandSource: all[0]?.commandSource ?? "path",
     evidenceRoot: path.relative(repositoryRoot, platformRoot),
     scenarios,

@@ -375,7 +375,7 @@ Gate SHALL 将真实 RPC Frame、Session、Prompt、模型文本、Tool 输出�
 
 ### Requirement: 分层执行并明确判定 Gate C
 
-工程 MUST 提供进入普通质量门禁的 Hermetic/Fixture 测试和独立显式运行的真实 Pi Gate。Gate 报告 MUST 对每个场景给出 `PASS`、`FAIL`或 `BLOCKED`，并 MUST 只在所有 MVP 必需 Pi RPC 行为均有真实通过证据时将总体结果标记为 `PASS`。权威报告 MUST 来自干净且执行前后提交不变的 Git 工作树中的同一次显式 Gate 执行，MUST NOT 自动拼接各 Profile 独立运行的最新目录。
+工程 MUST 提供进入普通质量门禁的 Hermetic/Fixture 测试和独立显式运行的真实 Pi Gate。Gate 报告 MUST 对每个场景给出 `PASS`、`FAIL`或 `BLOCKED`，并 MUST 只在所有 MVP 必需 Pi RPC 行为均有真实通过证据时将总体结果标记为 `PASS`。权威报告 MUST 来自同一次显式 Gate 执行，MUST NOT 记录具体 Git 提交或自动拼接各 Profile 独立运行的最新目录。
 
 #### Scenario: 所有必需能力成立
 

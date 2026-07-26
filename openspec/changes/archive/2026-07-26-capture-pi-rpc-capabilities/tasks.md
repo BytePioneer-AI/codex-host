@@ -91,7 +91,7 @@
 
 - [x] 11.1 运行全部 Hermetic、隔离、Gate Extension 和 Native Live 场景，逐项生成 PASS、FAIL 或 BLOCKED 结果
 - [x] 11.2 生成能力矩阵，区分 MVP 必需能力与 Approval、Reasoning、可靠 Patch 等观察能力
-- [x] 11.3 只从干净且执行前后提交不变的工作树中的同一次显式 Gate 执行生成本地忽略 Pi RPC Gate C 验证记录，包含代码提交、平台/架构、命令来源类别和真实证据位置，不自动拼接独立 Profile 最新目录且不执行 Harness 版本查询
+- [x] 11.3 只从同一次显式 Gate 执行生成本地忽略 Pi RPC Gate C 验证记录，包含平台/架构、命令来源类别和真实证据位置，不记录具体 Git 提交、不自动拼接独立 Profile 最新目录且不执行 Harness 版本查询
 - [x] 11.4 复核仓库内 Fixture 和 Golden 全部来自 Fake Pi 固定合成场景，真实报告和 Capture 未进入版本控制
 - [x] 11.5 将 Gate C 范围、终态、发布 E2E 和执行顺序固化到已跟踪 OpenSpec，并同步本地 `docs/开发步骤清单.md`
 - [x] 11.6 在已跟踪 OpenSpec 禁止 Harness 版本字段/版本行为，并同步本地设计中的 Native Ref、Fork、Question、Cancel、Patch 和命令目录边界

@@ -59,7 +59,6 @@ export const gateReportSchema = z.object({
   gate: z.literal("pi-rpc-capabilities"),
   status: scenarioStatusSchema,
   recordedAt: z.string().datetime(),
-  repositoryCommit: z.string().min(1),
   platform: z.string().min(1),
   architecture: z.string().min(1),
   commandSource: z.enum(["configured", "environment", "path"]),

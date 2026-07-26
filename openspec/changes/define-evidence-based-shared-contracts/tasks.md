@@ -9,7 +9,7 @@
 - [x] 2.1 实现递归 `JsonPrimitive`、`JsonArray`、`JsonObject`、`JsonValue`类型和 Zod Schema，接受可 round-trip JSON并拒绝 undefined、bigint、函数、Symbol及非有限数字
 - [x] 2.2 实现 `HarnessId`、`HostThreadId`、`HostTurnId`、`HostItemId`和 `HostInteractionId`品牌 Schema，拒绝空白值且不改变原始字符串或假设 UUID/前缀格式
 - [x] 2.3 增加 JSON Runtime 正反例、嵌套 round-trip、标识符 Runtime 负例和 TypeScript 品牌不可互换测试
-- [ ] 2.4 拒绝循环 object、array 和 Native Ref locator且不从 `safeParse()`抛出异常，同时允许非循环共享引用
+- [x] 2.4 拒绝循环 object、array 和 Native Ref locator且不从 `safeParse()`抛出异常，同时允许非循环共享引用
 
 ## 3. JSON-RPC Envelope
 
@@ -44,8 +44,8 @@
 
 ## 7. 实际验证结果
 
-- Shared Contracts、边界门禁和Browser bundle最窄测试：`8`个测试文件、`75`个用例通过；生产TypeScript构建、测试类型检查和真实仓库边界扫描通过。
-- `npm run check`：通过；Prettier、ESLint、边界检查、TypeScript、`30`个Vitest文件共`139`个用例、Rust fmt、Clippy和Rust测试全部成功。
+- Shared Contracts、边界门禁和Browser bundle最窄测试：`8`个测试文件、`78`个用例通过；生产TypeScript构建、测试类型检查和真实仓库边界扫描通过。
+- `npm run check`：通过；Prettier、ESLint、边界检查、TypeScript、`30`个Vitest文件共`142`个用例、Rust fmt、Clippy和Rust测试全部成功。
 - `npm run build`：通过；TypeScript、Renderer Browser Bundle和三个生产Rust package构建成功。
 - `npm run test:e2e`：通过；Playwright `1/1`用例成功，未启动真实Codex Desktop或Pi。
 - `openspec validate define-evidence-based-shared-contracts --strict`：通过。

@@ -49,6 +49,13 @@ describe("opaque native reference contracts", () => {
     expect(nativeCheckpointRefSchema.parse(checkpointRef)).toEqual(checkpointRef);
   });
 
+  it("returns a validation failure for a circular locator", () => {
+    const locator: Record<string, unknown> = {};
+    locator.self = locator;
+
+    expect(nativeSessionRefSchema.safeParse({ ...sessionRef, locator }).success).toBe(false);
+  });
+
   it.each([
     [nativeSessionRefSchema, { ...sessionRef, formatVersion: 2 }],
     [nativeSessionRefSchema, { ...sessionRef, nativeSessionId: "   " }],

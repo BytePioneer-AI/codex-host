@@ -26,6 +26,25 @@ describe("JSON value contracts", () => {
     expect(jsonObjectSchema.parse({ answer: 42 })).toEqual({ answer: 42 });
   });
 
+  it("returns validation failures for circular objects and arrays", () => {
+    const cyclicObject: Record<string, unknown> = {};
+    cyclicObject.self = cyclicObject;
+    const cyclicArray: unknown[] = [];
+    cyclicArray.push(cyclicArray);
+
+    expect(jsonValueSchema.safeParse(cyclicObject).success).toBe(false);
+    expect(jsonObjectSchema.safeParse(cyclicObject).success).toBe(false);
+    expect(jsonValueSchema.safeParse(cyclicArray).success).toBe(false);
+    expect(jsonArraySchema.safeParse(cyclicArray).success).toBe(false);
+  });
+
+  it("accepts repeated references that do not form a cycle", () => {
+    const shared = { value: "shared" };
+    const input = { left: shared, right: shared };
+
+    expect(jsonValueSchema.parse(input)).toEqual(input);
+  });
+
   it.each([
     undefined,
     1n,

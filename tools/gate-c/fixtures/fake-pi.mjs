@@ -58,7 +58,19 @@ function handle(command) {
     for (const byte of bytes) process.stdout.write(Buffer.from([byte]));
     return;
   }
-  if (["spawn-child", "spawn-child-refuse-close"].includes(scenario)) {
+  if (scenario === "spawn-child-refuse-close") {
+    child ??= spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGTERM", () => {}); process.send("ready"); setInterval(() => {}, 1000)'],
+      {
+        detached: false,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      },
+    );
+    child.once("message", () => response(command, { childPid: child.pid }));
+    return;
+  }
+  if (scenario === "spawn-child") {
     child ??= spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       detached: false,
       stdio: "ignore",

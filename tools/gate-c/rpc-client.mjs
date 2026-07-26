@@ -31,8 +31,30 @@ async function waitForExit(child, timeoutMs) {
   ]);
 }
 
-function forceProcessTree(child) {
-  if (!child.pid || child.exitCode !== null) return;
+function unixProcessGroupExists(processGroupId) {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
+  }
+}
+
+async function waitForProcessTreeExit(child, timeoutMs) {
+  if (process.platform === "win32" || !child.pid) return waitForExit(child, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const parentExited = child.exitCode !== null || child.signalCode !== null;
+    if (parentExited && !unixProcessGroupExists(child.pid)) return true;
+    await delay(Math.min(20, Math.max(1, deadline - Date.now())));
+  }
+  return false;
+}
+
+function signalProcessTree(child, signal) {
+  if (!child.pid) return;
   if (process.platform === "win32") {
     spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
       stdio: "ignore",
@@ -41,7 +63,7 @@ function forceProcessTree(child) {
     return;
   }
   try {
-    process.kill(-child.pid, "SIGKILL");
+    process.kill(-child.pid, signal);
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
@@ -275,15 +297,14 @@ export class PiRpcClient {
     }
 
     if (this.#child?.stdin.writable) this.#child.stdin.end();
-    let exited = await waitForExit(this.#child, this.#options.closeGraceMs);
+    let exited = await waitForProcessTreeExit(this.#child, this.#options.closeGraceMs);
     if (!exited) {
-      if (process.platform === "win32") forceProcessTree(this.#child);
-      else this.#child.kill("SIGTERM");
-      exited = await waitForExit(this.#child, this.#options.forceGraceMs);
+      signalProcessTree(this.#child, "SIGTERM");
+      exited = await waitForProcessTreeExit(this.#child, this.#options.forceGraceMs);
     }
     if (!exited) {
-      forceProcessTree(this.#child);
-      exited = await waitForExit(this.#child, this.#options.forceGraceMs);
+      signalProcessTree(this.#child, "SIGKILL");
+      exited = await waitForProcessTreeExit(this.#child, this.#options.forceGraceMs);
     }
     if (!exited) {
       throw new GateCError(

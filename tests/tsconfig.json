@@ -5,6 +5,7 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node", "vitest/globals"]
   },
   "include": ["../packages/**/test/**/*.ts", "./**/*.ts"]

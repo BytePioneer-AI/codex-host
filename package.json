@@ -54,6 +54,7 @@
     "gate:c:extension": "node tools/gate-c/run.mjs extension",
     "gate:c:live": "node tools/gate-c/run.mjs live",
     "gate:c": "node tools/gate-c/run.mjs gate",
+    "probe:renderer-binding": "npm run build:typescript && npm run build:renderer && node tools/renderer-binding/run.mjs",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools -- -D warnings && cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:typescript && npm run check:rust",
     "clean": "node tools/clean.mjs"

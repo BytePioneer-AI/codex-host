@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "macos")]
@@ -55,7 +57,7 @@ fn desktop_launch_command(
         }
         DesktopLaunchMode::DirectExecutable => {
             let mut command = Command::new(&installation.desktop_executable);
-            command.envs(environment);
+            command.envs(environment).process_group(0);
             command
         }
     };
@@ -88,6 +90,20 @@ pub fn launch_desktop(
     desktop_launch_command(installation, shim_path, mode, additional_environment)?
         .spawn()
         .map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunchMode) {
+    if mode == DesktopLaunchMode::DirectExecutable {
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+
+        if let Ok(process_group) = i32::try_from(launch_process.id()) {
+            let _ = killpg(Pid::from_raw(process_group), Signal::SIGKILL);
+        }
+    }
+    let _ = launch_process.kill();
+    let _ = launch_process.wait();
 }
 
 #[cfg(target_os = "macos")]
@@ -236,6 +252,13 @@ pub fn launch_desktop_session(
             .collect::<Vec<_>>();
         match roots.as_slice() {
             [root] => {
+                if mode == DesktopLaunchMode::DirectExecutable && root.process_group_id != root.id {
+                    cleanup_failed_desktop_launch(&mut launch_process, mode);
+                    return Err(PlatformError::Invalid(format!(
+                        "Desktop root PID {} did not become process-group leader",
+                        root.id
+                    )));
+                }
                 return Ok(DesktopSession {
                     launch_process,
                     tree: ObservedProcessTree::new(root.clone()),
@@ -253,14 +276,14 @@ pub fn launch_desktop_session(
                 thread::sleep(Duration::from_millis(50));
             }
             [] => {
-                let _ = launch_process.kill();
-                let _ = launch_process.wait();
+                cleanup_failed_desktop_launch(&mut launch_process, mode);
                 return Err(PlatformError::NotFound(
                     "Desktop launch did not create an identifiable App process before timeout"
                         .into(),
                 ));
             }
             _ => {
+                cleanup_failed_desktop_launch(&mut launch_process, mode);
                 return Err(PlatformError::Invalid(format!(
                     "Desktop launch created multiple root processes: {}",
                     roots

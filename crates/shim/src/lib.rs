@@ -10,10 +10,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
-    CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, spawn_supervised, validate_proxy_target,
+    CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file, spawn_supervised,
+    validate_proxy_target,
 };
 
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
+
+pub const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
+pub const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
@@ -179,6 +183,104 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
 }
 
+/// Returns the position of the Codex `app-server` subcommand after supported global options.
+///
+/// An arbitrary later argument named `app-server` is not treated as a subcommand. This keeps the
+/// Shim transparent for prompts and subcommands whose values happen to contain the same text.
+#[must_use]
+pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
+    const VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+    ];
+    const FLAG_OPTIONS: &[&str] = &[
+        "--strict-config",
+        "--oss",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+    ];
+
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
+        if argument == "app-server" {
+            return Some(index);
+        }
+        if VALUE_OPTIONS.contains(&argument) {
+            arguments.get(index + 1)?;
+            index += 2;
+            continue;
+        }
+        if VALUE_OPTIONS.iter().any(|option| {
+            argument
+                .strip_prefix(option)
+                .is_some_and(|remainder| remainder.starts_with('='))
+        }) || FLAG_OPTIONS.contains(&argument)
+        {
+            index += 1;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+fn child_command(
+    arguments: &[OsString],
+    current_executable: &Path,
+    stock_codex_path: &Path,
+) -> ShimResult<Command> {
+    let host_paths = (
+        env::var_os(HOST_NODE_PATH_ENV),
+        env::var_os(HOST_RUNTIME_PATH_ENV),
+    );
+    if app_server_subcommand_index(arguments).is_some() {
+        match host_paths {
+            (Some(node_path), Some(runtime_path)) => {
+                let node_path =
+                    validate_proxy_target(current_executable, &PathBuf::from(node_path))?;
+                let runtime_path = canonical_existing_file(&PathBuf::from(runtime_path))?;
+                let mut command = Command::new(node_path);
+                command
+                    .arg(runtime_path)
+                    .args(arguments)
+                    .env(STOCK_CODEX_PATH_ENV, stock_codex_path)
+                    .env_remove(CODEX_CLI_PATH_ENV)
+                    .env_remove(HOST_NODE_PATH_ENV)
+                    .env_remove(HOST_RUNTIME_PATH_ENV);
+                return Ok(command);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(format!(
+                    "{HOST_NODE_PATH_ENV} and {HOST_RUNTIME_PATH_ENV} must be configured together"
+                )
+                .into());
+            }
+        }
+    }
+
+    let mut command = Command::new(stock_codex_path);
+    command
+        .args(arguments)
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV);
+    Ok(command)
+}
+
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
@@ -193,10 +295,8 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let mut command = Command::new(&stock_codex_path);
+    let mut command = child_command(arguments, &current_executable, &stock_codex_path)?;
     command
-        .args(arguments)
-        .env_remove(CODEX_CLI_PATH_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -251,8 +351,41 @@ pub fn run_from_environment() -> ShimResult<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     #[cfg(target_os = "macos")]
     use super::ShutdownSignals;
+    use super::app_server_subcommand_index;
+
+    fn arguments(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn finds_app_server_after_supported_global_options_only() {
+        assert_eq!(
+            app_server_subcommand_index(&arguments(&[
+                "-c",
+                "features.code_mode_host=true",
+                "--strict-config",
+                "app-server",
+                "--analytics-default-enabled",
+            ])),
+            Some(3)
+        );
+        assert_eq!(
+            app_server_subcommand_index(&arguments(&[
+                "--config=features.code_mode_host=true",
+                "app-server",
+            ])),
+            Some(1)
+        );
+        assert_eq!(
+            app_server_subcommand_index(&arguments(&["--label", "app-server"])),
+            None
+        );
+        assert_eq!(app_server_subcommand_index(&arguments(&["-c"])), None);
+    }
 
     #[cfg(target_os = "macos")]
     fn observe_sigterm(signals: &ShutdownSignals) {

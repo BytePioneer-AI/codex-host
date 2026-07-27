@@ -3,21 +3,22 @@
 ## Purpose
 TBD - created by archiving change verify-windows-codex-transparent-proxy. Update Purpose after archive.
 ## Requirements
-### Requirement: 隔离启动 Windows Codex Desktop
+### Requirement: 受控启动 Windows Codex Desktop
 
-Probe MUST 发现当前 Windows Codex Desktop 安装，并且只通过本次启动进程的环境把绝对 `CODEX_CLI_PATH` 指向实验 Shim。Probe MUST NOT 永久修改用户级或系统级环境、官方安装文件或 `app.asar`。
+Probe MUST 发现当前 Windows Codex Desktop 安装，并且只通过测试进程环境把绝对 `CODEX_CLI_PATH` 指向实验 Shim。Probe MAY停止、终止或在能够确认测试配置与进程身份时复用当前正在运行的 Codex Desktop；已有实例 MUST NOT使测试自动阻塞。Probe MUST NOT 永久修改用户级或系统级环境、官方安装文件或 `app.asar`。
 
-#### Scenario: 启动新的 Desktop Probe 实例
+#### Scenario: 启动 Desktop Probe 实例
 
-- **WHEN** 目标 Codex Desktop 未运行且安装可被支持的 Windows 启动方式发现
-- **THEN** Probe MUST 使用仅作用于本次启动的环境启动 Desktop
+- **WHEN** 安装可被支持的 Windows 启动方式发现，且没有符合本次测试配置的运行实例
+- **THEN** Probe MAY停止或终止现有 Codex Desktop，再使用仅作用于本次启动的环境启动 Desktop
 - **AND** Desktop 后续 CLI 调用 MUST 到达指定实验 Shim
 
 #### Scenario: Desktop 已经运行
 
 - **WHEN** Probe 检测到目标 Codex Desktop 实例已经运行
-- **THEN** Probe MUST 拒绝复用或终止该实例
-- **AND** Probe MUST 返回可操作诊断，说明需要先正常关闭现有实例
+- **THEN** Probe MUST NOT仅因实例存在而返回阻塞
+- **AND** Probe MAY在记录 PID 后停止、终止并重新启动该实例，或在能够证明其已使用本次 Shim/CDP配置时直接复用
+- **AND** 测试结束后 Probe MUST清理本次启动或接管的测试进程
 
 #### Scenario: 安装或环境继承不可验证
 

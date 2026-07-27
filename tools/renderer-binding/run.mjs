@@ -341,7 +341,7 @@ function selectRendererWebContents(contents) {
   return selected && selected.runtime.elementCount >= 50 ? selected : null;
 }
 
-async function waitForElectronRenderer(inspector, timeoutMs = 30_000) {
+async function waitForElectronRenderer(inspector, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   let lastContents = [];
   while (Date.now() < deadline) {

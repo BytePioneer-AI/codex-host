@@ -5,6 +5,8 @@ import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions, CreateRequestRouteObservation } from "./app-server-host.js";
+export { LazyPiSession } from "./lazy-pi-session.js";
+export type { PiTextSession } from "./lazy-pi-session.js";
 
 export const packageMetadata = {
   name: "@codexhost/host-runtime",

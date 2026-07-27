@@ -9,8 +9,11 @@ export interface RendererSubmissionObservation {
   capturedAt: string;
 }
 
+export type ComposerAgentPhase = "draft" | "locked";
+
 interface ComposerState {
   agent: RendererAgent;
+  phase: ComposerAgentPhase;
   composerId: string;
   lastCapturedAt: number | null;
   lastObservation: RendererSubmissionObservation | null;
@@ -46,7 +49,13 @@ export class AgentSelectionRegistry<Composer extends object> {
 
   setAgent(composer: Composer, agent: RendererAgent): Readonly<ComposerState> {
     const state = this.#state(composer);
-    state.agent = agent;
+    if (state.phase === "draft") state.agent = agent;
+    return state;
+  }
+
+  lock(composer: Composer): Readonly<ComposerState> {
+    const state = this.#state(composer);
+    state.phase = "locked";
     return state;
   }
 
@@ -86,6 +95,7 @@ export class AgentSelectionRegistry<Composer extends object> {
     if (existing) return existing;
     const created: ComposerState = {
       agent: "codex",
+      phase: "draft",
       composerId: this.#idFactory("composer", ++this.#composerSequence),
       lastCapturedAt: null,
       lastObservation: null,

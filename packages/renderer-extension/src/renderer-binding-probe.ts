@@ -4,6 +4,10 @@ import {
   type RendererSubmissionObservation,
   type SubmissionTrigger,
 } from "./agent-selection-state.js";
+import type {
+  LockedComposerSelection,
+  RendererAdapterStatus,
+} from "./versioned-renderer-adapter.js";
 
 export interface RendererBindingProbeStatus {
   version: 1;
@@ -11,8 +15,10 @@ export interface RendererBindingProbeStatus {
   selections: Array<{
     composerId: string;
     agent: RendererAgent;
+    phase: "draft" | "locked";
   }>;
   observations: RendererSubmissionObservation[];
+  adapter: RendererAdapterStatus;
   diagnostics: {
     editorCandidates: number;
     replacementTransfers: number;
@@ -42,6 +48,8 @@ export interface RendererBindingProbeStatus {
 export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
   setAgent(composerId: string, agent: RendererAgent): boolean;
+  lockedSelection(): LockedComposerSelection | null;
+  setAdapter(status: RendererAdapterStatus, dispose?: () => void): void;
   dispose(): void;
 }
 
@@ -95,6 +103,17 @@ function sendButtonWithin(root: Element): HTMLButtonElement | null {
   );
 }
 
+export function editorForElement(element: Element): Element | null {
+  return element.matches(EDITOR_SELECTOR) ? element : element.closest(EDITOR_SELECTOR);
+}
+
+export function isComposerInputIntent(event: KeyboardEvent): boolean {
+  if (event.key === "Backspace" || event.key === "Delete" || event.key === "Enter") return true;
+  if (event.key === "Process") return true;
+  if ((event.ctrlKey || event.metaKey) && ["v", "x"].includes(event.key.toLowerCase())) return true;
+  return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
 function composerForEditor(editor: Element): Element | null {
   const codexComposer = editor.closest(CODEX_COMPOSER_SELECTOR);
   if (codexComposer) return codexComposer;
@@ -113,7 +132,7 @@ function composerForElement(element: Element): Element | null {
   if (codexComposer) return codexComposer;
   const mounted = element.closest(`[${CONTROL_ATTRIBUTE}]`);
   if (mounted) return mounted.parentElement;
-  const editor = element.matches(EDITOR_SELECTOR) ? element : element.closest(EDITOR_SELECTOR);
+  const editor = editorForElement(element);
   if (editor) return composerForEditor(editor);
   let candidate: Element | null = element;
   for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
@@ -191,13 +210,20 @@ function createAgentButton(agent: RendererAgent, label: string): HTMLButtonEleme
   return button;
 }
 
-function updateButtons(mounted: MountedComposer, agent: RendererAgent): void {
+function updateButtons(
+  mounted: MountedComposer,
+  state: { agent: RendererAgent; phase: "draft" | "locked" },
+  adapterState: RendererAdapterStatus["state"],
+): void {
   for (const candidate of ["codex", "pi"] as const) {
-    const selected = candidate === agent;
+    const selected = candidate === state.agent;
     const button = mounted.buttons[candidate];
     button.setAttribute("aria-pressed", String(selected));
+    button.disabled = state.phase === "locked" || (candidate === "pi" && adapterState !== "ready");
     button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
     button.style.boxShadow = selected ? "inset 0 0 0 1px rgba(127, 127, 127, 0.3)" : "none";
+    button.style.cursor = button.disabled ? "not-allowed" : "pointer";
+    button.style.opacity = button.disabled && !selected ? "0.55" : "1";
   }
 }
 
@@ -211,6 +237,16 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
   let disposed = false;
   let scanScheduled = false;
   let replacementTransfers = 0;
+  let adapterDispose: (() => void) | null = null;
+  let adapterStatus: RendererAdapterStatus = {
+    state: "installing",
+    asset: "app-initial-BbEVL4-_.js",
+    reason: "installing",
+    decoratedRequests: 0,
+    candidateCount: 0,
+    candidates: [],
+    hook: null,
+  };
 
   const record = (composer: Element, trigger: SubmissionTrigger): void => {
     const observation = registry.capture(composer, trigger);
@@ -259,15 +295,14 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     };
     for (const agent of ["codex", "pi"] as const) {
       buttons[agent].addEventListener("click", () => {
-        registry.setAgent(composer, agent);
-        updateButtons(mounted, agent);
+        updateButtons(mounted, registry.setAgent(composer, agent), adapterStatus.state);
       });
     }
     const toolbar = sendButton.parentElement;
     if (toolbar) toolbar.insertBefore(control, sendButton);
     else composer.append(control);
     mountedByComposer.set(composer, mounted);
-    updateButtons(mounted, state.agent);
+    updateButtons(mounted, state, adapterStatus.state);
   };
 
   const scan = (): void => {
@@ -333,17 +368,28 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     }
   };
 
+  const lockForTarget = (target: EventTarget | null): Element | null => {
+    const element = eventElement(target);
+    const editor = element ? editorForElement(element) : null;
+    if (!editor) return null;
+    const composer = composerForEditor(editor);
+    const mounted = composer ? mountedByComposer.get(composer) : undefined;
+    if (!composer || !mounted) return null;
+    updateButtons(mounted, registry.lock(composer), adapterStatus.state);
+    return composer;
+  };
+  const onBeforeInput = (event: InputEvent): void => {
+    lockForTarget(event.target);
+  };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
     const composer = element ? composerForElement(element) : null;
     if (composer && mountedByComposer.has(composer)) record(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
+    const composer = isComposerInputIntent(event) ? lockForTarget(event.target) : null;
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-    const element = eventElement(event.target);
-    if (!element?.matches(EDITOR_SELECTOR)) return;
-    const composer = composerForEditor(element);
-    if (composer && mountedByComposer.has(composer)) record(composer, "enter");
+    if (composer) record(composer, "enter");
   };
   const onClick = (event: MouseEvent): void => {
     const element = eventElement(event.target);
@@ -359,6 +405,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     scheduleScan();
   });
   mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
+  document.addEventListener("beforeinput", onBeforeInput, true);
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
@@ -368,12 +415,14 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       const selections = [...mountedByComposer.values()].map((mounted) => ({
         composerId: mounted.composerId,
         agent: registry.get(mounted.composer).agent,
+        phase: registry.get(mounted.composer).phase,
       }));
       return {
         version: 1,
         mountedComposers: selections.length,
         selections,
         observations: observations.map((observation) => ({ ...observation })),
+        adapter: { ...adapterStatus },
         diagnostics: structuralDiagnostics(replacementTransfers),
       };
     },
@@ -382,14 +431,37 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         (candidate) => candidate.composerId === composerId,
       );
       if (!mounted) return false;
-      registry.setAgent(mounted.composer, agent);
-      updateButtons(mounted, agent);
-      return true;
+      const state = registry.setAgent(mounted.composer, agent);
+      updateButtons(mounted, state, adapterStatus.state);
+      return state.agent === agent;
+    },
+    lockedSelection() {
+      const locked = [...mountedByComposer.values()]
+        .map((mounted) => registry.get(mounted.composer))
+        .filter((state) => state.phase === "locked");
+      const selection = locked[0];
+      if (locked.length !== 1 || !selection) return null;
+      return {
+        composerId: selection.composerId,
+        agent: selection.agent,
+        phase: "locked",
+      };
+    },
+    setAdapter(status, dispose) {
+      adapterDispose?.();
+      adapterDispose = dispose ?? null;
+      adapterStatus = { ...status };
+      for (const mounted of mountedByComposer.values()) {
+        updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
+      }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      adapterDispose?.();
+      adapterDispose = null;
       mutationObserver.disconnect();
+      document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);

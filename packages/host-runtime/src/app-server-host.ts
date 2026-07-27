@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
 import { PiRpcSession } from "@codexhost/adapter-pi";
+import { LazyPiSession, type PiTextSession } from "./lazy-pi-session.js";
 import {
   decodeCreateRoute,
   parseJsonFrame,
@@ -38,7 +39,7 @@ export interface AppServerHostOptions {
 interface PiThread {
   id: string;
   cwd: string;
-  session: PiRpcSession;
+  session: LazyPiSession;
   thread: JsonObject;
   turns: JsonObject[];
   running: boolean;
@@ -308,13 +309,15 @@ export class AppServerHost {
       return;
     }
     const threadId = randomUUID();
-    const session = new PiRpcSession({
-      cwd,
-      ...(this.#options.piCommand ? { command: this.#options.piCommand } : {}),
-      environment: this.#options.environment ?? process.env,
-    });
+    const session = new LazyPiSession(
+      (): PiTextSession =>
+        new PiRpcSession({
+          cwd,
+          ...(this.#options.piCommand ? { command: this.#options.piCommand } : {}),
+          environment: this.#options.environment ?? process.env,
+        }),
+    );
     try {
-      await session.start();
       const now = unixSeconds();
       const thread: JsonObject = {
         id: threadId,

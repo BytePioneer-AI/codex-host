@@ -95,6 +95,10 @@ function validateProbeStatus(value) {
     !Number.isInteger(value.mountedComposers) ||
     !Array.isArray(value.selections) ||
     !Array.isArray(value.observations) ||
+    !isRecord(value.adapter) ||
+    !["installing", "ready", "unsupported"].includes(value.adapter.state) ||
+    !Number.isInteger(value.adapter.decoratedRequests) ||
+    !Number.isInteger(value.adapter.candidateCount) ||
     !isRecord(value.diagnostics) ||
     !Number.isInteger(value.diagnostics.editorCandidates) ||
     !Number.isInteger(value.diagnostics.replacementTransfers) ||
@@ -106,7 +110,8 @@ function validateProbeStatus(value) {
     if (
       !isRecord(selection) ||
       typeof selection.composerId !== "string" ||
-      !["codex", "pi"].includes(selection.agent)
+      !["codex", "pi"].includes(selection.agent) ||
+      !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
     }
@@ -426,7 +431,7 @@ async function run() {
         status: "blocked",
         rendererSubmissionObserved: false,
         creationBoundaryObserved: false,
-        reason: "The probe does not observe or control the Host creation boundary",
+        reason: "No validated Adapter controls the active connect-app-host MessagePort boundary",
       },
     };
     let observedCount = 0;

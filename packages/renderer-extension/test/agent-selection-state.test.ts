@@ -15,10 +15,29 @@ describe("Renderer Agent selection state", () => {
     expect(registry.get(firstComposer)).toMatchObject({
       composerId: "composer-1",
       agent: "pi",
+      phase: "draft",
     });
     expect(registry.get(secondComposer)).toMatchObject({
       composerId: "composer-2",
       agent: "codex",
+      phase: "draft",
+    });
+  });
+
+  it("locks the first-input Agent and rejects later switches", () => {
+    const composer = {};
+    const registry = new AgentSelectionRegistry<object>({
+      idFactory: (kind, sequence) => `${kind}-${sequence}`,
+    });
+
+    registry.setAgent(composer, "pi");
+    registry.lock(composer);
+    registry.setAgent(composer, "codex");
+
+    expect(registry.get(composer)).toMatchObject({
+      composerId: "composer-1",
+      agent: "pi",
+      phase: "locked",
     });
   });
 
@@ -30,12 +49,14 @@ describe("Renderer Agent selection state", () => {
       idFactory: (kind, sequence) => `${kind}-${sequence}`,
     });
     registry.setAgent(originalComposer, "pi");
+    registry.lock(originalComposer);
     registry.setAgent(existingComposer, "codex");
 
     expect(registry.transfer(originalComposer, replacementComposer)).toBe(true);
     expect(registry.get(replacementComposer)).toMatchObject({
       composerId: "composer-1",
       agent: "pi",
+      phase: "locked",
     });
     expect(registry.transfer(originalComposer, existingComposer)).toBe(false);
     expect(registry.get(existingComposer)).toMatchObject({

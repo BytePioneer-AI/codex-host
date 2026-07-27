@@ -1,9 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { packageMetadata } from "../src/index.js";
+import type { JsonRpcRequest } from "@codexhost/protocol-core";
+
+import { classifyCreateRequestRoute, packageMetadata } from "../src/index.js";
 
 describe("host-runtime package", () => {
   it("declares the composition-root dependencies", () => {
     expect(packageMetadata.dependencies).toHaveLength(4);
     expect(packageMetadata.dependencies).toContain("@codexhost/protocol-core");
+  });
+
+  it("classifies create routes without exposing Model values or request IDs", () => {
+    const request = (model: string): JsonRpcRequest => ({
+      id: 42,
+      method: "thread/start",
+      params: { model },
+    });
+
+    expect(classifyCreateRequestRoute(request("official/model"), "codex")).toEqual({
+      requestMethod: "thread/start",
+      modelCarrier: "official-model",
+      selectedHarness: "codex",
+      selectionSource: "official-model",
+    });
+    expect(classifyCreateRequestRoute(request("official/model"), "pi")).toEqual({
+      requestMethod: "thread/start",
+      modelCarrier: "official-model",
+      selectedHarness: "pi",
+      selectionSource: "default-agent",
+    });
+    expect(classifyCreateRequestRoute(request("codexhost/pi-native"), "codex")).toEqual({
+      requestMethod: "thread/start",
+      modelCarrier: "pi-transport",
+      selectedHarness: "pi",
+      selectionSource: "transport-model",
+    });
+    expect(
+      classifyCreateRequestRoute({ id: 43, method: "thread/read", params: {} }, "codex"),
+    ).toBeNull();
   });
 });

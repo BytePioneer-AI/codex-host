@@ -237,6 +237,35 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn node_entrypoint_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const SEPARATOR: u16 = b'\\' as u16;
+    let value = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let verbatim = [SEPARATOR, SEPARATOR, b'?' as u16, SEPARATOR];
+    if !value.starts_with(&verbatim) {
+        return path.to_path_buf();
+    }
+    let unc = [b'U' as u16, b'N' as u16, b'C' as u16, SEPARATOR];
+    if value.get(4..8) == Some(unc.as_slice()) {
+        let normalized = [SEPARATOR, SEPARATOR]
+            .into_iter()
+            .chain(value[8..].iter().copied())
+            .collect::<Vec<_>>();
+        return PathBuf::from(OsString::from_wide(&normalized));
+    }
+    if value.get(5) == Some(&(b':' as u16)) {
+        return PathBuf::from(OsString::from_wide(&value[4..]));
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn node_entrypoint_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
@@ -254,7 +283,7 @@ fn child_command(
                 let runtime_path = canonical_existing_file(&PathBuf::from(runtime_path))?;
                 let mut command = Command::new(node_path);
                 command
-                    .arg(runtime_path)
+                    .arg(node_entrypoint_path(&runtime_path))
                     .args(arguments)
                     .env(STOCK_CODEX_PATH_ENV, stock_codex_path)
                     .env_remove(CODEX_CLI_PATH_ENV)
@@ -356,6 +385,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::ShutdownSignals;
     use super::app_server_subcommand_index;
+    #[cfg(target_os = "windows")]
+    use super::node_entrypoint_path;
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
@@ -385,6 +416,25 @@ mod tests {
             None
         );
         assert_eq!(app_server_subcommand_index(&arguments(&["-c"])), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalizes_verbatim_node_entrypoint_paths() {
+        use std::path::Path;
+
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"\\?\D:\workspace\host-runtime.js")),
+            Path::new(r"D:\workspace\host-runtime.js"),
+        );
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"\\?\UNC\server\share\host-runtime.js")),
+            Path::new(r"\\server\share\host-runtime.js"),
+        );
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"D:\workspace\host-runtime.js")),
+            Path::new(r"D:\workspace\host-runtime.js"),
+        );
     }
 
     #[cfg(target_os = "macos")]

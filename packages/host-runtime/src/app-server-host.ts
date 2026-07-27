@@ -15,6 +15,13 @@ import {
   type JsonValue,
 } from "@codexhost/protocol-core";
 
+export interface CreateRequestRouteObservation {
+  requestMethod: "thread/start";
+  modelCarrier: "official-model" | "pi-transport";
+  selectedHarness: "codex" | "pi";
+  selectionSource: "default-agent" | "official-model" | "transport-model";
+}
+
 export interface AppServerHostOptions {
   stockCodexPath: string;
   arguments: string[];
@@ -25,6 +32,7 @@ export interface AppServerHostOptions {
   diagnosticOutput?: Writable;
   piCommand?: string;
   spawnOfficial?: typeof spawn;
+  onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
 }
 
 interface PiThread {
@@ -70,6 +78,28 @@ function rpcError(request: JsonRpcRequest, code: number, message: string): JsonO
 
 function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+export function classifyCreateRequestRoute(
+  request: JsonRpcRequest,
+  defaultAgent: "codex" | "pi",
+): CreateRequestRouteObservation | null {
+  const route = decodeCreateRoute(request);
+  if (!route) return null;
+  if (route.harnessId === "pi") {
+    return {
+      requestMethod: "thread/start",
+      modelCarrier: "pi-transport",
+      selectedHarness: "pi",
+      selectionSource: "transport-model",
+    };
+  }
+  return {
+    requestMethod: "thread/start",
+    modelCarrier: "official-model",
+    selectedHarness: defaultAgent,
+    selectionSource: defaultAgent === "pi" ? "default-agent" : "official-model",
+  };
 }
 
 function requestObject(request: JsonRpcRequest): JsonObject {
@@ -232,11 +262,9 @@ export class AppServerHost {
         continue;
       }
       const request = requestResult.data;
-      const route = decodeCreateRoute(request);
-      if (
-        route?.harnessId === "pi" ||
-        (request.method === "thread/start" && this.#options.defaultAgent === "pi")
-      ) {
+      const createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      if (createRoute) this.#options.onCreateRequestRoute?.(createRoute);
+      if (createRoute?.selectedHarness === "pi") {
         await this.#startPiThread(request);
         continue;
       }

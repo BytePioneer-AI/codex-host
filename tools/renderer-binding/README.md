@@ -22,7 +22,11 @@ A controlled Windows test against Codex Desktop `26.721.4979.0` confirmed that:
 - the selector mounts beside the native Composer controls;
 - an Enter submission can retain and report a Composer-scoped `pi` selection.
 
-Creation binding remains `BLOCKED`. The probe neither observes nor controls the Host creation boundary, and the tested Pi-selected submission still entered the official Codex path. This result must not be interpreted as Pi routing or as permission to silently fall back to Codex.
+Creation binding remains `BLOCKED`. The probe neither controls the Host creation boundary nor modifies the native Model state. This result must not be interpreted as Pi routing or as permission to silently fall back to Codex.
+
+A controlled Windows test then launched Desktop through the codexhost Shim and a Host route observer with the process default fixed to Codex. One submission produced a Renderer observation with `agent: "pi"`, while both real `thread/start` requests observed during that interaction were classified as `official-model` and selected Codex. The visible response also came from Codex. This proves the independent selector does not currently set `thread/start.params.model` to `codexhost/pi-native`.
+
+The combined test also exposed and fixed a Windows Shim launch defect: canonical Host Runtime paths use the `\\?\` verbatim prefix, which Node.js cannot consume as its entrypoint argument. The Shim now passes a normalized Win32 path to Node after canonical validation.
 
 The controlled interaction did not exercise rapid concurrent creation, retry, Renderer reload, or a live DOM-root replacement. Registry replacement transfer has unit coverage, but its Renderer mutation path remains a residual live-test gap.
 

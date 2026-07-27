@@ -14,5 +14,6 @@ fn production_launcher_rejects_the_gate_probe_command() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("usage:\n  codexhost inspect"));
-    assert!(!stderr.contains("--shim"));
+    assert!(stderr.contains("codexhost launch"));
+    assert!(!stderr.contains("codexhost probe"));
 }

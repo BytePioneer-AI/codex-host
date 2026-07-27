@@ -31,19 +31,20 @@ macOS 平台层 MUST 只读发现目标 Codex App bundle，并 MUST 从同一 bu
 - **THEN** 发现 MUST 以明确错误结束
 - **AND** Probe MUST NOT 启动 Desktop 或其他全局 CLI
 
-### Requirement: 隔离验证 macOS Desktop 启动和环境继承
+### Requirement: 受控验证 macOS Desktop 启动和环境继承
 
-Gate MUST 在目标 Desktop 未运行时分别验证 LaunchServices 和直接 App bundle 可执行文件的启动事实，并 MUST 只采用能够证明本次新实例继承进程级 `CODEX_CLI_PATH` 的方式。Gate MUST NOT 修改用户级/系统级环境、`launchctl` 全局环境、官方安装或 `app.asar`。
+Gate MUST验证受支持的 LaunchServices 或直接 App bundle 启动方式，并 MUST只采用能够证明测试实例继承进程级 `CODEX_CLI_PATH` 的方式。Gate MAY停止、终止或在能够确认测试配置与进程身份时复用当前正在运行的 Codex Desktop；已有实例 MUST NOT使测试自动阻塞。Gate MUST NOT修改用户级/系统级环境、`launchctl`全局环境、官方安装或 `app.asar`。
 
 #### Scenario: Desktop 已经运行
 
 - **WHEN** 平台层检测到目标 App bundle 的 Desktop 主进程已经运行
-- **THEN** Probe MUST 拒绝复用或终止该实例
-- **AND** MUST 返回可操作诊断，要求用户正常关闭后重试
+- **THEN** Gate MUST NOT仅因实例存在而返回阻塞
+- **AND** Gate MAY在记录 PID 后停止、终止并重新启动该实例，或在能够证明其已使用本次 Shim/CDP配置时直接复用
+- **AND** 测试结束后 Gate MUST清理本次启动或接管的测试进程
 
-#### Scenario: 候选启动方式创建新实例并继承环境
+#### Scenario: 候选启动方式创建测试实例并继承环境
 
-- **WHEN** Gate 以候选方式启动全新 Desktop，并为本次进程设置绝对 Shim 路径
+- **WHEN** Gate 以候选方式启动 Desktop，并为本次进程设置绝对 Shim 路径
 - **THEN** Gate MUST 关联实际 Desktop PID、父子关系或进程组及 Shim Capture
 - **AND** Capture MUST 证明 Desktop 发起的 CLI 调用收到本次 `CODEX_CLI_PATH`
 - **AND** 环境设置 MUST 只作用于本次启动的进程树

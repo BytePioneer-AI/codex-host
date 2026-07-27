@@ -279,9 +279,14 @@ fn discover_from_candidates(
 
 #[cfg(target_os = "macos")]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let mut candidates = vec![PathBuf::from("/Applications/Codex.app")];
+    let mut candidates = vec![
+        PathBuf::from("/Applications/Codex.app"),
+        PathBuf::from("/Applications/ChatGPT.app"),
+    ];
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join("Applications/Codex.app"));
+        let applications = PathBuf::from(home).join("Applications");
+        candidates.push(applications.join("Codex.app"));
+        candidates.push(applications.join("ChatGPT.app"));
     }
     discover_from_candidates(candidates)
 }
@@ -336,24 +341,26 @@ mod tests {
     }
 
     #[test]
-    fn discovers_a_valid_macos_bundle() {
-        let bundle = temporary_bundle("Codex.app", "com.openai.codex", true);
-        let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
-        assert_eq!(installation.version, "1.2.3");
-        assert_eq!(
-            installation.install_root,
-            bundle.canonicalize().expect("bundle")
-        );
-        assert_eq!(
-            installation.identity,
-            DesktopIdentity::MacOsBundle {
-                bundle_identifier: "com.openai.codex".into()
-            }
-        );
-        assert_eq!(
-            installation.packaged_codex_cli,
-            installation.executable_codex_cli
-        );
+    fn discovers_a_valid_macos_bundle_under_current_or_legacy_app_names() {
+        for app_name in ["Codex.app", "ChatGPT.app"] {
+            let bundle = temporary_bundle(app_name, "com.openai.codex", true);
+            let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
+            assert_eq!(installation.version, "1.2.3");
+            assert_eq!(
+                installation.install_root,
+                bundle.canonicalize().expect("bundle")
+            );
+            assert_eq!(
+                installation.identity,
+                DesktopIdentity::MacOsBundle {
+                    bundle_identifier: "com.openai.codex".into()
+                }
+            );
+            assert_eq!(
+                installation.packaged_codex_cli,
+                installation.executable_codex_cli
+            );
+        }
     }
 
     #[test]

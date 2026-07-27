@@ -8,6 +8,7 @@ const javaScriptFiles = ["*.config.js", "tools/**/*.mjs"];
 export default [
   {
     ignores: [
+      ".codexhost/**",
       ".pi/**",
       "build/**",
       "coverage/**",

@@ -35,4 +35,4 @@
 - [x] 5.3 在真实 Codex UI验证 `--agent pi`首轮和同 Thread多轮文本均由 Pi执行，且多轮期间不新增 Pi RPC Session
 - [x] 5.4 验证关闭后没有本次 Desktop、Shim、Host、官方 app-server或 Pi孤儿进程，Launcher正常退出且 stderr为空
 - [x] 5.5 运行 `npm run check`、`npm run build`、`cargo test --workspace --locked`、strict OpenSpec validation和 `git diff --check`
-- [ ] 5.6 PoC通过后新建页面内独立 Agent选择器和持久化 change；不得把 Launcher选择声明为公开 MVP最终 UI
+- [x] 5.6 在开发步骤清单中将页面内独立 Agent选择器、请求级绑定和持久化记录为后续独立阶段；不得把 Launcher选择声明为公开 MVP最终 UI

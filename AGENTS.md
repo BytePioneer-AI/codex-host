@@ -15,6 +15,8 @@ If documents conflict, report the conflict explicitly. Follow the PRD as the cur
 
 Use `docs/开发步骤清单.md`, active OpenSpec changes, source code, and tests to determine the current implementation status. Do not infer implemented capabilities solely from package names, directory structure, or module presence.
 
+Before implementing a planned change, follow `docs/开发步骤清单.md` section “实施前上下文规则”. Read the relevant main OpenSpec spec, predecessor archived `design.md`, verification record, owning source modules, and tests. The checklist is a navigation and status index, not a substitute for those design and evidence sources. If they conflict, report the conflict explicitly before implementation.
+
 ## Code Layout
 
 - `crates/` is the Rust Cargo Workspace. `launcher` and `shim` are binary crates; `platform` is their shared Windows/macOS platform library. Rust owns native launch, process, and platform integration, not Host protocol or Harness semantics.

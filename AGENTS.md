@@ -52,9 +52,7 @@ Before implementing a planned change, follow `docs/开发步骤清单.md` sectio
 
 ## Testing & Completion
 
-- Add or update tests for changed behavior, regressions, error handling, and boundary conditions.
-- Prefer testing public behavior and complete structured values over internal implementation details.
-- Run the narrowest relevant checks while developing, followed by `npm run check` and `npm run build` before considering implementation work complete.
+- Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.
 

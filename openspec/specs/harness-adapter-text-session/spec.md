@@ -103,6 +103,13 @@ The Host SHALL consume Harness outputs and project the existing Codex text Threa
 - **WHEN** a Pi Session emits a successful text lifecycle
 - **THEN** the originating Codex Thread receives the corresponding Turn, Agent Message delta, Item completion, and Turn completion
 
+#### Scenario: Same Thread status converges after sequential Turns
+
+- **WHEN** two sequential Pi Turns complete in the same Harness Session
+- **THEN** the Host publishes `thread/status/changed(active)` and `thread/status/changed(idle)` for each Turn
+- **AND** each idle status follows the corresponding `turn/completed`
+- **AND** `thread/read` reports the Thread as idle after the second Turn completes
+
 #### Scenario: Command result and output race
 
 - **WHEN** Adapter outputs are queued before `execute(turn.start)` resolves

@@ -49,6 +49,8 @@ interface ProjectedTurn {
   projector: CodexTurnProjector;
 }
 
+type PiThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
+
 interface PiThread {
   id: string;
   cwd: string;
@@ -578,6 +580,9 @@ export class AppServerHost {
     const projection = this.#projectedTurn(thread, event.turnId);
     await this.#waitForTurnResponse(thread, event.turnId);
     const result = projection.projector.project(event as ProjectableHostEvent);
+    if (event.type === "turn.started") {
+      await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
+    }
     if (event.type === "turn.completed") {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
@@ -590,6 +595,18 @@ export class AppServerHost {
       thread.responseGates.delete(event.turnId);
     }
     for (const message of result.messages) await this.#writer.json(message);
+    if (event.type === "turn.completed") {
+      await this.#setThreadStatus(thread, { type: "idle" });
+    }
+  }
+
+  async #setThreadStatus(thread: PiThread, status: PiThreadStatus): Promise<void> {
+    thread.thread.status = status;
+    await this.#writer.json({
+      method: "thread/status/changed",
+      emittedAtMs: Date.now(),
+      params: { threadId: thread.id, status },
+    });
   }
 
   #projectedTurn(thread: PiThread, turnId: HostTurnId): ProjectedTurn {

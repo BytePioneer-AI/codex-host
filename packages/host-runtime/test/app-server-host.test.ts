@@ -69,6 +69,27 @@ function requestId(message: JsonObject, id: number): boolean {
   return message.id === id;
 }
 
+function messageParams(message: JsonObject): JsonObject {
+  return (message.params ?? {}) as JsonObject;
+}
+
+function threadStatus(message: JsonObject, threadId: string, type: string): boolean {
+  const params = messageParams(message);
+  return (
+    method(message, "thread/status/changed") &&
+    params.threadId === threadId &&
+    (params.status as JsonObject | undefined)?.type === type
+  );
+}
+
+function turnEvent(message: JsonObject, eventMethod: string, turnId: string): boolean {
+  const params = messageParams(message);
+  return (
+    method(message, eventMethod) &&
+    ((params.turn as JsonObject | undefined)?.id === turnId || params.turnId === turnId)
+  );
+}
+
 function writeRequest(stream: PassThrough, value: JsonObject): void {
   stream.write(`${JSON.stringify(value)}\n`);
 }
@@ -164,6 +185,60 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(readResponse).toMatchObject({
       result: { thread: { turns: [{ status: "completed" }] } },
     });
+    await stopFixture(fixture);
+  });
+
+  it("returns the Thread to idle after every Turn in the same Session", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const turnIds: string[] = [];
+
+    for (const requestIdValue of [2, 3]) {
+      const turnId = await startPiTurn(fixture, threadId, requestIdValue);
+      turnIds.push(turnId);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      session.appendText(`output ${requestIdValue}`);
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const completedTurnCount = requestIdValue - 1;
+      await fixture.collector.waitFor(
+        (message) =>
+          threadStatus(message, threadId, "idle") &&
+          fixture.collector.messages.filter((candidate) =>
+            threadStatus(candidate, threadId, "idle"),
+          ).length >= completedTurnCount,
+      );
+    }
+
+    const statuses = fixture.collector.messages.flatMap((message) => {
+      if (!method(message, "thread/status/changed")) return [];
+      const params = messageParams(message);
+      if (params.threadId !== threadId) return [];
+      const status = params.status as JsonObject | undefined;
+      return typeof status?.type === "string" ? [status.type] : [];
+    });
+    expect(statuses).toEqual(["active", "idle", "active", "idle"]);
+    for (const [turnIndex, turnId] of turnIds.entries()) {
+      const completedIndex = fixture.collector.messages.findIndex((message) =>
+        turnEvent(message, "turn/completed", turnId),
+      );
+      const idleIndexes = fixture.collector.messages.flatMap((message, messageIndex) =>
+        threadStatus(message, threadId, "idle") ? [messageIndex] : [],
+      );
+      expect(completedIndex).toBeGreaterThanOrEqual(0);
+      expect(idleIndexes[turnIndex]).toBeGreaterThan(completedIndex);
+    }
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "thread/read",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ result: { thread: { status: { type: "idle" } } } });
     await stopFixture(fixture);
   });
 

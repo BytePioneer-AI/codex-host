@@ -15,8 +15,8 @@ describe("shared-contracts browser bundle", () => {
       write: false,
       stdin: {
         contents: [
-          'import { codexhostErrorSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";',
-          "export const schemas = { codexhostErrorSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema };",
+          'import { codexhostErrorSchema, harnessInspectionSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema, threadModelSelectParamsSchema } from "@codexhost/shared-contracts";',
+          "export const schemas = { codexhostErrorSchema, harnessInspectionSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema, threadModelSelectParamsSchema };",
         ].join("\n"),
         loader: "ts",
         resolveDir: resolve(import.meta.dirname, "../../.."),

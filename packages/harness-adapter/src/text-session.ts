@@ -1,9 +1,20 @@
 import type {
   HarnessId,
+  HarnessInspection,
+  HarnessModelRef,
+  HarnessSessionCapabilities,
   HostItemId,
   HostTurnId,
   JsonValue,
   NativeSessionRef,
+} from "@codexhost/shared-contracts";
+
+export type {
+  HarnessInspection,
+  HarnessModel,
+  HarnessModelCatalog,
+  HarnessModelRef,
+  HarnessSessionCapabilities,
 } from "@codexhost/shared-contracts";
 
 export type HarnessErrorCode =
@@ -28,13 +39,20 @@ export interface HarnessError {
 
 export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: HarnessError };
 
+export interface InspectHarnessInput {
+  cwd?: string;
+  refresh?: boolean;
+}
+
 export interface CreateSessionInput {
   kind: "create";
   cwd: string;
+  model?: HarnessModelRef;
 }
 
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;
+  effectiveModel?: HarnessModelRef;
 }
 
 export interface HostTextInput {
@@ -53,7 +71,12 @@ export interface TurnCancelCommand {
   turnId: HostTurnId;
 }
 
-export type HostCommand = TurnStartCommand | TurnCancelCommand;
+export interface ModelSelectCommand {
+  type: "model.select";
+  model: HarnessModelRef;
+}
+
+export type HostCommand = TurnStartCommand | TurnCancelCommand | ModelSelectCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
@@ -61,6 +84,10 @@ export interface TurnStartAccepted {
 
 export interface TurnCancelAccepted {
   cancellationRequested: true;
+}
+
+export interface ModelSelectCompleted {
+  completed: true;
 }
 
 export interface HostAgentMessageItem {
@@ -189,17 +216,20 @@ export interface HarnessOutput {
 
 export interface HarnessSession {
   readonly harnessId: HarnessId;
+  readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   close(): Promise<void>;
 }
 
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
 
+  inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

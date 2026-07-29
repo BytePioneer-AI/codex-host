@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   codexhostErrorSchema,
   harnessIdSchema,
+  harnessInspectionSchema,
+  harnessModelRefSchema,
   hostThreadIdSchema,
   jsonRpcEnvelopeSchema,
   jsonValueSchema,
@@ -22,6 +24,19 @@ describe("shared-contracts public package", () => {
   it("exports representative runtime contracts from the package root", () => {
     expect(jsonValueSchema.parse({ public: true })).toEqual({ public: true });
     expect(harnessIdSchema.parse("pi")).toBe("pi");
+    expect(harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" })).toEqual({
+      id: "pi-model-v1.synthetic",
+    });
+    expect(
+      harnessInspectionSchema.parse({
+        status: "ready",
+        catalog: {
+          models: [{ ref: { id: "pi-model-v1.synthetic" }, label: "Synthetic" }],
+          defaultModel: { id: "pi-model-v1.synthetic" },
+        },
+        capabilities: { configuration: { selectModel: true } },
+      }),
+    ).toMatchObject({ status: "ready" });
     expect(hostThreadIdSchema.parse("thread")).toBe("thread");
     expect(jsonRpcEnvelopeSchema.parse({ id: 1, result: null })).toEqual({ id: 1, result: null });
     expect(

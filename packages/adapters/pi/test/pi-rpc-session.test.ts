@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PiRpcSession, type PiRpcProcessAdapter, type PiTurnEvent } from "../src/pi-rpc-session.js";
 
-type Scenario = "final-only" | "empty" | "tools" | "cancel" | "malformed-tool";
+type Scenario =
+  "final-only" | "empty" | "tools" | "cancel" | "malformed-tool" | "malformed-catalog";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -17,6 +18,8 @@ class FakePiRpcProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
+  #provider = "synthetic-provider";
+  #modelId = "synthetic-model";
   readonly #scenario: Scenario;
 
   constructor(scenario: Scenario) {
@@ -51,8 +54,33 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command, {
         sessionId: "synthetic-session",
         sessionFile: null,
-        model: { provider: "synthetic-provider", id: "synthetic-model" },
+        model: { provider: this.#provider, id: this.#modelId },
       });
+      return;
+    }
+    if (command.type === "get_available_models") {
+      this.#respond(command, {
+        models:
+          this.#scenario === "malformed-catalog"
+            ? [{ id: "missing-provider" }]
+            : [
+                {
+                  provider: "synthetic-provider",
+                  id: "synthetic-model",
+                  baseUrl: "https://private.invalid",
+                  apiKey: "secret",
+                },
+                { provider: "other/provider", id: "family/model" },
+              ],
+      });
+      return;
+    }
+    if (command.type === "set_model") {
+      if (typeof command.provider === "string" && typeof command.modelId === "string") {
+        this.#provider = command.provider;
+        this.#modelId = command.modelId;
+      }
+      this.#respond(command);
       return;
     }
     this.#respond(command);
@@ -247,6 +275,36 @@ describe("Pi RPC Turn aggregation", () => {
       callId: "custom-1",
       output: { content: [{ text: "first second" }] },
     });
+    await rpc.close();
+  });
+
+  it("reads only exact native Model identity and confirms selection through state", async () => {
+    const rpc = session("final-only");
+    await rpc.start();
+
+    await expect(rpc.getAvailableModels()).resolves.toEqual([
+      { provider: "synthetic-provider", id: "synthetic-model" },
+      { provider: "other/provider", id: "family/model" },
+    ]);
+    await expect(
+      rpc.selectModel({ provider: "other/provider", id: "family/model" }),
+    ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    await rpc.close();
+  });
+
+  it("faults a malformed native Model catalog", async () => {
+    const onFault = vi.fn();
+    const rpc = session("malformed-catalog", onFault);
+    await rpc.start();
+
+    await expect(rpc.getAvailableModels()).rejects.toThrow("invalid catalog Model");
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "protocolError",
+        message: "Pi RPC returned an invalid catalog Model",
+      }),
+    );
     await rpc.close();
   });
 

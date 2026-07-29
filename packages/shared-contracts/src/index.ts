@@ -4,6 +4,28 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export { codexhostErrorSchema } from "./errors.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  HARNESS_MODEL_REF_MAX_LENGTH,
+  harnessInspectionSchema,
+  harnessModelCatalogSchema,
+  harnessModelRefIdSchema,
+  harnessModelRefSchema,
+  harnessModelSchema,
+  harnessModelSelectionStateSchema,
+  harnessSessionCapabilitiesSchema,
+  piHarnessInspectParamsSchema,
+  threadModelSelectParamsSchema,
+} from "./harness-models.js";
+export type {
+  HarnessInspection,
+  HarnessModel,
+  HarnessModelCatalog,
+  HarnessModelRef,
+  HarnessModelSelectionState,
+  HarnessSessionCapabilities,
+  PiHarnessInspectParams,
+  ThreadModelSelectParams,
+} from "./harness-models.js";
+export {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,

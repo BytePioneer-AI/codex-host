@@ -2,49 +2,63 @@ import { describe, expect, it, vi } from "vitest";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
-import { PiAdapter, type PiAdapterDependencies, type PiTextTransport } from "../src/pi-adapter.js";
+import {
+  PiAdapter,
+  type PiAdapterDependencies,
+  type PiAdapterOptions,
+  type PiTurnTransport,
+} from "../src/pi-adapter.js";
 import {
   PiRpcFaultError,
   type PiRpcSessionOptions,
   type PiSessionState,
+  type PiTurnEvent,
+  type PiTurnResult,
 } from "../src/pi-rpc-session.js";
 
-class FakePiTransport implements PiTextTransport {
+class FakePiTransport implements PiTurnTransport {
   readonly state: PiSessionState = {
     sessionId: "pi-session-1",
     sessionFile: "/synthetic/pi-session.jsonl",
     provider: "synthetic-provider",
     modelId: "synthetic-model",
   };
-  readonly close = vi.fn(async () => undefined);
+  readonly abort = vi.fn(async () => undefined);
   readonly start = vi.fn(async () => undefined);
-  readonly runTextTurn = vi.fn((text: string, onDelta: (delta: string) => void) => {
+  readonly close = vi.fn(async () => {
+    this.fail(new Error("Fake Pi transport closed"));
+  });
+  readonly runTurn = vi.fn((text: string, onEvent: (event: PiTurnEvent) => void) => {
     this.text = text;
-    this.onDelta = onDelta;
-    return new Promise<{ text: string }>((resolve, reject) => {
+    this.onEvent = onEvent;
+    return new Promise<PiTurnResult>((resolve, reject) => {
       this.resolveTurn = resolve;
       this.rejectTurn = reject;
     });
   });
-  onDelta: ((delta: string) => void) | null = null;
+  onEvent: ((event: PiTurnEvent) => void) | null = null;
   options: PiRpcSessionOptions | null = null;
   rejectTurn: ((error: Error) => void) | null = null;
-  resolveTurn: ((value: { text: string }) => void) | null = null;
+  resolveTurn: ((value: PiTurnResult) => void) | null = null;
   text: string | null = null;
 
-  delta(text: string): void {
-    if (!this.onDelta) throw new Error("No active fake Pi Turn");
-    this.onDelta(text);
+  event(event: PiTurnEvent): void {
+    if (!this.onEvent) throw new Error("No active fake Pi Turn");
+    this.onEvent(event);
   }
 
-  succeed(text: string): void {
+  delta(text: string): void {
+    this.event({ type: "text.delta", delta: text });
+  }
+
+  succeed(text: string, cancelled = false): void {
     if (!this.resolveTurn) throw new Error("No active fake Pi Turn");
-    this.resolveTurn({ text });
+    this.resolveTurn({ text, cancelled });
     this.resetTurn();
   }
 
   fail(error: Error): void {
-    if (!this.rejectTurn) throw new Error("No active fake Pi Turn");
+    if (!this.rejectTurn) return;
     this.rejectTurn(error);
     this.resetTurn();
   }
@@ -55,23 +69,23 @@ class FakePiTransport implements PiTextTransport {
   }
 
   private resetTurn(): void {
-    this.onDelta = null;
+    this.onEvent = null;
     this.rejectTurn = null;
     this.resolveTurn = null;
   }
 }
 
-function fixture() {
+function fixture(options: PiAdapterOptions = {}) {
   const transports: FakePiTransport[] = [];
   const dependencies: PiAdapterDependencies = {
-    createTransport: vi.fn((options) => {
+    createTransport: vi.fn((sessionOptions) => {
       const transport = new FakePiTransport();
-      transport.options = options;
+      transport.options = sessionOptions;
       transports.push(transport);
       return transport;
     }),
   };
-  const adapter = new PiAdapter({}, dependencies);
+  const adapter = new PiAdapter(options, dependencies);
   return { adapter, dependencies, transports };
 }
 
@@ -89,13 +103,17 @@ function textTurn(id: string) {
   };
 }
 
+function cancelTurn(id: string) {
+  return { type: "turn.cancel" as const, turnId: hostTurnIdSchema.parse(id) };
+}
+
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   const result = await iterator.next();
   if (result.done) throw new Error("Harness output stream ended unexpectedly");
   return result.value.event;
 }
 
-describe("Pi HarnessAdapter text Session", () => {
+describe("Pi HarnessAdapter Session", () => {
   it("starts lazily and emits an ordered successful text lifecycle", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);
@@ -134,30 +152,6 @@ describe("Pi HarnessAdapter text Session", () => {
 
     await session.close();
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
-  });
-
-  it("fails an accepted Turn that settles without text and remains reusable", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-    await session.execute(textTurn("empty"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-
-    transports[0]?.succeed("");
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "item.completed",
-      snapshot: { outcome: { status: "failed" } },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "turn.completed",
-      outcome: { status: "failed" },
-    });
-
-    await expect(session.execute(textTurn("second"))).resolves.toMatchObject({ ok: true });
-    transports[0]?.succeed("second response");
-    await session.close();
   });
 
   it("rejects startup before Turn acceptance without lifecycle events", async () => {
@@ -203,23 +197,250 @@ describe("Pi HarnessAdapter text Session", () => {
     await session.close();
   });
 
-  it("rejects a concurrent Turn", async () => {
-    const { adapter, transports } = fixture();
+  it("maps interleaved Bash, Generic Tool, bounded output, and reliable Edit Patch", async () => {
+    const { adapter, transports } = fixture({ toolOutputLimit: 10 });
     const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("tools"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
 
-    await session.execute(textTurn("active"));
-    await expect(session.execute(textTurn("second"))).resolves.toMatchObject({
-      ok: false,
-      error: { code: "sessionBusy" },
+    transport?.event({
+      type: "tool.started",
+      callId: "bash-1",
+      toolName: "bash",
+      arguments: { command: "printf complete" },
     });
-    transports[0]?.succeed("done");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "commandExecution", command: "printf complete" },
+    });
+    transport?.event({
+      type: "tool.started",
+      callId: "custom-1",
+      toolName: "custom",
+      arguments: { value: 1 },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "custom" },
+    });
+    transport?.event({
+      type: "tool.updated",
+      callId: "bash-1",
+      output: { content: [{ type: "text", text: "abc" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "output.append", text: "abc" },
+    });
+    transport?.event({
+      type: "tool.updated",
+      callId: "bash-1",
+      output: { content: [{ type: "text", text: "abcdef" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "output.append", text: "def" },
+    });
+    transport?.event({
+      type: "tool.updated",
+      callId: "bash-1",
+      output: { content: [{ type: "text", text: "abcdefghijklmnop" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "output.append", text: "ghij" },
+    });
+    transport?.event({
+      type: "tool.updated",
+      callId: "custom-1",
+      output: { content: [{ type: "text", text: "0123456789overflow" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "output.replace",
+        output: { content: [{ text: "0123456789" }], truncated: true },
+      },
+    });
+    transport?.event({
+      type: "tool.completed",
+      callId: "bash-1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "abcdefghijklmnop" }], exitCode: 0 },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "commandExecution",
+          output: "abcdefghij",
+          outputTruncated: true,
+          exitCode: 0,
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport?.event({
+      type: "tool.completed",
+      callId: "custom-1",
+      toolName: "custom",
+      result: { content: [{ type: "text", text: "custom done" }] },
+      isError: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed" } },
+    });
+
+    transport?.event({
+      type: "tool.started",
+      callId: "edit-1",
+      toolName: "edit",
+      arguments: { path: "sample.txt" },
+    });
+    await nextEvent(iterator);
+    transport?.event({
+      type: "tool.completed",
+      callId: "edit-1",
+      toolName: "edit",
+      result: {
+        content: [{ type: "text", text: "edited" }],
+        details: {
+          patch: "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        },
+      },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution", toolName: "edit" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "fileChange",
+        changes: [
+          { path: "sample.txt", kind: "update", unifiedDiff: expect.stringContaining("@@") },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
+    });
+
+    transport?.delta("finished");
+    await nextEvent(iterator);
+    transport?.succeed("finished");
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
     await session.close();
   });
 
-  it("atomically reserves a Turn while the transport is starting", async () => {
-    const { adapter, dependencies, transports } = fixture();
+  it("does not infer File Change for Write or an Edit without a valid Patch", async () => {
+    const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("no-patch"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+
+    for (const [callId, toolName] of [
+      ["write-1", "write"],
+      ["edit-1", "edit"],
+    ] as const) {
+      transport?.event({ type: "tool.started", callId, toolName, arguments: {} });
+      await nextEvent(iterator);
+      transport?.event({
+        type: "tool.completed",
+        callId,
+        toolName,
+        result: { content: [{ type: "text", text: "done" }] },
+        isError: false,
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { item: { type: "toolExecution", toolName } },
+      });
+    }
+    transport?.succeed("");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("requests Abort idempotently, cancels active Items, and continues in the same Session", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("cancelled"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    transport?.event({
+      type: "tool.started",
+      callId: "long-1",
+      toolName: "long_tool",
+      arguments: {},
+    });
+    await nextEvent(iterator);
+
+    await expect(session.execute(cancelTurn("cancelled"))).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    await expect(session.execute(cancelTurn("cancelled"))).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(transport?.abort).toHaveBeenCalledOnce();
+    transport?.event({
+      type: "tool.completed",
+      callId: "long-1",
+      toolName: "long_tool",
+      result: { content: [{ type: "text", text: "cancelled" }] },
+      isError: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    transport?.succeed("", true);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+
+    await expect(session.execute(textTurn("continued"))).resolves.toMatchObject({ ok: true });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport?.delta("continued");
+    await nextEvent(iterator);
+    transport?.succeed("continued");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(transport?.start).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("rejects a concurrent Turn while transport startup is reserved", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const session = await openSession(adapter);
     let releaseStart!: () => void;
     const startGate = new Promise<undefined>((resolve) => {
       releaseStart = () => resolve(undefined);
@@ -235,19 +456,9 @@ describe("Pi HarnessAdapter text Session", () => {
     const first = session.execute(textTurn("first"));
     const second = session.execute(textTurn("second"));
     releaseStart();
-
     await expect(first).resolves.toMatchObject({ ok: true });
-    await expect(second).resolves.toMatchObject({
-      ok: false,
-      error: { code: "sessionBusy" },
-    });
-    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started", turnId: "first" });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "item.started", turnId: "first" });
-
+    await expect(second).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     transports[0]?.succeed("done");
-    expect(await nextEvent(iterator)).toMatchObject({ type: "item.completed", turnId: "first" });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed", turnId: "first" });
     await session.close();
   });
 
@@ -264,6 +475,28 @@ describe("Pi HarnessAdapter text Session", () => {
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
     expect((await nextEvent(iterator)).type).toBe("session.faulted");
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("fails an active Turn once when close cannot prove cancellation settlement", async () => {
+    const { adapter, transports } = fixture({ closeTimeoutMs: 5 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("closing"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    await session.close();
+    expect(transports[0]?.abort).toHaveBeenCalledOnce();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed" },
+    });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 

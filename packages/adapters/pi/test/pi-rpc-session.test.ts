@@ -2,11 +2,11 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { PiRpcSession, type PiRpcProcessAdapter } from "../src/pi-rpc-session.js";
+import { PiRpcSession, type PiRpcProcessAdapter, type PiTurnEvent } from "../src/pi-rpc-session.js";
 
-type Scenario = "final-only" | "empty";
+type Scenario = "final-only" | "empty" | "tools" | "cancel" | "malformed-tool";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -16,6 +16,7 @@ class FakePiRpcProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  #promptCount = 0;
   readonly #scenario: Scenario;
 
   constructor(scenario: Scenario) {
@@ -47,35 +48,115 @@ class FakePiRpcProcess extends EventEmitter {
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
     if (command.type === "get_state") {
-      this.#output({
-        id: command.id,
-        type: "response",
-        command: command.type,
-        success: true,
-        data: {
-          sessionId: "synthetic-session",
-          sessionFile: null,
-          model: { provider: "synthetic-provider", id: "synthetic-model" },
-        },
+      this.#respond(command, {
+        sessionId: "synthetic-session",
+        sessionFile: null,
+        model: { provider: "synthetic-provider", id: "synthetic-model" },
       });
       return;
     }
+    this.#respond(command);
+    if (command.type === "abort" && this.#scenario === "cancel") {
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "long-tool",
+        toolName: "gate_long_tool",
+        result: { content: [{ type: "text", text: "cancelled" }] },
+        isError: true,
+      });
+      this.#output({ type: "agent_settled" });
+      return;
+    }
+    if (command.type !== "prompt") return;
+    this.#promptCount += 1;
+    if (this.#scenario === "final-only" || (this.#scenario === "cancel" && this.#promptCount > 1)) {
+      const text = this.#scenario === "cancel" ? "continued" : "synthetic final text";
+      const message = { role: "assistant", content: [{ type: "text", text }] };
+      this.#output({ type: "message_start", message });
+      this.#output({ type: "message_end", message });
+      this.#output({ type: "agent_settled" });
+      return;
+    }
+    if (this.#scenario === "empty") {
+      this.#output({ type: "agent_settled" });
+      return;
+    }
+    if (this.#scenario === "malformed-tool") {
+      this.#output({
+        type: "tool_execution_update",
+        toolCallId: "missing",
+        partialResult: { content: [{ type: "text", text: "orphan" }] },
+      });
+      return;
+    }
+    if (this.#scenario === "cancel") {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "long-tool",
+        toolName: "gate_long_tool",
+        args: {},
+      });
+      return;
+    }
+    this.#toolEvents();
+  }
+
+  #toolEvents(): void {
+    this.#output({
+      type: "tool_execution_start",
+      toolCallId: "custom-1",
+      toolName: "custom",
+      args: { value: 1 },
+    });
+    this.#output({
+      type: "tool_execution_start",
+      toolCallId: "bash-1",
+      toolName: "bash",
+      args: { command: "printf done" },
+    });
+    this.#output({
+      type: "tool_execution_update",
+      toolCallId: "custom-1",
+      partialResult: { content: [{ type: "text", text: "first" }] },
+    });
+    this.#output({
+      type: "tool_execution_update",
+      toolCallId: "bash-1",
+      partialResult: { content: [{ type: "text", text: "done" }] },
+    });
+    this.#output({
+      type: "tool_execution_update",
+      toolCallId: "custom-1",
+      partialResult: { content: [{ type: "text", text: "first second" }] },
+    });
+    this.#output({
+      type: "tool_execution_end",
+      toolCallId: "bash-1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "done" }], exitCode: 0 },
+      isError: false,
+    });
+    this.#output({
+      type: "tool_execution_end",
+      toolCallId: "custom-1",
+      toolName: "custom",
+      result: { content: [{ type: "text", text: "first second" }] },
+      isError: true,
+    });
+    const message = { role: "assistant", content: [{ type: "text", text: "tools complete" }] };
+    this.#output({ type: "message_start", message });
+    this.#output({ type: "message_end", message });
+    this.#output({ type: "agent_settled" });
+  }
+
+  #respond(command: Record<string, unknown>, data?: unknown): void {
     this.#output({
       id: command.id,
       type: "response",
       command: command.type,
       success: true,
+      ...(data === undefined ? {} : { data }),
     });
-    if (command.type !== "prompt") return;
-    if (this.#scenario === "final-only") {
-      const message = {
-        role: "assistant",
-        content: [{ type: "text", text: "synthetic final text" }],
-      };
-      this.#output({ type: "message_start", message });
-      this.#output({ type: "message_end", message });
-    }
-    this.#output({ type: "agent_settled" });
   }
 
   #output(value: unknown): void {
@@ -83,7 +164,11 @@ class FakePiRpcProcess extends EventEmitter {
   }
 }
 
-function session(scenario: Scenario): PiRpcSession {
+function session(
+  scenario: Scenario,
+  onFault = vi.fn(),
+  options: { turnTimeoutMs?: number } = {},
+): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
       return new FakePiRpcProcess(scenario) as unknown as ChildProcessWithoutNullStreams;
@@ -93,32 +178,119 @@ function session(scenario: Scenario): PiRpcSession {
     {
       cwd: process.cwd(),
       commandTimeoutMs: 2_000,
-      turnTimeoutMs: 2_000,
+      turnTimeoutMs: options.turnTimeoutMs ?? 2_000,
       closeTimeoutMs: 500,
+      onFault,
     },
     processAdapter,
   );
 }
 
-describe("Pi RPC text aggregation", () => {
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for fake Pi event");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+describe("Pi RPC Turn aggregation", () => {
   it("recovers final assistant text when no streaming delta was emitted", async () => {
     const rpc = session("final-only");
-    const deltas: string[] = [];
+    const events: PiTurnEvent[] = [];
     await rpc.start();
 
-    await expect(rpc.runTextTurn("synthetic", (delta) => deltas.push(delta))).resolves.toEqual({
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
       text: "synthetic final text",
+      cancelled: false,
     });
-    expect(deltas).toEqual(["synthetic final text"]);
+    expect(events).toEqual([{ type: "text.delta", delta: "synthetic final text" }]);
     await rpc.close();
   });
 
-  it("rejects a settled Turn that has no displayable text", async () => {
+  it("rejects a settled Turn that has no displayable text or Tool", async () => {
     const rpc = session("empty");
     await rpc.start();
 
-    await expect(rpc.runTextTurn("synthetic", () => undefined)).rejects.toThrow(
-      "settled without text output",
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
+      "settled without displayable output",
+    );
+    await rpc.close();
+  });
+
+  it("validates and correlates interleaved Tool lifecycles", async () => {
+    const rpc = session("tools");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toMatchObject({
+      text: "tools complete",
+      cancelled: false,
+    });
+    expect(events.map(({ type }) => type)).toEqual([
+      "tool.started",
+      "tool.started",
+      "tool.updated",
+      "tool.updated",
+      "tool.updated",
+      "tool.completed",
+      "tool.completed",
+      "text.delta",
+    ]);
+    expect(events[2]).toMatchObject({
+      type: "tool.updated",
+      callId: "custom-1",
+      output: { content: [{ text: "first" }] },
+    });
+    expect(events[4]).toMatchObject({
+      type: "tool.updated",
+      callId: "custom-1",
+      output: { content: [{ text: "first second" }] },
+    });
+    await rpc.close();
+  });
+
+  it("waits for Abort acknowledgement and agent settlement before resolving cancelled", async () => {
+    const rpc = session("cancel");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    const turn = rpc.runTurn("cancel me", (event) => events.push(event));
+    await waitFor(() => events.some(({ type }) => type === "tool.started"));
+    await expect(Promise.all([rpc.abort(), rpc.abort()])).resolves.toEqual([undefined, undefined]);
+    await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+    expect(events.at(-1)).toMatchObject({ type: "tool.completed", isError: true });
+
+    await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
+      text: "continued",
+      cancelled: false,
+    });
+    await rpc.close();
+  });
+
+  it("faults and rejects a Tool Turn that cannot settle before its bound", async () => {
+    const onFault = vi.fn();
+    const rpc = session("cancel", onFault, { turnTimeoutMs: 10 });
+    await rpc.start();
+
+    await expect(rpc.runTurn("timeout", () => undefined)).rejects.toThrow("Pi Turn timed out");
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "protocolError", message: "Pi Turn timed out" }),
+    );
+    await rpc.close();
+  });
+
+  it("faults a known malformed Tool lifecycle instead of leaving the Turn pending", async () => {
+    const onFault = vi.fn();
+    const rpc = session("malformed-tool", onFault);
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow("invalid Tool update");
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "protocolError",
+        message: "Pi RPC returned an invalid Tool update",
+      }),
     );
     await rpc.close();
   });

@@ -4,6 +4,8 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/shared-contracts";
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
+export { CodexTurnProjector } from "./codex-ui-projector.js";
+export type { CodexTurnProjection, ProjectableHostEvent } from "./codex-ui-projector.js";
 export { PI_NATIVE_TRANSPORT_MODEL_ID, decodeCreateRoute } from "./model-routing.js";
 export type { CreateRoute } from "./model-routing.js";
 export {

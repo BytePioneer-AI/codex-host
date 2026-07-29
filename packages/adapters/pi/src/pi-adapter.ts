@@ -1,3 +1,6 @@
+import { parsePatch } from "diff";
+import { randomUUID } from "node:crypto";
+
 import {
   HarnessOutputChannel,
   type CreateSessionInput,
@@ -9,22 +12,33 @@ import {
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostCommandExecutionItem,
+  type HostFileChange,
+  type HostItem,
+  type HostItemOutcome,
+  type HostToolExecutionItem,
+  type HostToolOutput,
+  type TurnCancelAccepted,
+  type TurnCancelCommand,
   type TurnOutcome,
   type TurnStartAccepted,
+  type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
   hostItemIdSchema,
   type HarnessId,
   type HostItemId,
+  type JsonValue,
 } from "@codexhost/shared-contracts";
-import { randomUUID } from "node:crypto";
 
 import {
   PiRpcFaultError,
   PiRpcSession,
   type PiRpcSessionOptions,
   type PiSessionState,
+  type PiTurnEvent,
+  type PiTurnResult,
 } from "./pi-rpc-session.js";
 
 export interface PiAdapterOptions {
@@ -33,27 +47,44 @@ export interface PiAdapterOptions {
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
+  toolOutputLimit?: number;
 }
 
-export interface PiTextTransport {
+export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
-  runTextTurn(text: string, onDelta: (delta: string) => void): Promise<{ text: string }>;
+  runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
+  abort(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface PiAdapterDependencies {
-  createTransport(options: PiRpcSessionOptions): PiTextTransport;
+  createTransport(options: PiRpcSessionOptions): PiTurnTransport;
+}
+
+interface ActiveTool {
+  item: HostCommandExecutionItem | HostToolExecutionItem;
+  nativeName: string;
+  startedAtMs: number;
 }
 
 interface ActiveTurn {
-  command: HostCommand;
-  item: HostAgentMessageItem;
+  command: TurnStartCommand;
+  agentItem: HostAgentMessageItem;
+  tools: Map<string, ActiveTool>;
+  cancellationRequested: boolean;
+  completion: Promise<void>;
+  resolveCompletion(): void;
 }
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const piHarnessId = harnessIdSchema.parse("pi");
+const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -78,37 +109,128 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
+function toolFailure(toolName: string): HarnessError {
+  return {
+    code: "nativeFailure",
+    message: `Pi Tool '${toolName}' failed`,
+    retryable: false,
+  };
+}
+
+function nativeText(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  if (!isRecord(value) || !Array.isArray(value.content)) return "";
+  return value.content
+    .filter(
+      (content): content is Record<string, JsonValue> =>
+        isRecord(content) && content.type === "text" && typeof content.text === "string",
+    )
+    .map(({ text }) => text as string)
+    .join("");
+}
+
+function boundedOutput(value: JsonValue, limit: number): HostToolOutput | undefined {
+  const text = nativeText(value);
+  if (text.length === 0) return undefined;
+  const truncated = text.length > limit;
+  return {
+    content: [{ type: "text", text: truncated ? text.slice(0, limit) : text }],
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
+
+function outputText(output: HostToolOutput | undefined): string {
+  return (
+    output?.content
+      .filter(
+        (content): content is Extract<(typeof output.content)[number], { type: "text" }> =>
+          content.type === "text",
+      )
+      .map(({ text }) => text)
+      .join("") ?? ""
+  );
+}
+
+function stringField(value: JsonValue, key: string): string | undefined {
+  return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
+}
+
+function numberField(value: JsonValue, key: string): number | null | undefined {
+  if (!isRecord(value)) return undefined;
+  const field = value[key];
+  return typeof field === "number" || field === null ? field : undefined;
+}
+
+function stripDiffPrefix(path: string): string {
+  return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
+}
+
+function reliableFileChange(result: JsonValue): HostFileChange[] | null {
+  if (!isRecord(result) || !isRecord(result.details) || typeof result.details.patch !== "string") {
+    return null;
+  }
+  const patch = result.details.patch;
+  let parsed: ReturnType<typeof parsePatch>;
+  try {
+    parsed = parsePatch(patch);
+  } catch {
+    return null;
+  }
+  const file = parsed[0];
+  if (parsed.length !== 1 || !file) return null;
+  const oldFile = file.oldFileName;
+  const newFile = file.newFileName;
+  const kind = oldFile === "/dev/null" ? "add" : newFile === "/dev/null" ? "delete" : "update";
+  const path = stripDiffPrefix(kind === "delete" ? oldFile : newFile);
+  if (!path || path === "/dev/null") return null;
+  return [{ path, kind, unifiedDiff: patch }];
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
   readonly initialState: HarnessSessionState = {};
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
+  readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #onClosed: () => void;
+  readonly #toolOutputLimit: number;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #phase: SessionPhase = "open";
-  #starting: Promise<PiTextTransport> | null = null;
+  #starting: Promise<PiTurnTransport> | null = null;
   #state: HarnessSessionState = {};
-  #transport: PiTextTransport | null = null;
+  #transport: PiTurnTransport | null = null;
 
   constructor(
     cwd: string,
     createTransport: PiAdapterDependencies["createTransport"],
     onClosed: () => void,
+    options: { closeTimeoutMs: number; toolOutputLimit: number },
   ) {
     this.#cwd = cwd;
     this.#createTransport = createTransport;
     this.#onClosed = onClosed;
+    this.#closeTimeoutMs = options.closeTimeoutMs;
+    this.#toolOutputLimit = options.toolOutputLimit;
     this.outputs = this.#channel.outputs;
   }
 
-  async execute(command: HostCommand): Promise<HarnessResult<TurnStartAccepted>> {
+  execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  async execute(
+    command: HostCommand,
+  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
+    if (command.type === "turn.cancel") return this.#cancel(command);
     if (this.#acceptingTurn || this.#active) {
       return {
         ok: false,
@@ -133,7 +255,7 @@ class PiHarnessSession implements HarnessSession {
 
     this.#acceptingTurn = true;
     try {
-      let transport: PiTextTransport;
+      let transport: PiTurnTransport;
       try {
         transport = await this.#ensureTransport();
       } catch (error) {
@@ -143,23 +265,37 @@ class PiHarnessSession implements HarnessSession {
         return { ok: false, error: invalidState("Pi Session became unavailable during startup") };
       }
 
+      let resolveCompletion = (): void => undefined;
+      const completion = new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      });
       const item: HostAgentMessageItem = {
         type: "agentMessage",
         itemId: this.#newItemId(),
         text: "",
       };
-      const active: ActiveTurn = { command, item };
+      const active: ActiveTurn = {
+        command,
+        agentItem: item,
+        tools: new Map(),
+        cancellationRequested: false,
+        completion,
+        resolveCompletion,
+      };
       this.#active = active;
       this.#event({ type: "turn.started", turnId: command.turnId });
       this.#event({ type: "item.started", turnId: command.turnId, item });
 
       void transport
-        .runTextTurn(text, (delta) => this.#appendText(active, delta))
-        .then(({ text: output }) => {
-          if (output.trim().length === 0) {
-            throw new Error("Pi Turn settled without text output");
-          }
-          this.#completeTurn(active, { status: "succeeded" }, output);
+        .runTurn(text, (event) => this.#handleTurnEvent(active, event))
+        .then((result) => {
+          this.#completeTurn(
+            active,
+            result.cancelled
+              ? { status: "cancelled", reason: "Cancelled by user" }
+              : { status: "succeeded" },
+            result.text,
+          );
         })
         .catch((error: unknown) => {
           this.#completeTurn(active, {
@@ -181,7 +317,30 @@ class PiHarnessSession implements HarnessSession {
     return this.#closePromise;
   }
 
-  async #ensureTransport(): Promise<PiTextTransport> {
+  async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: invalidState("Pi Turn Cancel must reference the active Turn"),
+      };
+    }
+    if (active.cancellationRequested) {
+      return { ok: true, value: { cancellationRequested: true } };
+    }
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Pi transport is unavailable") };
+    active.cancellationRequested = true;
+    try {
+      await transport.abort();
+      return { ok: true, value: { cancellationRequested: true } };
+    } catch (error) {
+      if (this.#active === active) active.cancellationRequested = false;
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
+  async #ensureTransport(): Promise<PiTurnTransport> {
     if (this.#transport) return this.#transport;
     if (this.#starting) return this.#starting;
     const transport = this.#createTransport({
@@ -217,33 +376,156 @@ class PiHarnessSession implements HarnessSession {
     return starting;
   }
 
+  #handleTurnEvent(active: ActiveTurn, event: PiTurnEvent): void {
+    if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
+    switch (event.type) {
+      case "text.delta":
+        this.#appendText(active, event.delta);
+        return;
+      case "tool.started":
+        this.#startTool(active, event);
+        return;
+      case "tool.updated":
+        this.#updateTool(active, event);
+        return;
+      case "tool.completed":
+        this.#completeTool(active, event);
+    }
+  }
+
   #appendText(active: ActiveTurn, text: string): void {
-    if (this.#active !== active || this.#phase !== "open") return;
-    active.item = { ...active.item, text: active.item.text + text };
+    active.agentItem = { ...active.agentItem, text: active.agentItem.text + text };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
-      itemId: active.item.itemId,
+      itemId: active.agentItem.itemId,
       update: { type: "text.append", text },
+    });
+  }
+
+  #startTool(active: ActiveTurn, event: Extract<PiTurnEvent, { type: "tool.started" }>): void {
+    if (active.tools.has(event.callId)) throw new Error("Pi Tool started more than once");
+    const command = event.toolName === "bash" ? stringField(event.arguments, "command") : undefined;
+    const item: HostCommandExecutionItem | HostToolExecutionItem = command
+      ? {
+          type: "commandExecution",
+          itemId: this.#newItemId(),
+          command,
+          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+        }
+      : {
+          type: "toolExecution",
+          itemId: this.#newItemId(),
+          toolName: event.toolName,
+          arguments: event.arguments,
+        };
+    active.tools.set(event.callId, {
+      item,
+      nativeName: event.toolName,
+      startedAtMs: Date.now(),
+    });
+    this.#event({ type: "item.started", turnId: active.command.turnId, item });
+  }
+
+  #updateTool(active: ActiveTurn, event: Extract<PiTurnEvent, { type: "tool.updated" }>): void {
+    const tool = active.tools.get(event.callId);
+    if (!tool) throw new Error("Pi Tool update references an unknown Tool Call");
+    const output = boundedOutput(event.output, this.#toolOutputLimit);
+    if (!output) return;
+    if (tool.item.type === "commandExecution") {
+      const previous = tool.item.output ?? "";
+      const next = outputText(output);
+      tool.item = {
+        ...tool.item,
+        output: next,
+        outputTruncated: output.truncated === true,
+      };
+      if (next.startsWith(previous)) {
+        const delta = next.slice(previous.length);
+        if (delta.length > 0) {
+          this.#event({
+            type: "item.updated",
+            turnId: active.command.turnId,
+            itemId: tool.item.itemId,
+            update: { type: "output.append", text: delta },
+          });
+        }
+      }
+      return;
+    }
+    tool.item = { ...tool.item, output };
+    this.#event({
+      type: "item.updated",
+      turnId: active.command.turnId,
+      itemId: tool.item.itemId,
+      update: { type: "output.replace", output },
+    });
+  }
+
+  #completeTool(active: ActiveTurn, event: Extract<PiTurnEvent, { type: "tool.completed" }>): void {
+    const tool = active.tools.get(event.callId);
+    if (!tool || tool.nativeName !== event.toolName) {
+      throw new Error("Pi Tool completion references an unknown Tool Call");
+    }
+    active.tools.delete(event.callId);
+    const durationMs = Math.max(0, Date.now() - tool.startedAtMs);
+    const output = boundedOutput(event.result, this.#toolOutputLimit);
+    if (tool.item.type === "commandExecution") {
+      const exitCode = numberField(event.result, "exitCode");
+      tool.item = {
+        ...tool.item,
+        ...(output
+          ? {
+              output: outputText(output),
+              outputTruncated: output.truncated === true,
+            }
+          : {}),
+        ...(exitCode !== undefined ? { exitCode } : {}),
+        durationMs,
+      };
+    } else {
+      tool.item = { ...tool.item, ...(output ? { output } : {}), durationMs };
+    }
+    const outcome: HostItemOutcome = active.cancellationRequested
+      ? { status: "cancelled", reason: "Cancelled by user" }
+      : event.isError
+        ? { status: "failed", error: toolFailure(event.toolName) }
+        : { status: "succeeded" };
+    this.#completeItem(active, tool.item, outcome);
+
+    if (!event.isError && event.toolName === "edit") {
+      const changes = reliableFileChange(event.result);
+      if (changes) {
+        const fileItem: HostItem = { type: "fileChange", itemId: this.#newItemId(), changes };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+        this.#completeItem(active, fileItem, { status: "succeeded" });
+      }
+    }
+  }
+
+  #completeItem(active: ActiveTurn, item: HostItem, outcome: HostItemOutcome): void {
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
     });
   }
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, finalText?: string): void {
     if (this.#active !== active) return;
     this.#active = null;
-    if (finalText !== undefined) active.item = { ...active.item, text: finalText };
-    const itemOutcome =
+    const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
-        ? { status: "failed" as const, error: outcome.error }
+        ? { status: "failed", error: outcome.error }
         : outcome.status === "cancelled"
-          ? { status: "cancelled" as const, ...(outcome.reason ? { reason: outcome.reason } : {}) }
-          : { status: "succeeded" as const };
-    this.#event({
-      type: "item.completed",
-      turnId: active.command.turnId,
-      snapshot: { item: active.item, outcome: itemOutcome },
-    });
+          ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
+          : { status: "succeeded" };
+    for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
+    active.tools.clear();
+    if (finalText !== undefined) active.agentItem = { ...active.agentItem, text: finalText };
+    this.#completeItem(active, active.agentItem, itemOutcome);
     this.#event({ type: "turn.completed", turnId: active.command.turnId, outcome });
+    active.resolveCompletion();
   }
 
   #fault(error: unknown): void {
@@ -263,6 +545,12 @@ class PiHarnessSession implements HarnessSession {
     if (!wasFaulted) this.#phase = "closing";
     const transport =
       this.#transport ?? (this.#starting ? await this.#starting.catch(() => null) : null);
+    const active = this.#active;
+    if (transport && active) {
+      active.cancellationRequested = true;
+      await transport.abort().catch(() => undefined);
+      await Promise.race([active.completion, delay(this.#closeTimeoutMs)]);
+    }
     try {
       if (transport) await transport.close();
     } catch (error) {
@@ -270,7 +558,7 @@ class PiHarnessSession implements HarnessSession {
       throw error;
     }
     if (this.#active) {
-      const error = invalidState("Pi Session closed during an active Turn");
+      const error = invalidState("Pi Session closed before active Turn cancellation settled");
       this.#completeTurn(this.#active, { status: "failed", error });
     }
     if (!wasFaulted) {
@@ -290,8 +578,10 @@ class PiHarnessSession implements HarnessSession {
 
 export class PiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = piHarnessId;
+  readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #sessions = new Set<PiHarnessSession>();
+  readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
 
   constructor(
@@ -301,6 +591,8 @@ export class PiAdapter implements HarnessAdapter {
     },
   ) {
     this.#createTransport = dependencies.createTransport;
+    this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
+    this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
   async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -317,9 +609,14 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
-    const session = new PiHarnessSession(input.cwd, this.#createTransport, () => {
-      this.#sessions.delete(session);
-    });
+    const session = new PiHarnessSession(
+      input.cwd,
+      this.#createTransport,
+      () => {
+        this.#sessions.delete(session);
+      },
+      { closeTimeoutMs: this.#closeTimeoutMs, toolOutputLimit: this.#toolOutputLimit },
+    );
     this.#sessions.add(session);
     return { ok: true, value: session };
   }

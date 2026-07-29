@@ -3,13 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
 import { PiAdapter } from "@codexhost/adapter-pi";
-import type {
-  HarnessAdapter,
-  HarnessError,
-  HarnessOutput,
-  HarnessSession,
-  HostAgentMessageItem,
-} from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import {
   classifyThreadPurpose,
@@ -18,6 +12,7 @@ import {
   type RequestRouteObservation,
 } from "./route-observation.js";
 import {
+  CodexTurnProjector,
   decodeCreateRoute,
   parseJsonFrame,
   readLfFrames,
@@ -27,6 +22,7 @@ import {
   type JsonObject,
   type JsonRpcRequest,
   type JsonValue,
+  type ProjectableHostEvent,
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
@@ -50,10 +46,7 @@ interface TurnProjectionGate {
 }
 
 interface ProjectedTurn {
-  id: HostTurnId;
-  startedAtMs: number;
-  startedAt: number;
-  item: JsonObject | null;
+  projector: CodexTurnProjector;
 }
 
 interface PiThread {
@@ -64,6 +57,7 @@ interface PiThread {
   thread: JsonObject;
   turns: JsonObject[];
   running: boolean;
+  activeTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, ProjectedTurn>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
 }
@@ -155,71 +149,12 @@ function sandboxResult(params: JsonObject): JsonObject {
   };
 }
 
-function pendingTurn(id: string, startedAt: number | null): JsonObject {
-  return {
-    id,
-    status: "inProgress",
-    items: [],
-    error: null,
-    startedAt,
-    completedAt: null,
-    durationMs: null,
-    itemsView: "full",
-  };
-}
-
-function completedTurn(
-  id: string,
-  startedAt: number,
-  completedAt: number,
-  item: JsonObject,
-): JsonObject {
-  return {
-    id,
-    status: "completed",
-    items: [item],
-    error: null,
-    startedAt,
-    completedAt,
-    durationMs: Math.max(0, completedAt - startedAt) * 1000,
-    itemsView: "full",
-  };
-}
-
-function failedTurn(
-  id: string,
-  startedAt: number,
-  completedAt: number,
-  message: string,
-): JsonObject {
-  return {
-    id,
-    status: "failed",
-    items: [],
-    error: { message },
-    startedAt,
-    completedAt,
-    durationMs: Math.max(0, completedAt - startedAt) * 1000,
-    itemsView: "full",
-  };
-}
-
 function turnProjectionGate(): TurnProjectionGate {
   let resolve = (): void => undefined;
   const promise = new Promise<void>((complete) => {
     resolve = complete;
   });
   return { promise, resolve };
-}
-
-function codexAgentMessage(item: HostAgentMessageItem): JsonObject {
-  return {
-    id: item.itemId,
-    type: "agentMessage",
-    text: item.text,
-    phase: null,
-    memoryCitation: null,
-  };
 }
 
 class OrderedWriter {
@@ -345,6 +280,15 @@ export class AppServerHost {
           continue;
         }
       }
+      if (request.method === "turn/interrupt") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
+        if (piThread) {
+          await this.#interruptPiTurn(request, piThread, params.turnId);
+          continue;
+        }
+      }
       if (request.method === "thread/read") {
         const params = requestObject(request);
         const threadId = params.threadId;
@@ -438,6 +382,7 @@ export class AppServerHost {
         thread,
         turns: [],
         running: false,
+        activeTurnId: null,
         projectedTurns: new Map(),
         responseGates: new Map(),
       };
@@ -545,13 +490,16 @@ export class AppServerHost {
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
     const projection: ProjectedTurn = {
-      id: turnId,
-      startedAtMs,
-      startedAt: Math.floor(startedAtMs / 1000),
-      item: null,
+      projector: new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs,
+      }),
     };
     const gate = turnProjectionGate();
     thread.running = true;
+    thread.activeTurnId = turnId;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
@@ -562,6 +510,7 @@ export class AppServerHost {
     });
     if (!result.ok) {
       thread.running = false;
+      thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       gate.resolve();
@@ -570,8 +519,39 @@ export class AppServerHost {
     }
     try {
       await this.#writer.json(
-        rpcEnvelope(request, { result: { turn: pendingTurn(turnId, null) } }),
+        rpcEnvelope(request, { result: { turn: projection.projector.pendingTurn() } }),
       );
+    } finally {
+      gate.resolve();
+    }
+  }
+
+  async #interruptPiTurn(
+    request: JsonRpcRequest,
+    thread: PiThread,
+    requestedTurnId: JsonValue | undefined,
+  ): Promise<void> {
+    if (
+      typeof requestedTurnId !== "string" ||
+      !thread.running ||
+      thread.activeTurnId !== requestedTurnId
+    ) {
+      await this.#writer.json(
+        rpcError(request, -32074, "Pi turn/interrupt must reference the active Turn"),
+      );
+      return;
+    }
+    const turnId = thread.activeTurnId;
+    const gate = turnProjectionGate();
+    thread.responseGates.set(turnId, gate);
+    const result = await thread.session.execute({ type: "turn.cancel", turnId });
+    if (!result.ok) {
+      gate.resolve();
+      await this.#writer.json(rpcError(request, -32074, result.error.message));
+      return;
+    }
+    try {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
     } finally {
       gate.resolve();
     }
@@ -589,105 +569,27 @@ export class AppServerHost {
 
   async #projectHarnessOutput(thread: PiThread, output: HarnessOutput): Promise<void> {
     const event = output.event;
-    switch (event.type) {
-      case "session.state.changed":
-        return;
-      case "turn.started": {
-        const projection = this.#projectedTurn(thread, event.turnId);
-        await this.#waitForTurnResponse(thread, event.turnId);
-        await this.#writer.json({
-          method: "turn/started",
-          emittedAtMs: projection.startedAtMs,
-          params: {
-            threadId: thread.id,
-            turn: pendingTurn(projection.id, projection.startedAt),
-          },
-        });
-        return;
-      }
-      case "item.started": {
-        const projection = this.#projectedTurn(thread, event.turnId);
-        await this.#waitForTurnResponse(thread, event.turnId);
-        const item = codexAgentMessage(event.item);
-        projection.item = item;
-        await this.#writer.json({
-          method: "item/started",
-          emittedAtMs: projection.startedAtMs,
-          params: {
-            threadId: thread.id,
-            turnId: event.turnId,
-            startedAtMs: projection.startedAtMs,
-            item,
-          },
-        });
-        return;
-      }
-      case "item.updated": {
-        const projection = this.#projectedTurn(thread, event.turnId);
-        await this.#waitForTurnResponse(thread, event.turnId);
-        if (projection.item) {
-          const current = typeof projection.item.text === "string" ? projection.item.text : "";
-          projection.item = { ...projection.item, text: current + event.update.text };
-        }
-        await this.#writer.json({
-          method: "item/agentMessage/delta",
-          emittedAtMs: Date.now(),
-          params: {
-            threadId: thread.id,
-            turnId: event.turnId,
-            itemId: event.itemId,
-            delta: event.update.text,
-          },
-        });
-        return;
-      }
-      case "item.completed": {
-        const projection = this.#projectedTurn(thread, event.turnId);
-        await this.#waitForTurnResponse(thread, event.turnId);
-        const item = codexAgentMessage(event.snapshot.item);
-        projection.item = item;
-        await this.#writer.json({
-          method: "item/completed",
-          emittedAtMs: Date.now(),
-          params: {
-            threadId: thread.id,
-            turnId: event.turnId,
-            completedAtMs: Date.now(),
-            item,
-          },
-        });
-        return;
-      }
-      case "turn.completed": {
-        const projection = this.#projectedTurn(thread, event.turnId);
-        await this.#waitForTurnResponse(thread, event.turnId);
-        const completedAtMs = Date.now();
-        const completedAt = Math.floor(completedAtMs / 1000);
-        const turn =
-          event.outcome.status === "succeeded" && projection.item
-            ? completedTurn(event.turnId, projection.startedAt, completedAt, projection.item)
-            : failedTurn(
-                event.turnId,
-                projection.startedAt,
-                completedAt,
-                this.#turnFailureMessage(event.outcome),
-              );
-        thread.turns.push(turn);
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
-        thread.running = false;
-        thread.projectedTurns.delete(event.turnId);
-        thread.responseGates.delete(event.turnId);
-        await this.#writer.json({
-          method: "turn/completed",
-          emittedAtMs: completedAtMs,
-          params: { threadId: thread.id, turn },
-        });
-        return;
-      }
-      case "session.faulted":
-        this.#diagnose(`Pi Harness Session faulted: ${event.error.message}`);
+    if (event.type === "session.state.changed") return;
+    if (event.type === "session.faulted") {
+      this.#diagnose(`Pi Harness Session faulted: ${event.error.message}`);
+      return;
     }
+
+    const projection = this.#projectedTurn(thread, event.turnId);
+    await this.#waitForTurnResponse(thread, event.turnId);
+    const result = projection.projector.project(event as ProjectableHostEvent);
+    if (event.type === "turn.completed") {
+      if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
+      const completedAt = Math.floor(Date.now() / 1000);
+      thread.turns.push(result.completedTurn);
+      thread.thread.updatedAt = completedAt;
+      thread.thread.recencyAt = completedAt;
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.projectedTurns.delete(event.turnId);
+      thread.responseGates.delete(event.turnId);
+    }
+    for (const message of result.messages) await this.#writer.json(message);
   }
 
   #projectedTurn(thread: PiThread, turnId: HostTurnId): ProjectedTurn {
@@ -698,12 +600,6 @@ export class AppServerHost {
 
   async #waitForTurnResponse(thread: PiThread, turnId: HostTurnId): Promise<void> {
     await thread.responseGates.get(turnId)?.promise;
-  }
-
-  #turnFailureMessage(outcome: { status: string; error?: HarnessError; reason?: string }): string {
-    if (outcome.error) return outcome.error.message;
-    if (outcome.reason) return outcome.reason;
-    return `Pi Turn ${outcome.status}`;
   }
 
   #diagnose(error: unknown): void {

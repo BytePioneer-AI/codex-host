@@ -108,6 +108,23 @@ async function startPiThread(fixture: ReturnType<typeof createFixture>): Promise
   return thread.id;
 }
 
+async function startPiTurn(
+  fixture: ReturnType<typeof createFixture>,
+  threadId: string,
+  id = 2,
+): Promise<string> {
+  writeRequest(fixture.desktopInput, {
+    id,
+    method: "turn/start",
+    params: { threadId, input: [{ type: "text", text: "synthetic" }] },
+  });
+  const response = await fixture.collector.waitFor((message) => requestId(message, id));
+  const result = response.result as JsonObject;
+  const turn = result.turn as JsonObject;
+  if (typeof turn.id !== "string") throw new Error("Synthetic turn response has no ID");
+  return turn.id;
+}
+
 async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
   fixture.desktopInput.end();
   await expect(fixture.running).resolves.toBe(0);
@@ -262,6 +279,141 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(itemIndex).toBeGreaterThanOrEqual(0);
     expect(turnIndex).toBeGreaterThan(itemIndex);
+    await stopFixture(fixture);
+  });
+
+  it("projects Command, Generic Tool, reliable File Change, and Turn Diff output", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await fixture.collector.waitFor((message) => method(message, "item/started"));
+
+    const commandId = session.startCommandExecution("printf done", "/synthetic");
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/started") &&
+        (message.params as JsonObject).item !== undefined &&
+        ((message.params as JsonObject).item as JsonObject).id === commandId,
+    );
+    session.appendCommandOutput(commandId, "done\n");
+    await fixture.collector.waitFor((message) =>
+      method(message, "item/commandExecution/outputDelta"),
+    );
+    session.completeItem(commandId, { status: "succeeded" });
+
+    const toolId = session.startToolExecution("custom", { value: 1 });
+    session.replaceToolOutput(toolId, {
+      content: [{ type: "text", text: "custom output" }],
+    });
+    session.completeItem(toolId, { status: "succeeded" });
+    const toolCompleted = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id === toolId,
+    );
+    expect(toolCompleted).toMatchObject({
+      params: { item: { type: "dynamicToolCall", tool: "custom", success: true } },
+    });
+
+    session.emitFileChange([
+      {
+        path: "sample.txt",
+        kind: "update",
+        unifiedDiff: "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-old\n+new\n",
+      },
+    ]);
+    await fixture.collector.waitFor((message) => method(message, "item/fileChange/patchUpdated"));
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "turn/diff/updated")),
+    ).resolves.toMatchObject({ params: { diff: expect.stringContaining("+new") } });
+
+    session.appendText("finished");
+    session.succeedTurn();
+    const completed = await fixture.collector.waitFor((message) =>
+      method(message, "turn/completed"),
+    );
+    expect(completed).toMatchObject({
+      params: {
+        turn: {
+          status: "completed",
+          items: [{ type: "agentMessage" }],
+        },
+      },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("writes the interrupt response before cancellation lifecycle notifications", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await fixture.collector.waitFor((message) => method(message, "item/started"));
+    session.startCommandExecution("sleep 10");
+    session.completeCancellationOnRequest();
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/interrupt",
+      params: { threadId, turnId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      result: {},
+    });
+    const completed = await fixture.collector.waitFor((message) =>
+      method(message, "turn/completed"),
+    );
+    expect(completed).toMatchObject({ params: { turn: { status: "interrupted" } } });
+
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
+    const turnIndex = fixture.collector.messages.findIndex((message) =>
+      method(message, "turn/completed"),
+    );
+    expect(turnIndex).toBeGreaterThan(responseIndex);
+    await stopFixture(fixture);
+  });
+
+  it("rejects an interrupt that does not reference the active Pi Turn", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/interrupt",
+      params: { threadId, turnId: "missing-turn" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({
+      error: { code: -32074, message: "Pi turn/interrupt must reference the active Turn" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("forwards a Codex-owned interrupt without invoking Pi", async () => {
+    const fixture = createFixture();
+    fixture.official.stdin.once("data", (chunk: Buffer) => {
+      const request = JSON.parse(chunk.toString("utf8")) as JsonObject;
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 8,
+      method: "turn/interrupt",
+      params: { threadId: "official-thread", turnId: "official-turn" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 8))).resolves.toEqual({
+      id: 8,
+      result: {},
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
     await stopFixture(fixture);
   });
 

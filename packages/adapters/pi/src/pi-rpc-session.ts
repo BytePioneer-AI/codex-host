@@ -1,6 +1,8 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { jsonValueSchema, type JsonValue } from "@codexhost/shared-contracts";
+
 export interface PiSessionState {
   sessionId: string;
   sessionFile: string | null;
@@ -8,8 +10,21 @@ export interface PiSessionState {
   modelId: string | null;
 }
 
-export interface PiTextTurnResult {
+export type PiTurnEvent =
+  | { type: "text.delta"; delta: string }
+  | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
+  | { type: "tool.updated"; callId: string; output: JsonValue }
+  | {
+      type: "tool.completed";
+      callId: string;
+      toolName: string;
+      result: JsonValue;
+      isError: boolean;
+    };
+
+export interface PiTurnResult {
   text: string;
+  cancelled: boolean;
 }
 
 export type PiRpcFaultKind = "notInstalled" | "unavailable" | "protocolError" | "processExited";
@@ -54,11 +69,16 @@ interface ActiveTurn {
   text: string;
   streamedMessageText: string;
   lastFinalizedMessageText: string | null;
-  onDelta(delta: string): void;
-  resolve(value: PiTextTurnResult): void;
+  onEvent(event: PiTurnEvent): void;
+  resolve(value: PiTurnResult): void;
   reject(error: Error): void;
   timeout: NodeJS.Timeout;
   failure: Error | null;
+  sawTool: boolean;
+  tools: Map<string, string>;
+  settled: boolean;
+  cancellation: "none" | "requesting" | "accepted";
+  abortPromise: Promise<void> | null;
 }
 
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -238,25 +258,31 @@ export class PiRpcSession {
     return this;
   }
 
-  async runTextTurn(text: string, onDelta: (delta: string) => void): Promise<PiTextTurnResult> {
-    if (!this.#child || !this.#state || this.#closed || this.#failed)
+  async runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
+    }
     if (this.#activeTurn) throw new Error("Pi RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
 
-    const settled = new Promise<PiTextTurnResult>((resolve, reject) => {
+    const settled = new Promise<PiTurnResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.#fail(new PiRpcFaultError("protocolError", "Pi text Turn timed out"));
+        this.#fail(new PiRpcFaultError("protocolError", "Pi Turn timed out"));
       }, this.#options.turnTimeoutMs);
       this.#activeTurn = {
         text: "",
         streamedMessageText: "",
         lastFinalizedMessageText: null,
-        onDelta,
+        onEvent,
         resolve,
         reject,
         timeout,
         failure: null,
+        sawTool: false,
+        tools: new Map(),
+        settled: false,
+        cancellation: "none",
+        abortPromise: null,
       };
     });
     try {
@@ -265,6 +291,30 @@ export class PiRpcSession {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
     return settled;
+  }
+
+  abort(): Promise<void> {
+    const active = this.#activeTurn;
+    if (!active || this.#closed || this.#failed) {
+      return Promise.reject(new Error("Pi RPC Session has no cancellable Turn"));
+    }
+    if (active.abortPromise) return active.abortPromise;
+    active.cancellation = "requesting";
+    const aborting = this.#send("abort", {})
+      .then(() => {
+        if (this.#activeTurn !== active) return;
+        active.cancellation = "accepted";
+        this.#finishSettledTurn(active);
+      })
+      .catch((error: unknown) => {
+        if (this.#activeTurn === active) {
+          active.cancellation = "none";
+          this.#finishSettledTurn(active);
+        }
+        throw error;
+      });
+    active.abortPromise = aborting;
+    return aborting;
   }
 
   async close(): Promise<void> {
@@ -311,23 +361,7 @@ export class PiRpcSession {
 
   #handle(value: Record<string, unknown>): void {
     if (value.type === "response") {
-      const id = value.id;
-      if (typeof id !== "string") {
-        return this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response has no id"));
-      }
-      const pending = this.#pending.get(id);
-      if (!pending) {
-        return this.#fail(
-          new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"),
-        );
-      }
-      clearTimeout(pending.timeout);
-      this.#pending.delete(id);
-      if (value.success === true) pending.resolve(value);
-      else
-        pending.reject(
-          new Error(typeof value.error === "string" ? value.error : "Pi RPC command failed"),
-        );
+      this.#handleResponse(value);
       return;
     }
     const active = this.#activeTurn;
@@ -341,7 +375,7 @@ export class PiRpcSession {
       if (event.type === "text_delta" && typeof event.delta === "string") {
         active.text += event.delta;
         active.streamedMessageText += event.delta;
-        active.onDelta(event.delta);
+        active.onEvent({ type: "text.delta", delta: event.delta });
       } else if (event.type === "error") {
         active.failure = new Error("Pi assistant message failed");
       }
@@ -355,13 +389,122 @@ export class PiRpcSession {
       this.#finalizeAssistantMessage(active, value.message);
       return;
     }
+    if (value.type === "tool_execution_start") {
+      this.#startTool(active, value);
+      return;
+    }
+    if (value.type === "tool_execution_update") {
+      this.#updateTool(active, value);
+      return;
+    }
+    if (value.type === "tool_execution_end") {
+      this.#completeTool(active, value);
+      return;
+    }
     if (value.type === "agent_settled") {
-      clearTimeout(active.timeout);
-      this.#activeTurn = null;
-      if (active.failure) active.reject(active.failure);
-      else if (active.text.trim().length === 0) {
-        active.reject(new Error("Pi RPC settled without text output"));
-      } else active.resolve({ text: active.text });
+      active.settled = true;
+      this.#finishSettledTurn(active);
+    }
+  }
+
+  #handleResponse(value: Record<string, unknown>): void {
+    const id = value.id;
+    if (typeof id !== "string") {
+      this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response has no id"));
+      return;
+    }
+    const pending = this.#pending.get(id);
+    if (!pending) {
+      this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
+      return;
+    }
+    clearTimeout(pending.timeout);
+    this.#pending.delete(id);
+    if (value.success === true) pending.resolve(value);
+    else {
+      pending.reject(
+        new Error(typeof value.error === "string" ? value.error : "Pi RPC command failed"),
+      );
+    }
+  }
+
+  #startTool(active: ActiveTurn, value: Record<string, unknown>): void {
+    const callId = value.toolCallId;
+    const toolName = value.toolName;
+    const argumentsResult = jsonValueSchema.safeParse(value.args);
+    if (
+      typeof callId !== "string" ||
+      callId.length === 0 ||
+      typeof toolName !== "string" ||
+      toolName.length === 0 ||
+      !argumentsResult.success ||
+      active.tools.has(callId)
+    ) {
+      throw new PiRpcFaultError("protocolError", "Pi RPC returned an invalid Tool start");
+    }
+    active.sawTool = true;
+    active.tools.set(callId, toolName);
+    active.onEvent({
+      type: "tool.started",
+      callId,
+      toolName,
+      arguments: argumentsResult.data,
+    });
+  }
+
+  #updateTool(active: ActiveTurn, value: Record<string, unknown>): void {
+    const callId = value.toolCallId;
+    const outputResult = jsonValueSchema.safeParse(value.partialResult);
+    if (typeof callId !== "string" || !active.tools.has(callId) || !outputResult.success) {
+      throw new PiRpcFaultError("protocolError", "Pi RPC returned an invalid Tool update");
+    }
+    active.onEvent({ type: "tool.updated", callId, output: outputResult.data });
+  }
+
+  #completeTool(active: ActiveTurn, value: Record<string, unknown>): void {
+    const callId = value.toolCallId;
+    const toolName = value.toolName;
+    const result = jsonValueSchema.safeParse(value.result);
+    const expectedName = typeof callId === "string" ? active.tools.get(callId) : undefined;
+    if (
+      typeof callId !== "string" ||
+      typeof toolName !== "string" ||
+      expectedName !== toolName ||
+      typeof value.isError !== "boolean" ||
+      !result.success
+    ) {
+      throw new PiRpcFaultError("protocolError", "Pi RPC returned an invalid Tool end");
+    }
+    active.tools.delete(callId);
+    active.onEvent({
+      type: "tool.completed",
+      callId,
+      toolName,
+      result: result.data,
+      isError: value.isError,
+    });
+  }
+
+  #finishSettledTurn(active: ActiveTurn): void {
+    if (this.#activeTurn !== active || !active.settled || active.cancellation === "requesting") {
+      return;
+    }
+    if (active.tools.size > 0) {
+      this.#fail(
+        new PiRpcFaultError("protocolError", "Pi RPC settled with active Tool executions"),
+      );
+      return;
+    }
+    clearTimeout(active.timeout);
+    this.#activeTurn = null;
+    if (active.cancellation === "accepted") {
+      active.resolve({ text: active.text, cancelled: true });
+    } else if (active.failure) {
+      active.reject(active.failure);
+    } else if (active.text.trim().length === 0 && !active.sawTool) {
+      active.reject(new Error("Pi RPC settled without displayable output"));
+    } else {
+      active.resolve({ text: active.text, cancelled: false });
     }
   }
 
@@ -380,7 +523,7 @@ export class PiRpcSession {
       active.text = active.text.slice(0, -active.streamedMessageText.length) + finalText;
     } else if (missingText.length > 0) {
       active.text += missingText;
-      active.onDelta(missingText);
+      active.onEvent({ type: "text.delta", delta: missingText });
     }
     active.streamedMessageText = "";
     active.lastFinalizedMessageText = finalText;
@@ -388,8 +531,9 @@ export class PiRpcSession {
 
   #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const child = this.#child;
-    if (!child?.stdin.writable || this.#closed || this.#failed)
+    if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Pi RPC stdin is unavailable"));
+    }
     const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

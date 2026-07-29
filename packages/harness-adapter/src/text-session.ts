@@ -2,6 +2,7 @@ import type {
   HarnessId,
   HostItemId,
   HostTurnId,
+  JsonValue,
   NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
@@ -47,10 +48,19 @@ export interface TurnStartCommand {
   input: HostTextInput[];
 }
 
-export type HostCommand = TurnStartCommand;
+export interface TurnCancelCommand {
+  type: "turn.cancel";
+  turnId: HostTurnId;
+}
+
+export type HostCommand = TurnStartCommand | TurnCancelCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
+}
+
+export interface TurnCancelAccepted {
+  cancellationRequested: true;
 }
 
 export interface HostAgentMessageItem {
@@ -59,9 +69,54 @@ export interface HostAgentMessageItem {
   text: string;
 }
 
-export type HostItem = HostAgentMessageItem;
+export interface HostCommandExecutionItem {
+  type: "commandExecution";
+  itemId: HostItemId;
+  command: string;
+  cwd?: string;
+  output?: string;
+  outputTruncated?: boolean;
+  exitCode?: number | null;
+  durationMs?: number;
+}
 
-export type HostItemUpdate = { type: "text.append"; text: string };
+export interface HostToolOutput {
+  content: Array<
+    { type: "text"; text: string } | { type: "image"; mimeType: string; base64Data: string }
+  >;
+  truncated?: boolean;
+}
+
+export interface HostToolExecutionItem {
+  type: "toolExecution";
+  itemId: HostItemId;
+  toolName: string;
+  namespace?: string;
+  arguments: JsonValue;
+  output?: HostToolOutput;
+  durationMs?: number;
+}
+
+export interface HostFileChange {
+  path: string;
+  kind: "add" | "update" | "delete";
+  unifiedDiff: string;
+}
+
+export interface HostFileChangeItem {
+  type: "fileChange";
+  itemId: HostItemId;
+  changes: HostFileChange[];
+}
+
+export type HostItem =
+  HostAgentMessageItem | HostCommandExecutionItem | HostToolExecutionItem | HostFileChangeItem;
+
+export type HostItemUpdate =
+  | { type: "text.append"; text: string }
+  | { type: "output.append"; text: string }
+  | { type: "output.replace"; output: HostToolOutput }
+  | { type: "fileChanges.replace"; changes: HostFileChange[] };
 
 export type HostItemOutcome =
   | { status: "succeeded" }
@@ -137,7 +192,8 @@ export interface HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
 
-  execute(command: HostCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   close(): Promise<void>;
 }
 

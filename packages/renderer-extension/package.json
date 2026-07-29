@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=browser --format=esm --target=es2024 --outfile=dist/index.js && esbuild src/probe-entry.ts --bundle --platform=browser --format=iife --target=es2024 --outfile=dist/renderer-binding-probe.js"
+    "build": "esbuild src/index.ts --bundle --platform=browser --format=esm --target=es2024 --loader:.png=dataurl --outfile=dist/index.js && esbuild src/probe-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --outfile=dist/renderer-binding-probe.js"
   },
   "dependencies": {
     "@codexhost/shared-contracts": "0.0.0"

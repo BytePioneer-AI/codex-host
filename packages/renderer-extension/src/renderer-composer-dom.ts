@@ -1,9 +1,15 @@
 import type { HarnessModelCatalog, HarnessModelRef } from "@codexhost/shared-contracts";
 
 import type { ComposerAgentPhase, RendererAgent } from "./agent-selection-state.js";
+import {
+  CONTROL_ATTRIBUTE,
+  mountRendererAgentPicker,
+  renderRendererAgentPicker,
+  type RendererAgentPickerControl,
+} from "./renderer-agent-picker.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
-export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
+export { CONTROL_ATTRIBUTE };
 export const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
 export const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
 
@@ -14,13 +20,20 @@ export interface PiModelControlView {
   error?: string;
 }
 
+interface NativeModelControlState {
+  element: HTMLElement;
+  hidden: HTMLElement["hidden"];
+  ariaHidden: string | null;
+}
+
 export interface ComposerAgentControl {
+  composer: Element;
   root: HTMLElement;
+  picker: RendererAgentPickerControl;
   modelSelect: HTMLSelectElement;
+  nativeModelControl: NativeModelControlState | null;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
-  agents: readonly RendererAgent[];
-  buttons: Partial<Record<RendererAgent, HTMLButtonElement>>;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -96,22 +109,88 @@ export function composerForElement(element: Element): Element | null {
   return null;
 }
 
-function createAgentButton(agent: RendererAgent, label: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.dataset.agent = agent;
-  button.textContent = label;
-  button.style.height = "24px";
-  button.style.minWidth = "44px";
-  button.style.padding = "0 8px";
-  button.style.border = "0";
-  button.style.borderRadius = "4px";
-  button.style.background = "transparent";
-  button.style.color = "inherit";
-  button.style.font = "500 12px/1 system-ui, sans-serif";
-  button.style.letterSpacing = "0";
-  button.style.cursor = "pointer";
-  return button;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isNativeModelControlCandidate(element: Element): boolean {
+  if (
+    element.hasAttribute(CONTROL_ATTRIBUTE) ||
+    element.hasAttribute("data-codexhost-model-control") ||
+    !element.matches('button[aria-haspopup="menu"]')
+  ) {
+    return false;
+  }
+  const fiberName = Object.getOwnPropertyNames(element).find((name) =>
+    name.startsWith("__reactFiber$"),
+  );
+  let fiber = fiberName
+    ? (Object.getOwnPropertyDescriptor(element, fiberName)?.value as {
+        return?: unknown;
+        memoizedProps?: unknown;
+      } | null)
+    : null;
+  for (let depth = 0; fiber && depth < 60; depth += 1) {
+    const props = fiber.memoizedProps;
+    if (
+      isRecord(props) &&
+      typeof props.onSelectModel === "function" &&
+      typeof props.onSelectReasoningEffort === "function" &&
+      "reasoningEffort" in props &&
+      isRecord(props.fallbackPowerSelection)
+    ) {
+      return true;
+    }
+    const parent = fiber.return;
+    fiber =
+      (typeof parent === "object" || typeof parent === "function") && parent !== null
+        ? (parent as typeof fiber)
+        : null;
+  }
+  return false;
+}
+
+function nativeModelControlForComposer(composer: Element): HTMLElement | null {
+  const candidates = [
+    ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
+  ].filter((element) => isNativeModelControlCandidate(element));
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+function captureNativeModelControl(element: HTMLElement | null): NativeModelControlState | null {
+  return element
+    ? {
+        element,
+        hidden: element.hidden,
+        ariaHidden: element.getAttribute("aria-hidden"),
+      }
+    : null;
+}
+
+function restoreNativeModelControl(state: NativeModelControlState | null): void {
+  if (!state) return;
+  state.element.hidden = state.hidden;
+  if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
+  else state.element.setAttribute("aria-hidden", state.ariaHidden);
+}
+
+function refreshNativeModelControl(control: ComposerAgentControl): void {
+  const candidate = nativeModelControlForComposer(control.composer);
+  if (!candidate || candidate === control.nativeModelControl?.element) return;
+  restoreNativeModelControl(control.nativeModelControl);
+  control.nativeModelControl = captureNativeModelControl(candidate);
+}
+
+function setNativeModelControlHidden(state: NativeModelControlState | null, hidden: boolean): void {
+  if (!state) return;
+  if (!hidden) {
+    restoreNativeModelControl(state);
+    return;
+  }
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && state.element.contains(active)) active.blur();
+  state.element.hidden = true;
+  state.element.setAttribute("aria-hidden", "true");
 }
 
 export function mountComposerAgentControl(
@@ -122,35 +201,11 @@ export function mountComposerAgentControl(
   onSelect: (agent: RendererAgent) => void,
   onSelectModel: (modelId: string) => void,
 ): ComposerAgentControl {
-  const root = document.createElement("div");
-  root.setAttribute(CONTROL_ATTRIBUTE, composerId);
-  root.setAttribute("role", "group");
-  root.setAttribute("aria-label", "Agent");
-  root.style.display = "inline-flex";
-  root.style.alignItems = "center";
-  root.style.gap = "2px";
-  root.style.height = "28px";
-  root.style.padding = "2px";
-  root.style.marginInline = "4px";
-  root.style.border = "1px solid rgba(127, 127, 127, 0.28)";
-  root.style.borderRadius = "6px";
-  root.style.background = "rgba(127, 127, 127, 0.08)";
-  root.style.color = "inherit";
-
-  const labels: Record<RendererAgent, string> = {
-    codex: "Codex",
-    pi: "Pi",
-    "claude-code": "Claude Code",
-  };
-  const buttons: Partial<Record<RendererAgent, HTMLButtonElement>> = {};
-  for (const agent of enabledAgents) {
-    const button = createAgentButton(agent, labels[agent]);
-    button.addEventListener("click", () => onSelect(agent));
-    buttons[agent] = button;
-    root.append(button);
-  }
+  const nativeModelControl = captureNativeModelControl(nativeModelControlForComposer(composer));
+  const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect);
   const modelSelect = document.createElement("select");
   modelSelect.setAttribute("aria-label", "Model");
+  modelSelect.setAttribute("data-codexhost-model-control", composerId);
   modelSelect.style.display = "none";
   modelSelect.style.height = "28px";
   modelSelect.style.width = "clamp(132px, 18vw, 220px)";
@@ -166,18 +221,19 @@ export function mountComposerAgentControl(
 
   const toolbar = sendButton.parentElement;
   if (toolbar) {
-    toolbar.insertBefore(root, sendButton);
     toolbar.insertBefore(modelSelect, sendButton);
+    toolbar.insertBefore(picker.root, sendButton);
   } else {
-    composer.append(root, modelSelect);
+    composer.append(modelSelect, picker.root);
   }
   return {
-    root,
+    composer,
+    root: picker.root,
+    picker,
     modelSelect,
+    nativeModelControl,
     sendButton,
     sendDisabledBeforeSwitch: null,
-    agents: [...enabledAgents],
-    buttons,
   };
 }
 
@@ -202,6 +258,9 @@ export function renderComposerAgentControl(
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
     control.sendDisabledBeforeSwitch = null;
   }
+  const pickerView = renderRendererAgentPicker(control.picker, state, adapterState, switching);
+  refreshNativeModelControl(control);
+  setNativeModelControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
   control.modelSelect.style.display = state.agent === "pi" ? "inline-block" : "none";
   if (state.agent === "pi") {
     const catalogSignature =
@@ -240,24 +299,13 @@ export function renderComposerAgentControl(
     control.modelSelect.style.cursor = control.modelSelect.disabled ? "not-allowed" : "pointer";
     control.modelSelect.style.opacity = control.modelSelect.disabled ? "0.65" : "1";
   }
-  for (const candidate of control.agents) {
-    const selected = candidate === state.agent;
-    const button = control.buttons[candidate];
-    if (!button) continue;
-    button.setAttribute("aria-pressed", String(selected));
-    button.disabled =
-      switching || state.phase === "locked" || (candidate !== "codex" && adapterState !== "ready");
-    button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
-    button.style.boxShadow = selected ? "inset 0 0 0 1px rgba(127, 127, 127, 0.3)" : "none";
-    button.style.cursor = button.disabled ? "not-allowed" : "pointer";
-    button.style.opacity = button.disabled && !selected ? "0.55" : "1";
-  }
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
   }
-  control.root.remove();
+  restoreNativeModelControl(control.nativeModelControl);
+  control.picker.dispose();
   control.modelSelect.remove();
 }

@@ -1,6 +1,11 @@
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import { shouldTransferComposerState } from "../src/renderer-binding-probe.js";
+import {
+  isOwnershipSubmissionBlocked,
+  restoredThreadOwnership,
+  shouldTransferComposerState,
+} from "../src/renderer-binding-probe.js";
 import {
   editorForElement,
   isComposerInputIntent,
@@ -57,6 +62,34 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerSubmissionKey(event({ shiftKey: true }))).toBe(false);
     expect(isComposerSubmissionKey(event({ isComposing: true }))).toBe(false);
     expect(isComposerSubmissionKey(event({ key: "Process" }))).toBe(false);
+  });
+
+  it("restores validated Host ownership and blocks unresolved submission", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.restored" });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: "codexhost/pi-native",
+        effectiveModel: model,
+        locked: true,
+      }),
+    ).toEqual({ agent: "pi", piModel: model });
+    expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
+      agent: "codex",
+    });
+    expect(() =>
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: "official/model",
+        locked: true,
+      }),
+    ).toThrow("incompatible transport Model");
+    expect(isOwnershipSubmissionBlocked("loading")).toBe(true);
+    expect(isOwnershipSubmissionBlocked("error")).toBe(true);
+    expect(isOwnershipSubmissionBlocked("ready")).toBe(false);
+    expect(isOwnershipSubmissionBlocked("not-required")).toBe(false);
   });
 
   it("transfers only the same Model target or a first-create transition", () => {

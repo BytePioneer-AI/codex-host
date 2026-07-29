@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import {
   HarnessOutputChannel,
   validateHostQuestionResponse,
-  type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
   type HarnessInspection,
@@ -22,6 +21,8 @@ import {
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ModelSelectCompleted,
+  type OpenSessionInput,
+  type HostThreadSnapshot,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -137,6 +138,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: { selectModel: false },
+    history: { fork: false },
   };
   readonly initialState: HarnessSessionState = {};
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -167,6 +169,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#onClosed = onClosed;
     this.#sessionId = this.#randomUUID();
     this.outputs = this.#channel.outputs;
+  }
+
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    return {
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: "Claude Code history Snapshot is not implemented",
+        retryable: false,
+      },
+    };
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -551,7 +564,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     };
   }
 
-  async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
+  async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closePromise) {
       return {
         ok: false,

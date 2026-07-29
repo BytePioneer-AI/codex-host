@@ -470,7 +470,10 @@ describe("minimal Harness text Session", () => {
     await expect(adapter.inspect({ cwd: "/synthetic", refresh: true })).resolves.toEqual({
       status: "ready",
       catalog: adapter.catalog,
-      capabilities: { configuration: { selectModel: true } },
+      capabilities: {
+        configuration: { selectModel: true },
+        history: { fork: true },
+      },
     });
     expect(adapter.inspectionCalls).toBe(1);
     expect(adapter.sessions).toHaveLength(0);
@@ -537,6 +540,91 @@ describe("minimal Harness text Session", () => {
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     expect(adapter.sessions).toHaveLength(0);
+    await adapter.close();
+  });
+
+  it("reads deterministic history and Forks an isolated derived Session", async () => {
+    const adapter = new FakeHarnessAdapter();
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+
+    await source.execute(textTurn("source-1"));
+    source.appendText("first");
+    source.succeedTurn();
+    await source.execute(textTurn("source-2"));
+    source.appendText("second");
+    source.succeedTurn();
+
+    const firstRead = await source.readSnapshot();
+    const repeatedRead = await source.readSnapshot();
+    expect(repeatedRead).toEqual(firstRead);
+    if (!firstRead.ok) throw new Error(firstRead.error.message);
+    const checkpoint = firstRead.value.turns[0]?.checkpoint;
+    const sourceRef = source.state.nativeRef;
+    if (!checkpoint || !sourceRef) throw new Error("Fake source has no Fork identity");
+
+    const forked = await adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint,
+      cwd: "/synthetic",
+    });
+    if (!forked.ok) throw new Error(forked.error.message);
+    const derived = forked.value as FakeHarnessSession;
+    const derivedRead = await derived.readSnapshot();
+    if (!derivedRead.ok) throw new Error(derivedRead.error.message);
+
+    expect(derived.state.nativeRef?.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
+    expect(derivedRead.value.turns).toHaveLength(1);
+    expect(derivedRead.value.turns[0]?.nativeTurnRef).not.toEqual(
+      firstRead.value.turns[0]?.nativeTurnRef,
+    );
+    expect(derivedRead.value.turns[0]?.items[0]?.item.itemId).not.toBe(
+      firstRead.value.turns[0]?.items[0]?.item.itemId,
+    );
+
+    await derived.execute(textTurn("derived-2"));
+    derived.appendText("derived");
+    derived.succeedTurn();
+    const sourceAfter = await source.readSnapshot();
+    const derivedAfter = await derived.readSnapshot();
+    expect(sourceAfter.ok && sourceAfter.value.turns).toHaveLength(2);
+    expect(derivedAfter.ok && derivedAfter.value.turns).toHaveLength(2);
+
+    const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: "/synthetic" });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    await expect(resumed.value.readSnapshot()).resolves.toEqual(sourceAfter);
+    await adapter.close();
+  });
+
+  it("reports unsupported Fork without emitting Checkpoints", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("fake"), undefined, false);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+    await source.execute(textTurn("no-fork"));
+    source.succeedTurn();
+    const snapshot = await source.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(source.capabilities.history.fork).toBe(false);
+    expect(snapshot.value.turns[0]?.checkpoint).toBeUndefined();
+
+    const sourceRef = source.state.nativeRef;
+    if (!sourceRef) throw new Error("Fake source has no Native Ref");
+    await expect(
+      adapter.open({
+        kind: "fork",
+        sourceRef,
+        checkpoint: {
+          harnessId: sourceRef.harnessId,
+          nativeSessionId: sourceRef.nativeSessionId,
+          checkpointId: "missing",
+          formatVersion: 1,
+        },
+        cwd: "/synthetic",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     await adapter.close();
   });
 

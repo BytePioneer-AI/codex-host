@@ -2,14 +2,19 @@ import {
   harnessInspectionSchema,
   harnessModelSelectionStateSchema,
   piHarnessInspectParamsSchema,
+  threadInspectionParamsSchema,
+  threadInspectionSchema,
   threadModelSelectParamsSchema,
   type HarnessInspection,
   type HarnessModelSelectionState,
   type PiHarnessInspectParams,
+  type ThreadInspection,
+  type ThreadInspectionParams,
   type ThreadModelSelectParams,
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 
 interface RequestManagerCandidate {
@@ -18,6 +23,7 @@ interface RequestManagerCandidate {
 
 export interface RendererModelClient {
   inspectPi(input: PiHarnessInspectParams): Promise<HarnessInspection>;
+  inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
 }
 
@@ -36,6 +42,11 @@ export function createRendererModelClient(
       const params = piHarnessInspectParamsSchema.parse(input);
       const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
       return harnessInspectionSchema.parse(result);
+    },
+    async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
+      const params = threadInspectionParamsSchema.parse(input);
+      const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
+      return threadInspectionSchema.parse(result);
     },
     async selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState> {
       const params = threadModelSelectParamsSchema.parse(input);

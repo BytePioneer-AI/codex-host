@@ -135,7 +135,10 @@ describe("Claude Code HarnessAdapter", () => {
       error: { code: "unsupported", retryable: false },
     });
     const session = await openSession(adapter);
-    expect(session.capabilities).toEqual({ configuration: { selectModel: false } });
+    expect(session.capabilities).toEqual({
+      configuration: { selectModel: false },
+      history: { fork: false },
+    });
     await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
       ok: false,
       error: { code: "unsupported", retryable: false },

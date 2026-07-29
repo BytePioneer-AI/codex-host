@@ -9,6 +9,7 @@ import type {
   HarnessSession,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
+import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessInspectionSchema,
   harnessModelSelectionStateSchema,
@@ -16,12 +17,26 @@ import {
   hostTurnIdSchema,
   jsonValueSchema,
   piHarnessInspectParamsSchema,
+  threadInspectionParamsSchema,
+  threadInspectionSchema,
   threadModelSelectParamsSchema,
   type HarnessModelRef,
   type HostInteractionId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
-import { SessionStateObserver } from "./session-state-observer.js";
+import { executeExternalThreadFork } from "./external-thread-fork.js";
+import {
+  createExternalThreadRecordInput,
+  createProductionExternalThreadStore,
+  ExternalThreadRepository,
+  externalThreadValue,
+  type ExternalThreadStore,
+} from "./external-thread-repository.js";
+import {
+  ExternalThreadRuntime,
+  type ExternalThread,
+  type ExternalThreadResolution,
+} from "./external-thread-runtime.js";
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -32,13 +47,18 @@ import {
   CodexTurnProjector,
   decodeCreateRoute,
   decodePiTransportModel,
+  decodeThreadForkRequest,
+  mapExternalThreadHarnessError,
   parseJsonFrame,
   readLfFrames,
   writeFrame,
   writeJsonFrame,
   jsonRpcRequestSchema,
+  threadForkResult,
   transportModelIdForHarness,
   type CodexQuestionProjection,
+  type DecodedThreadForkRequest,
+  type ExternalThreadRpcError,
   type CodexQuestionRequestProjection,
   type ExternalHarnessId,
   type JsonObject,
@@ -58,6 +78,7 @@ export interface AppServerHostOptions {
   piCommand?: string;
   piAdapter?: HarnessAdapter;
   externalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+  mappingStore?: ExternalThreadStore;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
@@ -83,24 +104,6 @@ interface PendingDesktopQuestion {
 
 type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
 
-interface ExternalThread {
-  id: string;
-  cwd: string;
-  harnessId: ExternalHarnessId;
-  session: HarnessSession;
-  outputTask: Promise<void>;
-  requestedModel?: HarnessModelRef;
-  stateObserver: SessionStateObserver;
-  thread: JsonObject;
-  transportModelId: string;
-  turns: JsonObject[];
-  running: boolean;
-  activeTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, ProjectedTurn>;
-  responseGates: Map<HostTurnId, TurnProjectionGate>;
-  ignoredInteractionIds: Set<HostInteractionId>;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -113,6 +116,7 @@ function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const internal = new Set([
     "CODEX_CLI_PATH",
     "CODEXHOST_HOST_NODE_PATH",
+    "CODEXHOST_DATA_DIR",
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
     "CODEXHOST_PI_COMMAND",
@@ -237,7 +241,8 @@ export class AppServerHost {
     AppServerHostOptions;
   #official: ChildProcessWithoutNullStreams | null = null;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
-  #externalThreads = new Map<string, ExternalThread>();
+  #externalRuntime: ExternalThreadRuntime;
+  #repository: ExternalThreadRepository;
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #routeObservationTracker = new RequestRouteObservationTracker();
@@ -251,6 +256,10 @@ export class AppServerHost {
       ...options,
     };
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
+    this.#repository = new ExternalThreadRepository(
+      options.mappingStore ??
+        createProductionExternalThreadStore(this.#options.environment ?? process.env),
+    );
     this.#externalAdapters = options.externalAdapters
       ? new Map(options.externalAdapters)
       : new Map([
@@ -268,9 +277,21 @@ export class AppServerHost {
         throw new Error(`External Adapter '${harnessId}' has mismatched Harness ID`);
       }
     }
+    this.#externalRuntime = new ExternalThreadRuntime({
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
+      diagnose: (error) => this.#diagnose(error),
+    });
   }
 
   async run(): Promise<number> {
+    try {
+      await this.#repository.initialize();
+    } catch (error) {
+      this.#diagnose(`Mapping Store initialization failed: ${errorMessage(error)}`);
+      return 1;
+    }
     const spawnOfficial = this.#options.spawnOfficial ?? spawn;
     const official = spawnOfficial(this.#options.stockCodexPath, this.#options.arguments, {
       env: officialEnvironment(this.#options.environment ?? process.env),
@@ -297,7 +318,7 @@ export class AppServerHost {
       await exited.catch(() => undefined);
       return 1;
     } finally {
-      const threads = [...this.#externalThreads.values()];
+      const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
@@ -308,8 +329,9 @@ export class AppServerHost {
           () => undefined,
         );
       }
-      this.#externalThreads.clear();
+      this.#externalRuntime.clear();
       this.#routeObservationTracker.clear();
+      await this.#repository.close().catch((error) => this.#diagnose(error));
     }
   }
 
@@ -327,6 +349,10 @@ export class AppServerHost {
       const request = requestResult.data;
       if (request.method === "codexhost/harness/inspect") {
         await this.#inspectHarness(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/inspect") {
+        await this.#inspectThread(request);
         continue;
       }
       if (request.method === "codexhost/thread/model/select") {
@@ -354,58 +380,98 @@ export class AppServerHost {
         await this.#startExternalThread(request, createRoute.selectedHarness);
         continue;
       }
+      if (request.method === "thread/fork") {
+        const params = isRecord(request.params) ? request.params : {};
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (resolution.kind === "error") {
+          await this.#writer.json(
+            rpcError(request, resolution.error.code, resolution.error.message),
+          );
+          continue;
+        }
+        if (resolution.kind === "external") {
+          let fork: DecodedThreadForkRequest;
+          try {
+            const decoded = decodeThreadForkRequest(request);
+            if (!decoded) throw new Error("Expected thread/fork request");
+            fork = decoded;
+          } catch (error) {
+            await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+            continue;
+          }
+          await this.#forkExternalThread(request, resolution.thread, fork);
+          continue;
+        }
+      }
       if (request.method === "turn/start") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const thread =
-          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        const resolution =
+          typeof threadId === "string"
+            ? await this.#resolveExternalThread(threadId)
+            : ({ kind: "official" } as const);
         if (typeof threadId === "string") {
           this.#options.onRequestRoute?.(
-            this.#routeObservationTracker.observeTurn(threadId, thread?.harnessId ?? "codex"),
+            this.#routeObservationTracker.observeTurn(
+              threadId,
+              resolution.kind === "external" ? resolution.thread.harnessId : "codex",
+            ),
           );
         }
-        if (thread) {
-          await this.#startExternalTurn(request, thread);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          await this.#startExternalTurn(request, resolution.thread);
           continue;
         }
       }
       if (request.method === "turn/interrupt") {
         const params = requestObject(request);
-        const threadId = params.threadId;
-        const thread =
-          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
-        if (thread) {
-          await this.#interruptExternalTurn(request, thread, params.turnId);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          await this.#interruptExternalTurn(request, resolution.thread, params.turnId);
           continue;
         }
       }
-      if (request.method === "thread/read") {
+      if (request.method === "thread/read" || request.method === "thread/resume") {
         const params = requestObject(request);
-        const threadId = params.threadId;
-        const thread =
-          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
-        if (thread) {
-          await this.#readExternalThread(request, thread, params.includeTurns === true);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          if (request.method === "thread/read") {
+            await this.#readExternalThread(
+              request,
+              resolution.thread,
+              params.includeTurns === true,
+            );
+          } else {
+            await this.#resumeExternalThread(request, resolution.thread, params);
+          }
           continue;
         }
       }
-      if (request.method === "thread/name/set") {
+      if (request.method === "thread/name/set" || request.method === "thread/delete") {
         const params = requestObject(request);
-        const threadId = params.threadId;
-        const thread =
-          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
-        if (thread) {
-          await this.#setExternalThreadName(request, thread, params.name);
-          continue;
-        }
-      }
-      if (request.method === "thread/delete") {
-        const params = requestObject(request);
-        const threadId = params.threadId;
-        const thread =
-          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
-        if (thread) {
-          await this.#deleteExternalThread(request, thread);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          if (request.method === "thread/name/set") {
+            await this.#setExternalThreadName(request, resolution.thread, params.name);
+          } else {
+            await this.#deleteExternalThread(request, resolution.thread);
+          }
           continue;
         }
       }
@@ -459,13 +525,45 @@ export class AppServerHost {
     );
   }
 
+  async #inspectThread(request: JsonRpcRequest): Promise<void> {
+    const params = threadInspectionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread inspection params"));
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (resolution.kind === "error") {
+      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+      return;
+    }
+    const inspection = threadInspectionSchema.parse(
+      resolution.kind === "official"
+        ? { owner: "codex", locked: true }
+        : {
+            owner: "external",
+            harnessId: resolution.thread.harnessId,
+            transportModelId: resolution.thread.transportModelId,
+            ...(resolution.thread.stateObserver.state.effectiveModel
+              ? { effectiveModel: resolution.thread.stateObserver.state.effectiveModel }
+              : {}),
+            locked: true,
+          },
+    );
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
   async #selectPiThreadModel(request: JsonRpcRequest): Promise<void> {
     const params = threadModelSelectParamsSchema.safeParse(request.params);
     if (!params.success) {
       await this.#writer.json(rpcError(request, -32602, "Invalid Pi Model selection params"));
       return;
     }
-    const thread = this.#externalThreads.get(params.data.threadId);
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (resolution.kind === "error") {
+      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+      return;
+    }
+    const thread = resolution.kind === "external" ? resolution.thread : undefined;
     if (!thread || thread.harnessId !== "pi") {
       await this.#writer.json(
         rpcError(request, -32078, "Model selection requires a current-process Pi Thread"),
@@ -521,6 +619,23 @@ export class AppServerHost {
       );
       return;
     }
+
+    const recordInput = createExternalThreadRecordInput({
+      harnessId: adapter.harnessId,
+      cwd,
+      transportModelId,
+      ephemeral: params.ephemeral === true,
+      historyMode: params.historyMode === "paginated" ? "paginated" : "legacy",
+    });
+    let record: StoredThreadRecordV1;
+    try {
+      record = await this.#repository.createProvisional(recordInput);
+    } catch {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(rpcError(request, -32081, "External Thread could not be persisted"));
+      return;
+    }
+
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,
@@ -528,60 +643,33 @@ export class AppServerHost {
     });
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
-      await this.#writer.json(rpcError(request, -32071, sessionResult.error.message));
+      await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
+      await this.#writer.json(rpcError(request, mapped.code, mapped.message));
       return;
     }
     const session = sessionResult.value;
-    const threadId = randomUUID();
-    this.#routeObservationTracker.bindCreatedThread(request.id, threadId);
     try {
-      const now = unixSeconds();
-      const thread: JsonObject = {
-        id: threadId,
-        sessionId: threadId,
-        path: null,
-        cwd,
-        // Codex Desktop keys its live timeline by the same client and persistence metadata.
-        source: "vscode",
-        threadSource: null,
-        modelProvider: "codexhost",
-        cliVersion: "codexhost",
-        createdAt: now,
-        updatedAt: now,
-        recencyAt: now,
-        status: { type: "idle" },
+      if (session.initialState.nativeRef) {
+        record = await this.#repository.commitNative(
+          record.hostThreadId,
+          session.initialState.nativeRef,
+        );
+      }
+      const thread = externalThreadValue({
+        record,
         turns: [],
-        preview: "",
-        name: null,
-        gitInfo: null,
-        forkedFromId: null,
-        parentThreadId: null,
-        ephemeral: params.ephemeral === true,
-        canAcceptDirectInput: true,
-        historyMode: params.historyMode === "paginated" ? "paginated" : "legacy",
-        agentNickname: null,
-        agentRole: null,
-        extra: null,
-      };
-      const externalThread: ExternalThread = {
-        id: threadId,
-        cwd,
-        harnessId,
+        sessionId: record.hostThreadId,
+      });
+      const externalThread = this.#registerExternalThread({
+        record,
         session,
-        outputTask: Promise.resolve(),
-        ...(requestedModel ? { requestedModel } : {}),
-        stateObserver: new SessionStateObserver(session.initialState),
+        sessionId: record.hostThreadId,
         thread,
-        transportModelId,
         turns: [],
-        running: false,
-        activeTurnId: null,
-        projectedTurns: new Map(),
-        responseGates: new Map(),
-        ignoredInteractionIds: new Set(),
-      };
-      externalThread.outputTask = this.#consumeHarnessOutputs(externalThread);
-      this.#externalThreads.set(threadId, externalThread);
+        ...(requestedModel ? { requestedModel } : {}),
+      });
+      this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
       await this.#writer.json(
         rpcEnvelope(request, {
           result: {
@@ -609,18 +697,88 @@ export class AppServerHost {
         emittedAtMs: Date.now(),
         params: { thread },
       });
-    } catch (error) {
-      this.#externalThreads.delete(threadId);
-      this.#routeObservationTracker.forgetThread(threadId);
+    } catch {
+      this.#externalRuntime.remove(record.hostThreadId);
+      this.#routeObservationTracker.forgetThread(record.hostThreadId);
       await session.close().catch(() => undefined);
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32071,
-          `External Harness '${harnessId}' Session could not open: ${errorMessage(error)}`,
-        ),
-      );
+      await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      await this.#writer.json(rpcError(request, -32081, "External Thread could not be persisted"));
     }
+  }
+
+  #registerExternalThread(input: {
+    record: StoredThreadRecordV1;
+    session: HarnessSession;
+    sessionId: string;
+    thread: JsonObject;
+    turns: JsonObject[];
+    requestedModel?: HarnessModelRef;
+  }): ExternalThread {
+    return this.#externalRuntime.register(input);
+  }
+
+  #resolveExternalThread(threadId: string): Promise<ExternalThreadResolution> {
+    return this.#externalRuntime.resolve(threadId);
+  }
+
+  async #writeResolutionError(
+    request: JsonRpcRequest,
+    resolution: ExternalThreadResolution,
+  ): Promise<boolean> {
+    if (resolution.kind !== "error") return false;
+    await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+    return true;
+  }
+
+  #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    return this.#externalRuntime.refresh(thread);
+  }
+
+  #persistTerminalIdentity(
+    thread: ExternalThread,
+    event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
+  ): Promise<Error | null> {
+    return this.#externalRuntime.persistTerminalIdentity(thread, event);
+  }
+
+  async #forkExternalThread(
+    request: JsonRpcRequest,
+    source: ExternalThread,
+    fork: DecodedThreadForkRequest,
+  ): Promise<void> {
+    const result = await executeExternalThreadFork({
+      source,
+      fork,
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, result.error.code, result.error.message));
+      return;
+    }
+    const params: JsonObject = {
+      ...(fork.sandbox ? { sandbox: fork.sandbox } : {}),
+    };
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: threadForkResult(result.responseThread, {
+          model: result.derived.transportModelId,
+          cwd: result.derived.cwd,
+          ...(fork.runtimeWorkspaceRoots
+            ? { runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots }
+            : {}),
+          ...(fork.approvalPolicy ? { approvalPolicy: fork.approvalPolicy } : {}),
+          sandbox: sandboxResult(params),
+          ...(fork.serviceTier ? { serviceTier: fork.serviceTier } : {}),
+        }),
+      }),
+    );
+    await this.#writer.json({
+      method: "thread/started",
+      emittedAtMs: Date.now(),
+      params: { thread: { ...result.thread, turns: [] } },
+    });
   }
 
   async #setExternalThreadName(
@@ -634,6 +792,14 @@ export class AppServerHost {
       );
       return;
     }
+    try {
+      thread.record = await this.#repository.setTitle(thread.id, name);
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32081, "External Thread title could not be persisted"),
+      );
+      return;
+    }
     thread.thread.name = name;
     thread.thread.updatedAt = unixSeconds();
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
@@ -644,7 +810,13 @@ export class AppServerHost {
   }
 
   async #deleteExternalThread(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    this.#externalThreads.delete(thread.id);
+    try {
+      await this.#repository.removeThread(thread.id);
+    } catch {
+      await this.#writer.json(rpcError(request, -32081, "External Thread could not be removed"));
+      return;
+    }
+    this.#externalRuntime.remove(thread.id);
     this.#routeObservationTracker.forgetThread(thread.id);
     thread.stateObserver.fault(new Error("External Thread was deleted"));
     try {
@@ -663,6 +835,13 @@ export class AppServerHost {
     thread: ExternalThread,
     includeTurns: boolean,
   ): Promise<void> {
+    if (includeTurns && !thread.running) {
+      const refreshed = await this.#refreshExternalThread(thread);
+      if (refreshed) {
+        await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
+        return;
+      }
+    }
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
@@ -670,6 +849,40 @@ export class AppServerHost {
             ...thread.thread,
             turns: includeTurns ? thread.turns : [],
           },
+        },
+      }),
+    );
+  }
+
+  async #resumeExternalThread(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    params: JsonObject,
+  ): Promise<void> {
+    if (!thread.running) {
+      const refreshed = await this.#refreshExternalThread(thread);
+      if (refreshed) {
+        await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
+        return;
+      }
+    }
+    const result = threadForkResult(thread.thread, {
+      model: thread.transportModelId,
+      cwd: thread.cwd,
+      runtimeWorkspaceRoots: Array.isArray(params.runtimeWorkspaceRoots)
+        ? params.runtimeWorkspaceRoots.filter((value): value is string => typeof value === "string")
+        : [],
+      approvalPolicy: typeof params.approvalPolicy === "string" ? params.approvalPolicy : "never",
+      sandbox: sandboxResult(params),
+      ...(typeof params.serviceTier === "string" ? { serviceTier: params.serviceTier } : {}),
+    });
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: {
+          ...result,
+          initialTurnsPage: null,
+          turnsBackwardsCursor: null,
+          itemsBackwardsCursor: null,
         },
       }),
     );
@@ -809,9 +1022,25 @@ export class AppServerHost {
       await this.#projectQuestion(thread, output.interaction);
       return;
     }
-    const event = output.event;
+    let event = output.event;
     if (event.type === "session.state.changed") {
-      thread.stateObserver.update(event.state);
+      try {
+        if (event.state.nativeRef) {
+          if (!thread.record.nativeSessionRef) {
+            thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
+          } else if (
+            thread.record.nativeSessionRef.harnessId !== event.state.nativeRef.harnessId ||
+            thread.record.nativeSessionRef.nativeSessionId !== event.state.nativeRef.nativeSessionId
+          ) {
+            throw new Error("External Session changed Native identity");
+          }
+        }
+        thread.stateObserver.update(event.state);
+      } catch (error) {
+        thread.persistenceError = error instanceof Error ? error : new Error(errorMessage(error));
+        thread.stateObserver.fault(thread.persistenceError);
+        this.#diagnose("External Session state could not be persisted");
+      }
       return;
     }
     if (event.type === "session.faulted") {
@@ -830,6 +1059,23 @@ export class AppServerHost {
     }
     if (event.type === "interaction.closed") {
       await this.#resolveDesktopQuestion(event.interactionId);
+    }
+    if (event.type === "turn.completed") {
+      const persistenceError = await this.#persistTerminalIdentity(thread, event);
+      if (persistenceError) {
+        event = {
+          type: "turn.completed",
+          turnId: event.turnId,
+          outcome: {
+            status: "failed",
+            error: {
+              code: "internalError",
+              message: "External Turn identity could not be persisted",
+              retryable: false,
+            },
+          },
+        };
+      }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {

@@ -46,6 +46,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #enabledAgents: ReadonlySet<RendererAgent>;
   readonly #conversationStates: ConversationState[] = [];
   readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
+  readonly #ownershipRequestGenerations = new WeakMap<MutableComposerState, number>();
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
@@ -92,6 +93,31 @@ export class DraftAgentController<Composer extends object> {
 
   isCurrentModelRequest(composer: Composer, generation: number): boolean {
     return (this.#modelRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+  }
+
+  beginOwnershipRequest(composer: Composer): number {
+    const state = this.#state(composer);
+    const generation = (this.#ownershipRequestGenerations.get(state) ?? 0) + 1;
+    this.#ownershipRequestGenerations.set(state, generation);
+    return generation;
+  }
+
+  isCurrentOwnershipRequest(composer: Composer, generation: number): boolean {
+    return (this.#ownershipRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+  }
+
+  restore(
+    composer: Composer,
+    agent: RendererAgent,
+    piModel?: HarnessModelRef,
+  ): Readonly<DraftComposerState> | null {
+    if (!this.#enabledAgents.has(agent)) return null;
+    const state = this.#state(composer);
+    state.agent = agent;
+    state.phase = "locked";
+    if (agent === "pi" && piModel) state.piModel = piModel;
+    else if (agent !== "pi") delete state.piModel;
+    return state;
   }
 
   setPiModel(composer: Composer, model: HarnessModelRef): Readonly<DraftComposerState> {

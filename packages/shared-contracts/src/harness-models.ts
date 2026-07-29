@@ -67,6 +67,11 @@ export const harnessSessionCapabilitiesSchema = z
         selectModel: z.boolean(),
       })
       .strict(),
+    history: z
+      .object({
+        fork: z.boolean(),
+      })
+      .strict(),
   })
   .strict();
 
@@ -120,3 +125,35 @@ export const threadModelSelectParamsSchema = z
   .strict();
 
 export type ThreadModelSelectParams = z.infer<typeof threadModelSelectParamsSchema>;
+
+export const threadInspectionParamsSchema = z
+  .object({
+    threadId: hostThreadIdSchema,
+  })
+  .strict();
+
+export type ThreadInspectionParams = z.infer<typeof threadInspectionParamsSchema>;
+
+const codexThreadInspectionSchema = z
+  .object({
+    owner: z.literal("codex"),
+    locked: z.literal(true),
+  })
+  .strict();
+
+const externalThreadInspectionSchema = z
+  .object({
+    owner: z.literal("external"),
+    harnessId: nonBlankTextSchema.max(256),
+    transportModelId: nonBlankTextSchema.max(1_024),
+    effectiveModel: harnessModelRefSchema.optional(),
+    locked: z.literal(true),
+  })
+  .strict();
+
+export const threadInspectionSchema = z.discriminatedUnion("owner", [
+  codexThreadInspectionSchema,
+  externalThreadInspectionSchema,
+]);
+
+export type ThreadInspection = z.infer<typeof threadInspectionSchema>;

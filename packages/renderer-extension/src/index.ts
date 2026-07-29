@@ -14,18 +14,23 @@ export type {
 } from "./agent-selection-state.js";
 export {
   HARNESS_INSPECT_METHOD,
+  THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
 export {
   installRendererBindingProbe,
+  isOwnershipSubmissionBlocked,
+  restoredThreadOwnership,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";
 export type {
+  ComposerOwnershipStatus,
   RendererBindingProbeApi,
   RendererBindingProbeOptions,
   RendererBindingProbeStatus,
+  RestoredThreadOwnership,
 } from "./renderer-binding-probe.js";
 export {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,

@@ -7,6 +7,8 @@ import {
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
   piHarnessInspectParamsSchema,
+  threadInspectionParamsSchema,
+  threadInspectionSchema,
   threadModelSelectParamsSchema,
 } from "@codexhost/shared-contracts";
 
@@ -23,7 +25,10 @@ function readyInspection() {
       ],
       defaultModel: firstRef,
     },
-    capabilities: { configuration: { selectModel: true } },
+    capabilities: {
+      configuration: { selectModel: true },
+      history: { fork: true },
+    },
   };
 }
 
@@ -115,6 +120,34 @@ describe("Harness Model runtime contracts", () => {
         threadId: "thread-1",
         model: firstRef,
         provider: "private-provider",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates fixed Thread ownership inspection without Native details", () => {
+    expect(threadInspectionParamsSchema.parse({ threadId: "thread-1" })).toEqual({
+      threadId: "thread-1",
+    });
+    expect(
+      threadInspectionSchema.parse({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: "codexhost/pi-native",
+        effectiveModel: firstRef,
+        locked: true,
+      }),
+    ).toMatchObject({ owner: "external", harnessId: "pi", locked: true });
+    expect(threadInspectionSchema.parse({ owner: "codex", locked: true })).toEqual({
+      owner: "codex",
+      locked: true,
+    });
+    expect(
+      threadInspectionSchema.safeParse({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: "codexhost/pi-native",
+        locked: true,
+        nativeSessionRef: { nativeSessionId: "secret" },
       }).success,
     ).toBe(false);
   });

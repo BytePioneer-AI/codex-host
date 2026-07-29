@@ -34,7 +34,10 @@ describe("shared-contracts public package", () => {
           models: [{ ref: { id: "pi-model-v1.synthetic" }, label: "Synthetic" }],
           defaultModel: { id: "pi-model-v1.synthetic" },
         },
-        capabilities: { configuration: { selectModel: true } },
+        capabilities: {
+          configuration: { selectModel: true },
+          history: { fork: true },
+        },
       }),
     ).toMatchObject({ status: "ready" });
     expect(hostThreadIdSchema.parse("thread")).toBe("thread");

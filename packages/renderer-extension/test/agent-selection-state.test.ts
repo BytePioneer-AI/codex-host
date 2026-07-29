@@ -155,6 +155,33 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("restores a newly mounted Fork owner and ignores stale ownership generations", () => {
+    const forkComposer = {};
+    const replacement = {};
+    const target = ["conversation", "fork-thread"];
+    const agents = controller();
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fork" });
+
+    agents.mount(forkComposer, target);
+    const stale = agents.beginOwnershipRequest(forkComposer);
+    const current = agents.beginOwnershipRequest(forkComposer);
+    expect(agents.isCurrentOwnershipRequest(forkComposer, stale)).toBe(false);
+    expect(agents.isCurrentOwnershipRequest(forkComposer, current)).toBe(true);
+    expect(agents.restore(forkComposer, "pi", model)).toMatchObject({
+      agent: "pi",
+      phase: "locked",
+      piModel: model,
+    });
+
+    agents.mount(replacement, ["conversation", "fork-thread"]);
+    expect(agents.get(replacement)).toMatchObject({
+      agent: "pi",
+      phase: "locked",
+      piModel: model,
+    });
+    expect(agents.restore(replacement, "claude-code")).toBeNull();
+  });
+
   it("transfers Pi Model state and request generations with logical Composer identity", () => {
     const draft = {};
     const conversation = {};

@@ -7,7 +7,9 @@ import type {
   HostItemId,
   HostTurnId,
   JsonValue,
+  NativeCheckpointRef,
   NativeSessionRef,
+  NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 export type {
@@ -22,7 +24,9 @@ export type HarnessErrorCode =
   | "notInstalled"
   | "unavailable"
   | "authenticationRequired"
+  | "sessionNotFound"
   | "sessionBusy"
+  | "checkpointNotFound"
   | "unsupported"
   | "invalidRequest"
   | "invalidState"
@@ -50,6 +54,21 @@ export interface CreateSessionInput {
   cwd: string;
   model?: HarnessModelRef;
 }
+
+export interface ResumeSessionInput {
+  kind: "resume";
+  nativeRef: NativeSessionRef;
+  cwd: string;
+}
+
+export interface ForkSessionInput {
+  kind: "fork";
+  sourceRef: NativeSessionRef;
+  checkpoint: NativeCheckpointRef;
+  cwd: string;
+}
+
+export type OpenSessionInput = CreateSessionInput | ResumeSessionInput | ForkSessionInput;
 
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;
@@ -214,10 +233,29 @@ export interface HostItemSnapshot {
   outcome: HostItemOutcome;
 }
 
-export type TurnOutcome =
+export type HistoricalTurnOutcome =
   | { status: "succeeded" }
   | { status: "failed"; error: HarnessError }
-  | { status: "cancelled"; reason?: string };
+  | { status: "cancelled"; reason?: string }
+  | { status: "unknown"; reason: string };
+
+export interface HostTurnSnapshot {
+  nativeTurnRef: NativeTurnRef;
+  checkpoint?: NativeCheckpointRef;
+  input: HostTextInput[];
+  items: HostItemSnapshot[];
+  outcome: HistoricalTurnOutcome;
+  model?: HarnessModelRef;
+}
+
+export interface HostThreadSnapshot {
+  turns: HostTurnSnapshot[];
+}
+
+export type TurnOutcome =
+  | { status: "succeeded"; checkpoint?: NativeCheckpointRef }
+  | { status: "failed"; error: HarnessError; checkpoint?: NativeCheckpointRef }
+  | { status: "cancelled"; reason?: string; checkpoint?: NativeCheckpointRef };
 
 export interface SessionStateChangedEvent {
   type: "session.state.changed";
@@ -251,6 +289,7 @@ export interface ItemCompletedEvent {
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
+  nativeTurnRef?: NativeTurnRef;
   outcome: TurnOutcome;
 }
 
@@ -285,6 +324,7 @@ export interface HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
 
+  readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
@@ -296,6 +336,6 @@ export interface HarnessAdapter {
   readonly harnessId: HarnessId;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
-  open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>>;
+  open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

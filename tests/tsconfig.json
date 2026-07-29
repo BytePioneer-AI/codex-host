@@ -8,5 +8,9 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node", "vitest/globals"]
   },
-  "include": ["../packages/**/test/**/*.ts", "./**/*.ts"]
+  "include": [
+    "../packages/**/test/**/*.ts",
+    "../packages/renderer-extension/src/assets.d.ts",
+    "./**/*.ts"
+  ]
 }

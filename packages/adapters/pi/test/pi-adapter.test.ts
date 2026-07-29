@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 
 import type {
   HarnessOutput,
@@ -12,6 +16,7 @@ import {
   type PiAdapterOptions,
   type PiTurnTransport,
 } from "../src/pi-adapter.js";
+import type { PiSessionHistory } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import {
   PiRpcFaultError,
@@ -42,6 +47,18 @@ class FakePiTransport implements PiTurnTransport {
     { provider: "synthetic-provider", id: "synthetic-model" },
     { provider: "synthetic-provider", id: "alternate-model" },
   ]);
+  readonly getEntries = vi.fn(async (): Promise<PiSessionHistory> => structuredClone(this.history));
+  readonly fork = vi.fn(async (entryId: string) => {
+    const cutoff = this.history.entries.findIndex((entry) => entry.id === entryId);
+    if (cutoff < 0) throw new Error("Unknown synthetic Fork Entry");
+    this.history.entries = this.history.entries.slice(0, cutoff);
+    this.history.leafId =
+      typeof this.history.entries.at(-1)?.id === "string"
+        ? (this.history.entries.at(-1)?.id as string)
+        : null;
+    return this.deriveState();
+  });
+  readonly clone = vi.fn(async () => this.deriveState());
   readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
     this.state = { ...this.state, provider: model.provider, modelId: model.id };
     return this.state;
@@ -57,6 +74,7 @@ class FakePiTransport implements PiTurnTransport {
       this.rejectTurn = reject;
     });
   });
+  history: PiSessionHistory = { entries: [], leafId: null };
   onEvent: ((event: PiTurnEvent) => void) | null = null;
   options: PiRpcSessionOptions | null = null;
   rejectTurn: ((error: Error) => void) | null = null;
@@ -73,7 +91,33 @@ class FakePiTransport implements PiTurnTransport {
   }
 
   succeed(text: string, cancelled = false): void {
-    if (!this.resolveTurn) throw new Error("No active fake Pi Turn");
+    if (!this.resolveTurn || this.text === null) throw new Error("No active fake Pi Turn");
+    const ordinal = this.history.entries.filter(
+      (entry) =>
+        entry.type === "message" &&
+        (entry.message as { role?: unknown } | undefined)?.role === "user",
+    ).length;
+    const userId = `synthetic-user-${ordinal + 1}`;
+    const assistantId = `synthetic-assistant-${ordinal + 1}`;
+    this.history.entries.push(
+      {
+        id: userId,
+        parentId: this.history.leafId,
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: this.text }] },
+      },
+      {
+        id: assistantId,
+        parentId: userId,
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text }],
+          stopReason: cancelled ? "aborted" : "stop",
+        },
+      },
+    );
+    this.history.leafId = assistantId;
     this.resolveTurn({ text, cancelled });
     this.resetTurn();
   }
@@ -87,6 +131,15 @@ class FakePiTransport implements PiTurnTransport {
   fault(error: PiRpcFaultError): void {
     this.fail(error);
     this.options?.onFault?.(error);
+  }
+
+  private deriveState(): PiSessionState {
+    this.state = {
+      ...this.state,
+      sessionId: `${this.state.sessionId}-derived`,
+      sessionFile: `${this.state.sessionFile}.derived`,
+    };
+    return this.state;
   }
 
   private resetTurn(): void {
@@ -108,6 +161,35 @@ function fixture(options: PiAdapterOptions = {}) {
   };
   const adapter = new PiAdapter(options, dependencies);
   return { adapter, dependencies, transports };
+}
+
+function sourceHistory(turnCount = 2): PiSessionHistory {
+  const entries: PiSessionHistory["entries"] = [];
+  let parentId: string | null = null;
+  for (let index = 1; index <= turnCount; index += 1) {
+    const userId = `source-user-${index}`;
+    const assistantId = `source-assistant-${index}`;
+    entries.push(
+      {
+        id: userId,
+        parentId,
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: `question ${index}` }] },
+      },
+      {
+        id: assistantId,
+        parentId: userId,
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: `answer ${index}` }],
+        },
+      },
+    );
+    parentId = assistantId;
+  }
+  return { entries, leafId: parentId };
 }
 
 async function openSession(adapter: PiAdapter): Promise<HarnessSession> {
@@ -164,7 +246,10 @@ describe("Pi HarnessAdapter Session", () => {
           id: "synthetic-model",
         }),
       },
-      capabilities: { configuration: { selectModel: true } },
+      capabilities: {
+        configuration: { selectModel: true },
+        history: { fork: true },
+      },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
     expect(transports[0]?.getAvailableModels).toHaveBeenCalledOnce();
@@ -187,6 +272,150 @@ describe("Pi HarnessAdapter Session", () => {
       error: { code: "unavailable", message: "synthetic catalog failure" },
     });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("resumes a persisted Pi Session and reads its active-branch Snapshot", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "source-session",
+        sessionFile: "/synthetic/source.jsonl",
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
+    );
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "source-session" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+          { nativeTurnRef: { nativeTurnKey: "source-user-2" } },
+        ],
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("forks a middle Pi Turn before the next User Entry and verifies the cutoff", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "source-session",
+        sessionFile: "/synthetic/source.jsonl",
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-1",
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
+    expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "source-session-derived" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("clones a terminal Pi Turn and fails closed for an unknown Checkpoint", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementation((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "source-session",
+        sessionFile: "/synthetic/source.jsonl",
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const terminalCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-2",
+      formatVersion: 1,
+    });
+    const cloned = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint: terminalCheckpoint,
+    });
+    if (!cloned.ok) throw new Error(cloned.error.message);
+    expect(transports[0]?.clone).toHaveBeenCalledOnce();
+    expect(transports[0]?.fork).not.toHaveBeenCalled();
+    await cloned.value.close();
+
+    const missingCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "missing",
+      formatVersion: 1,
+    });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic",
+        sourceRef,
+        checkpoint: missingCheckpoint,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(transports[1]?.close).toHaveBeenCalledOnce();
     await adapter.close();
   });
 

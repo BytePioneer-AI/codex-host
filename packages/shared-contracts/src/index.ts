@@ -13,6 +13,8 @@ export {
   harnessModelSelectionStateSchema,
   harnessSessionCapabilitiesSchema,
   piHarnessInspectParamsSchema,
+  threadInspectionParamsSchema,
+  threadInspectionSchema,
   threadModelSelectParamsSchema,
 } from "./harness-models.js";
 export type {
@@ -23,6 +25,8 @@ export type {
   HarnessModelSelectionState,
   HarnessSessionCapabilities,
   PiHarnessInspectParams,
+  ThreadInspection,
+  ThreadInspectionParams,
   ThreadModelSelectParams,
 } from "./harness-models.js";
 export {

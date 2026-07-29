@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import {
   HarnessOutputChannel,
   validateHostQuestionResponse,
-  type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
   type HarnessInspection,
@@ -29,6 +28,8 @@ import {
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ModelSelectCompleted,
+  type OpenSessionInput,
+  type HostThreadSnapshot,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -39,12 +40,18 @@ import {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
   type HarnessId,
   type HostInteractionId,
   type HostItemId,
   type JsonValue,
+  type NativeCheckpointRef,
+  type NativeSessionRef,
+  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import {
   PiRpcFaultError,
   PiRpcSession,
@@ -76,6 +83,9 @@ export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModelRef[]>;
+  getEntries(): Promise<PiSessionHistory>;
+  fork(entryId: string): Promise<PiSessionState>;
+  clone(): Promise<PiSessionState>;
   selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
@@ -105,6 +115,7 @@ interface ActiveTurn {
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
+  beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
 }
@@ -122,7 +133,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class PiAdapterFaultError extends Error {
+  constructor(readonly harnessError: HarnessError) {
+    super(harnessError.message);
+    this.name = "PiAdapterFaultError";
+  }
+}
+
 function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): HarnessError {
+  if (error instanceof PiAdapterFaultError) return error.harnessError;
   if (error instanceof PiRpcFaultError) {
     return {
       code: error.kind,
@@ -152,6 +171,35 @@ function nativeModelFromState(state: PiSessionState): PiNativeModelRef | null {
 function effectiveModelFromState(state: PiSessionState): HarnessModelRef | undefined {
   const model = nativeModelFromState(state);
   return model ? encodePiModelRef(model) : undefined;
+}
+
+function harnessStateFromPi(state: PiSessionState): HarnessSessionState {
+  const effectiveModel = effectiveModelFromState(state);
+  return {
+    nativeRef: nativeSessionRefSchema.parse({
+      harnessId: piHarnessId,
+      nativeSessionId: state.sessionId,
+      ...(state.sessionFile ? { locator: { sessionFile: state.sessionFile } } : {}),
+      formatVersion: 1,
+    }) as NativeSessionRef,
+    ...(effectiveModel ? { effectiveModel } : {}),
+  };
+}
+
+function nativeModelForHistory(state: PiSessionState): PiNativeModelRef | null {
+  return nativeModelFromState(state);
+}
+
+function sessionFileFromRef(ref: NativeSessionRef): string {
+  if (
+    ref.harnessId !== piHarnessId ||
+    !isRecord(ref.locator) ||
+    typeof ref.locator.sessionFile !== "string" ||
+    ref.locator.sessionFile.length === 0
+  ) {
+    throw new Error("Pi Native Session Ref has no resumable Session file");
+  }
+  return ref.locator.sessionFile;
 }
 
 function toolFailure(toolName: string): HarnessError {
@@ -239,8 +287,9 @@ class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: { selectModel: true },
+    history: { fork: true },
   };
-  readonly initialState: HarnessSessionState = {};
+  readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;
@@ -266,6 +315,7 @@ class PiHarnessSession implements HarnessSession {
       closeTimeoutMs: number;
       model?: HarnessModelRef;
       toolOutputLimit: number;
+      startedTransport?: PiTurnTransport;
     },
   ) {
     this.#cwd = cwd;
@@ -274,7 +324,45 @@ class PiHarnessSession implements HarnessSession {
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#requestedModel = options.model;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.#transport = options.startedTransport ?? null;
+    this.initialState = options.startedTransport
+      ? harnessStateFromPi(options.startedTransport.state)
+      : {};
+    this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+  }
+
+  handleTransportFault(error: PiRpcFaultError): void {
+    queueMicrotask(() => this.#fault(error));
+  }
+
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Pi Session is not open") };
+    }
+    if (this.#active || this.#acceptingTurn || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Pi Session cannot read history while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    try {
+      const transport = await this.#ensureTransport();
+      const history = await transport.getEntries();
+      return {
+        ok: true,
+        value: mapPiSnapshot(history, {
+          sessionId: transport.state.sessionId,
+          model: nativeModelForHistory(transport.state),
+        }),
+      };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -328,6 +416,16 @@ class PiHarnessSession implements HarnessSession {
         return { ok: false, error: invalidState("Pi Session became unavailable during startup") };
       }
 
+      let beforeHistory: HostThreadSnapshot;
+      try {
+        beforeHistory = mapPiSnapshot(await transport.getEntries(), {
+          sessionId: transport.state.sessionId,
+          model: nativeModelForHistory(transport.state),
+        });
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "protocolError") };
+      }
+
       let resolveCompletion = (): void => undefined;
       const completion = new Promise<void>((resolve) => {
         resolveCompletion = resolve;
@@ -344,6 +442,9 @@ class PiHarnessSession implements HarnessSession {
         interactions: new Map(),
         interactionByNativeId: new Map(),
         cancellationRequested: false,
+        beforeNativeTurnKeys: new Set(
+          beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
+        ),
         completion,
         resolveCompletion,
       };
@@ -353,20 +454,46 @@ class PiHarnessSession implements HarnessSession {
 
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
-        .then((result) => {
+        .then(async (result) => {
+          try {
+            const identity = await this.#completedTurnIdentity(active, transport);
+            this.#completeTurn(
+              active,
+              result.cancelled
+                ? {
+                    status: "cancelled",
+                    reason: "Cancelled by user",
+                    checkpoint: identity.checkpoint,
+                  }
+                : { status: "succeeded", checkpoint: identity.checkpoint },
+              result.text,
+              identity.nativeTurnRef,
+            );
+          } catch (error) {
+            this.#completeTurn(active, {
+              status: "failed",
+              error: normalizedError(error, "protocolError"),
+            });
+          }
+        })
+        .catch(async (error: unknown) => {
+          let identity:
+            { nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | undefined;
+          try {
+            identity = await this.#completedTurnIdentity(active, transport);
+          } catch {
+            // A failed native Turn may not have persisted a stable User Entry.
+          }
           this.#completeTurn(
             active,
-            result.cancelled
-              ? { status: "cancelled", reason: "Cancelled by user" }
-              : { status: "succeeded" },
-            result.text,
+            {
+              status: "failed",
+              error: normalizedError(error, "nativeFailure"),
+              ...(identity ? { checkpoint: identity.checkpoint } : {}),
+            },
+            undefined,
+            identity?.nativeTurnRef,
           );
-        })
-        .catch((error: unknown) => {
-          this.#completeTurn(active, {
-            status: "failed",
-            error: normalizedError(error, "nativeFailure"),
-          });
         });
 
       return { ok: true, value: { turnId: command.turnId } };
@@ -541,16 +668,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #publishTransportState(state: PiSessionState): void {
-    const effectiveModel = effectiveModelFromState(state);
-    this.#state = {
-      nativeRef: {
-        harnessId: this.harnessId,
-        nativeSessionId: state.sessionId,
-        ...(state.sessionFile ? { locator: { sessionFile: state.sessionFile } } : {}),
-        formatVersion: 1,
-      },
-      ...(effectiveModel ? { effectiveModel } : {}),
-    };
+    this.#state = harnessStateFromPi(state);
     this.#event({ type: "session.state.changed", state: this.#state });
   }
 
@@ -788,7 +906,33 @@ class PiHarnessSession implements HarnessSession {
     }
   }
 
-  #completeTurn(active: ActiveTurn, outcome: TurnOutcome, finalText?: string): void {
+  async #completedTurnIdentity(
+    active: ActiveTurn,
+    transport: PiTurnTransport,
+  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
+    const snapshot = mapPiSnapshot(await transport.getEntries(), {
+      sessionId: transport.state.sessionId,
+      model: nativeModelForHistory(transport.state),
+    });
+    const created = snapshot.turns.filter(
+      (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
+    );
+    if (created.length !== 1) {
+      throw new Error(
+        `Pi Turn persisted ${created.length} new User Entries; exactly one is required`,
+      );
+    }
+    const turn = created[0];
+    if (!turn?.checkpoint) throw new Error("Pi Turn has no terminal Checkpoint identity");
+    return { nativeTurnRef: turn.nativeTurnRef, checkpoint: turn.checkpoint };
+  }
+
+  #completeTurn(
+    active: ActiveTurn,
+    outcome: TurnOutcome,
+    finalText?: string,
+    nativeTurnRef?: NativeTurnRef,
+  ): void {
     if (this.#active !== active) return;
     this.#closeActiveInteractions(
       active,
@@ -805,7 +949,12 @@ class PiHarnessSession implements HarnessSession {
     active.tools.clear();
     if (finalText !== undefined) active.agentItem = { ...active.agentItem, text: finalText };
     this.#completeItem(active, active.agentItem, itemOutcome);
-    this.#event({ type: "turn.completed", turnId: active.command.turnId, outcome });
+    this.#event({
+      type: "turn.completed",
+      turnId: active.command.turnId,
+      outcome,
+      ...(nativeTurnRef ? { nativeTurnRef } : {}),
+    });
     active.resolveCompletion();
   }
 
@@ -901,7 +1050,10 @@ export class PiAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog,
-        capabilities: { configuration: { selectModel: true } },
+        capabilities: {
+          configuration: { selectModel: true },
+          history: { fork: true },
+        },
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
@@ -915,41 +1067,135 @@ export class PiAdapter implements HarnessAdapter {
     }
   }
 
-  async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
+  async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closePromise) {
       return { ok: false, error: invalidState("Pi Adapter is closed") };
     }
-    if (input.kind !== "create" || input.cwd.length === 0) {
+    if (input.cwd.length === 0) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Pi Adapter requires a create input with cwd",
+          message: "Pi Adapter requires cwd",
           retryable: false,
         },
       };
     }
-    if (input.model) {
-      try {
-        decodePiModelRef(input.model);
-      } catch (error) {
-        return { ok: false, error: normalizedError(error, "invalidRequest") };
+    if (input.kind === "create") {
+      if (input.model) {
+        try {
+          decodePiModelRef(input.model);
+        } catch (error) {
+          return { ok: false, error: normalizedError(error, "invalidRequest") };
+        }
       }
+      return {
+        ok: true,
+        value: this.#trackSession(input.cwd, {
+          ...(input.model ? { model: input.model } : {}),
+        }),
+      };
     }
+
+    const sourceRef = nativeSessionRefSchema.parse(
+      input.kind === "resume" ? input.nativeRef : input.sourceRef,
+    ) as NativeSessionRef;
+    let session: PiHarnessSession | undefined;
+    let transport: PiTurnTransport | undefined;
+    try {
+      if (sourceRef.harnessId !== this.harnessId) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Pi Adapter cannot open another Harness's Native Session",
+            retryable: false,
+          },
+        };
+      }
+      transport = this.#createTransport({
+        cwd: input.cwd,
+        sessionFile: sessionFileFromRef(sourceRef),
+        onFault: (error) => session?.handleTransportFault(error),
+      });
+      await transport.start();
+      if (transport.state.sessionId !== sourceRef.nativeSessionId) {
+        throw new PiAdapterFaultError({
+          code: "sessionNotFound",
+          message: "Pi resumed Session identity does not match the persisted Native Session Ref",
+          retryable: false,
+        });
+      }
+
+      if (input.kind === "fork") {
+        const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
+        if (
+          checkpoint.harnessId !== this.harnessId ||
+          checkpoint.nativeSessionId !== sourceRef.nativeSessionId
+        ) {
+          throw new PiAdapterFaultError({
+            code: "checkpointNotFound",
+            message: "Pi Checkpoint does not belong to the source Native Session",
+            retryable: false,
+          });
+        }
+        const sourceHistory = await transport.getEntries();
+        let boundary: ReturnType<typeof resolvePiForkBoundary>;
+        try {
+          boundary = resolvePiForkBoundary(sourceHistory, checkpoint.checkpointId);
+        } catch {
+          throw new PiAdapterFaultError({
+            code: "checkpointNotFound",
+            message: "Pi Checkpoint is not on the source Session's active branch",
+            retryable: false,
+          });
+        }
+        const derivedState = boundary.nextUserEntryId
+          ? await transport.fork(boundary.nextUserEntryId)
+          : await transport.clone();
+        if (derivedState.sessionId === sourceRef.nativeSessionId) {
+          throw new Error("Pi Fork did not create a new Native Session identity");
+        }
+        const derivedSnapshot = mapPiSnapshot(await transport.getEntries(), {
+          sessionId: derivedState.sessionId,
+          model: nativeModelForHistory(derivedState),
+        });
+        const terminal = derivedSnapshot.turns.at(-1);
+        if (
+          derivedSnapshot.turns.length !== boundary.targetTurnIndex + 1 ||
+          terminal?.nativeTurnRef.nativeTurnKey !== checkpoint.checkpointId
+        ) {
+          throw new Error("Pi Fork derived history does not match the requested Checkpoint");
+        }
+      }
+
+      session = this.#trackSession(input.cwd, { startedTransport: transport });
+      return { ok: true, value: session };
+    } catch (error) {
+      await transport?.close().catch(() => undefined);
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
+  #trackSession(
+    cwd: string,
+    options: { model?: HarnessModelRef; startedTransport?: PiTurnTransport },
+  ): PiHarnessSession {
     const session = new PiHarnessSession(
-      input.cwd,
+      cwd,
       this.#createTransport,
       () => {
         this.#sessions.delete(session);
       },
       {
         closeTimeoutMs: this.#closeTimeoutMs,
-        ...(input.model ? { model: input.model } : {}),
+        ...(options.model ? { model: options.model } : {}),
         toolOutputLimit: this.#toolOutputLimit,
+        ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
       },
     );
     this.#sessions.add(session);
-    return { ok: true, value: session };
+    return session;
   }
 
   close(): Promise<void> {

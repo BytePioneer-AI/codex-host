@@ -16,6 +16,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "zod": "4.4.3"
   }
 }

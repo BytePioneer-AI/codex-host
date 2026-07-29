@@ -12,12 +12,14 @@ import type {
   HostInteractionId,
   HostItemId,
   JsonValue,
+  NativeCheckpointRef,
+  NativeSessionRef,
+  NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import { HarnessOutputChannel } from "./output-channel.js";
 import { validateHostQuestionResponse } from "./question.js";
 import type {
-  CreateSessionInput,
   HarnessAdapter,
   HarnessError,
   HarnessOutput,
@@ -33,15 +35,19 @@ import type {
   HostFileChange,
   HostItem,
   HostItemOutcome,
+  HostItemSnapshot,
   HostItemUpdate,
   HostQuestion,
   HostQuestionInteraction,
+  HostThreadSnapshot,
   HostToolExecutionItem,
   HostToolOutput,
+  HostTurnSnapshot,
   InteractionRespondAccepted,
   InteractionRespondCommand,
   ModelSelectCommand,
   ModelSelectCompleted,
+  OpenSessionInput,
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnStartAccepted,
@@ -51,6 +57,7 @@ import type {
 interface ActiveFakeTurn {
   command: TurnStartCommand;
   items: Map<HostItemId, HostItem>;
+  completedItems: HostItemSnapshot[];
   interactions: Map<HostInteractionId, HostQuestionInteraction>;
   cancellationRequested: boolean;
 }
@@ -77,11 +84,13 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 export class FakeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId;
-  readonly capabilities: HarnessSessionCapabilities = {
-    configuration: { selectModel: true },
-  };
+  readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -99,21 +108,54 @@ export class FakeHarnessSession implements HarnessSession {
   } | null = null;
   #nextRejection: HarnessError | null = null;
   #state: HarnessSessionState;
+  #snapshot: HostThreadSnapshot;
+  #turnOrdinal = 0;
 
   constructor(
     harnessId: HarnessId,
     catalog: HarnessModelCatalog = defaultFakeCatalog,
     initialModel: HarnessModelRef | undefined = catalog.defaultModel,
+    nativeRef: NativeSessionRef = {
+      harnessId,
+      nativeSessionId: `fake-session-${Math.random().toString(36).slice(2)}`,
+      formatVersion: 1,
+    },
+    snapshot: HostThreadSnapshot = { turns: [] },
+    supportsFork = true,
   ) {
     this.harnessId = harnessId;
+    this.capabilities = {
+      configuration: { selectModel: true },
+      history: { fork: supportsFork },
+    };
     this.#catalog = catalog;
-    this.initialState = initialModel ? { effectiveModel: initialModel } : {};
+    this.initialState = {
+      nativeRef,
+      ...(initialModel ? { effectiveModel: initialModel } : {}),
+    };
     this.#state = this.initialState;
+    this.#snapshot = cloneJson(snapshot);
+    this.#turnOrdinal = snapshot.turns.length;
     this.outputs = this.#channel.outputs;
   }
 
   get state(): HarnessSessionState {
     return this.#state;
+  }
+
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closed) return { ok: false, error: invalidStateError };
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Fake Harness Session cannot read history during an active Turn",
+          retryable: true,
+        },
+      };
+    }
+    return { ok: true, value: cloneJson(this.#snapshot) };
   }
 
   rejectNextTurn(error: HarnessError): void {
@@ -184,6 +226,7 @@ export class FakeHarnessSession implements HarnessSession {
     this.#active = {
       command,
       items: new Map([[item.itemId, item]]),
+      completedItems: [],
       interactions: new Map(),
       cancellationRequested: false,
     };
@@ -256,10 +299,12 @@ export class FakeHarnessSession implements HarnessSession {
     const item = active.items.get(itemId);
     if (!item) throw new Error("Fake Harness Item is not active");
     active.items.delete(itemId);
+    const snapshot = { item, outcome };
+    active.completedItems.push(snapshot);
     this.#event({
       type: "item.completed",
       turnId: active.command.turnId,
-      snapshot: { item, outcome },
+      snapshot,
     });
   }
 
@@ -443,10 +488,12 @@ export class FakeHarnessSession implements HarnessSession {
   #completeItems(active: ActiveFakeTurn, outcome: HostItemOutcome): void {
     for (const item of [...active.items.values()].reverse()) {
       active.items.delete(item.itemId);
+      const snapshot = { item, outcome };
+      active.completedItems.push(snapshot);
       this.#event({
         type: "item.completed",
         turnId: active.command.turnId,
-        snapshot: { item, outcome },
+        snapshot,
       });
     }
   }
@@ -454,7 +501,47 @@ export class FakeHarnessSession implements HarnessSession {
   #finishTurn(active: ActiveFakeTurn, outcome: HostItemOutcome): void {
     if (this.#active !== active) return;
     this.#active = null;
-    this.#event({ type: "turn.completed", turnId: active.command.turnId, outcome });
+    this.#turnOrdinal += 1;
+    const nativeRef = this.#state.nativeRef;
+    if (!nativeRef) throw new Error("Fake Harness Session has no Native Session identity");
+    const nativeTurnRef: NativeTurnRef = {
+      harnessId: this.harnessId,
+      nativeSessionId: nativeRef.nativeSessionId,
+      nativeTurnKey: `fake-turn-${this.#turnOrdinal}`,
+      formatVersion: 1,
+    };
+    const checkpoint: NativeCheckpointRef | undefined = this.capabilities.history.fork
+      ? {
+          harnessId: this.harnessId,
+          nativeSessionId: nativeRef.nativeSessionId,
+          checkpointId: `fake-checkpoint-${this.#turnOrdinal}`,
+          formatVersion: 1,
+        }
+      : undefined;
+    const historicalOutcome =
+      outcome.status === "succeeded"
+        ? ({ status: "succeeded" } as const)
+        : outcome.status === "cancelled"
+          ? {
+              status: "cancelled" as const,
+              ...(outcome.reason ? { reason: outcome.reason } : {}),
+            }
+          : { status: "failed" as const, error: outcome.error };
+    const turn: HostTurnSnapshot = {
+      nativeTurnRef,
+      ...(checkpoint ? { checkpoint } : {}),
+      input: cloneJson(active.command.input),
+      items: cloneJson(active.completedItems),
+      outcome: historicalOutcome,
+      ...(this.#state.effectiveModel ? { model: this.#state.effectiveModel } : {}),
+    };
+    this.#snapshot.turns.push(turn);
+    this.#event({
+      type: "turn.completed",
+      turnId: active.command.turnId,
+      nativeTurnRef,
+      outcome: { ...outcome, ...(checkpoint ? { checkpoint } : {}) },
+    });
   }
 
   #event(event: HostEvent): void {
@@ -481,15 +568,20 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly catalog: HarnessModelCatalog;
   readonly sessions: FakeHarnessSession[] = [];
+  readonly supportsFork: boolean;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
+  #sessionOrdinal = 0;
+  #sessionsByNativeId = new Map<string, FakeHarnessSession>();
 
   constructor(
     harnessId: HarnessId = harnessIdSchema.parse("fake"),
     catalog: HarnessModelCatalog = defaultFakeCatalog,
+    supportsFork = true,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
+    this.supportsFork = supportsFork;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -508,35 +600,155 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     return {
       status: "ready",
       catalog: this.catalog,
-      capabilities: { configuration: { selectModel: true } },
+      capabilities: {
+        configuration: { selectModel: true },
+        history: { fork: this.supportsFork },
+      },
     };
   }
 
-  async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
+  async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closePromise) return { ok: false, error: invalidStateError };
-    if (input.kind !== "create" || input.cwd.length === 0) {
+    if (input.cwd.length === 0) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Fake Adapter requires a create input with cwd",
+          message: "Fake Adapter requires a non-empty cwd",
           retryable: false,
         },
       };
     }
-    if (input.model && !catalogHasModel(this.catalog, input.model)) {
+    if (input.kind === "create") {
+      if (input.model && !catalogHasModel(this.catalog, input.model)) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Fake Adapter create Model is not in the current catalog",
+            retryable: false,
+          },
+        };
+      }
+      return { ok: true, value: this.#createSession(input.model) };
+    }
+    const sourceRef = input.kind === "resume" ? input.nativeRef : input.sourceRef;
+    if (sourceRef.harnessId !== this.harnessId) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Fake Adapter create Model is not in the current catalog",
+          message: "Fake Native Session belongs to another Harness",
           retryable: false,
         },
       };
     }
-    const session = new FakeHarnessSession(this.harnessId, this.catalog, input.model);
+    const source = this.#sessionsByNativeId.get(sourceRef.nativeSessionId);
+    if (!source) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionNotFound",
+          message: "Fake Native Session was not found",
+          retryable: false,
+        },
+      };
+    }
+    const snapshot = await source.readSnapshot();
+    if (!snapshot.ok) return snapshot;
+    if (input.kind === "resume") return { ok: true, value: source };
+    if (!this.supportsFork) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Adapter does not support Fork",
+          retryable: false,
+        },
+      };
+    }
+    if (
+      input.checkpoint.harnessId !== this.harnessId ||
+      input.checkpoint.nativeSessionId !== sourceRef.nativeSessionId
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "checkpointNotFound",
+          message: "Fake Checkpoint does not belong to the source Session",
+          retryable: false,
+        },
+      };
+    }
+    const checkpointIndex = snapshot.value.turns.findIndex(
+      (turn) => turn.checkpoint?.checkpointId === input.checkpoint.checkpointId,
+    );
+    if (checkpointIndex < 0) {
+      return {
+        ok: false,
+        error: {
+          code: "checkpointNotFound",
+          message: "Fake Checkpoint was not found",
+          retryable: false,
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: this.#createSession(
+        source.state.effectiveModel,
+        snapshot.value.turns.slice(0, checkpointIndex + 1),
+      ),
+    };
+  }
+
+  #createSession(
+    model: HarnessModelRef | undefined,
+    sourceTurns: HostTurnSnapshot[] = [],
+  ): FakeHarnessSession {
+    this.#sessionOrdinal += 1;
+    const nativeRef: NativeSessionRef = {
+      harnessId: this.harnessId,
+      nativeSessionId: `fake-session-${this.#sessionOrdinal}`,
+      formatVersion: 1,
+    };
+    const turns = sourceTurns.map((turn, index): HostTurnSnapshot => ({
+      ...cloneJson(turn),
+      items: turn.items.map((snapshot, itemIndex) => ({
+        ...cloneJson(snapshot),
+        item: {
+          ...cloneJson(snapshot.item),
+          itemId: hostItemIdSchema.parse(
+            `fake-derived-item-${this.#sessionOrdinal}-${index + 1}-${itemIndex + 1}`,
+          ),
+        },
+      })),
+      nativeTurnRef: {
+        ...turn.nativeTurnRef,
+        nativeSessionId: nativeRef.nativeSessionId,
+        nativeTurnKey: `fake-derived-turn-${index + 1}`,
+      },
+      ...(turn.checkpoint
+        ? {
+            checkpoint: {
+              ...turn.checkpoint,
+              nativeSessionId: nativeRef.nativeSessionId,
+              checkpointId: `fake-checkpoint-${index + 1}`,
+            },
+          }
+        : {}),
+    }));
+    const session = new FakeHarnessSession(
+      this.harnessId,
+      this.catalog,
+      model,
+      nativeRef,
+      { turns },
+      this.supportsFork,
+    );
     this.sessions.push(session);
-    return { ok: true, value: session };
+    this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);
+    return session;
   }
 
   close(): Promise<void> {

@@ -3,15 +3,18 @@ import type {
   HostCommandExecutionItem,
   HostFileChangeItem,
   HostQuestionInteraction,
+  HostThreadSnapshot,
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
 import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector } from "../src/index.js";
+import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -26,6 +29,72 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("projects a complete historical Snapshot without replaying notifications", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "native-turn-1",
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session-1",
+        checkpointId: "checkpoint-1",
+        formatVersion: 1,
+      }),
+      input: [{ type: "text", text: "question" }],
+      items: [
+        {
+          item: { type: "agentMessage", itemId: itemId("historical-agent"), text: "answer" },
+          outcome: { status: "succeeded" },
+        },
+        {
+          item: {
+            type: "toolExecution",
+            itemId: itemId("historical-tool"),
+            toolName: "read",
+            arguments: { path: "a.txt" },
+            output: { content: [{ type: "text", text: "contents" }] },
+          },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+    };
+
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toEqual({
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "turn-1-user",
+          type: "userMessage",
+          clientId: null,
+          content: [{ type: "text", text: "question" }],
+        },
+        {
+          id: "historical-agent",
+          type: "agentMessage",
+          text: "answer",
+          phase: null,
+          memoryCitation: null,
+        },
+        expect.objectContaining({
+          id: "historical-tool",
+          type: "dynamicToolCall",
+          status: "completed",
+          success: true,
+        }),
+      ],
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+      itemsView: "full",
+    });
+  });
+
   it("projects Agent Message and Command Execution lifecycles", () => {
     const value = projector();
     const agentId = itemId("agent-1");

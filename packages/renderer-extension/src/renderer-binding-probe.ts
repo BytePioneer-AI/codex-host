@@ -1,4 +1,4 @@
-import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import type { HarnessModelRef, ThreadInspection } from "@codexhost/shared-contracts";
 
 import {
   DEFAULT_RENDERER_AGENTS,
@@ -23,8 +23,10 @@ import {
   type PiModelControlView,
 } from "./renderer-composer-dom.js";
 import {
+  CLAUDE_CODE_TRANSPORT_MODEL_ID,
   findComposerModelTarget,
   isDraftPrewarmPolicyReady,
+  isPiTransportModelId,
   threadIdFromComposerModelTarget,
   type LockedComposerSelection,
   type RendererAdapterStatus,
@@ -66,12 +68,44 @@ declare global {
   }
 }
 
+export type ComposerOwnershipStatus = "not-required" | "loading" | "ready" | "error";
+
+export interface RestoredThreadOwnership {
+  agent: RendererAgent;
+  piModel?: HarnessModelRef;
+}
+
+export function restoredThreadOwnership(inspection: ThreadInspection): RestoredThreadOwnership {
+  if (inspection.owner === "codex") return { agent: "codex" };
+  if (inspection.harnessId === "pi") {
+    if (!isPiTransportModelId(inspection.transportModelId)) {
+      throw new Error("Pi Thread reported an incompatible transport Model");
+    }
+    return {
+      agent: "pi",
+      ...(inspection.effectiveModel ? { piModel: inspection.effectiveModel } : {}),
+    };
+  }
+  if (inspection.harnessId === "claude-code") {
+    if (inspection.transportModelId !== CLAUDE_CODE_TRANSPORT_MODEL_ID) {
+      throw new Error("Claude Code Thread reported an incompatible transport Model");
+    }
+    return { agent: "claude-code" };
+  }
+  throw new Error("Thread owner is not a Renderer Agent");
+}
+
+export function isOwnershipSubmissionBlocked(status: ComposerOwnershipStatus): boolean {
+  return status === "loading" || status === "error";
+}
+
 interface MountedComposer {
   composer: Element;
   composerId: string;
   control: ComposerAgentControl;
   modelTarget: readonly unknown[] | null;
   modelView: PiModelControlView;
+  ownershipStatus: ComposerOwnershipStatus;
 }
 
 interface PendingComposerReplacement {
@@ -140,7 +174,8 @@ export function installRendererBindingProbe(
       mounted.control,
       controller.get(mounted.composer),
       adapterStatus.state,
-      controller.isSwitching(mounted.composer),
+      controller.isSwitching(mounted.composer) ||
+        isOwnershipSubmissionBlocked(mounted.ownershipStatus),
       mounted.modelView,
     );
   };
@@ -151,6 +186,47 @@ export function installRendererBindingProbe(
       throw new Error("Renderer draft prewarm policy is unavailable");
     }
     await policy.clear();
+  };
+
+  const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId) {
+      mounted.ownershipStatus = "not-required";
+      return;
+    }
+    const generation = controller.beginOwnershipRequest(mounted.composer);
+    mounted.ownershipStatus = "loading";
+    renderMounted(mounted);
+    try {
+      if (!modelControl) throw new Error("Thread ownership control is unavailable");
+      const inspection = await modelControl.inspectThread({ threadId });
+      if (
+        !controller.isCurrentOwnershipRequest(mounted.composer, generation) ||
+        mountedByComposer.get(mounted.composer) !== mounted ||
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId
+      ) {
+        return;
+      }
+      const { agent, piModel } = restoredThreadOwnership(inspection);
+      const restored = controller.restore(mounted.composer, agent, piModel);
+      if (!restored || !(applyAdapterAgent?.(agent, piModel) ?? agent === "codex")) {
+        throw new Error("Thread owner could not be applied to the Composer");
+      }
+      mounted.ownershipStatus = "ready";
+      if (agent === "pi") {
+        mounted.modelView = { status: "loading" };
+        void loadPiCatalog(mounted);
+      } else {
+        mounted.modelView = { status: "idle" };
+      }
+    } catch {
+      if (!controller.isCurrentOwnershipRequest(mounted.composer, generation)) return;
+      mounted.ownershipStatus = "error";
+    } finally {
+      if (controller.isCurrentOwnershipRequest(mounted.composer, generation)) {
+        renderMounted(mounted);
+      }
+    }
   };
 
   const loadPiCatalog = async (mounted: MountedComposer): Promise<void> => {
@@ -333,11 +409,16 @@ export function installRendererBindingProbe(
       control,
       modelTarget,
       modelView: { status: "idle" },
+      ownershipStatus: threadIdFromComposerModelTarget(modelTarget) ? "loading" : "not-required",
     };
     mountedByComposer.set(composer, mounted);
     applyAdapterAgent?.(state.agent, state.piModel);
     renderMounted(mounted);
-    if (state.agent === "pi") void loadPiCatalog(mounted);
+    if (threadIdFromComposerModelTarget(modelTarget)) {
+      void loadThreadOwnership(mounted);
+    } else if (state.agent === "pi") {
+      void loadPiCatalog(mounted);
+    }
   };
 
   const scan = (): void => {
@@ -434,7 +515,9 @@ export function installRendererBindingProbe(
     const mounted = mountedByComposer.get(composer);
     if (!mounted) return null;
     const current = controller.get(composer);
-    if (controller.isSwitching(composer)) return false;
+    if (controller.isSwitching(composer) || isOwnershipSubmissionBlocked(mounted.ownershipStatus)) {
+      return false;
+    }
     const modelReady =
       current.agent !== "pi" ||
       (mounted.modelView.status !== "selecting" &&
@@ -557,7 +640,14 @@ export function installRendererBindingProbe(
         if (mounted) {
           const state = controller.get(mounted.composer);
           applyAdapterAgent?.(state.agent, state.piModel);
-          if (state.agent === "pi") void loadPiCatalog(mounted);
+          if (
+            threadIdFromComposerModelTarget(mounted.modelTarget) &&
+            mounted.ownershipStatus !== "ready"
+          ) {
+            void loadThreadOwnership(mounted);
+          } else if (state.agent === "pi") {
+            void loadPiCatalog(mounted);
+          }
         }
       }
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);

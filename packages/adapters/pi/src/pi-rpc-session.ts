@@ -1,8 +1,9 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { jsonValueSchema, type JsonValue } from "@codexhost/shared-contracts";
+import { jsonValueSchema, type JsonObject, type JsonValue } from "@codexhost/shared-contracts";
 
+import type { PiSessionHistory } from "./pi-history.js";
 import type { PiNativeModelRef } from "./pi-model-catalog.js";
 
 export interface PiSessionState {
@@ -86,6 +87,7 @@ export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
+  sessionFile?: string;
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
@@ -96,6 +98,7 @@ export interface PiRpcProcessOptions {
   cwd: string;
   command?: string;
   environment: NodeJS.ProcessEnv;
+  sessionFile?: string;
 }
 
 export interface PiRpcProcessAdapter {
@@ -157,6 +160,27 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
   };
+}
+
+function parseSessionHistory(response: Record<string, unknown>): PiSessionHistory {
+  const data = isRecord(response.data) ? response.data : null;
+  if (!data || !Array.isArray(data.entries)) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC entries response has no Entries");
+  }
+  const entries = data.entries.map((entry) => {
+    const parsed = jsonValueSchema.safeParse(entry);
+    if (!parsed.success || !isRecord(parsed.data)) {
+      throw new PiRpcFaultError(
+        "protocolError",
+        "Pi RPC entries response contains an invalid Entry",
+      );
+    }
+    return parsed.data as JsonObject;
+  });
+  if (data.leafId !== null && typeof data.leafId !== "string") {
+    throw new PiRpcFaultError("protocolError", "Pi RPC entries response has an invalid leaf ID");
+  }
+  return { entries, leafId: data.leafId as string | null };
 }
 
 function parseAvailableModels(response: Record<string, unknown>): PiNativeModelRef[] {
@@ -224,7 +248,11 @@ function spawnCommand(options: PiRpcProcessOptions): {
   windowsVerbatimArguments: boolean;
 } {
   const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
-  const arguments_ = ["--mode", "rpc"];
+  const arguments_ = [
+    "--mode",
+    "rpc",
+    ...(options.sessionFile ? ["--session", options.sessionFile] : []),
+  ];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -294,6 +322,7 @@ export class PiRpcSession {
         PI_SKIP_VERSION_CHECK: "1",
         PI_TELEMETRY: "0",
       },
+      ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));
@@ -339,6 +368,26 @@ export class PiRpcSession {
     return this;
   }
 
+  async getEntries(): Promise<PiSessionHistory> {
+    try {
+      return parseSessionHistory(await this.#send("get_entries", {}));
+    } catch (error) {
+      if (error instanceof PiRpcFaultError) this.#fail(error);
+      throw error;
+    }
+  }
+
+  async fork(entryId: string): Promise<PiSessionState> {
+    if (entryId.length === 0) throw new Error("Pi Fork Entry ID must not be empty");
+    await this.#send("fork", { entryId });
+    return this.#refreshState("Fork");
+  }
+
+  async clone(): Promise<PiSessionState> {
+    await this.#send("clone", {});
+    return this.#refreshState("Clone");
+  }
+
   async getAvailableModels(): Promise<PiNativeModelRef[]> {
     try {
       return parseAvailableModels(await this.#send("get_available_models", {}));
@@ -350,6 +399,10 @@ export class PiRpcSession {
 
   async selectModel(model: PiNativeModelRef): Promise<PiSessionState> {
     await this.#send("set_model", { provider: model.provider, modelId: model.id });
+    return this.#refreshState("Model");
+  }
+
+  async #refreshState(operation: string): Promise<PiSessionState> {
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
       return this.#state;
@@ -359,7 +412,7 @@ export class PiRpcSession {
           ? error
           : new PiRpcFaultError(
               "protocolError",
-              `Pi RPC Model state could not be confirmed: ${message(error)}`,
+              `Pi RPC ${operation} state could not be confirmed: ${message(error)}`,
             );
       this.#fail(fault);
       throw fault;

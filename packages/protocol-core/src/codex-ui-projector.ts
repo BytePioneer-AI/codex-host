@@ -4,6 +4,8 @@ import type {
   HostItemOutcome,
   HostItemUpdate,
   HostQuestionInteraction,
+  HostTurnSnapshot,
+  HistoricalTurnOutcome,
   InteractionClosedEvent,
   ItemCompletedEvent,
   ItemStartedEvent,
@@ -40,6 +42,12 @@ export interface CodexTurnProjection {
 export interface CodexQuestionProjection extends CodexTurnProjection {
   itemId: HostItemId;
   questionRequest: CodexQuestionRequestProjection;
+}
+
+export interface HistoricalTurnProjectionInput {
+  turnId: HostTurnId;
+  cwd: string;
+  snapshot: HostTurnSnapshot;
 }
 
 interface ProjectedItem {
@@ -143,6 +151,42 @@ function turnError(outcome: TurnCompletedEvent["outcome"]): JsonObject | null {
         additionalDetails: null,
       }
     : null;
+}
+
+function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interrupted" | "failed" {
+  if (outcome.status === "failed") return "failed";
+  if (outcome.status === "cancelled") return "interrupted";
+  return "completed";
+}
+
+export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
+  const { turnId, cwd, snapshot } = input;
+  const error =
+    snapshot.outcome.status === "failed"
+      ? {
+          message: snapshot.outcome.error.message,
+          codexErrorInfo: "other",
+          additionalDetails: null,
+        }
+      : null;
+  return {
+    id: turnId,
+    status: historicalStatus(snapshot.outcome),
+    items: [
+      {
+        id: `${turnId}-user`,
+        type: "userMessage",
+        clientId: null,
+        content: snapshot.input.map(({ text }) => ({ type: "text", text })),
+      },
+      ...snapshot.items.map(({ item, outcome }) => projectItem(item, outcome, cwd)),
+    ],
+    error,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+    itemsView: "full",
+  };
 }
 
 function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {

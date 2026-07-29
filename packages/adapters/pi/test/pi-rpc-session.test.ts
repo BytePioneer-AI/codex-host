@@ -34,6 +34,8 @@ class FakePiRpcProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
+  #sessionId = "synthetic-session";
+  #sessionFile: string | null = "/synthetic/session.jsonl";
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
   readonly #scenario: Scenario;
@@ -81,10 +83,30 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_state") {
       this.#respond(command, {
-        sessionId: "synthetic-session",
-        sessionFile: null,
+        sessionId: this.#sessionId,
+        sessionFile: this.#sessionFile,
         model: { provider: this.#provider, id: this.#modelId },
       });
+      return;
+    }
+    if (command.type === "get_entries") {
+      this.#respond(command, {
+        entries: [
+          {
+            id: "user-1",
+            parentId: null,
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text: "hello" }] },
+          },
+        ],
+        leafId: "user-1",
+      });
+      return;
+    }
+    if (command.type === "fork" || command.type === "clone") {
+      this.#sessionId = `${this.#sessionId}-derived`;
+      this.#sessionFile = `${this.#sessionFile}.derived`;
+      this.#respond(command);
       return;
     }
     if (command.type === "get_available_models") {
@@ -356,6 +378,39 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(spawnProcess.mock.calls[0]?.[0]).not.toHaveProperty("extensionPath");
+    await rpc.close();
+  });
+
+  it("passes a Native Session file to the Pi process adapter", async () => {
+    const spawnProcess = vi.fn(
+      () => new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams,
+    );
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), sessionFile: "/synthetic/source.jsonl" },
+      { spawn: spawnProcess },
+    );
+
+    await rpc.start();
+    expect(spawnProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
+    );
+    await rpc.close();
+  });
+
+  it("reads typed Entries and confirms Fork and Clone state", async () => {
+    const rpc = session("final-only");
+    await rpc.start();
+
+    await expect(rpc.getEntries()).resolves.toEqual({
+      entries: [expect.objectContaining({ id: "user-1", type: "message" })],
+      leafId: "user-1",
+    });
+    await expect(rpc.fork("user-1")).resolves.toMatchObject({
+      sessionId: "synthetic-session-derived",
+    });
+    await expect(rpc.clone()).resolves.toMatchObject({
+      sessionId: "synthetic-session-derived-derived",
+    });
     await rpc.close();
   });
 

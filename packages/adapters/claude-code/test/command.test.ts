@@ -15,7 +15,7 @@ afterEach(() => {
 function fakeExecutable(): { directory: string; executable: string } {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-adapter-"));
   directories.push(directory);
-  const executable = path.join(directory, "claude");
+  const executable = path.join(directory, process.platform === "win32" ? "claude.cmd" : "claude");
   fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   return { directory, executable };
 }
@@ -31,7 +31,10 @@ describe("Claude Code executable resolution", () => {
   it("resolves from PATH", () => {
     const { directory, executable } = fakeExecutable();
     expect(
-      resolveClaudeCodeExecutable({ environment: { PATH: directory }, platform: "linux" }),
+      resolveClaudeCodeExecutable({
+        environment: { PATH: directory, PATHEXT: ".cmd" },
+        platform: process.platform,
+      }),
     ).toBe(executable);
   });
 

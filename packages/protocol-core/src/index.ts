@@ -6,12 +6,19 @@ export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/s
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 export { projectCodexQuestionRequest } from "./codex-question.js";
 export type { CodexQuestionRequestProjection } from "./codex-question.js";
-export { CodexTurnProjector } from "./codex-ui-projector.js";
+export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
 export type {
   CodexQuestionProjection,
   CodexTurnProjection,
+  HistoricalTurnProjectionInput,
   ProjectableHostEvent,
 } from "./codex-ui-projector.js";
+export {
+  decodeThreadForkRequest,
+  mapExternalThreadHarnessError,
+  threadForkResult,
+} from "./thread-fork.js";
+export type { DecodedThreadForkRequest, ExternalThreadRpcError } from "./thread-fork.js";
 export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   EXTERNAL_HARNESS_IDS,

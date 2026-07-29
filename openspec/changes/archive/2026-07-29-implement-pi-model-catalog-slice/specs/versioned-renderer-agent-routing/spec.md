@@ -3,7 +3,7 @@
 ### Requirement: Versioned Adapter drives the native create Model state
 For a supported Desktop build, the Renderer Adapter SHALL synchronously update the uniquely associated Composer's optimistic native Model state to a bounded internal Pi transport carrier only when that Composer selects Pi. The generic carrier SHALL be `codexhost/pi-native`; an explicit selected Pi Model SHALL be represented by the same carrier plus an opaque Harness Model Ref and SHALL remain internal rather than user-visible.
 
-#### Scenario: Pi conversation create with native default
+#### Scenario: Pi conversation create
 - **WHEN** a supported Adapter observes the unique Pi Composer without an explicit Pi Model Ref before native creation
 - **THEN** the native conversation `thread/start` carries `codexhost/pi-native` as its internal Model transport token
 

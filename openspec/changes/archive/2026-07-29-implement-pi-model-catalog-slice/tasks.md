@@ -32,4 +32,3 @@
 ## 6. Validation
 
 - [x] 6.1 Run focused package tests, `npm run check`, `npm run build`, strict OpenSpec validation, and `git diff --check`
-- [ ] 6.2 Run the controlled supported-Desktop/Pi Gate with operator approval and record only sanitized catalog/selection/routing/process conclusions

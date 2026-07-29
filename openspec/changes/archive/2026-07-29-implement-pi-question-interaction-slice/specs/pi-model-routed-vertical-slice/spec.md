@@ -35,7 +35,7 @@
 - **AND**Pi可用Tool集合 MUST只来自Pi默认能力和用户原有配置
 - **AND**Question映射 MUST只在Pi实际发出Extension UI Request时发生
 
-#### Scenario: 当前切片不伪造未实现能力
+#### Scenario: 当前 PoC不伪造未实现能力
 
 - **WHEN**Pi产生Approval、Snapshot、Resume、Fork或本change未接管的行为
 - **THEN**系统 MUST NOT伪造为已支持的Codex UI能力

@@ -12,6 +12,18 @@ export interface PiTextTurnResult {
   text: string;
 }
 
+export type PiRpcFaultKind = "notInstalled" | "unavailable" | "protocolError" | "processExited";
+
+export class PiRpcFaultError extends Error {
+  constructor(
+    readonly kind: PiRpcFaultKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PiRpcFaultError";
+  }
+}
+
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
@@ -19,6 +31,7 @@ export interface PiRpcSessionOptions {
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
+  onFault?: (error: PiRpcFaultError) => void;
 }
 
 interface PendingCommand {
@@ -98,6 +111,7 @@ export class PiRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
 
@@ -135,14 +149,21 @@ export class PiRpcSession {
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));
     child.stdout.on("end", () => {
-      if (this.#buffer.length !== 0) this.#fail(new Error("Pi RPC stdout ended mid-frame"));
+      if (this.#buffer.length !== 0) {
+        this.#fail(new PiRpcFaultError("protocolError", "Pi RPC stdout ended mid-frame"));
+      }
     });
     child.stderr.resume();
-    child.once("error", (error) =>
-      this.#fail(new Error(`Pi RPC failed to start: ${error.message}`)),
-    );
+    child.once("error", (error) => {
+      const kind = isRecord(error) && error.code === "ENOENT" ? "notInstalled" : "unavailable";
+      this.#fail(new PiRpcFaultError(kind, `Pi RPC failed to start: ${error.message}`));
+    });
     child.once("exit", (code, signal) => {
-      if (!this.#closed) this.#fail(new Error(`Pi RPC exited (code=${code}, signal=${signal})`));
+      if (!this.#closed) {
+        this.#fail(
+          new PiRpcFaultError("processExited", `Pi RPC exited (code=${code}, signal=${signal})`),
+        );
+      }
     });
     await Promise.race([
       new Promise<void>((resolve, reject) => {
@@ -156,7 +177,17 @@ export class PiRpcSession {
         ),
       ),
     ]);
-    const state = await this.#send("get_state", {});
+    let state: Record<string, unknown>;
+    try {
+      state = await this.#send("get_state", {});
+    } catch (error) {
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError("unavailable", `Pi RPC state unavailable: ${message(error)}`);
+      this.#fail(fault);
+      throw fault;
+    }
     const data = isRecord(state.data) ? state.data : null;
     this.#state = {
       sessionId: typeof data?.sessionId === "string" ? data.sessionId : randomUUID(),
@@ -171,15 +202,14 @@ export class PiRpcSession {
   }
 
   async runTextTurn(text: string, onDelta: (delta: string) => void): Promise<PiTextTurnResult> {
-    if (!this.#child || !this.#state || this.#closed)
+    if (!this.#child || !this.#state || this.#closed || this.#failed)
       throw new Error("Pi RPC Session is unavailable");
     if (this.#activeTurn) throw new Error("Pi RPC Session already has an active Turn");
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
 
     const settled = new Promise<PiTextTurnResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.#activeTurn = null;
-        reject(new Error("Pi text Turn timed out"));
+        this.#fail(new PiRpcFaultError("protocolError", "Pi text Turn timed out"));
       }, this.#options.turnTimeoutMs);
       this.#activeTurn = { text: "", onDelta, resolve, reject, timeout, failure: null };
     });
@@ -216,11 +246,18 @@ export class PiRpcSession {
       try {
         const value = JSON.parse(textDecoder.decode(frame));
         if (!isRecord(value) || typeof value.type !== "string") {
-          throw new Error("Pi RPC returned an invalid envelope");
+          throw new PiRpcFaultError("protocolError", "Pi RPC returned an invalid envelope");
         }
         this.#handle(value);
       } catch (error) {
-        this.#fail(new Error(`Pi RPC returned invalid JSONL: ${message(error)}`));
+        this.#fail(
+          error instanceof PiRpcFaultError
+            ? error
+            : new PiRpcFaultError(
+                "protocolError",
+                `Pi RPC returned invalid JSONL: ${message(error)}`,
+              ),
+        );
       }
       newline = this.#buffer.indexOf(0x0a);
     }
@@ -229,9 +266,15 @@ export class PiRpcSession {
   #handle(value: Record<string, unknown>): void {
     if (value.type === "response") {
       const id = value.id;
-      if (typeof id !== "string") return this.#fail(new Error("Pi RPC response has no id"));
+      if (typeof id !== "string") {
+        return this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response has no id"));
+      }
       const pending = this.#pending.get(id);
-      if (!pending) return this.#fail(new Error("Pi RPC response id is not pending"));
+      if (!pending) {
+        return this.#fail(
+          new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"),
+        );
+      }
       clearTimeout(pending.timeout);
       this.#pending.delete(id);
       if (value.success === true) pending.resolve(value);
@@ -263,7 +306,7 @@ export class PiRpcSession {
 
   #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const child = this.#child;
-    if (!child?.stdin.writable || this.#closed)
+    if (!child?.stdin.writable || this.#closed || this.#failed)
       return Promise.reject(new Error("Pi RPC stdin is unavailable"));
     const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
@@ -300,7 +343,10 @@ export class PiRpcSession {
     this.#rejectActiveTurn(error);
   }
 
-  #fail(error: Error): void {
+  #fail(error: PiRpcFaultError): void {
+    if (this.#closed || this.#failed) return;
+    this.#failed = true;
     this.#rejectAll(error);
+    this.#options.onFault?.(error);
   }
 }

@@ -9,8 +9,10 @@
   },
   "references": [
     { "path": "../desktop-control/tsconfig.json" },
+    { "path": "../harness-adapter/tsconfig.json" },
     { "path": "../mapping-store/tsconfig.json" },
     { "path": "../protocol-core/tsconfig.json" },
+    { "path": "../shared-contracts/tsconfig.json" },
     { "path": "../adapters/pi/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]

@@ -4,7 +4,7 @@ import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
-import type { JsonObject } from "@codexhost/protocol-core";
+import { encodePiTransportModel, type JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 
 import { AppServerHost } from "../src/index.js";
@@ -95,11 +95,14 @@ function createFixture() {
   return { adapter, collector, desktopInput, diagnosticOutput, official, running };
 }
 
-async function startPiThread(fixture: ReturnType<typeof createFixture>): Promise<string> {
+async function startPiThread(
+  fixture: ReturnType<typeof createFixture>,
+  model = "codexhost/pi-native",
+): Promise<string> {
   writeRequest(fixture.desktopInput, {
     id: 1,
     method: "thread/start",
-    params: { model: "codexhost/pi-native", cwd: "/synthetic" },
+    params: { model, cwd: "/synthetic" },
   });
   const response = await fixture.collector.waitFor((message) => requestId(message, 1));
   const result = response.result as JsonObject;
@@ -131,6 +134,141 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("handles Pi inspection locally without opening a Thread Session", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 30,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "pi", cwd: "/synthetic", refresh: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 30)),
+    ).resolves.toMatchObject({
+      result: {
+        status: "ready",
+        catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
+        capabilities: { configuration: { selectModel: true } },
+      },
+    });
+    expect(fixture.adapter.inspectionCalls).toBe(1);
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("selects an existing Pi Thread Model from ordered Session state", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const model = fixture.adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+
+    writeRequest(fixture.desktopInput, {
+      id: 31,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 31))).resolves.toEqual({
+      id: 31,
+      result: { effectiveModel: model },
+    });
+    expect(fixture.adapter.sessions[0]?.state.effectiveModel).toEqual(model);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects fixed Model control for an unknown or Codex-owned Thread locally", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const model = fixture.adapter.catalog.models[0]?.ref;
+    if (!model) throw new Error("Fake catalog is empty");
+
+    writeRequest(fixture.desktopInput, {
+      id: 35,
+      method: "codexhost/thread/model/select",
+      params: { threadId: "official-thread", model },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 35)),
+    ).resolves.toMatchObject({ error: { code: -32078 } });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects a Pi Model selection while its Turn is active", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    await startPiTurn(fixture, threadId);
+    const model = fixture.adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+
+    writeRequest(fixture.desktopInput, {
+      id: 32,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: expect.stringContaining("active") },
+    });
+    fixture.adapter.sessions[0]?.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("binds a selected Pi Model carrier to create and later Turn routing", async () => {
+    const fixture = createFixture();
+    const model = fixture.adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+    const carrier = encodePiTransportModel(model);
+    const threadId = await startPiThread(fixture, carrier);
+
+    expect(fixture.adapter.sessions[0]?.initialState.effectiveModel).toEqual(model);
+    expect(
+      (fixture.collector.messages.find((message) => requestId(message, 1))?.result as JsonObject)
+        .model,
+    ).toBe(carrier);
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "turn/start",
+      params: {
+        threadId,
+        model: carrier,
+        input: [{ type: "text", text: "selected" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    fixture.adapter.sessions[0]?.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("rejects malformed selected Pi carriers without forwarding or stopping Host", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 34,
+      method: "thread/start",
+      params: { model: "codexhost/pi-native@provider/model", cwd: "/synthetic" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 34)),
+    ).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringContaining("Model Ref") },
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("projects early Adapter outputs after the turn/start response and supports thread/read", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

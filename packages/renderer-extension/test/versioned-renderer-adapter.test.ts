@@ -1,3 +1,4 @@
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -5,8 +6,11 @@ import {
   findPrewarmTargets,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
+  isPiTransportModelId,
   modelSelectionForAgent,
+  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
+  threadIdFromComposerModelTarget,
   selectOptimisticModelAtom,
   wrapElectronRendererBridge,
   wrapPrewarmDispatcher,
@@ -62,6 +66,29 @@ describe("versioned Renderer Agent adapter", () => {
     });
     expect(modelSelectionForAgent(null, "high", "codex")).toBeNull();
     expect(modelSelectionForAgent(official, "high", "codex")).toBe(official);
+  });
+
+  it("encodes a selected Pi Model in the internal carrier without displaying semantics", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
+    const selected = piTransportModelId(model);
+
+    expect(selected).toBe(`${PI_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(isPiTransportModelId(selected)).toBe(true);
+    expect(isPiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@provider/model`)).toBe(false);
+    expect(modelSelectionForAgent(null, "high", "pi", model)).toEqual({
+      model: selected,
+      reasoningEffort: "high",
+    });
+    expect(decorateThreadStartParams({ model: "official/model" }, { ...lockedPi, model })).toEqual({
+      model: selected,
+    });
+  });
+
+  it("extracts only a validated conversation Thread identity", () => {
+    expect(threadIdFromComposerModelTarget(["conversation", "thread-1"])).toBe("thread-1");
+    expect(threadIdFromComposerModelTarget(["default", "thread-1"])).toBeNull();
+    expect(threadIdFromComposerModelTarget(["conversation", ""])).toBeNull();
+    expect(threadIdFromComposerModelTarget(["conversation", {}])).toBeNull();
   });
 
   it("clones Pi create params and leaves Codex params unchanged", () => {

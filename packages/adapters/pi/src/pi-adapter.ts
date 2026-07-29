@@ -6,10 +6,14 @@ import {
   type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
+  type HarnessInspection,
+  type HarnessModelRef,
   type HarnessOutput,
   type HarnessResult,
   type HarnessSession,
+  type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
   type HostCommandExecutionItem,
@@ -18,6 +22,8 @@ import {
   type HostItemOutcome,
   type HostToolExecutionItem,
   type HostToolOutput,
+  type ModelSelectCommand,
+  type ModelSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -40,6 +46,13 @@ import {
   type PiTurnEvent,
   type PiTurnResult,
 } from "./pi-rpc-session.js";
+import {
+  decodePiModelRef,
+  encodePiModelRef,
+  normalizePiModelCatalog,
+  samePiModel,
+  type PiNativeModelRef,
+} from "./pi-model-catalog.js";
 
 export interface PiAdapterOptions {
   command?: string;
@@ -53,6 +66,8 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
+  getAvailableModels(): Promise<PiNativeModelRef[]>;
+  selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -107,6 +122,19 @@ function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): Ha
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
+}
+
+function nativeModelFromState(state: PiSessionState): PiNativeModelRef | null {
+  if (state.provider === null && state.modelId === null) return null;
+  if (state.provider === null || state.modelId === null) {
+    throw new PiRpcFaultError("protocolError", "Pi state contains a partial Model identity");
+  }
+  return { provider: state.provider, id: state.modelId };
+}
+
+function effectiveModelFromState(state: PiSessionState): HarnessModelRef | undefined {
+  const model = nativeModelFromState(state);
+  return model ? encodePiModelRef(model) : undefined;
 }
 
 function toolFailure(toolName: string): HarnessError {
@@ -192,6 +220,9 @@ function delay(milliseconds: number): Promise<void> {
 
 class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
+  readonly capabilities: HarnessSessionCapabilities = {
+    configuration: { selectModel: true },
+  };
   readonly initialState: HarnessSessionState = {};
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -199,10 +230,12 @@ class PiHarnessSession implements HarnessSession {
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #onClosed: () => void;
+  readonly #requestedModel: HarnessModelRef | undefined;
   readonly #toolOutputLimit: number;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
+  #configuring = false;
   #phase: SessionPhase = "open";
   #starting: Promise<PiTurnTransport> | null = null;
   #state: HarnessSessionState = {};
@@ -212,26 +245,33 @@ class PiHarnessSession implements HarnessSession {
     cwd: string,
     createTransport: PiAdapterDependencies["createTransport"],
     onClosed: () => void,
-    options: { closeTimeoutMs: number; toolOutputLimit: number },
+    options: {
+      closeTimeoutMs: number;
+      model?: HarnessModelRef;
+      toolOutputLimit: number;
+    },
   ) {
     this.#cwd = cwd;
     this.#createTransport = createTransport;
     this.#onClosed = onClosed;
     this.#closeTimeoutMs = options.closeTimeoutMs;
+    this.#requestedModel = options.model;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.outputs = this.#channel.outputs;
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted>> {
+  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | ModelSelectCompleted>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (this.#acceptingTurn || this.#active) {
+    if (command.type === "model.select") return this.#selectModel(command);
+    if (this.#acceptingTurn || this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
@@ -317,6 +357,58 @@ class PiHarnessSession implements HarnessSession {
     return this.#closePromise;
   }
 
+  async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (this.#acceptingTurn || this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Pi Session cannot select a Model while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) {
+      return {
+        ok: false,
+        error: invalidState("Pi Model selection requires a started Native Session"),
+      };
+    }
+    let requested: PiNativeModelRef;
+    try {
+      requested = decodePiModelRef(command.model);
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "invalidRequest") };
+    }
+
+    this.#configuring = true;
+    try {
+      let state: PiSessionState;
+      try {
+        state = await transport.selectModel(requested);
+      } catch (error) {
+        if (error instanceof PiRpcFaultError) this.#fault(error);
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+      this.#publishTransportState(state);
+      const actual = nativeModelFromState(state);
+      if (!samePiModel(actual, requested)) {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Pi did not activate the requested Model",
+            retryable: false,
+          },
+        };
+      }
+      return { ok: true, value: { completed: true } };
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -349,19 +441,20 @@ class PiHarnessSession implements HarnessSession {
     });
     const starting = transport
       .start()
-      .then(() => {
+      .then(async () => {
         if (this.#phase !== "open") throw new Error("Pi Session closed during startup");
+        let state = transport.state;
+        if (this.#requestedModel) {
+          const requested = decodePiModelRef(this.#requestedModel);
+          const current = nativeModelFromState(state);
+          if (!samePiModel(current, requested)) state = await transport.selectModel(requested);
+          if (!samePiModel(nativeModelFromState(state), requested)) {
+            this.#publishTransportState(state);
+            throw new Error("Pi did not activate the requested create Model");
+          }
+        }
         this.#transport = transport;
-        const state = transport.state;
-        this.#state = {
-          nativeRef: {
-            harnessId: this.harnessId,
-            nativeSessionId: state.sessionId,
-            ...(state.sessionFile ? { locator: { sessionFile: state.sessionFile } } : {}),
-            formatVersion: 1,
-          },
-        };
-        this.#event({ type: "session.state.changed", state: this.#state });
+        this.#publishTransportState(state);
         return transport;
       })
       .catch(async (error: unknown) => {
@@ -374,6 +467,20 @@ class PiHarnessSession implements HarnessSession {
       });
     this.#starting = starting;
     return starting;
+  }
+
+  #publishTransportState(state: PiSessionState): void {
+    const effectiveModel = effectiveModelFromState(state);
+    this.#state = {
+      nativeRef: {
+        harnessId: this.harnessId,
+        nativeSessionId: state.sessionId,
+        ...(state.sessionFile ? { locator: { sessionFile: state.sessionFile } } : {}),
+        formatVersion: 1,
+      },
+      ...(effectiveModel ? { effectiveModel } : {}),
+    };
+    this.#event({ type: "session.state.changed", state: this.#state });
   }
 
   #handleTurnEvent(active: ActiveTurn, event: PiTurnEvent): void {
@@ -580,6 +687,7 @@ export class PiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = piHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
+  readonly #inspections = new Set<PiTurnTransport>();
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -593,6 +701,44 @@ export class PiAdapter implements HarnessAdapter {
     this.#createTransport = dependencies.createTransport;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+  }
+
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    if (this.#closePromise) {
+      return {
+        status: "unavailable",
+        error: {
+          code: "invalidState",
+          message: "Pi Adapter is closed",
+          retryable: false,
+        },
+      };
+    }
+    const transport = this.#createTransport({
+      cwd: input.cwd ?? process.cwd(),
+      onFault: () => undefined,
+    });
+    this.#inspections.add(transport);
+    try {
+      await transport.start();
+      const models = await transport.getAvailableModels();
+      const catalog = normalizePiModelCatalog(models, nativeModelFromState(transport.state));
+      await transport.close();
+      return {
+        status: "ready",
+        catalog,
+        capabilities: { configuration: { selectModel: true } },
+      };
+    } catch (error) {
+      await transport.close().catch(() => undefined);
+      const normalized = normalizedError(error, "unavailable");
+      return {
+        status: normalized.code === "notInstalled" ? "notInstalled" : "error",
+        error: normalized,
+      };
+    } finally {
+      this.#inspections.delete(transport);
+    }
   }
 
   async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -609,13 +755,24 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
+    if (input.model) {
+      try {
+        decodePiModelRef(input.model);
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
+      }
+    }
     const session = new PiHarnessSession(
       input.cwd,
       this.#createTransport,
       () => {
         this.#sessions.delete(session);
       },
-      { closeTimeoutMs: this.#closeTimeoutMs, toolOutputLimit: this.#toolOutputLimit },
+      {
+        closeTimeoutMs: this.#closeTimeoutMs,
+        ...(input.model ? { model: input.model } : {}),
+        toolOutputLimit: this.#toolOutputLimit,
+      },
     );
     this.#sessions.add(session);
     return { ok: true, value: session };
@@ -623,9 +780,10 @@ export class PiAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
-      this.#closePromise = Promise.all([...this.#sessions].map((session) => session.close())).then(
-        () => undefined,
-      );
+      this.#closePromise = Promise.all([
+        ...[...this.#inspections].map((transport) => transport.close()),
+        ...[...this.#sessions].map((session) => session.close()),
+      ]).then(() => undefined);
     }
     return this.#closePromise;
   }

@@ -1,3 +1,5 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 export type RendererAgent = "codex" | "pi";
 export type ComposerAgentPhase = "draft" | "locked";
 
@@ -5,6 +7,7 @@ export interface DraftComposerState {
   agent: RendererAgent;
   phase: ComposerAgentPhase;
   composerId: string;
+  piModel?: HarnessModelRef;
 }
 
 type MutableComposerState = DraftComposerState;
@@ -38,6 +41,7 @@ function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolea
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
   readonly #conversationStates: ConversationState[] = [];
+  readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
@@ -65,6 +69,27 @@ export class DraftAgentController<Composer extends object> {
 
   isSwitching(composer: Composer): boolean {
     return this.#switching.has(this.#state(composer));
+  }
+
+  beginModelRequest(composer: Composer): number {
+    const state = this.#state(composer);
+    const generation = (this.#modelRequestGenerations.get(state) ?? 0) + 1;
+    this.#modelRequestGenerations.set(state, generation);
+    return generation;
+  }
+
+  invalidateModelRequests(composer: Composer): void {
+    this.beginModelRequest(composer);
+  }
+
+  isCurrentModelRequest(composer: Composer, generation: number): boolean {
+    return (this.#modelRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+  }
+
+  setPiModel(composer: Composer, model: HarnessModelRef): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piModel = model;
+    return state;
   }
 
   lock(composer: Composer): Readonly<DraftComposerState> {

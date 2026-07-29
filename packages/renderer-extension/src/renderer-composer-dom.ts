@@ -1,3 +1,5 @@
+import type { HarnessModelCatalog, HarnessModelRef } from "@codexhost/shared-contracts";
+
 import type { ComposerAgentPhase, RendererAgent } from "./agent-selection-state.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
@@ -5,8 +7,16 @@ export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
 export const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
 export const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
 
+export interface PiModelControlView {
+  status: "idle" | "loading" | "ready" | "selecting" | "empty" | "error";
+  catalog?: HarnessModelCatalog;
+  selected?: HarnessModelRef;
+  error?: string;
+}
+
 export interface ComposerAgentControl {
   root: HTMLElement;
+  modelSelect: HTMLSelectElement;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
   buttons: Record<RendererAgent, HTMLButtonElement>;
@@ -108,6 +118,7 @@ export function mountComposerAgentControl(
   composerId: string,
   sendButton: HTMLButtonElement,
   onSelect: (agent: RendererAgent) => void,
+  onSelectModel: (modelId: string) => void,
 ): ComposerAgentControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -132,11 +143,32 @@ export function mountComposerAgentControl(
     buttons[agent].addEventListener("click", () => onSelect(agent));
   }
   root.append(buttons.codex, buttons.pi);
+
+  const modelSelect = document.createElement("select");
+  modelSelect.setAttribute("aria-label", "Model");
+  modelSelect.style.display = "none";
+  modelSelect.style.height = "28px";
+  modelSelect.style.width = "clamp(132px, 18vw, 220px)";
+  modelSelect.style.padding = "0 24px 0 8px";
+  modelSelect.style.marginInline = "4px";
+  modelSelect.style.border = "1px solid rgba(127, 127, 127, 0.28)";
+  modelSelect.style.borderRadius = "6px";
+  modelSelect.style.background = "rgba(127, 127, 127, 0.08)";
+  modelSelect.style.color = "inherit";
+  modelSelect.style.font = "500 12px/1 system-ui, sans-serif";
+  modelSelect.style.letterSpacing = "0";
+  modelSelect.addEventListener("change", () => onSelectModel(modelSelect.value));
+
   const toolbar = sendButton.parentElement;
-  if (toolbar) toolbar.insertBefore(root, sendButton);
-  else composer.append(root);
+  if (toolbar) {
+    toolbar.insertBefore(root, sendButton);
+    toolbar.insertBefore(modelSelect, sendButton);
+  } else {
+    composer.append(root, modelSelect);
+  }
   return {
     root,
+    modelSelect,
     sendButton,
     sendDisabledBeforeSwitch: null,
     buttons,
@@ -148,13 +180,59 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
+  modelView: PiModelControlView = { status: "idle" },
 ): void {
-  if (switching && control.sendDisabledBeforeSwitch === null) {
+  const selectedModel = modelView.selected;
+  const modelReady =
+    modelView.catalog !== undefined &&
+    selectedModel !== undefined &&
+    modelView.catalog.models.some((model) => model.ref.id === selectedModel.id);
+  const modelBlocked = state.agent === "pi" && (modelView.status === "selecting" || !modelReady);
+  const submissionBlocked = switching || modelBlocked;
+  if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
-  } else if (!switching && control.sendDisabledBeforeSwitch !== null) {
+  } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
     control.sendDisabledBeforeSwitch = null;
+  }
+  control.modelSelect.style.display = state.agent === "pi" ? "inline-block" : "none";
+  if (state.agent === "pi") {
+    const catalogSignature =
+      modelView.catalog?.models
+        .map((model) => `${model.ref.id}\u0000${model.label}`)
+        .join("\u0001") ?? `:${modelView.status}`;
+    if (control.modelSelect.dataset.catalogSignature !== catalogSignature) {
+      control.modelSelect.replaceChildren();
+      if (modelView.catalog && modelView.catalog.models.length > 0) {
+        for (const model of modelView.catalog.models) {
+          const option = document.createElement("option");
+          option.value = model.ref.id;
+          option.textContent = model.label;
+          control.modelSelect.append(option);
+        }
+      } else {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent =
+          modelView.status === "loading"
+            ? "Loading models..."
+            : modelView.status === "empty"
+              ? "No Pi models"
+              : "Models unavailable";
+        control.modelSelect.append(option);
+      }
+      control.modelSelect.dataset.catalogSignature = catalogSignature;
+    }
+    if (selectedModel) control.modelSelect.value = selectedModel.id;
+    control.modelSelect.disabled =
+      modelView.status === "loading" ||
+      modelView.status === "selecting" ||
+      modelView.status === "empty" ||
+      modelView.catalog === undefined;
+    control.modelSelect.title = modelView.error ?? "Pi Model";
+    control.modelSelect.style.cursor = control.modelSelect.disabled ? "not-allowed" : "pointer";
+    control.modelSelect.style.opacity = control.modelSelect.disabled ? "0.65" : "1";
   }
   for (const candidate of ["codex", "pi"] as const) {
     const selected = candidate === state.agent;
@@ -174,4 +252,5 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
   }
   control.root.remove();
+  control.modelSelect.remove();
 }

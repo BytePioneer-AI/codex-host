@@ -1,3 +1,4 @@
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { DraftAgentController } from "../src/index.js";
@@ -116,6 +117,33 @@ describe("Renderer draft Agent controller", () => {
       agent: "pi",
       phase: "locked",
     });
+  });
+
+  it("transfers Pi Model state and request generations with logical Composer identity", () => {
+    const draft = {};
+    const conversation = {};
+    const revisit = {};
+    const newDefault = {};
+    const targetMember = {};
+    const target = ["conversation", targetMember];
+    const agents = controller();
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
+
+    agents.mount(draft, ["default"]);
+    agents.setPiModel(draft, model);
+    const firstGeneration = agents.beginModelRequest(draft);
+    expect(agents.transfer(draft, conversation, target)).toBe(true);
+    expect(agents.get(conversation).piModel).toEqual(model);
+    expect(agents.isCurrentModelRequest(conversation, firstGeneration)).toBe(true);
+
+    const secondGeneration = agents.beginModelRequest(conversation);
+    expect(agents.isCurrentModelRequest(draft, firstGeneration)).toBe(false);
+    expect(agents.isCurrentModelRequest(draft, secondGeneration)).toBe(true);
+    agents.mount(revisit, ["conversation", targetMember]);
+    expect(agents.get(revisit).piModel).toEqual(model);
+
+    agents.mount(newDefault, ["default"]);
+    expect(agents.get(newDefault).piModel).toBeUndefined();
   });
 
   it("applies the target Agent before clearing stale prewarm", async () => {

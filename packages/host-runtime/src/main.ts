@@ -1,7 +1,7 @@
+import { createExternalHarnessAdapters } from "./adapter-composition.js";
 import { AppServerHost } from "./app-server-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
-const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 
 const stockCodexPath = process.env[STOCK_CODEX_PATH_ENV];
@@ -16,7 +16,7 @@ const host = new AppServerHost({
   arguments: process.argv.slice(2),
   defaultAgent,
   environment: process.env,
-  ...(process.env[PI_COMMAND_ENV] ? { piCommand: process.env[PI_COMMAND_ENV] } : {}),
+  externalAdapters: createExternalHarnessAdapters(process.env),
 });
 
 process.exitCode = await host.run();

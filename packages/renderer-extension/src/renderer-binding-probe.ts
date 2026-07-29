@@ -1,4 +1,5 @@
 import {
+  DEFAULT_RENDERER_AGENTS,
   DraftAgentController,
   type ComposerAgentPhase,
   type RendererAgent,
@@ -28,12 +29,17 @@ import {
 export interface RendererBindingProbeStatus {
   version: 2;
   mountedComposers: number;
+  enabledAgents: RendererAgent[];
   selections: Array<{
     composerId: string;
     agent: RendererAgent;
     phase: ComposerAgentPhase;
   }>;
   adapter: RendererAdapterStatus;
+}
+
+export interface RendererBindingProbeOptions {
+  enabledAgents?: readonly RendererAgent[];
 }
 
 export interface RendererBindingProbeApi {
@@ -82,11 +88,14 @@ export function shouldTransferComposerState(
   );
 }
 
-export function installRendererBindingProbe(): RendererBindingProbeApi {
+export function installRendererBindingProbe(
+  options: RendererBindingProbeOptions = {},
+): RendererBindingProbeApi {
   const existing = window.__codexhostRendererBindingProbeV1;
   if (existing) return existing;
 
-  const controller = new DraftAgentController<Element>();
+  const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
+  const controller = new DraftAgentController<Element>({ enabledAgents });
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
@@ -168,11 +177,17 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
     const state = controller.mount(composer, modelTarget);
-    const control = mountComposerAgentControl(composer, state.composerId, sendButton, (agent) => {
-      const mounted = mountedByComposer.get(composer);
-      if (!composer.isConnected || !mounted) return;
-      void switchComposerAgent(mounted, agent);
-    });
+    const control = mountComposerAgentControl(
+      composer,
+      state.composerId,
+      sendButton,
+      enabledAgents,
+      (agent) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void switchComposerAgent(mounted, agent);
+      },
+    );
     const mounted = {
       composer,
       composerId: state.composerId,
@@ -363,6 +378,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       return {
         version: 2,
         mountedComposers: selections.length,
+        enabledAgents: [...enabledAgents],
         selections,
         adapter: { ...adapterStatus },
       };

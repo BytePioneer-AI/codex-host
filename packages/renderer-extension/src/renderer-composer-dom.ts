@@ -9,7 +9,8 @@ export interface ComposerAgentControl {
   root: HTMLElement;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
-  buttons: Record<RendererAgent, HTMLButtonElement>;
+  agents: readonly RendererAgent[];
+  buttons: Partial<Record<RendererAgent, HTMLButtonElement>>;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -107,6 +108,7 @@ export function mountComposerAgentControl(
   composer: Element,
   composerId: string,
   sendButton: HTMLButtonElement,
+  enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
 ): ComposerAgentControl {
   const root = document.createElement("div");
@@ -124,14 +126,18 @@ export function mountComposerAgentControl(
   root.style.background = "rgba(127, 127, 127, 0.08)";
   root.style.color = "inherit";
 
-  const buttons = {
-    codex: createAgentButton("codex", "Codex"),
-    pi: createAgentButton("pi", "Pi"),
+  const labels: Record<RendererAgent, string> = {
+    codex: "Codex",
+    pi: "Pi",
+    "claude-code": "Claude Code",
   };
-  for (const agent of ["codex", "pi"] as const) {
-    buttons[agent].addEventListener("click", () => onSelect(agent));
+  const buttons: Partial<Record<RendererAgent, HTMLButtonElement>> = {};
+  for (const agent of enabledAgents) {
+    const button = createAgentButton(agent, labels[agent]);
+    button.addEventListener("click", () => onSelect(agent));
+    buttons[agent] = button;
+    root.append(button);
   }
-  root.append(buttons.codex, buttons.pi);
   const toolbar = sendButton.parentElement;
   if (toolbar) toolbar.insertBefore(root, sendButton);
   else composer.append(root);
@@ -139,6 +145,7 @@ export function mountComposerAgentControl(
     root,
     sendButton,
     sendDisabledBeforeSwitch: null,
+    agents: [...enabledAgents],
     buttons,
   };
 }
@@ -156,12 +163,13 @@ export function renderComposerAgentControl(
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
     control.sendDisabledBeforeSwitch = null;
   }
-  for (const candidate of ["codex", "pi"] as const) {
+  for (const candidate of control.agents) {
     const selected = candidate === state.agent;
     const button = control.buttons[candidate];
+    if (!button) continue;
     button.setAttribute("aria-pressed", String(selected));
     button.disabled =
-      switching || state.phase === "locked" || (candidate === "pi" && adapterState !== "ready");
+      switching || state.phase === "locked" || (candidate !== "codex" && adapterState !== "ready");
     button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
     button.style.boxShadow = selected ? "inset 0 0 0 1px rgba(127, 127, 127, 0.3)" : "none";
     button.style.cursor = button.disabled ? "not-allowed" : "pointer";

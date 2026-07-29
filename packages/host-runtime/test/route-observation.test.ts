@@ -14,6 +14,13 @@ const piRoute: CreateRequestRouteObservation = {
   selectionSource: "transport-model",
 };
 
+const claudeRoute: CreateRequestRouteObservation = {
+  requestMethod: "thread/start",
+  modelCarrier: "claude-code-transport",
+  selectedHarness: "claude-code",
+  selectionSource: "transport-model",
+};
+
 const codexRoute: CreateRequestRouteObservation = {
   requestMethod: "thread/start",
   modelCarrier: "official-model",
@@ -38,6 +45,8 @@ describe("request route observation", () => {
 
     const piCreate = tracker.registerCreate("pi-request", piRoute, "conversation");
     tracker.bindCreatedThread("pi-request", "pi-thread");
+    const claudeCreate = tracker.registerCreate("claude-request", claudeRoute, "conversation");
+    tracker.bindCreatedThread("claude-request", "claude-thread");
     const officialCreate = tracker.registerCreate("official-request", codexRoute, "ephemeral");
     tracker.bindOfficialResponse({
       id: "official-request",
@@ -51,7 +60,7 @@ describe("request route observation", () => {
     });
     expect(officialCreate).toEqual({
       ...codexRoute,
-      createOrdinal: 2,
+      createOrdinal: 3,
       threadPurpose: "ephemeral",
     });
     expect(tracker.observeTurn("pi-thread", "codex")).toEqual({
@@ -61,9 +70,21 @@ describe("request route observation", () => {
       threadPurpose: "conversation",
       association: "matched",
     });
-    expect(tracker.observeTurn("official-thread", "codex")).toEqual({
+    expect(claudeCreate).toEqual({
+      ...claudeRoute,
+      createOrdinal: 2,
+      threadPurpose: "conversation",
+    });
+    expect(tracker.observeTurn("claude-thread", "codex")).toEqual({
       requestMethod: "turn/start",
       createOrdinal: 2,
+      selectedHarness: "claude-code",
+      threadPurpose: "conversation",
+      association: "matched",
+    });
+    expect(tracker.observeTurn("official-thread", "codex")).toEqual({
+      requestMethod: "turn/start",
+      createOrdinal: 3,
       selectedHarness: "codex",
       threadPurpose: "ephemeral",
       association: "matched",

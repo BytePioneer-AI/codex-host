@@ -1,6 +1,7 @@
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
+export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const SUPPORTED_RENDERER_ASSETS = [
   "app-initial-BbEVL4-_.js",
   "app-initial-BHB6SClA.js",
@@ -105,6 +106,16 @@ declare global {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
   }
+}
+
+function transportModelIdForAgent(agent: RendererAgent): string | null {
+  if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
+  if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  return null;
+}
+
+function isTransportModelId(model: unknown): boolean {
+  return model === PI_TRANSPORT_MODEL_ID || model === CLAUDE_CODE_TRANSPORT_MODEL_ID;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -239,8 +250,9 @@ export function decorateThreadStartParams(
   if (!isRecord(params) || typeof params.model !== "string") {
     throw new Error("thread/start params must contain a text Model");
   }
-  if (selection?.agent !== "pi") return params as ThreadStartParams;
-  return { ...params, model: PI_TRANSPORT_MODEL_ID } as ThreadStartParams;
+  const transportModelId = selection ? transportModelIdForAgent(selection.agent) : null;
+  if (!transportModelId) return params as ThreadStartParams;
+  return { ...params, model: transportModelId } as ThreadStartParams;
 }
 
 export function wrapElectronRendererBridge(
@@ -252,7 +264,8 @@ export function wrapElectronRendererBridge(
   const wrapped = function (this: unknown, message: unknown): unknown {
     const selection = getSelection();
     if (
-      selection?.agent !== "pi" ||
+      selection == null ||
+      transportModelIdForAgent(selection.agent) == null ||
       !isRecord(message) ||
       !isRecord(message.request) ||
       message.request.method !== "thread/start"
@@ -279,7 +292,9 @@ export function wrapPrewarmDispatcher(
   const original = dispatcher.dispatchMessage;
   const wrapped = function (this: unknown, type: string, payload: unknown): unknown {
     const selection = getSelection();
-    if (selection?.agent !== "pi") return original.call(this, type, payload);
+    if (!selection || transportModelIdForAgent(selection.agent) == null) {
+      return original.call(this, type, payload);
+    }
     if (!isRecord(payload) || !isRecord(payload.request)) {
       if (type === "thread-prewarm-start") {
         throw new Error("thread-prewarm-start payload must contain a Request");
@@ -545,7 +560,8 @@ export function modelSelectionForAgent(
   reasoningEffort: unknown,
   agent: RendererAgent,
 ): ModelPowerSelection | null {
-  return agent === "pi" ? { model: PI_TRANSPORT_MODEL_ID, reasoningEffort } : officialSelection;
+  const transportModelId = transportModelIdForAgent(agent);
+  return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
 export function installCurrentRendererAdapter(): {
@@ -613,7 +629,7 @@ export function installCurrentRendererAdapter(): {
     modelController = discovered;
     if (
       selectedAgent === "codex" &&
-      (discovered.current === null || discovered.current.model !== PI_TRANSPORT_MODEL_ID)
+      (discovered.current === null || !isTransportModelId(discovered.current.model))
     ) {
       officialSelection = discovered.current;
       hasOfficialSelection = true;

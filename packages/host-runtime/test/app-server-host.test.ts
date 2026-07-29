@@ -4,7 +4,11 @@ import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
-import type { JsonObject } from "@codexhost/protocol-core";
+import {
+  CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  type ExternalHarnessId,
+  type JsonObject,
+} from "@codexhost/protocol-core";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 
 import { AppServerHost } from "../src/index.js";
@@ -94,8 +98,14 @@ function writeRequest(stream: PassThrough, value: JsonObject): void {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
-function createFixture() {
-  const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+function createFixture(
+  options: {
+    environment?: NodeJS.ProcessEnv;
+    externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
+  } = {},
+) {
+  const adapter =
+    options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const desktopInput = new PassThrough();
   const desktopOutput = new PassThrough();
   const diagnosticOutput = new PassThrough();
@@ -109,24 +119,43 @@ function createFixture() {
     desktopInput,
     desktopOutput,
     diagnosticOutput,
-    piAdapter: adapter,
+    ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.externalAdapters
+      ? { externalAdapters: options.externalAdapters }
+      : { piAdapter: adapter }),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
   });
   const running = host.run();
-  return { adapter, collector, desktopInput, diagnosticOutput, official, running };
+  return {
+    adapter,
+    collector,
+    desktopInput,
+    diagnosticOutput,
+    official,
+    running,
+    spawnOfficial,
+  };
 }
 
-async function startPiThread(fixture: ReturnType<typeof createFixture>): Promise<string> {
+async function startExternalThread(
+  fixture: ReturnType<typeof createFixture>,
+  model: string,
+  id = 1,
+): Promise<string> {
   writeRequest(fixture.desktopInput, {
-    id: 1,
+    id,
     method: "thread/start",
-    params: { model: "codexhost/pi-native", cwd: "/synthetic" },
+    params: { model, cwd: "/synthetic" },
   });
-  const response = await fixture.collector.waitFor((message) => requestId(message, 1));
+  const response = await fixture.collector.waitFor((message) => requestId(message, id));
   const result = response.result as JsonObject;
   const thread = result.thread as JsonObject;
   if (typeof thread.id !== "string") throw new Error("Synthetic thread response has no ID");
   return thread.id;
+}
+
+async function startPiThread(fixture: ReturnType<typeof createFixture>): Promise<string> {
+  return startExternalThread(fixture, "codexhost/pi-native");
 }
 
 async function startPiTurn(
@@ -466,9 +495,101 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 2)),
     ).resolves.toMatchObject({
-      error: { code: -32074, message: "Pi turn/interrupt must reference the active Turn" },
+      error: { code: -32074, message: "External turn/interrupt must reference the active Turn" },
     });
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("isolates Pi and Claude Threads behind the same registered Harness path", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      10,
+    );
+    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 11);
+    expect(claudeThreadId).not.toBe(piThreadId);
+    expect(claudeAdapter.sessions).toHaveLength(1);
+    expect(piAdapter.sessions).toHaveLength(1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "turn/start",
+      params: { threadId: claudeThreadId, input: [{ type: "text", text: "synthetic" }] },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 12));
+    const claudeStarted = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/started") &&
+        (message.params as JsonObject).threadId === claudeThreadId,
+    );
+    expect(claudeStarted).toBeDefined();
+    const claudeSession = claudeAdapter.sessions[0];
+    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
+    claudeSession.appendText("claude output");
+    claudeSession.succeedTurn();
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/completed") &&
+        (message.params as JsonObject).threadId === claudeThreadId,
+    );
+
+    expect(piAdapter.sessions[0]?.initialState).toEqual({});
+    expect(claudeAdapter.sessions).toHaveLength(1);
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 12));
+    const startedIndex = fixture.collector.messages.findIndex(
+      (message) =>
+        method(message, "turn/started") &&
+        (message.params as JsonObject).threadId === claudeThreadId,
+    );
+    expect(startedIndex).toBeGreaterThan(responseIndex);
+    await stopFixture(fixture);
+  });
+
+  it("fails closed when a valid Claude token has no registered Adapter", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 20,
+      method: "thread/start",
+      params: { model: CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, cwd: "/synthetic" },
+    });
+
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 20)),
+    ).resolves.toMatchObject({
+      error: { code: -32070, message: "External Harness 'claude-code' is unavailable" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("does not pass internal Harness controls to the official app-server", async () => {
+    const fixture = createFixture({
+      environment: {
+        VISIBLE_TO_OFFICIAL: "yes",
+        CODEXHOST_ENABLE_CLAUDE_CODE: "1",
+        CODEXHOST_CLAUDE_COMMAND: "/synthetic/claude",
+        CODEXHOST_PI_COMMAND: "/synthetic/pi",
+      },
+    });
+
+    expect(fixture.spawnOfficial).toHaveBeenCalledWith(
+      "/synthetic/codex",
+      ["app-server"],
+      expect.objectContaining({ env: { VISIBLE_TO_OFFICIAL: "yes" } }),
+    );
     await stopFixture(fixture);
   });
 

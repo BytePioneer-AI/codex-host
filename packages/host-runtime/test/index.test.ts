@@ -5,8 +5,9 @@ import { classifyCreateRequestRoute, packageMetadata } from "../src/index.js";
 
 describe("host-runtime package", () => {
   it("declares the composition-root dependencies", () => {
-    expect(packageMetadata.dependencies).toHaveLength(6);
+    expect(packageMetadata.dependencies).toHaveLength(7);
     expect(packageMetadata.dependencies).toContain("@codexhost/protocol-core");
+    expect(packageMetadata.dependencies).toContain("@codexhost/adapter-claude-code");
     expect(packageMetadata.dependencies).toContain("@codexhost/harness-adapter");
     expect(packageMetadata.dependencies).toContain("@codexhost/shared-contracts");
   });
@@ -34,6 +35,12 @@ describe("host-runtime package", () => {
       requestMethod: "thread/start",
       modelCarrier: "pi-transport",
       selectedHarness: "pi",
+      selectionSource: "transport-model",
+    });
+    expect(classifyCreateRequestRoute(request("codexhost/claude-code-native"), "codex")).toEqual({
+      requestMethod: "thread/start",
+      modelCarrier: "claude-code-transport",
+      selectedHarness: "claude-code",
       selectionSource: "transport-model",
     });
     expect(

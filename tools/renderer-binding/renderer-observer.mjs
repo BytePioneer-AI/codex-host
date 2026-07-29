@@ -12,7 +12,7 @@ const INSTALL_RENDERER_OBSERVER_SOURCE = `(() => {
     if (
       !isRecord(detail) ||
       typeof detail.composerId !== 'string' ||
-      !['codex', 'pi'].includes(detail.agent) ||
+      !['codex', 'pi', 'claude-code'].includes(detail.agent) ||
       !['click', 'enter', 'submit'].includes(detail.trigger)
     ) return;
     const capturedAt = Date.now();
@@ -45,7 +45,7 @@ const INSTALL_RENDERER_OBSERVER_SOURCE = `(() => {
         return;
       }
       const buttons = [...control.querySelectorAll('button[data-agent]')];
-      if (buttons.length === 2 && buttons.some((button) => !button.disabled)) break;
+      if (buttons.length >= 2 && buttons.some((button) => !button.disabled)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     switchCounters.rejected += 1;
@@ -62,7 +62,7 @@ const INSTALL_RENDERER_OBSERVER_SOURCE = `(() => {
       target == null ||
       target.disabled ||
       target.getAttribute('aria-pressed') === 'true' ||
-      !['codex', 'pi'].includes(agent) ||
+      !['codex', 'pi', 'claude-code'].includes(agent) ||
       typeof composerId !== 'string'
     ) return;
     switchCounters.attempts += 1;
@@ -172,7 +172,7 @@ export function validateRendererObserverStatus(value) {
       !isRecord(observation) ||
       typeof observation.submissionId !== "string" ||
       typeof observation.composerId !== "string" ||
-      !["codex", "pi"].includes(observation.agent) ||
+      !["codex", "pi", "claude-code"].includes(observation.agent) ||
       !["click", "enter", "submit"].includes(observation.trigger) ||
       typeof observation.capturedAt !== "string"
     ) {

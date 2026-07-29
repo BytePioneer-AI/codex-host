@@ -6,8 +6,14 @@ export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/s
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 export { CodexTurnProjector } from "./codex-ui-projector.js";
 export type { CodexTurnProjection, ProjectableHostEvent } from "./codex-ui-projector.js";
-export { PI_NATIVE_TRANSPORT_MODEL_ID, decodeCreateRoute } from "./model-routing.js";
-export type { CreateRoute } from "./model-routing.js";
+export {
+  CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  EXTERNAL_HARNESS_IDS,
+  PI_NATIVE_TRANSPORT_MODEL_ID,
+  decodeCreateRoute,
+  transportModelIdForHarness,
+} from "./model-routing.js";
+export type { CreateRoute, ExternalHarnessId, RoutedHarnessId } from "./model-routing.js";
 export {
   encodeJsonFrame,
   parseJsonFrame,

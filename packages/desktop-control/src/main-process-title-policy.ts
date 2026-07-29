@@ -25,6 +25,7 @@ export interface MainProcessTitlePolicyStatus {
 export interface MainProcessTitlePolicyCounters {
   codexTitleCalls: number;
   piTitleSkips: number;
+  externalTitleSkips: number;
   ambiguousTitleSkips: number;
 }
 
@@ -132,6 +133,7 @@ const INSTALL_POLICY_FUNCTION = `async function () {
   const counters = {
     codexTitleCalls: 0,
     piTitleSkips: 0,
+    externalTitleSkips: 0,
     ambiguousTitleSkips: 0,
   };
   const ownedWebContentsIds = new Set();
@@ -166,7 +168,7 @@ const INSTALL_POLICY_FUNCTION = `async function () {
       return null;
     }
     if (selection.agent !== 'codex') {
-      counters.ambiguousTitleSkips += 1;
+      counters.externalTitleSkips += 1;
       return null;
     }
     counters.codexTitleCalls += 1;
@@ -338,6 +340,7 @@ export async function readMainProcessTitlePolicyCounters(
     !isRecord(value) ||
     !Number.isInteger(value.codexTitleCalls) ||
     !Number.isInteger(value.piTitleSkips) ||
+    !Number.isInteger(value.externalTitleSkips) ||
     !Number.isInteger(value.ambiguousTitleSkips)
   ) {
     throw new Error("Main-process title policy returned invalid counters");

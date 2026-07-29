@@ -27,7 +27,7 @@ function usage() {
   node tools/renderer-binding/run.mjs [--endpoint <loopback-url>]
     [--inspector-endpoint <loopback-url>] [--desktop <absolute-file>]
     [--observe-seconds <seconds>] [--until-submissions <count>]
-    [--output <directory>] [--keep-desktop]
+    [--output <directory>] [--keep-desktop] [--enable-claude-code]
 
 When --desktop is provided, the probe starts that executable with CDP and main-process Inspector
 ports, then closes only the process tree it started. Without --desktop, it attaches to both existing
@@ -51,6 +51,7 @@ function parseArguments(arguments_) {
     untilSubmissions: null,
     outputDirectory: defaultOutputDirectory,
     keepDesktop: false,
+    enableClaudeCode: false,
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -81,6 +82,9 @@ function parseArguments(arguments_) {
       case "--keep-desktop":
         options.keepDesktop = true;
         break;
+      case "--enable-claude-code":
+        options.enableClaudeCode = true;
+        break;
       case "--help":
       case "-h":
         usage();
@@ -102,6 +106,11 @@ function validateProbeStatus(value) {
     !isRecord(value) ||
     value.version !== 2 ||
     !Number.isInteger(value.mountedComposers) ||
+    !Array.isArray(value.enabledAgents) ||
+    value.enabledAgents.length < 2 ||
+    value.enabledAgents.some((agent) => !["codex", "pi", "claude-code"].includes(agent)) ||
+    !value.enabledAgents.includes("codex") ||
+    !value.enabledAgents.includes("pi") ||
     !Array.isArray(value.selections) ||
     !isRecord(value.adapter) ||
     !["installing", "ready", "unsupported"].includes(value.adapter.state) ||
@@ -115,7 +124,7 @@ function validateProbeStatus(value) {
     if (
       !isRecord(selection) ||
       typeof selection.composerId !== "string" ||
-      !["codex", "pi"].includes(selection.agent) ||
+      !["codex", "pi", "claude-code"].includes(selection.agent) ||
       !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
@@ -132,15 +141,25 @@ function endpointPort(endpoint, option) {
   return url.port ? parseInteger(url.port, `${option} port`, 1, 65_535) : 80;
 }
 
-function launchDesktop(executable, cdpPort, inspectorPort) {
+function launchDesktop(executable, cdpPort, inspectorPort, enableClaudeCode) {
   if (!fs.statSync(executable).isFile()) {
     throw new Error(`Desktop executable is not a file: ${executable}`);
   }
-  return spawn(executable, [`--remote-debugging-port=${cdpPort}`, `--inspect=${inspectorPort}`], {
-    detached: process.platform !== "win32",
-    stdio: "ignore",
-    windowsHide: false,
-  });
+  const child = spawn(
+    executable,
+    [`--remote-debugging-port=${cdpPort}`, `--inspect=${inspectorPort}`],
+    {
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+      windowsHide: false,
+      env: {
+        ...process.env,
+        ...(enableClaudeCode ? { CODEXHOST_ENABLE_CLAUDE_CODE: "1" } : {}),
+      },
+    },
+  );
+  child.unref();
+  return child;
 }
 
 function stopDesktop(child) {
@@ -393,7 +412,9 @@ async function run() {
     const cdpPort = endpointPort(options.endpoint, "--endpoint");
     const inspectorPort = endpointPort(options.inspectorEndpoint, "--inspector-endpoint");
     if (cdpPort === inspectorPort) throw new Error("CDP and Inspector ports must differ");
-    if (options.desktop) desktop = launchDesktop(options.desktop, cdpPort, inspectorPort);
+    if (options.desktop) {
+      desktop = launchDesktop(options.desktop, cdpPort, inspectorPort, options.enableClaudeCode);
+    }
 
     const [target, inspectorTarget] = await Promise.all([
       waitForRendererTarget(options.endpoint, { timeoutMs: 30_000 }),
@@ -429,6 +450,17 @@ async function run() {
     );
     console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
     const source = fs.readFileSync(probeBundlePath, "utf8");
+    await executeInWebContents(
+      inspectorClient,
+      selectedRenderer.id,
+      `(() => {
+        Object.defineProperty(window, "__codexhostRendererConfigurationV1", {
+          configurable: true,
+          value: { enableClaudeCode: ${JSON.stringify(options.enableClaudeCode)} },
+        });
+        return null;
+      })()`,
+    );
     await executeInWebContents(inspectorClient, selectedRenderer.id, source);
     const executeInRenderer = (expression) =>
       executeInWebContents(inspectorClient, selectedRenderer.id, expression);
@@ -437,6 +469,7 @@ async function run() {
     const report = {
       schemaVersion: 2,
       recordedAt: new Date().toISOString(),
+      enabledDevelopmentHarnesses: options.enableClaudeCode ? ["claude-code"] : [],
       target: {
         id: target.id,
         type: target.type,

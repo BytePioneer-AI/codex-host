@@ -13,7 +13,8 @@
     { "path": "../mapping-store/tsconfig.json" },
     { "path": "../protocol-core/tsconfig.json" },
     { "path": "../shared-contracts/tsconfig.json" },
-    { "path": "../adapters/pi/tsconfig.json" }
+    { "path": "../adapters/pi/tsconfig.json" },
+    { "path": "../adapters/claude-code/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

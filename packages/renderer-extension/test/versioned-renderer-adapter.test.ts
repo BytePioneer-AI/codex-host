@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CLAUDE_CODE_TRANSPORT_MODEL_ID,
   decorateThreadStartParams,
   findPrewarmTargets,
   isDraftPrewarmPolicyReady,
@@ -15,6 +16,12 @@ import {
 
 const lockedPi = {
   agent: "pi",
+  composerId: "composer-1",
+  phase: "locked",
+} as const;
+
+const lockedClaudeCode = {
+  agent: "claude-code",
   composerId: "composer-1",
   phase: "locked",
 } as const;
@@ -53,22 +60,30 @@ describe("versioned Renderer Agent adapter", () => {
     expect(isDraftPrewarmPolicyReady(null)).toBe(false);
   });
 
-  it("creates a Pi optimistic selection and restores the original Codex snapshot", () => {
+  it("creates external optimistic selections and restores the original Codex snapshot", () => {
     const official = { model: "official/model", reasoningEffort: "medium" };
 
     expect(modelSelectionForAgent(null, "high", "pi")).toEqual({
       model: PI_TRANSPORT_MODEL_ID,
       reasoningEffort: "high",
     });
+    expect(modelSelectionForAgent(null, "high", "claude-code")).toEqual({
+      model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
+      reasoningEffort: "high",
+    });
     expect(modelSelectionForAgent(null, "high", "codex")).toBeNull();
     expect(modelSelectionForAgent(official, "high", "codex")).toBe(official);
   });
 
-  it("clones Pi create params and leaves Codex params unchanged", () => {
+  it("clones external create params and leaves Codex params unchanged", () => {
     const original = { model: "official/model", cwd: "<workspace>" };
 
     expect(decorateThreadStartParams(original, lockedPi)).toEqual({
       model: PI_TRANSPORT_MODEL_ID,
+      cwd: "<workspace>",
+    });
+    expect(decorateThreadStartParams(original, lockedClaudeCode)).toEqual({
+      model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
       cwd: "<workspace>",
     });
     expect(decorateThreadStartParams(original, lockedPi)).not.toBe(original);

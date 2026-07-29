@@ -1,5 +1,5 @@
 {
-  "name": "@codexhost/host-runtime",
+  "name": "@codexhost/adapter-claude-code",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,12 +16,11 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@codexhost/adapter-claude-code": "0.0.0",
-    "@codexhost/adapter-pi": "0.0.0",
-    "@codexhost/desktop-control": "0.0.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/sdk": "0.115.0",
     "@codexhost/harness-adapter": "0.0.0",
-    "@codexhost/mapping-store": "0.0.0",
-    "@codexhost/protocol-core": "0.0.0",
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
   }
 }

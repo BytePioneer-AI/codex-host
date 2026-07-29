@@ -1,9 +1,11 @@
-import type { JsonRpcRequest } from "@codexhost/protocol-core";
+import type { ExternalHarnessId, JsonRpcRequest, RoutedHarnessId } from "@codexhost/protocol-core";
+
+export type RouteModelCarrier = "official-model" | `${ExternalHarnessId}-transport`;
 
 export interface CreateRequestRouteObservation {
   requestMethod: "thread/start";
-  modelCarrier: "official-model" | "pi-transport";
-  selectedHarness: "codex" | "pi";
+  modelCarrier: RouteModelCarrier;
+  selectedHarness: RoutedHarnessId;
   selectionSource: "default-agent" | "official-model" | "transport-model";
 }
 
@@ -17,7 +19,7 @@ export interface TrackedCreateRouteObservation extends CreateRequestRouteObserva
 export interface TurnRequestRouteObservation {
   requestMethod: "turn/start";
   createOrdinal: number | null;
-  selectedHarness: "codex" | "pi";
+  selectedHarness: RoutedHarnessId;
   threadPurpose: ThreadPurpose | null;
   association: "matched" | "unmatched";
 }
@@ -26,7 +28,7 @@ export type RequestRouteObservation = TrackedCreateRouteObservation | TurnReques
 
 interface TrackedCreate {
   createOrdinal: number;
-  selectedHarness: "codex" | "pi";
+  selectedHarness: RoutedHarnessId;
   threadPurpose: ThreadPurpose;
 }
 
@@ -59,6 +61,10 @@ export class RequestRouteObservationTracker {
     return { ...route, createOrdinal: tracked.createOrdinal, threadPurpose };
   }
 
+  rejectCreate(requestId: unknown): void {
+    this.#pendingByRequestId.delete(requestId);
+  }
+
   bindCreatedThread(requestId: unknown, threadId: string): void {
     const tracked = this.#pendingByRequestId.get(requestId);
     if (!tracked) return;
@@ -82,7 +88,7 @@ export class RequestRouteObservationTracker {
     this.#createByThreadId.delete(threadId);
   }
 
-  observeTurn(threadId: string, fallbackHarness: "codex" | "pi"): TurnRequestRouteObservation {
+  observeTurn(threadId: string, fallbackHarness: RoutedHarnessId): TurnRequestRouteObservation {
     const tracked = this.#createByThreadId.get(threadId);
     if (!tracked) {
       return {

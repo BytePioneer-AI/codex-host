@@ -31,6 +31,42 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("rejects Claude Code unless it is explicitly enabled", async () => {
+    const composer = {};
+    const agents = controller();
+    const applyAgent = vi.fn(() => true);
+
+    await expect(
+      agents.switchAgent(composer, "claude-code", {
+        applyAgent,
+        clearPrewarm: vi.fn(async () => undefined),
+      }),
+    ).resolves.toBe(false);
+    expect(applyAgent).not.toHaveBeenCalled();
+    expect(agents.get(composer).agent).toBe("codex");
+  });
+
+  it("uses the same draft lifecycle for explicitly enabled Claude Code", async () => {
+    const composer = {};
+    const agents = new DraftAgentController<object>({
+      idFactory: (sequence) => `composer-${sequence}`,
+      enabledAgents: ["codex", "pi", "claude-code"],
+    });
+    const operations = {
+      applyAgent: vi.fn(() => true),
+      clearPrewarm: vi.fn(async () => undefined),
+    };
+
+    await expect(agents.switchAgent(composer, "pi", operations)).resolves.toBe(true);
+    await expect(agents.switchAgent(composer, "claude-code", operations)).resolves.toBe(true);
+    await expect(agents.switchAgent(composer, "codex", operations)).resolves.toBe(true);
+
+    expect(operations.applyAgent).toHaveBeenNthCalledWith(1, "pi");
+    expect(operations.applyAgent).toHaveBeenNthCalledWith(2, "claude-code");
+    expect(operations.applyAgent).toHaveBeenNthCalledWith(3, "codex");
+    expect(agents.get(composer)).toMatchObject({ agent: "codex", phase: "draft" });
+  });
+
   it("keeps the draft mutable until submission locks the final Agent", async () => {
     const composer = {};
     const agents = controller();

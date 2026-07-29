@@ -1,20 +1,32 @@
 import type { JsonRpcRequest } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
-import { PI_NATIVE_TRANSPORT_MODEL_ID, decodeCreateRoute } from "../src/index.js";
+import {
+  CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  PI_NATIVE_TRANSPORT_MODEL_ID,
+  decodeCreateRoute,
+  transportModelIdForHarness,
+} from "../src/index.js";
 
-describe("Pi transport model routing", () => {
-  it("decodes only thread/start transport selection", () => {
-    const piRequest: JsonRpcRequest = {
+describe("external Harness transport model routing", () => {
+  it.each([
+    ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
+    ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
+  ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
+    const request: JsonRpcRequest = {
       id: 2,
       method: "thread/start",
-      params: { model: PI_NATIVE_TRANSPORT_MODEL_ID },
+      params: { model: transportModelId },
     };
-    expect(decodeCreateRoute(piRequest)).toEqual({
-      harnessId: "pi",
+    expect(decodeCreateRoute(request)).toEqual({
+      harnessId,
       routeMode: "native",
-      transportModelId: PI_NATIVE_TRANSPORT_MODEL_ID,
+      transportModelId,
     });
+    expect(transportModelIdForHarness(harnessId)).toBe(transportModelId);
+  });
+
+  it("keeps official models transparent and ignores other methods", () => {
     expect(
       decodeCreateRoute({ id: 3, method: "thread/start", params: { model: "official/model" } }),
     ).toEqual({ harnessId: "codex", transportModelId: "official/model" });

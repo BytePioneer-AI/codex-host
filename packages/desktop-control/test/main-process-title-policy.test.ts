@@ -93,6 +93,7 @@ describe("main-process title policy", () => {
         return {
           codexTitleCalls: 2,
           piTitleSkips: 3,
+          externalTitleSkips: 4,
           ambiguousTitleSkips: 1,
         } as T;
       },
@@ -101,6 +102,7 @@ describe("main-process title policy", () => {
     await expect(readMainProcessTitlePolicyCounters(inspector)).resolves.toEqual({
       codexTitleCalls: 2,
       piTitleSkips: 3,
+      externalTitleSkips: 4,
       ambiguousTitleSkips: 1,
     });
     expect(evaluate).toHaveBeenCalledOnce();

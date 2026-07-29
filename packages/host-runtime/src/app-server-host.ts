@@ -19,6 +19,8 @@ import {
   writeFrame,
   writeJsonFrame,
   jsonRpcRequestSchema,
+  transportModelIdForHarness,
+  type ExternalHarnessId,
   type JsonObject,
   type JsonRpcRequest,
   type JsonValue,
@@ -35,6 +37,7 @@ export interface AppServerHostOptions {
   diagnosticOutput?: Writable;
   piCommand?: string;
   piAdapter?: HarnessAdapter;
+  externalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
@@ -49,11 +52,12 @@ interface ProjectedTurn {
   projector: CodexTurnProjector;
 }
 
-type PiThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
+type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
 
-interface PiThread {
+interface ExternalThread {
   id: string;
   cwd: string;
+  harnessId: ExternalHarnessId;
   session: HarnessSession;
   outputTask: Promise<void>;
   thread: JsonObject;
@@ -79,6 +83,8 @@ function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
     "CODEXHOST_PI_COMMAND",
+    "CODEXHOST_ENABLE_CLAUDE_CODE",
+    "CODEXHOST_CLAUDE_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
   ]);
   return Object.fromEntries(Object.entries(source).filter(([key]) => !internal.has(key)));
@@ -106,11 +112,11 @@ export function classifyCreateRequestRoute(
 ): CreateRequestRouteObservation | null {
   const route = decodeCreateRoute(request);
   if (!route) return null;
-  if (route.harnessId === "pi") {
+  if (route.harnessId !== "codex") {
     return {
       requestMethod: "thread/start",
-      modelCarrier: "pi-transport",
-      selectedHarness: "pi",
+      modelCarrier: `${route.harnessId}-transport`,
+      selectedHarness: route.harnessId,
       selectionSource: "transport-model",
     };
   }
@@ -185,8 +191,8 @@ export class AppServerHost {
   > &
     AppServerHostOptions;
   #official: ChildProcessWithoutNullStreams | null = null;
-  #piAdapter: HarnessAdapter;
-  #piThreads = new Map<string, PiThread>();
+  #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
+  #externalThreads = new Map<string, ExternalThread>();
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
 
@@ -198,12 +204,23 @@ export class AppServerHost {
       ...options,
     };
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
-    this.#piAdapter =
-      options.piAdapter ??
-      new PiAdapter({
-        ...(options.piCommand ? { command: options.piCommand } : {}),
-        environment: options.environment ?? process.env,
-      });
+    this.#externalAdapters = options.externalAdapters
+      ? new Map(options.externalAdapters)
+      : new Map([
+          [
+            "pi",
+            options.piAdapter ??
+              new PiAdapter({
+                ...(options.piCommand ? { command: options.piCommand } : {}),
+                environment: options.environment ?? process.env,
+              }),
+          ],
+        ]);
+    for (const [harnessId, adapter] of this.#externalAdapters) {
+      if (adapter.harnessId !== harnessId) {
+        throw new Error(`External Adapter '${harnessId}' has mismatched Harness ID`);
+      }
+    }
   }
 
   async run(): Promise<number> {
@@ -233,11 +250,13 @@ export class AppServerHost {
       await exited.catch(() => undefined);
       return 1;
     } finally {
-      const threads = [...this.#piThreads.values()];
+      const threads = [...this.#externalThreads.values()];
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
-      await this.#piAdapter.close().catch(() => undefined);
-      this.#piThreads.clear();
+      await Promise.allSettled(
+        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+      );
+      this.#externalThreads.clear();
       this.#routeObservationTracker.clear();
     }
   }
@@ -264,57 +283,62 @@ export class AppServerHost {
           ),
         );
       }
-      if (createRoute?.selectedHarness === "pi") {
-        await this.#startPiThread(request);
+      if (createRoute && createRoute.selectedHarness !== "codex") {
+        await this.#startExternalThread(request, createRoute.selectedHarness);
         continue;
       }
       if (request.method === "turn/start") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
         if (typeof threadId === "string") {
           this.#options.onRequestRoute?.(
-            this.#routeObservationTracker.observeTurn(threadId, piThread ? "pi" : "codex"),
+            this.#routeObservationTracker.observeTurn(threadId, thread?.harnessId ?? "codex"),
           );
         }
-        if (piThread) {
-          await this.#startPiTurn(request, piThread);
+        if (thread) {
+          await this.#startExternalTurn(request, thread);
           continue;
         }
       }
       if (request.method === "turn/interrupt") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#interruptPiTurn(request, piThread, params.turnId);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#interruptExternalTurn(request, thread, params.turnId);
           continue;
         }
       }
       if (request.method === "thread/read") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#readPiThread(request, piThread, params.includeTurns === true);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#readExternalThread(request, thread, params.includeTurns === true);
           continue;
         }
       }
       if (request.method === "thread/name/set") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#setPiThreadName(request, piThread, params.name);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#setExternalThreadName(request, thread, params.name);
           continue;
         }
       }
       if (request.method === "thread/delete") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#deletePiThread(request, piThread);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#deleteExternalThread(request, thread);
           continue;
         }
       }
@@ -333,20 +357,33 @@ export class AppServerHost {
     }
   }
 
-  async #startPiThread(request: JsonRpcRequest): Promise<void> {
+  async #startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void> {
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(request, -32070, `External Harness '${harnessId}' is unavailable`),
+      );
+      return;
+    }
     const params = requestObject(request);
     const cwd = params.cwd;
     if (typeof cwd !== "string" || cwd.length === 0) {
-      await this.#writer.json(rpcError(request, -32602, "Pi thread/start requires cwd"));
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(request, -32602, `External Harness '${harnessId}' thread/start requires cwd`),
+      );
       return;
     }
-    const sessionResult = await this.#piAdapter.open({ kind: "create", cwd });
+    const sessionResult = await adapter.open({ kind: "create", cwd });
     if (!sessionResult.ok) {
+      this.#routeObservationTracker.rejectCreate(request.id);
       await this.#writer.json(rpcError(request, -32071, sessionResult.error.message));
       return;
     }
     const session = sessionResult.value;
     const threadId = randomUUID();
+    const transportModelId = transportModelIdForHarness(harnessId);
     this.#routeObservationTracker.bindCreatedThread(request.id, threadId);
     try {
       const now = unixSeconds();
@@ -376,9 +413,10 @@ export class AppServerHost {
         agentRole: null,
         extra: null,
       };
-      const piThread: PiThread = {
+      const externalThread: ExternalThread = {
         id: threadId,
         cwd,
+        harnessId,
         session,
         outputTask: Promise.resolve(),
         thread,
@@ -388,13 +426,13 @@ export class AppServerHost {
         projectedTurns: new Map(),
         responseGates: new Map(),
       };
-      piThread.outputTask = this.#consumeHarnessOutputs(piThread);
-      this.#piThreads.set(threadId, piThread);
+      externalThread.outputTask = this.#consumeHarnessOutputs(externalThread);
+      this.#externalThreads.set(threadId, externalThread);
       await this.#writer.json(
         rpcEnvelope(request, {
           result: {
             thread,
-            model: "codexhost/pi-native",
+            model: transportModelId,
             modelProvider: "codexhost",
             cwd,
             approvalPolicy:
@@ -418,68 +456,75 @@ export class AppServerHost {
         params: { thread },
       });
     } catch (error) {
-      this.#piThreads.delete(threadId);
+      this.#externalThreads.delete(threadId);
+      this.#routeObservationTracker.forgetThread(threadId);
       await session.close().catch(() => undefined);
       await this.#writer.json(
-        rpcError(request, -32071, `Pi Session could not open: ${errorMessage(error)}`),
+        rpcError(
+          request,
+          -32071,
+          `External Harness '${harnessId}' Session could not open: ${errorMessage(error)}`,
+        ),
       );
     }
   }
 
-  async #setPiThreadName(
+  async #setExternalThreadName(
     request: JsonRpcRequest,
-    piThread: PiThread,
+    thread: ExternalThread,
     name: JsonValue | undefined,
   ): Promise<void> {
     if (typeof name !== "string" || name.length === 0) {
       await this.#writer.json(
-        rpcError(request, -32602, "Pi Thread name must be a non-empty string"),
+        rpcError(request, -32602, "External Thread name must be a non-empty string"),
       );
       return;
     }
-    piThread.thread.name = name;
-    piThread.thread.updatedAt = unixSeconds();
+    thread.thread.name = name;
+    thread.thread.updatedAt = unixSeconds();
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
     await this.#writer.json({
       method: "thread/name/updated",
-      params: { threadId: piThread.id, threadName: name },
+      params: { threadId: thread.id, threadName: name },
     });
   }
 
-  async #deletePiThread(request: JsonRpcRequest, piThread: PiThread): Promise<void> {
-    this.#piThreads.delete(piThread.id);
-    this.#routeObservationTracker.forgetThread(piThread.id);
+  async #deleteExternalThread(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    this.#externalThreads.delete(thread.id);
+    this.#routeObservationTracker.forgetThread(thread.id);
     try {
-      await piThread.session.close();
-      await piThread.outputTask;
+      await thread.session.close();
+      await thread.outputTask;
       await this.#writer.json(rpcEnvelope(request, { result: {} }));
     } catch (error) {
       await this.#writer.json(
-        rpcError(request, -32075, `Pi Thread could not close: ${errorMessage(error)}`),
+        rpcError(request, -32075, `External Thread could not close: ${errorMessage(error)}`),
       );
     }
   }
 
-  async #readPiThread(
+  async #readExternalThread(
     request: JsonRpcRequest,
-    piThread: PiThread,
+    thread: ExternalThread,
     includeTurns: boolean,
   ): Promise<void> {
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
           thread: {
-            ...piThread.thread,
-            turns: includeTurns ? piThread.turns : [],
+            ...thread.thread,
+            turns: includeTurns ? thread.turns : [],
           },
         },
       }),
     );
   }
 
-  async #startPiTurn(request: JsonRpcRequest, thread: PiThread): Promise<void> {
+  async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     if (thread.running) {
-      await this.#writer.json(rpcError(request, -32072, "Pi Thread already has an active Turn"));
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread already has an active Turn"),
+      );
       return;
     }
     let text: string;
@@ -528,9 +573,9 @@ export class AppServerHost {
     }
   }
 
-  async #interruptPiTurn(
+  async #interruptExternalTurn(
     request: JsonRpcRequest,
-    thread: PiThread,
+    thread: ExternalThread,
     requestedTurnId: JsonValue | undefined,
   ): Promise<void> {
     if (
@@ -539,7 +584,7 @@ export class AppServerHost {
       thread.activeTurnId !== requestedTurnId
     ) {
       await this.#writer.json(
-        rpcError(request, -32074, "Pi turn/interrupt must reference the active Turn"),
+        rpcError(request, -32074, "External turn/interrupt must reference the active Turn"),
       );
       return;
     }
@@ -559,7 +604,7 @@ export class AppServerHost {
     }
   }
 
-  async #consumeHarnessOutputs(thread: PiThread): Promise<void> {
+  async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
     try {
       for await (const output of thread.session.outputs) {
         await this.#projectHarnessOutput(thread, output);
@@ -569,11 +614,11 @@ export class AppServerHost {
     }
   }
 
-  async #projectHarnessOutput(thread: PiThread, output: HarnessOutput): Promise<void> {
+  async #projectHarnessOutput(thread: ExternalThread, output: HarnessOutput): Promise<void> {
     const event = output.event;
     if (event.type === "session.state.changed") return;
     if (event.type === "session.faulted") {
-      this.#diagnose(`Pi Harness Session faulted: ${event.error.message}`);
+      this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
       return;
     }
 
@@ -600,7 +645,7 @@ export class AppServerHost {
     }
   }
 
-  async #setThreadStatus(thread: PiThread, status: PiThreadStatus): Promise<void> {
+  async #setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void> {
     thread.thread.status = status;
     await this.#writer.json({
       method: "thread/status/changed",
@@ -609,13 +654,13 @@ export class AppServerHost {
     });
   }
 
-  #projectedTurn(thread: PiThread, turnId: HostTurnId): ProjectedTurn {
+  #projectedTurn(thread: ExternalThread, turnId: HostTurnId): ProjectedTurn {
     const projection = thread.projectedTurns.get(turnId);
     if (!projection) throw new Error("Harness output references an unknown Host Turn");
     return projection;
   }
 
-  async #waitForTurnResponse(thread: PiThread, turnId: HostTurnId): Promise<void> {
+  async #waitForTurnResponse(thread: ExternalThread, turnId: HostTurnId): Promise<void> {
     await thread.responseGates.get(turnId)?.promise;
   }
 

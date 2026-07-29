@@ -1,4 +1,6 @@
-export type RendererAgent = "codex" | "pi";
+export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi"] as const;
+export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ComposerAgentPhase = "draft" | "locked";
 
 export interface DraftComposerState {
@@ -16,6 +18,7 @@ interface ConversationState {
 
 export interface DraftAgentControllerOptions {
   idFactory?: (sequence: number) => string;
+  enabledAgents?: readonly RendererAgent[];
 }
 
 export interface DraftAgentSwitchOperations {
@@ -37,6 +40,7 @@ function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolea
 
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
+  readonly #enabledAgents: ReadonlySet<RendererAgent>;
   readonly #conversationStates: ConversationState[] = [];
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
@@ -44,6 +48,10 @@ export class DraftAgentController<Composer extends object> {
 
   constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
+    this.#enabledAgents = new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS);
+    if (!this.#enabledAgents.has("codex")) {
+      throw new Error("Renderer enabled Agents must include Codex");
+    }
   }
 
   get(composer: Composer): Readonly<DraftComposerState> {
@@ -98,6 +106,7 @@ export class DraftAgentController<Composer extends object> {
     operations: DraftAgentSwitchOperations,
   ): Promise<boolean> {
     const state = this.#state(composer);
+    if (!this.#enabledAgents.has(nextAgent)) return false;
     if (state.phase !== "draft" || this.#switching.has(state)) return false;
     if (state.agent === nextAgent) return true;
 

@@ -1,6 +1,10 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts/version";
 
-export { DraftAgentController } from "./agent-selection-state.js";
+export {
+  DEFAULT_RENDERER_AGENTS,
+  DraftAgentController,
+  KNOWN_RENDERER_AGENTS,
+} from "./agent-selection-state.js";
 export type {
   ComposerAgentPhase,
   DraftAgentControllerOptions,
@@ -14,9 +18,11 @@ export {
 } from "./renderer-binding-probe.js";
 export type {
   RendererBindingProbeApi,
+  RendererBindingProbeOptions,
   RendererBindingProbeStatus,
 } from "./renderer-binding-probe.js";
 export {
+  CLAUDE_CODE_TRANSPORT_MODEL_ID,
   decorateThreadStartParams,
   describePrewarmTargets,
   findActivePrewarmTargets,

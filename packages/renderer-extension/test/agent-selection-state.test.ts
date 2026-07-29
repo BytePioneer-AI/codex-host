@@ -86,6 +86,38 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("restores a submitted Agent when its conversation target is revisited", async () => {
+    const draftComposer = {};
+    const firstConversation = {};
+    const secondConversation = {};
+    const revisitedConversation = {};
+    const firstTargetMember = {};
+    const secondTargetMember = {};
+    const draftTarget = ["default"];
+    const firstTarget = ["conversation", firstTargetMember];
+    const equivalentFirstTarget = ["conversation", firstTargetMember];
+    const secondTarget = ["conversation", secondTargetMember];
+    const agents = controller();
+
+    agents.mount(draftComposer, draftTarget);
+    await agents.switchAgent(draftComposer, "pi", {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    });
+    agents.lock(draftComposer);
+    expect(agents.transfer(draftComposer, firstConversation, firstTarget)).toBe(true);
+
+    agents.mount(secondConversation, secondTarget);
+    expect(agents.get(secondConversation)).toMatchObject({ agent: "codex", phase: "draft" });
+    agents.mount(revisitedConversation, equivalentFirstTarget);
+
+    expect(agents.get(revisitedConversation)).toEqual({
+      composerId: "composer-1",
+      agent: "pi",
+      phase: "locked",
+    });
+  });
+
   it("applies the target Agent before clearing stale prewarm", async () => {
     const composer = {};
     const agents = controller();

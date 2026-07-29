@@ -166,7 +166,8 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
-    const state = controller.get(composer);
+    const modelTarget = findComposerModelTarget(composer);
+    const state = controller.mount(composer, modelTarget);
     const control = mountComposerAgentControl(composer, state.composerId, sendButton, (agent) => {
       const mounted = mountedByComposer.get(composer);
       if (!composer.isConnected || !mounted) return;
@@ -176,7 +177,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       composer,
       composerId: state.composerId,
       control,
-      modelTarget: findComposerModelTarget(composer),
+      modelTarget,
     };
     mountedByComposer.set(composer, mounted);
     applyAdapterAgent?.(state.agent);
@@ -188,14 +189,15 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     if (disposed) return;
     for (const replacement of pendingReplacements.values()) {
       const sourceState = controller.get(replacement.source);
+      const replacementTarget = findComposerModelTarget(replacement.target);
       if (
         shouldTransferComposerState(
           replacement.sourceModelTarget,
-          findComposerModelTarget(replacement.target),
+          replacementTarget,
           sourceState.phase,
         )
       ) {
-        controller.transfer(replacement.source, replacement.target);
+        controller.transfer(replacement.source, replacement.target, replacementTarget);
       }
     }
     pendingReplacements.clear();

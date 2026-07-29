@@ -38,7 +38,7 @@ The public DOM/preload surface still has no stable Agent-to-create binding. The 
 2. The draft prewarm policy recovers the owned official request bridge through CDP and exposes only `clear-prewarmed-threads-for-host({ hostId: "local" })` as a no-argument Renderer operation.
 3. The main-process title policy locates `ThreadMetadataGenerationService.generateTitle`; Pi uses the Desktop's local fallback instead of creating an official Codex ephemeral title Thread.
 
-A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: a draft or locked `default → conversation` transition transfers state, while a new task or another conversation resets to Codex.
+A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: a draft or locked `default → conversation` transition transfers state, a new task or previously unseen conversation starts as Codex, and revisiting a known conversation in the same Renderer process restores its final Agent and locked phase.
 
 The final controlled Gates proved:
 

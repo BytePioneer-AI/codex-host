@@ -9,6 +9,11 @@ export interface DraftComposerState {
 
 type MutableComposerState = DraftComposerState;
 
+interface ConversationState {
+  target: readonly unknown[];
+  state: MutableComposerState;
+}
+
 export interface DraftAgentControllerOptions {
   idFactory?: (sequence: number) => string;
 }
@@ -22,8 +27,17 @@ function defaultIdFactory(sequence: number): string {
   return `codexhost-composer-${Date.now().toString(36)}-${sequence.toString(36)}`;
 }
 
+function isConversationTarget(target: readonly unknown[] | null): target is readonly unknown[] {
+  return target?.[0] === "conversation";
+}
+
+function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
+  readonly #conversationStates: ConversationState[] = [];
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
@@ -36,6 +50,19 @@ export class DraftAgentController<Composer extends object> {
     return this.#state(composer);
   }
 
+  mount(composer: Composer, target: readonly unknown[] | null): Readonly<DraftComposerState> {
+    const bound = this.#conversationState(target);
+    if (bound) {
+      this.#states.set(composer, bound);
+      return bound;
+    }
+    const state = this.#state(composer);
+    if (isConversationTarget(target)) {
+      this.#conversationStates.push({ target, state });
+    }
+    return state;
+  }
+
   isSwitching(composer: Composer): boolean {
     return this.#switching.has(this.#state(composer));
   }
@@ -46,12 +73,22 @@ export class DraftAgentController<Composer extends object> {
     return state;
   }
 
-  transfer(source: Composer, replacement: Composer): boolean {
+  transfer(
+    source: Composer,
+    replacement: Composer,
+    target: readonly unknown[] | null = null,
+  ): boolean {
     const state = this.#states.get(source);
     if (!state) return false;
-    if (source === replacement) return true;
-    if (this.#states.has(replacement)) return false;
-    this.#states.set(replacement, state);
+    const bound = this.#conversationState(target);
+    if (bound && bound !== state) return false;
+    if (source !== replacement) {
+      if (this.#states.has(replacement)) return false;
+      this.#states.set(replacement, state);
+    }
+    if (isConversationTarget(target) && !bound) {
+      this.#conversationStates.push({ target, state });
+    }
     return true;
   }
 
@@ -82,6 +119,14 @@ export class DraftAgentController<Composer extends object> {
     } finally {
       this.#switching.delete(state);
     }
+  }
+
+  #conversationState(target: readonly unknown[] | null): MutableComposerState | null {
+    if (!isConversationTarget(target)) return null;
+    return (
+      this.#conversationStates.find((candidate) => sameTarget(candidate.target, target))?.state ??
+      null
+    );
   }
 
   #state(composer: Composer): MutableComposerState {

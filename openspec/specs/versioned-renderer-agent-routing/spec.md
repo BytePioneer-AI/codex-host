@@ -35,6 +35,12 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 - **WHEN** a conversation Composer is replaced by a new default Composer
 - **THEN** the new Composer starts as Codex and draft rather than inheriting the previous Thread Agent
 
+#### Scenario: User revisits a submitted Thread
+
+- **WHEN** a submitted conversation Composer is unmounted and an equivalent opaque conversation Model target is mounted again in the same Renderer process
+- **THEN** the Renderer restores that logical Composer's identity, final Agent, and locked phase
+- **AND** it does not interpret, serialize, or persist the opaque target's Thread identity
+
 #### Scenario: Switch is in flight
 
 - **WHEN** the official prewarm clear has not settled

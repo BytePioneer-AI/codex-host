@@ -192,6 +192,41 @@ describe("Pi HarnessAdapter text Session", () => {
     await session.close();
   });
 
+  it("atomically reserves a Turn while the transport is starting", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    let releaseStart!: () => void;
+    const startGate = new Promise<undefined>((resolve) => {
+      releaseStart = () => resolve(undefined);
+    });
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.start.mockImplementationOnce(() => startGate);
+      transports.push(transport);
+      return transport;
+    });
+
+    const first = session.execute(textTurn("first"));
+    const second = session.execute(textTurn("second"));
+    releaseStart();
+
+    await expect(first).resolves.toMatchObject({ ok: true });
+    await expect(second).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started", turnId: "first" });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.started", turnId: "first" });
+
+    transports[0]?.succeed("done");
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.completed", turnId: "first" });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed", turnId: "first" });
+    await session.close();
+  });
+
   it("finishes the active lifecycle before faulting the Session", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

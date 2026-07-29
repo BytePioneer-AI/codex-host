@@ -86,6 +86,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #onClosed: () => void;
+  #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #phase: SessionPhase = "open";
@@ -108,7 +109,7 @@ class PiHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
-    if (this.#active) {
+    if (this.#acceptingTurn || this.#active) {
       return {
         ok: false,
         error: {
@@ -130,37 +131,42 @@ class PiHarnessSession implements HarnessSession {
       };
     }
 
-    let transport: PiTextTransport;
+    this.#acceptingTurn = true;
     try {
-      transport = await this.#ensureTransport();
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "unavailable") };
-    }
-    if (this.#phase !== "open") {
-      return { ok: false, error: invalidState("Pi Session became unavailable during startup") };
-    }
+      let transport: PiTextTransport;
+      try {
+        transport = await this.#ensureTransport();
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "unavailable") };
+      }
+      if (this.#phase !== "open") {
+        return { ok: false, error: invalidState("Pi Session became unavailable during startup") };
+      }
 
-    const item: HostAgentMessageItem = {
-      type: "agentMessage",
-      itemId: this.#newItemId(),
-      text: "",
-    };
-    const active: ActiveTurn = { command, item };
-    this.#active = active;
-    this.#event({ type: "turn.started", turnId: command.turnId });
-    this.#event({ type: "item.started", turnId: command.turnId, item });
+      const item: HostAgentMessageItem = {
+        type: "agentMessage",
+        itemId: this.#newItemId(),
+        text: "",
+      };
+      const active: ActiveTurn = { command, item };
+      this.#active = active;
+      this.#event({ type: "turn.started", turnId: command.turnId });
+      this.#event({ type: "item.started", turnId: command.turnId, item });
 
-    void transport
-      .runTextTurn(text, (delta) => this.#appendText(active, delta))
-      .then(({ text: output }) => this.#completeTurn(active, { status: "succeeded" }, output))
-      .catch((error: unknown) => {
-        this.#completeTurn(active, {
-          status: "failed",
-          error: normalizedError(error, "nativeFailure"),
+      void transport
+        .runTextTurn(text, (delta) => this.#appendText(active, delta))
+        .then(({ text: output }) => this.#completeTurn(active, { status: "succeeded" }, output))
+        .catch((error: unknown) => {
+          this.#completeTurn(active, {
+            status: "failed",
+            error: normalizedError(error, "nativeFailure"),
+          });
         });
-      });
 
-    return { ok: true, value: { turnId: command.turnId } };
+      return { ok: true, value: { turnId: command.turnId } };
+    } finally {
+      this.#acceptingTurn = false;
+    }
   }
 
   close(): Promise<void> {

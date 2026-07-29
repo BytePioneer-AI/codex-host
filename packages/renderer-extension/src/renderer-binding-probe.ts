@@ -104,7 +104,6 @@ export function installRendererBindingProbe(
   let applyAdapterAgent: ((agent: RendererAgent) => boolean) | null = null;
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
-    asset: "app-initial-BbEVL4-_.js",
     reason: "installing",
     decoratedRequests: 0,
     modelUpdates: 0,

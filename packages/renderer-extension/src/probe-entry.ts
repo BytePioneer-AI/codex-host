@@ -25,7 +25,6 @@ try {
   );
   probe.setAdapter({
     state: "unsupported",
-    asset: null,
     reason: "bridge-unavailable",
     decoratedRequests: 0,
     modelUpdates: 0,

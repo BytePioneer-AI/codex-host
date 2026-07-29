@@ -34,8 +34,6 @@ export {
   modelSelectionForAgent,
   PI_TRANSPORT_MODEL_ID,
   selectOptimisticModelAtom,
-  SUPPORTED_DESKTOP_PACKAGE_VERSION,
-  SUPPORTED_RENDERER_ASSET,
   wrapElectronRendererBridge,
   wrapPrewarmDispatcher,
   wrapPrewarmTarget,

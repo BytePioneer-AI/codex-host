@@ -2,12 +2,6 @@ import type { RendererAgent } from "./agent-selection-state.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
-export const SUPPORTED_RENDERER_ASSETS = [
-  "app-initial-BbEVL4-_.js",
-  "app-initial-BHB6SClA.js",
-] as const;
-export const SUPPORTED_RENDERER_ASSET = SUPPORTED_RENDERER_ASSETS[0];
-export const SUPPORTED_DESKTOP_PACKAGE_VERSION = "26.721.4979.0";
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -28,12 +22,10 @@ export interface RendererAdapterCandidateShape {
 
 export interface RendererAdapterStatus {
   state: RendererAdapterState;
-  asset: (typeof SUPPORTED_RENDERER_ASSETS)[number] | null;
   reason:
     | "installing"
     | "ready"
     | "asset-import-failed"
-    | "asset-signature-missing"
     | "bridge-unavailable"
     | "title-policy-unavailable"
     | "draft-prewarm-policy-unavailable"
@@ -569,7 +561,6 @@ export function installCurrentRendererAdapter(): {
   applyAgent(agent: RendererAgent): boolean;
   dispose(): void;
 } {
-  let matchedAsset: RendererAdapterStatus["asset"] = null;
   let disposed = false;
   let modelController: ModelStateController | null = null;
   let officialSelection: ModelPowerSelection | null = null;
@@ -578,7 +569,6 @@ export function installCurrentRendererAdapter(): {
   let modelUpdates = 0;
   const liveStatus: RendererAdapterStatus = {
     state: "installing",
-    asset: null,
     reason: "installing",
     decoratedRequests: 0,
     modelUpdates: 0,
@@ -592,28 +582,12 @@ export function installCurrentRendererAdapter(): {
     hook: RendererAdapterStatus["hook"],
   ): void => {
     liveStatus.state = state;
-    liveStatus.asset = matchedAsset;
     liveStatus.reason = reason;
     liveStatus.modelUpdates = modelUpdates;
     liveStatus.hook = hook;
     window.dispatchEvent(new CustomEvent("codexhost:renderer-adapter-status"));
   };
 
-  const resourceNames = [
-    ...[...document.querySelectorAll("script[src], link[href]")].flatMap((element) => [
-      element.getAttribute("src") ?? "",
-      element.getAttribute("href") ?? "",
-    ]),
-    ...performance.getEntriesByType("resource").map((entry) => entry.name),
-  ];
-  matchedAsset =
-    SUPPORTED_RENDERER_ASSETS.find((asset) =>
-      resourceNames.some((resourceName) => resourceName.includes(asset)),
-    ) ?? null;
-  if (matchedAsset === null) {
-    updateStatus("unsupported", "asset-signature-missing", null);
-    return { status: liveStatus, applyAgent: () => false, dispose() {} };
-  }
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
     return { status: liveStatus, applyAgent: () => false, dispose() {} };

@@ -4,7 +4,12 @@ import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { PiRpcSession, type PiRpcProcessAdapter, type PiTurnEvent } from "../src/pi-rpc-session.js";
+import {
+  PiRpcSession,
+  type PiRpcProcessAdapter,
+  type PiRpcProcessOptions,
+  type PiTurnEvent,
+} from "../src/pi-rpc-session.js";
 
 type Scenario =
   | "final-only"
@@ -264,14 +269,14 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
-  it("passes an explicit controlled Extension path into native process startup", async () => {
-    const spawnProcess = vi.fn(
-      () => new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams,
-    );
+  it("starts the native process without a codexhost Extension option", async () => {
+    const spawnProcess = vi.fn((options: PiRpcProcessOptions) => {
+      expect(options.cwd).toBe(process.cwd());
+      return new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams;
+    });
     const rpc = new PiRpcSession(
       {
         cwd: process.cwd(),
-        extensionPath: "/synthetic/codexhost-question-extension.js",
         commandTimeoutMs: 2_000,
         turnTimeoutMs: 2_000,
         closeTimeoutMs: 500,
@@ -280,9 +285,8 @@ describe("Pi RPC Turn aggregation", () => {
     );
 
     await rpc.start();
-    expect(spawnProcess).toHaveBeenCalledWith(
-      expect.objectContaining({ extensionPath: "/synthetic/codexhost-question-extension.js" }),
-    );
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    expect(spawnProcess.mock.calls[0]?.[0]).not.toHaveProperty("extensionPath");
     await rpc.close();
   });
 

@@ -87,7 +87,6 @@ export interface PiRpcSessionOptions {
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
-  extensionPath?: string;
   onFault?: (error: PiRpcFaultError) => void;
 }
 
@@ -95,7 +94,6 @@ export interface PiRpcProcessOptions {
   cwd: string;
   command?: string;
   environment: NodeJS.ProcessEnv;
-  extensionPath?: string;
 }
 
 export interface PiRpcProcessAdapter {
@@ -176,11 +174,7 @@ function spawnCommand(options: PiRpcProcessOptions): {
   windowsVerbatimArguments: boolean;
 } {
   const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
-  const arguments_ = [
-    "--mode",
-    "rpc",
-    ...(options.extensionPath ? ["--extension", options.extensionPath] : []),
-  ];
+  const arguments_ = ["--mode", "rpc"];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -244,7 +238,6 @@ export class PiRpcSession {
     const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
       ...(this.#options.command ? { command: this.#options.command } : {}),
-      ...(this.#options.extensionPath ? { extensionPath: this.#options.extensionPath } : {}),
       environment: {
         ...process.env,
         ...this.#options.environment,

@@ -112,10 +112,10 @@ Protocol Core and Host Runtime SHALL project a pending Host Question as the curr
 
 Question prompts and answers SHALL remain in the live Interaction path and native Harness history only where the Harness itself records them. codexhost SHALL NOT write complete prompts, answers, secret values, or native callback IDs to diagnostics, route observations, Mapping Store, committed Fixtures, or ordinary test output.
 
-#### Scenario: Secret Question is answered
+#### Scenario: Current Desktop cannot safely render a secret Question
 
-- **WHEN** a secret text Question is projected and answered
-- **THEN** only the live Codex request and matching Pi response path MAY contain the secret value
+- **WHEN** a secret text Question reaches a projector whose reviewed native input control does not mask the value
+- **THEN** the Host SHALL cancel the Interaction before sending that unsafe Desktop request
 - **AND** tracked evidence SHALL contain only reviewed structural facts such as counts, booleans, and terminal reasons
 
 #### Scenario: Interaction is not persisted

@@ -1,6 +1,5 @@
 import { parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import {
   HarnessOutputChannel,
@@ -57,7 +56,6 @@ export interface PiAdapterOptions {
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
-  extensionPath?: string;
   toolOutputLimit?: number;
 }
 
@@ -99,9 +97,6 @@ interface ActiveTurn {
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const piHarnessId = harnessIdSchema.parse("pi");
-const DEFAULT_QUESTION_EXTENSION_PATH = fileURLToPath(
-  new URL("./codexhost-question-extension.js", import.meta.url),
-);
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -220,7 +215,6 @@ class PiHarnessSession implements HarnessSession {
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #cwd: string;
-  readonly #extensionPath: string | undefined;
   readonly #onClosed: () => void;
   readonly #toolOutputLimit: number;
   #acceptingTurn = false;
@@ -235,13 +229,12 @@ class PiHarnessSession implements HarnessSession {
     cwd: string,
     createTransport: PiAdapterDependencies["createTransport"],
     onClosed: () => void,
-    options: { closeTimeoutMs: number; extensionPath?: string; toolOutputLimit: number },
+    options: { closeTimeoutMs: number; toolOutputLimit: number },
   ) {
     this.#cwd = cwd;
     this.#createTransport = createTransport;
     this.#onClosed = onClosed;
     this.#closeTimeoutMs = options.closeTimeoutMs;
-    this.#extensionPath = options.extensionPath;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.outputs = this.#channel.outputs;
   }
@@ -419,7 +412,6 @@ class PiHarnessSession implements HarnessSession {
     if (this.#starting) return this.#starting;
     const transport = this.#createTransport({
       cwd: this.#cwd,
-      ...(this.#extensionPath ? { extensionPath: this.#extensionPath } : {}),
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
     });
     const starting = transport
@@ -517,15 +509,7 @@ class PiHarnessSession implements HarnessSession {
                 ? { prefill: request.prefill }
                 : {}),
             };
-    const matchingQuestionTools = [...active.tools.values()].filter(
-      ({ nativeName }) => nativeName === "codexhost_question",
-    );
-    const associatedTool =
-      matchingQuestionTools.length === 1
-        ? matchingQuestionTools[0]
-        : active.tools.size === 1
-          ? [...active.tools.values()][0]
-          : undefined;
+    const associatedTool = active.tools.size === 1 ? [...active.tools.values()][0] : undefined;
     const interaction: HostQuestionInteraction = {
       type: "question",
       interactionId,
@@ -766,7 +750,6 @@ export class PiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = piHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
-  readonly #extensionPath: string | undefined;
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -779,7 +762,6 @@ export class PiAdapter implements HarnessAdapter {
   ) {
     this.#createTransport = dependencies.createTransport;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
-    this.#extensionPath = options.extensionPath ?? DEFAULT_QUESTION_EXTENSION_PATH;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
@@ -805,7 +787,6 @@ export class PiAdapter implements HarnessAdapter {
       },
       {
         closeTimeoutMs: this.#closeTimeoutMs,
-        ...(this.#extensionPath ? { extensionPath: this.#extensionPath } : {}),
         toolOutputLimit: this.#toolOutputLimit,
       },
     );

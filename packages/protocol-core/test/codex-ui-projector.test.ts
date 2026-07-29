@@ -347,7 +347,7 @@ describe("Codex UI projector", () => {
     const tool: HostToolExecutionItem = {
       type: "toolExecution",
       itemId: toolId,
-      toolName: "codexhost_question",
+      toolName: "user_question_tool",
       arguments: {},
     };
     const question: HostQuestionInteraction = {

@@ -16,9 +16,9 @@
 - **THEN**该 Turn MUST进入与首轮相同的 Pi Native Session
 - **AND**返回事件 MUST继续关联当前 Host Thread且不得进入官方 Codex Agent Loop
 
-#### Scenario: Pi Tool发起阻塞式Question
+#### Scenario: Pi用户Extension发起阻塞式Question
 
-- **WHEN**Pi在活动Turn中发出`select`、`confirm`、`input`或`editor` Extension UI Request
+- **WHEN**Pi中已有的用户Extension在活动Turn中发出`select`、`confirm`、`input`或`editor` Extension UI Request
 - **THEN**Pi Adapter MUST把它映射为属于同一Host Turn的Question
 - **AND**Codex UI MUST显示原生用户输入界面并把回答精确返回同一个Pi原生请求
 
@@ -27,6 +27,13 @@
 - **WHEN**Pi Extension在Prompt preflight中发出Question且Pi Prompt Command尚未返回
 - **THEN**Host MUST已经建立Turn与Interaction路由并允许Desktop回答
 - **AND**系统 MUST NOT因互相等待Prompt Response和Question Response而死锁
+
+#### Scenario: codexhost不向Pi注入Question Tool
+
+- **WHEN**Host启动Pi Native Session
+- **THEN**启动参数 MUST NOT包含codexhost拥有的`--extension`
+- **AND**Pi可用Tool集合 MUST只来自Pi默认能力和用户原有配置
+- **AND**Question映射 MUST只在Pi实际发出Extension UI Request时发生
 
 #### Scenario: 当前切片不伪造未实现能力
 

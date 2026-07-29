@@ -4,7 +4,7 @@ The current production `HarnessSession.outputs` stream carries only Host events,
 
 The current Codex app-server types expose the experimental server request `item/tool/requestUserInput`. Desktop returns answers keyed by Question ID. The request requires `threadId`, `turnId`, `itemId`, `questions`, and optional auto-resolution duration. The Host currently forwards all official server requests and has no registry for Host-owned request IDs or responses.
 
-Pi intentionally has no built-in permission popup or question tool. User Extensions can call `ctx.ui`, while model-initiated questions require a trusted Extension tool. CLI `--extension/-e` explicitly loads a codexhost-owned Extension without relying on project trust; ordinary user/global/project Extension discovery remains a separate native-mode concern.
+Pi intentionally has no built-in permission popup or model-facing Question Tool. User Extensions can call `ctx.ui` from their own Tools. codexhost must preserve that native capability boundary: it may bridge `extension_ui_request` records that Pi actually emits, but it must not register a Question Tool, explicitly load a codexhost Extension, or otherwise change Pi's default or user-configured Tool set.
 
 ## Goals / Non-Goals
 
@@ -13,7 +13,7 @@ Pi intentionally has no built-in permission popup or question tool. User Extensi
 - Implement reusable, UI-independent Question semantics in `HarnessAdapter` with exact response and terminal invariants.
 - Render Pi blocking dialogs through the current Codex Desktop native user-input request and return answers to the original Pi callback.
 - Support early Questions, Tool-associated Questions, standalone Extension Questions, Adapter timeout cleanup, cancellation, fault, close, and continuation.
-- Provide a narrowly scoped codexhost Pi Extension tool so the model can ask one choice or text Question.
+- Preserve Pi's original capability set by bridging emitted Extension UI requests without injecting a codexhost Tool or Extension.
 - Preserve transparent routing for official Codex server requests and all non-owned responses.
 
 **Non-Goals:**
@@ -23,6 +23,7 @@ Pi intentionally has no built-in permission popup or question tool. User Extensi
 - No persistence of Interaction state or answers.
 - No Snapshot, Resume, Mapping Store, Fork, Detach, model catalog, or release packaging.
 - No support for RPC fire-and-forget Extension UI methods beyond ignoring them safely or reporting a non-sensitive notice where already supported.
+- No codexhost-provided model-facing Pi Question Tool.
 - No other Harness integration or semantic calibration.
 
 ## Decisions
@@ -73,19 +74,19 @@ The Adapter tracks each Question as pending, responded, cancelled, expired, or s
 
 All pending Interactions close before `turn.completed`. A transport fault first closes pending Interactions, then completes active Items and Turn, then emits `session.faulted`.
 
-### 7. Load a controlled question Extension explicitly
+### 7. Preserve Pi's native capability set
 
-The Pi Adapter resolves a built Extension asset owned by `packages/adapters/pi` and passes it through repeatable `--extension`. It does not write into `~/.pi`, the project, or Pi settings, and it does not disable the user's ordinary Extension discovery. The Extension registers one `codexhost_question` Tool supporting one choice, single-line text, or multiline text prompt and calls only `ctx.ui.select`, `ctx.ui.input`, or `ctx.ui.editor`. It does not expose a timeout parameter because the current Desktop cannot automatically dismiss an expired `requestUserInput` request.
+The Pi Adapter starts Pi with its normal RPC arguments and does not pass a codexhost-owned `--extension`, register a model-facing Question Tool, write into `~/.pi` or the project, or mutate Pi settings. Default and user-configured Extension discovery remains owned by Pi. If a user-installed Extension calls `ctx.ui.select`, `ctx.ui.confirm`, `ctx.ui.input`, or `ctx.ui.editor`, the same native RPC bridge handles the resulting callback.
 
-The Extension does not make permission decisions, access files, spawn processes, persist entries, or handle project trust. Tests can inject an alternate Extension path. Missing or unloadable controlled Extension is a clear Session startup failure when model-initiated Question support is enabled.
+This keeps capability ownership explicit: the generic Interaction abstraction and Pi RPC mapping are reactive compatibility layers, not a source of new model capabilities. Tests assert that production startup has no Extension injection and exercise the bridge with reviewed synthetic native RPC records.
 
-Alternative: install globally or place `.pi/extensions` in each project. Rejected because it mutates user/project configuration and changes the project trust boundary.
+Alternative: explicitly load a controlled codexhost Question Extension. Rejected because Pi has no default Question Tool and codexhost must not expand a Harness capability set merely to exercise a generic abstraction.
 
 ### 8. Keep timeout and privacy semantics explicit
 
 The Pi transport performs native timeout resolution and Codex receives the same duration. The Adapter owns the bounded timer so a lost UI response cannot leak the native callback or Host Interaction state. When timeout, cancellation, fault, close, or Thread deletion resolves a Question without a Desktop response, the Host emits `serverRequest/resolved` for the numeric Host request ID and rejects any late answer at the Adapter boundary.
 
-The current Desktop build does not automatically send a response for `autoResolutionMs`, and its `serverRequest/resolved` path does not remove this external Thread's visible `requestUserInput` control. Pi therefore continues correctly after timeout, but Desktop keeps the stale Question and withholds the Composer until the user clicks an option or Skip; that late response is consumed without reaching Pi. The controlled product Tool does not expose timeout until this Desktop behavior is resolved. This is a documented compatibility limit, not a successful UI timeout Gate.
+The current Desktop build does not automatically send a response for `autoResolutionMs`, and its `serverRequest/resolved` path does not remove this external Thread's visible `requestUserInput` control. Pi therefore continues correctly after timeout, but Desktop keeps the stale Question and withholds the Composer until the user clicks an option or Skip; that late response is consumed without reaching Pi. This limits timeout compatibility for user Extensions but does not affect the default Pi flow because codexhost injects no Question Tool.
 
 Prompts and answers, especially secret text, are not written to diagnostics, route observations, committed Fixtures, Mapping Store, or ordinary test output. Tests assert structure, IDs, counts, and enum-like outcomes only.
 
@@ -94,9 +95,9 @@ Prompts and answers, especially secret text, are not written to diagnostics, rou
 - [The Codex request is experimental and may change by Desktop build] -> Add runtime validation, versioned real Desktop evidence, and fail closed on incompatible shapes.
 - [Standalone Pi dialogs have no native Tool Item] -> Gate the synthetic Generic Tool lifecycle before implementing the full bridge.
 - [Codex free-text UI may not preserve multiline editor prefill] -> Verify actual rendering; use honest text fallback or report unsupported instead of pretending fidelity.
-- [Pi timeout and Desktop auto-resolution can race] -> Use one pending-state transition, reject all later paths idempotently, and do not expose timeout through the controlled Tool while the current Desktop leaves expired Questions visible.
+- [Pi timeout and Desktop auto-resolution can race] -> Use one pending-state transition and reject all later paths idempotently; document the Desktop limit for user Extensions.
 - [User Extensions can emit sensitive Questions] -> Never log prompt or answer bodies and keep complete native IDs private.
-- [The controlled Extension runs with user permissions] -> Keep it dependency-light and side-effect-free, load it explicitly, and document that it is not a sandbox or permission layer.
+- [Bridge work could accidentally expand Pi's Tool set] -> Keep Extension loading out of production startup and assert the absence of codexhost-owned Tool injection.
 - [Host-owned server request IDs can collide with official requests] -> Reserve a bounded negative safe-integer range, use an exact pending registry, and transparently forward all IDs outside that range.
 
 ## Migration Plan
@@ -104,14 +105,14 @@ Prompts and answers, especially secret text, are not written to diagnostics, rou
 1. Prove current Desktop `requestUserInput` request/response behavior with a synthetic external Turn and reviewed shape-only evidence.
 2. Add the public Question contract and Fake contract tests without changing product routing.
 3. Add Protocol Core projection and Host request-response routing with synthetic tests.
-4. Add Pi RPC runtime schemas, Adapter mapping, and the controlled Extension asset.
-5. Run hermetic checks, real Pi Extension scenarios, and a controlled Desktop Gate covering answer, cancel, timeout, continuation, and process cleanup.
-6. Rollback is removal of the new contract member, projector path, Extension flag, and Host request registry; no persistent data migration is required.
+4. Add Pi RPC runtime schemas and Adapter mapping without changing Pi startup capabilities.
+5. Run hermetic native-RPC checks and a controlled Desktop Gate covering answer, cancel, timeout, continuation, process cleanup, and absence of Extension injection.
+6. Rollback is removal of the new contract member, projector path, Pi callback bridge, and Host request registry; no persistent data migration is required.
 
 ## Compatibility Findings
 
 - Tool-associated and stable synthetic `dynamicToolCall` Items both render `requestUserInput` and return answers in the current Desktop. The standalone Gate's later Assistant text still hit the separately tracked visible-Thread binding P0; that does not invalidate the synthetic Item lifecycle itself.
 - `input` renders as a native textarea. `editor` degrades to the same textarea but preserves submitted multiline text; editor-specific prefill presentation is not claimed.
-- `isSecret: true` still renders an unmasked textarea (`-webkit-text-security: none`), so secret Questions are rejected before Desktop projection.
+- Secret input is not part of the default Pi capability set or this change's acceptance surface. The generic projector retains defensive fail-closed behavior for an unsafe Desktop representation.
 - Choice click, text Enter, and Skip return explicit responses. `autoResolutionMs` does not return a Desktop response, and `serverRequest/resolved` does not dismiss this external Thread's visible control in the current build.
 - Future fire-and-forget Pi `notify` requests remain ignored until a separate user-visible notification slice.

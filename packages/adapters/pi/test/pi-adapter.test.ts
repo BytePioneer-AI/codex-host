@@ -405,7 +405,7 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
-  it("maps a Tool-associated Pi select Question and returns the exact native answer", async () => {
+  it("maps a user Extension Tool-associated Pi select Question and returns the exact native answer", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -418,7 +418,7 @@ describe("Pi HarnessAdapter Session", () => {
     transport?.event({
       type: "tool.started",
       callId: "question-tool",
-      toolName: "codexhost_question",
+      toolName: "user_question_tool",
       arguments: {},
     });
     const toolStarted = await nextEvent(iterator);
@@ -471,7 +471,7 @@ describe("Pi HarnessAdapter Session", () => {
     transport?.event({
       type: "tool.completed",
       callId: "question-tool",
-      toolName: "codexhost_question",
+      toolName: "user_question_tool",
       result: { content: [{ type: "text", text: "answered" }] },
       isError: false,
     });
@@ -763,14 +763,14 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
-  it("passes the controlled Question Extension path only when native startup begins", async () => {
-    const extensionPath = "/synthetic/codexhost-question-extension.js";
-    const { adapter, dependencies, transports } = fixture({ extensionPath });
+  it("starts the native transport without injecting a codexhost Extension", async () => {
+    const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);
     expect(dependencies.createTransport).not.toHaveBeenCalled();
 
-    await session.execute(textTurn("extension-path"));
-    expect(transports[0]?.options).toMatchObject({ extensionPath });
+    await session.execute(textTurn("native-capabilities-only"));
+    expect(transports[0]?.options).toMatchObject({ cwd: "/synthetic" });
+    expect(transports[0]?.options).not.toHaveProperty("extensionPath");
     transports[0]?.succeed("done");
     await session.close();
   });

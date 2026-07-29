@@ -1,7 +1,9 @@
 # harness-adapter-text-session Specification
 
 ## Purpose
-TBD - created by archiving change implement-harness-adapter-text-slice. Update Purpose after archive.
+
+Define the minimal UI-independent HarnessAdapter text Session contract for lazy create, ordered Agent Message and Turn lifecycles, normalized failures, Host projection, and bounded close without exposing native Harness protocols.
+
 ## Requirements
 ### Requirement: Host uses a UI-independent text Session interface
 

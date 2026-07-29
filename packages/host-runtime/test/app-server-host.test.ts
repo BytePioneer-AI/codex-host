@@ -326,6 +326,48 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("deletes an active external Thread after retiring its pending Question", async () => {
+    const fixture = createFixture();
+    const forwarded: string[] = [];
+    fixture.official.stdin.setEncoding("utf8");
+    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await startPiTurn(fixture, threadId);
+    session.askQuestion({
+      id: "value",
+      type: "text",
+      prompt: "Value",
+      multiline: false,
+      secret: false,
+      optional: false,
+    });
+    const questionRequest = await fixture.collector.waitFor((message) =>
+      method(message, "item/tool/requestUserInput"),
+    );
+    if (typeof questionRequest.id !== "number" || !Number.isSafeInteger(questionRequest.id)) {
+      throw new Error("Question request has no numeric Host ID");
+    }
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "thread/delete",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      result: {},
+    });
+    writeRequest(fixture.desktopInput, {
+      id: questionRequest.id,
+      result: { answers: { value: { answers: ["late"] } } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(forwarded.join("")).not.toContain(questionRequest.id);
+    await stopFixture(fixture);
+  });
+
   it("returns a command error without lifecycle notifications for a rejected Turn", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
@@ -449,6 +491,217 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("round-trips an early standalone Question through the Codex native request", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.askQuestionOnNextTurn(
+      {
+        id: "decision",
+        type: "choice",
+        prompt: "Choose",
+        options: [
+          { value: "continue-value", label: "Continue" },
+          { value: "stop-value", label: "Stop" },
+        ],
+        multiple: false,
+        allowOther: false,
+        optional: false,
+      },
+      { title: "Decision" },
+    );
+
+    const turnId = await startPiTurn(fixture, threadId);
+    const request = await fixture.collector.waitFor((message) =>
+      method(message, "item/tool/requestUserInput"),
+    );
+    expect(request).toMatchObject({
+      id: -1,
+      params: {
+        threadId,
+        turnId,
+        itemId: expect.any(String),
+        questions: [
+          {
+            id: "decision",
+            header: "Decision",
+            question: "Choose",
+            options: [
+              { label: "Continue", description: "" },
+              { label: "Stop", description: "" },
+            ],
+          },
+        ],
+      },
+    });
+    const turnResponseIndex = fixture.collector.messages.findIndex((message) =>
+      requestId(message, 2),
+    );
+    const questionIndex = fixture.collector.messages.indexOf(request);
+    expect(questionIndex).toBeGreaterThan(turnResponseIndex);
+    const requestIdValue = request.id;
+    if (typeof requestIdValue !== "number") throw new Error("Question request has no numeric ID");
+    writeRequest(fixture.desktopInput, {
+      id: requestIdValue,
+      result: { answers: { decision: { answers: ["Continue"] } } },
+    });
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id ===
+          (request.params as JsonObject).itemId,
+    );
+    expect(session.interactionResponses).toMatchObject([
+      {
+        response: { type: "question", answers: { decision: ["continue-value"] } },
+      },
+    ]);
+
+    session.appendText("continued");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await stopFixture(fixture);
+  });
+
+  it("fails a secret Question closed without rendering visible Desktop input", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await startPiTurn(fixture, threadId);
+    session.askQuestion({
+      id: "secret",
+      type: "text",
+      prompt: "Secret value",
+      multiline: false,
+      secret: true,
+      optional: false,
+    });
+    await vi.waitFor(() => {
+      expect(session.interactionResponses.at(-1)).toMatchObject({
+        response: { type: "question", answers: {}, cancelled: true },
+      });
+    });
+    expect(
+      fixture.collector.messages.filter((message) => method(message, "item/tool/requestUserInput")),
+    ).toHaveLength(0);
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    await stopFixture(fixture);
+  });
+
+  it("cancels malformed and dismissed Desktop Question responses", async () => {
+    for (const result of [
+      { answers: { decision: { answers: ["undeclared"] } } },
+      { answers: {} },
+    ]) {
+      const fixture = createFixture();
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await startPiTurn(fixture, threadId);
+      session.askQuestion({
+        id: "decision",
+        type: "choice",
+        prompt: "Choose",
+        options: [{ value: "known", label: "Known" }],
+        multiple: false,
+        allowOther: false,
+        optional: false,
+      });
+      const request = await fixture.collector.waitFor((message) =>
+        method(message, "item/tool/requestUserInput"),
+      );
+      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
+      writeRequest(fixture.desktopInput, { id: request.id, result });
+      await fixture.collector.waitFor((message) => method(message, "item/completed"));
+      expect(session.interactionResponses.at(-1)).toMatchObject({
+        response: { type: "question", answers: {}, cancelled: true },
+      });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+      await stopFixture(fixture);
+    }
+  });
+
+  it("cancels a Question at the Host expiry bound", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await startPiTurn(fixture, threadId);
+    session.askQuestion(
+      {
+        id: "value",
+        type: "text",
+        prompt: "Value",
+        multiline: false,
+        secret: false,
+        optional: false,
+      },
+      { expiresAt: new Date(Date.now() + 20).toISOString() },
+    );
+    const request = await fixture.collector.waitFor((message) =>
+      method(message, "item/tool/requestUserInput"),
+    );
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "serverRequest/resolved")),
+    ).resolves.toMatchObject({
+      params: { threadId, requestId: request.id },
+    });
+    await fixture.collector.waitFor((message) => method(message, "item/completed"));
+    expect(session.interactionResponses.at(-1)).toMatchObject({
+      response: { type: "question", answers: {}, cancelled: true },
+    });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    await stopFixture(fixture);
+  });
+
+  it("forwards non-Host responses and consumes retired Host Question responses", async () => {
+    const fixture = createFixture();
+    const forwarded: string[] = [];
+    fixture.official.stdin.setEncoding("utf8");
+    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await startPiTurn(fixture, threadId);
+    const interactionId = session.askQuestion({
+      id: "value",
+      type: "text",
+      prompt: "Value",
+      multiline: false,
+      secret: false,
+      optional: false,
+    });
+    const request = await fixture.collector.waitFor((message) =>
+      method(message, "item/tool/requestUserInput"),
+    );
+    if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
+    session.expireQuestion(interactionId);
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "serverRequest/resolved")),
+    ).resolves.toMatchObject({
+      params: { threadId, requestId: request.id },
+    });
+    await fixture.collector.waitFor((message) => method(message, "item/completed"));
+
+    writeRequest(fixture.desktopInput, {
+      id: request.id,
+      result: { answers: { value: { answers: ["late"] } } },
+    });
+    writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(forwarded.join("")).toContain(JSON.stringify({ id: 999, result: { official: true } }));
+    expect(forwarded.join("")).not.toContain(String(request.id));
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    await stopFixture(fixture);
+  });
+
   it("writes the interrupt response before cancellation lifecycle notifications", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
@@ -457,6 +710,21 @@ describe("AppServerHost HarnessAdapter projection", () => {
     if (!session) throw new Error("Fake Pi Session was not opened");
     await fixture.collector.waitFor((message) => method(message, "item/started"));
     session.startCommandExecution("sleep 10");
+    session.askQuestion({
+      id: "cancel-decision",
+      type: "choice",
+      prompt: "Continue?",
+      options: [
+        { value: "yes", label: "Yes" },
+        { value: "no", label: "No" },
+      ],
+      multiple: false,
+      allowOther: false,
+      optional: false,
+    });
+    const questionRequest = await fixture.collector.waitFor((message) =>
+      method(message, "item/tool/requestUserInput"),
+    );
     session.completeCancellationOnRequest();
 
     writeRequest(fixture.desktopInput, {
@@ -474,10 +742,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(completed).toMatchObject({ params: { turn: { status: "interrupted" } } });
 
     const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
+    const questionItemId = (questionRequest.params as JsonObject).itemId;
+    const questionClosedIndex = fixture.collector.messages.findIndex(
+      (message) =>
+        method(message, "item/completed") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id === questionItemId,
+    );
     const turnIndex = fixture.collector.messages.findIndex((message) =>
       method(message, "turn/completed"),
     );
-    expect(turnIndex).toBeGreaterThan(responseIndex);
+    expect(questionClosedIndex).toBeGreaterThan(responseIndex);
+    expect(turnIndex).toBeGreaterThan(questionClosedIndex);
     await stopFixture(fixture);
   });
 

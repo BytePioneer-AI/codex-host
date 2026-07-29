@@ -3,8 +3,18 @@ import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
 import { PiAdapter } from "@codexhost/adapter-pi";
-import type { HarnessAdapter, HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
+import type {
+  HarnessAdapter,
+  HarnessOutput,
+  HarnessSession,
+  HostQuestionInteraction,
+} from "@codexhost/harness-adapter";
+import {
+  hostItemIdSchema,
+  hostTurnIdSchema,
+  type HostInteractionId,
+  type HostTurnId,
+} from "@codexhost/shared-contracts";
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -20,6 +30,8 @@ import {
   writeJsonFrame,
   jsonRpcRequestSchema,
   transportModelIdForHarness,
+  type CodexQuestionProjection,
+  type CodexQuestionRequestProjection,
   type ExternalHarnessId,
   type JsonObject,
   type JsonRpcRequest,
@@ -52,6 +64,15 @@ interface ProjectedTurn {
   projector: CodexTurnProjector;
 }
 
+type HostQuestionRequestId = number;
+
+interface PendingDesktopQuestion {
+  thread: ExternalThread;
+  interaction: HostQuestionInteraction;
+  projection: CodexQuestionRequestProjection;
+  timeout: NodeJS.Timeout | null;
+}
+
 type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
 
 interface ExternalThread {
@@ -66,6 +87,7 @@ interface ExternalThread {
   activeTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, ProjectedTurn>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
+  ignoredInteractionIds: Set<HostInteractionId>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,6 +126,18 @@ function rpcError(request: JsonRpcRequest, code: number, message: string): JsonO
 
 function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
+const HOST_QUESTION_REQUEST_ID_MAX = -1;
+
+function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= HOST_QUESTION_REQUEST_ID_MIN &&
+    value <= HOST_QUESTION_REQUEST_ID_MAX
+  );
 }
 
 export function classifyCreateRequestRoute(
@@ -193,6 +227,8 @@ export class AppServerHost {
   #official: ChildProcessWithoutNullStreams | null = null;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #externalThreads = new Map<string, ExternalThread>();
+  #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
+  #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
 
@@ -256,6 +292,11 @@ export class AppServerHost {
       await Promise.allSettled(
         [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
       );
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId).catch(
+          () => undefined,
+        );
+      }
       this.#externalThreads.clear();
       this.#routeObservationTracker.clear();
     }
@@ -266,6 +307,7 @@ export class AppServerHost {
     if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
+      if (await this.#handleDesktopQuestionResponse(parsed)) continue;
       const requestResult = jsonRpcRequestSchema.safeParse(parsed);
       if (!requestResult.success) {
         await writeFrame(official.stdin, frame);
@@ -425,6 +467,7 @@ export class AppServerHost {
         activeTurnId: null,
         projectedTurns: new Map(),
         responseGates: new Map(),
+        ignoredInteractionIds: new Set(),
       };
       externalThread.outputTask = this.#consumeHarnessOutputs(externalThread);
       this.#externalThreads.set(threadId, externalThread);
@@ -615,6 +658,10 @@ export class AppServerHost {
   }
 
   async #projectHarnessOutput(thread: ExternalThread, output: HarnessOutput): Promise<void> {
+    if (output.kind === "interaction") {
+      await this.#projectQuestion(thread, output.interaction);
+      return;
+    }
     const event = output.event;
     if (event.type === "session.state.changed") return;
     if (event.type === "session.faulted") {
@@ -624,6 +671,15 @@ export class AppServerHost {
 
     const projection = this.#projectedTurn(thread, event.turnId);
     await this.#waitForTurnResponse(thread, event.turnId);
+    if (
+      event.type === "interaction.closed" &&
+      thread.ignoredInteractionIds.delete(event.interactionId)
+    ) {
+      return;
+    }
+    if (event.type === "interaction.closed") {
+      await this.#resolveDesktopQuestion(event.interactionId);
+    }
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
@@ -643,6 +699,135 @@ export class AppServerHost {
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(thread, { type: "idle" });
     }
+  }
+
+  async #projectQuestion(
+    thread: ExternalThread,
+    interaction: HostQuestionInteraction,
+  ): Promise<void> {
+    const projection = this.#projectedTurn(thread, interaction.turnId);
+    await this.#waitForTurnResponse(thread, interaction.turnId);
+    let result: CodexQuestionProjection;
+    try {
+      result = projection.projector.projectQuestion(
+        interaction,
+        hostItemIdSchema.parse(randomUUID()),
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      thread.ignoredInteractionIds.add(interaction.interactionId);
+      const cancelled = await thread.session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      });
+      if (!cancelled.ok) {
+        thread.ignoredInteractionIds.delete(interaction.interactionId);
+        this.#diagnose(`Unsupported Question cancellation failed: ${cancelled.error.message}`);
+      }
+      return;
+    }
+    for (const message of result.messages) await this.#writer.json(message);
+
+    const requestId = this.#allocateQuestionRequestId();
+    const expiresAtMs = interaction.expiresAt ? Date.parse(interaction.expiresAt) : Number.NaN;
+    const timeoutMs = Number.isFinite(expiresAtMs) ? Math.max(0, expiresAtMs - Date.now()) : null;
+    const pending: PendingDesktopQuestion = {
+      thread,
+      interaction,
+      projection: result.questionRequest,
+      timeout: null,
+    };
+    if (timeoutMs !== null) {
+      pending.timeout = setTimeout(() => {
+        void this.#cancelExpiredQuestion(requestId);
+      }, timeoutMs);
+    }
+    this.#pendingDesktopQuestions.set(requestId, pending);
+    try {
+      await this.#writer.json({ id: requestId, ...result.questionRequest.request });
+    } catch (error) {
+      this.#retireDesktopQuestion(interaction.interactionId);
+      await thread.session
+        .execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "question", answers: {}, cancelled: true },
+        })
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async #handleDesktopQuestionResponse(value: JsonValue): Promise<boolean> {
+    if (!isRecord(value) || !isHostQuestionRequestId(value.id)) return false;
+    const pending = this.#pendingDesktopQuestions.get(value.id);
+    if (!pending) return true;
+    this.#pendingDesktopQuestions.delete(value.id);
+    if (pending.timeout) clearTimeout(pending.timeout);
+
+    let response;
+    try {
+      response =
+        "error" in value
+          ? { type: "question" as const, answers: {}, cancelled: true as const }
+          : pending.projection.parseResponse(value.result);
+    } catch (error) {
+      this.#diagnose(error);
+      response = { type: "question" as const, answers: {}, cancelled: true as const };
+    }
+    const result = await pending.thread.session.execute({
+      type: "interaction.respond",
+      interactionId: pending.interaction.interactionId,
+      response,
+    });
+    if (!result.ok && result.error.code !== "invalidState") {
+      this.#diagnose(`Question response failed: ${result.error.message}`);
+    }
+    return true;
+  }
+
+  async #cancelExpiredQuestion(requestId: HostQuestionRequestId): Promise<void> {
+    const pending = this.#pendingDesktopQuestions.get(requestId);
+    if (!pending) return;
+    await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+    const result = await pending.thread.session.execute({
+      type: "interaction.respond",
+      interactionId: pending.interaction.interactionId,
+      response: { type: "question", answers: {}, cancelled: true },
+    });
+    if (!result.ok && result.error.code !== "invalidState") {
+      this.#diagnose(`Question expiry failed: ${result.error.message}`);
+    }
+  }
+
+  #retireDesktopQuestion(interactionId: HostInteractionId): void {
+    for (const [requestId, pending] of this.#pendingDesktopQuestions) {
+      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pendingDesktopQuestions.delete(requestId);
+    }
+  }
+
+  async #resolveDesktopQuestion(interactionId: HostInteractionId): Promise<void> {
+    for (const [requestId, pending] of this.#pendingDesktopQuestions) {
+      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pendingDesktopQuestions.delete(requestId);
+      await this.#writer.json({
+        method: "serverRequest/resolved",
+        params: { threadId: pending.thread.id, requestId },
+      });
+    }
+  }
+
+  #allocateQuestionRequestId(): HostQuestionRequestId {
+    if (this.#nextQuestionRequestId < HOST_QUESTION_REQUEST_ID_MIN) {
+      throw new Error("Host Question Request ID namespace is exhausted");
+    }
+    const requestId = this.#nextQuestionRequestId;
+    this.#nextQuestionRequestId -= 1;
+    return requestId;
   }
 
   async #setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void> {

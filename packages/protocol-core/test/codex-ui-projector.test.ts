@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
   HostFileChangeItem,
+  HostQuestionInteraction,
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
-import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  hostInteractionIdSchema,
+  hostItemIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import { CodexTurnProjector } from "../src/index.js";
 
@@ -261,6 +266,156 @@ describe("Codex UI projector", () => {
       outcome: { status: "succeeded" },
     });
     expect(completed.completedTurn).toMatchObject({ items: [] });
+  });
+
+  it("projects standalone Questions through a synthetic Generic Tool lifecycle", () => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-1"),
+      turnId,
+      title: "Question",
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [
+            { value: "yes", label: "Yes" },
+            { value: "no", label: "No" },
+          ],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    const opened = value.projectQuestion(question, itemId("synthetic-question"), 2_000);
+    expect(opened.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: "synthetic-question",
+            type: "dynamicToolCall",
+            namespace: "codexhost",
+            tool: "question",
+          },
+        },
+      },
+    ]);
+    expect(opened.questionRequest.request).toMatchObject({
+      method: "item/tool/requestUserInput",
+      params: { itemId: "synthetic-question", turnId: "turn-1" },
+    });
+    expect(() =>
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
+    ).toThrow("pending Interactions");
+
+    const closed = value.project(
+      {
+        type: "interaction.closed",
+        interactionId: question.interactionId,
+        turnId,
+        reason: "responded",
+      },
+      2_500,
+    );
+    expect(closed.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "synthetic-question",
+            type: "dynamicToolCall",
+            status: "completed",
+            success: true,
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn,
+    ).toMatchObject({ status: "completed", items: [] });
+  });
+
+  it("associates a Question with an active Generic Tool and protects its lifecycle", () => {
+    const value = projector();
+    const toolId = itemId("question-tool");
+    const tool: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: toolId,
+      toolName: "codexhost_question",
+      arguments: {},
+    };
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-tool"),
+      turnId,
+      itemId: toolId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: tool });
+    expect(value.projectQuestion(question, itemId("unused")).messages).toEqual([]);
+    expect(() =>
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: tool, outcome: { status: "succeeded" } },
+      }),
+    ).toThrow("pending Interaction");
+    expect(
+      value.project({
+        type: "interaction.closed",
+        interactionId: question.interactionId,
+        turnId,
+        reason: "cancelled",
+      }).messages,
+    ).toEqual([]);
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: tool, outcome: { status: "cancelled" } },
+    });
+  });
+
+  it("fails a secret Question without mutating synthetic Item state", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-secret"),
+      turnId,
+      questions: [
+        {
+          id: "secret",
+          type: "text",
+          prompt: "Secret value",
+          multiline: false,
+          secret: true,
+          optional: false,
+        },
+      ],
+    };
+    expect(() => value.projectQuestion(question, itemId("unused-secret"))).toThrow(
+      "does not safely render secret Question input",
+    );
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn,
+    ).toMatchObject({ status: "completed", items: [] });
   });
 
   it("rejects invalid ordering and maps cancelled Turns to interrupted", () => {

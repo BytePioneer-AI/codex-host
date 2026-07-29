@@ -1,7 +1,17 @@
-import { harnessIdSchema, hostItemIdSchema } from "@codexhost/shared-contracts";
-import type { HarnessId, HostItemId, JsonValue } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostInteractionIdSchema,
+  hostItemIdSchema,
+} from "@codexhost/shared-contracts";
+import type {
+  HarnessId,
+  HostInteractionId,
+  HostItemId,
+  JsonValue,
+} from "@codexhost/shared-contracts";
 
 import { HarnessOutputChannel } from "./output-channel.js";
+import { validateHostQuestionResponse } from "./question.js";
 import type {
   CreateSessionInput,
   HarnessAdapter,
@@ -13,12 +23,17 @@ import type {
   HostAgentMessageItem,
   HostCommand,
   HostCommandExecutionItem,
+  HostEvent,
   HostFileChange,
   HostItem,
   HostItemOutcome,
   HostItemUpdate,
+  HostQuestion,
+  HostQuestionInteraction,
   HostToolExecutionItem,
   HostToolOutput,
+  InteractionRespondAccepted,
+  InteractionRespondCommand,
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnStartAccepted,
@@ -28,6 +43,7 @@ import type {
 interface ActiveFakeTurn {
   command: TurnStartCommand;
   items: Map<HostItemId, HostItem>;
+  interactions: Map<HostInteractionId, HostQuestionInteraction>;
   cancellationRequested: boolean;
 }
 
@@ -44,12 +60,18 @@ function invalidState(message: string): HarnessError {
 export class FakeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId;
   readonly initialState: HarnessSessionState = {};
+  readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #active: ActiveFakeTurn | null = null;
   #closed = false;
   #completeCancellationDuringRequest = false;
+  #interactionOrdinal = 0;
   #itemOrdinal = 0;
+  #nextQuestion: {
+    question: HostQuestion;
+    options: { itemId?: HostItemId; title?: string; expiresAt?: string };
+  } | null = null;
   #nextRejection: HarnessError | null = null;
 
   constructor(harnessId: HarnessId) {
@@ -65,13 +87,22 @@ export class FakeHarnessSession implements HarnessSession {
     this.#completeCancellationDuringRequest = true;
   }
 
+  askQuestionOnNextTurn(
+    question: HostQuestion,
+    options: { itemId?: HostItemId; title?: string; expiresAt?: string } = {},
+  ): void {
+    this.#nextQuestion = { question, options };
+  }
+
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted>> {
+  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted>> {
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "interaction.respond") return this.#respond(command);
     if (this.#nextRejection) {
       const error = this.#nextRejection;
       this.#nextRejection = null;
@@ -106,10 +137,16 @@ export class FakeHarnessSession implements HarnessSession {
     this.#active = {
       command,
       items: new Map([[item.itemId, item]]),
+      interactions: new Map(),
       cancellationRequested: false,
     };
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
+    if (this.#nextQuestion) {
+      const pending = this.#nextQuestion;
+      this.#nextQuestion = null;
+      this.askQuestion(pending.question, pending.options);
+    }
     return { ok: true, value: { turnId: command.turnId } };
   }
 
@@ -186,6 +223,39 @@ export class FakeHarnessSession implements HarnessSession {
     return itemId;
   }
 
+  askQuestion(
+    question: HostQuestion,
+    options: { itemId?: HostItemId; title?: string; expiresAt?: string } = {},
+  ): HostInteractionId {
+    const active = this.#requireActive();
+    const interactionId = this.#nextInteractionId();
+    const interaction: HostQuestionInteraction = {
+      type: "question",
+      interactionId,
+      turnId: active.command.turnId,
+      questions: [question],
+      ...(options.itemId ? { itemId: options.itemId } : {}),
+      ...(options.title ? { title: options.title } : {}),
+      ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
+    };
+    active.interactions.set(interactionId, interaction);
+    this.#channel.emit({ kind: "interaction", interaction });
+    return interactionId;
+  }
+
+  expireQuestion(interactionId: HostInteractionId): void {
+    const active = this.#requireActive();
+    if (!active.interactions.delete(interactionId)) {
+      throw new Error("Fake Harness Question is not pending");
+    }
+    this.#event({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason: "expired",
+    });
+  }
+
   succeedTurn(): void {
     const active = this.#requireActive();
     const unfinishedTools = [...active.items.values()].filter(
@@ -193,6 +263,9 @@ export class FakeHarnessSession implements HarnessSession {
     );
     if (unfinishedTools.length > 0) {
       throw new Error("Fake Harness Session cannot succeed with active Tool Items");
+    }
+    if (active.interactions.size > 0) {
+      throw new Error("Fake Harness Session cannot succeed with pending Interactions");
     }
     this.#completeItems(active, { status: "succeeded" });
     this.#finishTurn(active, { status: "succeeded" });
@@ -204,6 +277,7 @@ export class FakeHarnessSession implements HarnessSession {
       throw new Error("Fake Harness Turn has no cancellation request");
     }
     const outcome = { status: "cancelled" as const, reason };
+    this.#closeInteractions(active, "cancelled");
     this.#completeItems(active, outcome);
     this.#finishTurn(active, outcome);
   }
@@ -211,6 +285,7 @@ export class FakeHarnessSession implements HarnessSession {
   failTurn(error: HarnessError): void {
     const active = this.#requireActive();
     const outcome = { status: "failed" as const, error };
+    this.#closeInteractions(active, "cancelled");
     this.#completeItems(active, outcome);
     this.#finishTurn(active, outcome);
   }
@@ -227,6 +302,28 @@ export class FakeHarnessSession implements HarnessSession {
     if (this.#active) this.failTurn(invalidStateError);
     this.#closed = true;
     this.#channel.end();
+  }
+
+  #respond(command: InteractionRespondCommand): HarnessResult<InteractionRespondAccepted> {
+    const active = this.#active;
+    const interaction = active?.interactions.get(command.interactionId);
+    if (!active || !interaction) {
+      return {
+        ok: false,
+        error: invalidState("Interaction Response must reference a pending Question"),
+      };
+    }
+    const error = validateHostQuestionResponse(interaction, command.response);
+    if (error) return { ok: false, error };
+    active.interactions.delete(command.interactionId);
+    this.interactionResponses.push(command);
+    this.#event({
+      type: "interaction.closed",
+      interactionId: command.interactionId,
+      turnId: active.command.turnId,
+      reason: command.response.cancelled ? "cancelled" : "responded",
+    });
+    return { ok: true, value: { accepted: true } };
   }
 
   #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
@@ -253,6 +350,18 @@ export class FakeHarnessSession implements HarnessSession {
     this.#event({ type: "item.updated", turnId: active.command.turnId, itemId, update });
   }
 
+  #closeInteractions(active: ActiveFakeTurn, reason: "cancelled" | "expired" | "superseded"): void {
+    for (const interaction of active.interactions.values()) {
+      this.#event({
+        type: "interaction.closed",
+        interactionId: interaction.interactionId,
+        turnId: active.command.turnId,
+        reason,
+      });
+    }
+    active.interactions.clear();
+  }
+
   #completeItems(active: ActiveFakeTurn, outcome: HostItemOutcome): void {
     for (const item of [...active.items.values()].reverse()) {
       active.items.delete(item.itemId);
@@ -270,8 +379,13 @@ export class FakeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.completed", turnId: active.command.turnId, outcome });
   }
 
-  #event(event: HarnessOutput["event"]): void {
+  #event(event: HostEvent): void {
     this.#channel.emit({ kind: "event", event });
+  }
+
+  #nextInteractionId(): HostInteractionId {
+    this.#interactionOrdinal += 1;
+    return hostInteractionIdSchema.parse(`fake-interaction-${this.#interactionOrdinal}`);
   }
 
   #nextItemId(): HostItemId {

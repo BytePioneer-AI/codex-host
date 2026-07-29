@@ -89,12 +89,15 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
         await expect(
           collector.waitFor(
             (output) =>
-              output.event.type === "turn.completed" && output.event.turnId === firstTurnId,
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === firstTurnId,
           ),
         ).resolves.toMatchObject({ event: { outcome: { status: "succeeded" } } });
         expect(
           collector.outputs.some(
             (output) =>
+              output.kind === "event" &&
               output.event.type === "item.updated" &&
               output.event.turnId === firstTurnId &&
               output.event.update.type === "text.append",
@@ -111,7 +114,9 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
         await expect(
           collector.waitFor(
             (output) =>
-              output.event.type === "turn.completed" && output.event.turnId === cancelledTurnId,
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === cancelledTurnId,
           ),
         ).resolves.toMatchObject({ event: { outcome: { status: "cancelled" } } });
 
@@ -120,7 +125,9 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
         await expect(
           collector.waitFor(
             (output) =>
-              output.event.type === "turn.completed" && output.event.turnId === continuationTurnId,
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === continuationTurnId,
           ),
         ).resolves.toMatchObject({ event: { outcome: { status: "succeeded" } } });
 

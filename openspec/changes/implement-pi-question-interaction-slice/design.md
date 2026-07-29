@@ -12,7 +12,7 @@ Pi intentionally has no built-in permission popup or question tool. User Extensi
 
 - Implement reusable, UI-independent Question semantics in `HarnessAdapter` with exact response and terminal invariants.
 - Render Pi blocking dialogs through the current Codex Desktop native user-input request and return answers to the original Pi callback.
-- Support early Questions, Tool-associated Questions, standalone Extension Questions, timeout, cancellation, fault, close, and continuation.
+- Support early Questions, Tool-associated Questions, standalone Extension Questions, Adapter timeout cleanup, cancellation, fault, close, and continuation.
 - Provide a narrowly scoped codexhost Pi Extension tool so the model can ask one choice or text Question.
 - Preserve transparent routing for official Codex server requests and all non-owned responses.
 
@@ -51,11 +51,11 @@ Codex JSON-RPC server request ID
 -> Pi extension_ui_request ID
 ```
 
-The Host generates namespaced UUID server request IDs and intercepts only exact pending IDs. Unknown responses continue to the official app-server. The Pi Adapter never exports the Pi request ID, and Protocol Core never receives an `extension_ui_*` payload.
+The Host allocates server request IDs from the reserved `-1..-1000000` range and intercepts only exact pending IDs. Official app-server requests use non-negative numeric IDs. Unknown responses outside the reserved range continue to the official app-server. The Pi Adapter never exports the Pi request ID, and Protocol Core never receives an `extension_ui_*` payload.
 
 ### 4. Use the native Codex user-input server request
 
-Protocol Core projects a Host Question to `item/tool/requestUserInput` and validates `ToolRequestUserInputResponse` at the first consumption boundary. Choice options become Codex labels; free text uses `options: null`; secret and allow-other flags are preserved where representable; Pi timeout becomes `autoResolutionMs`.
+Protocol Core projects a Host Question to `item/tool/requestUserInput` and validates `ToolRequestUserInputResponse` at the first consumption boundary. Choice options become Codex labels; free text uses `options: null`; allow-other is preserved; Pi timeout becomes `autoResolutionMs`. The current Desktop renders `isSecret: true` as an unmasked textarea, so Protocol Core fails secret Questions closed and Host cancels the Interaction instead of exposing visible secret input. Current Desktop also renders the timeout duration but does not automatically answer or dismiss the native Question.
 
 Codex requires an `itemId`. A Question emitted while a Tool Item is active uses that Item. A standalone or preflight Question gets a stable synthetic Generic Tool Item owned by the Host Turn; it starts before the server request and completes when the Interaction closes. The first implementation task is a real Desktop compatibility Gate proving this sequence. If the current build rejects or fails to render it, implementation pauses and the design is revised rather than silently adding custom Renderer UI.
 
@@ -75,7 +75,7 @@ All pending Interactions close before `turn.completed`. A transport fault first 
 
 ### 7. Load a controlled question Extension explicitly
 
-The Pi Adapter resolves a built Extension asset owned by `packages/adapters/pi` and passes it through repeatable `--extension`. It does not write into `~/.pi`, the project, or Pi settings, and it does not disable the user's ordinary Extension discovery. The Extension registers one `codexhost_question` Tool supporting one choice or text prompt and calls only `ctx.ui.select` or `ctx.ui.input`.
+The Pi Adapter resolves a built Extension asset owned by `packages/adapters/pi` and passes it through repeatable `--extension`. It does not write into `~/.pi`, the project, or Pi settings, and it does not disable the user's ordinary Extension discovery. The Extension registers one `codexhost_question` Tool supporting one choice, single-line text, or multiline text prompt and calls only `ctx.ui.select`, `ctx.ui.input`, or `ctx.ui.editor`. It does not expose a timeout parameter because the current Desktop cannot automatically dismiss an expired `requestUserInput` request.
 
 The Extension does not make permission decisions, access files, spawn processes, persist entries, or handle project trust. Tests can inject an alternate Extension path. Missing or unloadable controlled Extension is a clear Session startup failure when model-initiated Question support is enabled.
 
@@ -83,7 +83,9 @@ Alternative: install globally or place `.pi/extensions` in each project. Rejecte
 
 ### 8. Keep timeout and privacy semantics explicit
 
-Pi performs native timeout resolution; Codex receives the same duration for UI auto-resolution. The Adapter also owns a bounded local cleanup timer so a lost UI response cannot leak Host state. A late Desktop response after expiry is rejected.
+The Pi transport performs native timeout resolution and Codex receives the same duration. The Adapter owns the bounded timer so a lost UI response cannot leak the native callback or Host Interaction state. When timeout, cancellation, fault, close, or Thread deletion resolves a Question without a Desktop response, the Host emits `serverRequest/resolved` for the numeric Host request ID and rejects any late answer at the Adapter boundary.
+
+The current Desktop build does not automatically send a response for `autoResolutionMs`, and its `serverRequest/resolved` path does not remove this external Thread's visible `requestUserInput` control. Pi therefore continues correctly after timeout, but Desktop keeps the stale Question and withholds the Composer until the user clicks an option or Skip; that late response is consumed without reaching Pi. The controlled product Tool does not expose timeout until this Desktop behavior is resolved. This is a documented compatibility limit, not a successful UI timeout Gate.
 
 Prompts and answers, especially secret text, are not written to diagnostics, route observations, committed Fixtures, Mapping Store, or ordinary test output. Tests assert structure, IDs, counts, and enum-like outcomes only.
 
@@ -92,10 +94,10 @@ Prompts and answers, especially secret text, are not written to diagnostics, rou
 - [The Codex request is experimental and may change by Desktop build] -> Add runtime validation, versioned real Desktop evidence, and fail closed on incompatible shapes.
 - [Standalone Pi dialogs have no native Tool Item] -> Gate the synthetic Generic Tool lifecycle before implementing the full bridge.
 - [Codex free-text UI may not preserve multiline editor prefill] -> Verify actual rendering; use honest text fallback or report unsupported instead of pretending fidelity.
-- [Pi timeout and Desktop auto-resolution can race] -> Use one pending-state transition and reject all later paths idempotently.
+- [Pi timeout and Desktop auto-resolution can race] -> Use one pending-state transition, reject all later paths idempotently, and do not expose timeout through the controlled Tool while the current Desktop leaves expired Questions visible.
 - [User Extensions can emit sensitive Questions] -> Never log prompt or answer bodies and keep complete native IDs private.
 - [The controlled Extension runs with user permissions] -> Keep it dependency-light and side-effect-free, load it explicitly, and document that it is not a sandbox or permission layer.
-- [Host-owned server request IDs can collide with official requests] -> Use a namespaced UUID and exact pending registry while transparently forwarding all non-owned responses.
+- [Host-owned server request IDs can collide with official requests] -> Reserve a bounded negative safe-integer range, use an exact pending registry, and transparently forward all IDs outside that range.
 
 ## Migration Plan
 
@@ -106,9 +108,10 @@ Prompts and answers, especially secret text, are not written to diagnostics, rou
 5. Run hermetic checks, real Pi Extension scenarios, and a controlled Desktop Gate covering answer, cancel, timeout, continuation, and process cleanup.
 6. Rollback is removal of the new contract member, projector path, Extension flag, and Host request registry; no persistent data migration is required.
 
-## Open Questions
+## Compatibility Findings
 
-- Does the current Desktop require a previously started `dynamicToolCall` Item for every `requestUserInput`, or is a stable synthetic Item ID sufficient?
-- Does the current Desktop free-text control preserve multiline editor answers and prefill, or must `editor` be reported as a degraded text Question?
-- Does Desktop always return an explicit response on user dismissal and auto-resolution, or must Host cancellation be driven only by its local timeout?
-- Should future fire-and-forget Pi `notify` requests map to a Host notice, or remain ignored until a separate user-visible notification slice?
+- Tool-associated and stable synthetic `dynamicToolCall` Items both render `requestUserInput` and return answers in the current Desktop. The standalone Gate's later Assistant text still hit the separately tracked visible-Thread binding P0; that does not invalidate the synthetic Item lifecycle itself.
+- `input` renders as a native textarea. `editor` degrades to the same textarea but preserves submitted multiline text; editor-specific prefill presentation is not claimed.
+- `isSecret: true` still renders an unmasked textarea (`-webkit-text-security: none`), so secret Questions are rejected before Desktop projection.
+- Choice click, text Enter, and Skip return explicit responses. `autoResolutionMs` does not return a Desktop response, and `serverRequest/resolved` does not dismiss this external Thread's visible control in the current build.
+- Future fire-and-forget Pi `notify` requests remain ignored until a separate user-visible notification slice.

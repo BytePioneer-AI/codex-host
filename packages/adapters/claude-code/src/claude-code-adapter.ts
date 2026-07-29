@@ -11,7 +11,10 @@ import {
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostEvent,
   type HostItemOutcome,
+  type InteractionRespondAccepted,
+  type InteractionRespondCommand,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -142,13 +145,24 @@ class ClaudeHarnessSession implements HarnessSession {
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted>> {
+  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "interaction.respond") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Claude Code Interaction is not implemented in this Adapter slice",
+          retryable: false,
+        },
+      };
+    }
     if (this.#acceptingTurn || this.#active) {
       return {
         ok: false,
@@ -345,7 +359,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#onClosed();
   }
 
-  #event(event: HarnessOutput["event"]): void {
+  #event(event: HostEvent): void {
     this.#channel.emit({ kind: "event", event });
   }
 }

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 
-import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
+import type {
+  HarnessOutput,
+  HarnessSession,
+  HostQuestionInteraction,
+} from "@codexhost/harness-adapter";
 import {
   PiAdapter,
   type PiAdapterDependencies,
@@ -10,6 +14,7 @@ import {
 } from "../src/pi-adapter.js";
 import {
   PiRpcFaultError,
+  type PiInteractionResponse,
   type PiRpcSessionOptions,
   type PiSessionState,
   type PiTurnEvent,
@@ -24,6 +29,13 @@ class FakePiTransport implements PiTurnTransport {
     modelId: "synthetic-model",
   };
   readonly abort = vi.fn(async () => undefined);
+  readonly respondToInteraction = vi.fn(async (response: PiInteractionResponse) => {
+    this.event({
+      type: "interaction.closed",
+      requestId: response.requestId,
+      reason: "cancelled" in response ? "cancelled" : "responded",
+    });
+  });
   readonly start = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => {
     this.fail(new Error("Fake Pi transport closed"));
@@ -107,10 +119,24 @@ function cancelTurn(id: string) {
   return { type: "turn.cancel" as const, turnId: hostTurnIdSchema.parse(id) };
 }
 
-async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
+async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
   const result = await iterator.next();
   if (result.done) throw new Error("Harness output stream ended unexpectedly");
-  return result.value.event;
+  return result.value;
+}
+
+async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
+  const output = await nextOutput(iterator);
+  if (output.kind !== "event") throw new Error("Expected a Harness event output");
+  return output.event;
+}
+
+async function nextInteraction(
+  iterator: AsyncIterator<HarnessOutput>,
+): Promise<HostQuestionInteraction> {
+  const output = await nextOutput(iterator);
+  if (output.kind !== "interaction") throw new Error("Expected a Harness Interaction output");
+  return output.interaction;
 }
 
 describe("Pi HarnessAdapter Session", () => {
@@ -379,6 +405,197 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("maps a Tool-associated Pi select Question and returns the exact native answer", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("question"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+
+    transport?.event({
+      type: "tool.started",
+      callId: "question-tool",
+      toolName: "codexhost_question",
+      arguments: {},
+    });
+    const toolStarted = await nextEvent(iterator);
+    if (toolStarted.type !== "item.started") throw new Error("Question Tool did not start");
+    transport?.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "native-question",
+        method: "select",
+        title: "Continue?",
+        options: ["continue", "stop"],
+        timeoutMs: 5_000,
+      },
+    });
+    const interaction = await nextInteraction(iterator);
+    expect(interaction).toMatchObject({
+      type: "question",
+      turnId: "question",
+      itemId: toolStarted.item.itemId,
+      title: "Pi",
+      questions: [
+        {
+          id: "answer",
+          type: "choice",
+          prompt: "Continue?",
+          options: [
+            { value: "continue", label: "continue" },
+            { value: "stop", label: "stop" },
+          ],
+        },
+      ],
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: { answer: ["continue"] } },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transport?.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "native-question",
+      value: "continue",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: interaction.interactionId,
+      reason: "responded",
+    });
+
+    transport?.event({
+      type: "tool.completed",
+      callId: "question-tool",
+      toolName: "codexhost_question",
+      result: { content: [{ type: "text", text: "answered" }] },
+      isError: false,
+    });
+    await nextEvent(iterator);
+    transport?.succeed("");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("maps confirm, input, and editor Questions without inferring Approval", async () => {
+    for (const request of [
+      {
+        requestId: "confirm",
+        method: "confirm" as const,
+        title: "Confirm",
+        message: "Proceed?",
+      },
+      {
+        requestId: "input",
+        method: "input" as const,
+        title: "Value",
+        placeholder: "type",
+      },
+      {
+        requestId: "editor",
+        method: "editor" as const,
+        title: "Edit",
+        prefill: "line 1\nline 2",
+      },
+    ]) {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn(`question-${request.method}`));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      transports[0]?.event({ type: "interaction.requested", request });
+      const interaction = await nextInteraction(iterator);
+      expect(interaction.type).toBe("question");
+      expect(JSON.stringify(interaction)).not.toContain("approval");
+      expect(interaction.itemId).toBeUndefined();
+      if (request.method === "confirm") {
+        expect(interaction.questions[0]).toMatchObject({
+          type: "choice",
+          prompt: "Proceed?",
+        });
+        await session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "question", answers: { answer: ["yes"] } },
+        });
+        expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
+          requestId: "confirm",
+          confirmed: true,
+        });
+      } else {
+        expect(interaction.questions[0]).toMatchObject({
+          type: "text",
+          multiline: request.method === "editor",
+        });
+        await session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "question", answers: { answer: ["value"] } },
+        });
+        expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
+          requestId: request.requestId,
+          value: "value",
+        });
+      }
+      await nextEvent(iterator);
+      transports[0]?.succeed("");
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await session.close();
+    }
+  });
+
+  it("rejects invalid and duplicate Pi Question responses", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("invalid-question"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "native-question",
+        method: "select",
+        title: "Choose",
+        options: ["known"],
+      },
+    });
+    const interaction = await nextInteraction(iterator);
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: { answer: ["unknown"] } },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: interaction.interactionId,
+      response: { type: "question", answers: {}, cancelled: true },
+    });
+    await nextEvent(iterator);
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transports[0]?.succeed("");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
   it("requests Abort idempotently, cancels active Items, and continues in the same Session", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -395,6 +612,16 @@ describe("Pi HarnessAdapter Session", () => {
       arguments: {},
     });
     await nextEvent(iterator);
+    transport?.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "cancel-question",
+        method: "select",
+        title: "Continue?",
+        options: ["yes", "no"],
+      },
+    });
+    const cancelledInteraction = await nextInteraction(iterator);
 
     await expect(session.execute(cancelTurn("cancelled"))).resolves.toEqual({
       ok: true,
@@ -405,6 +632,16 @@ describe("Pi HarnessAdapter Session", () => {
       value: { cancellationRequested: true },
     });
     expect(transport?.abort).toHaveBeenCalledOnce();
+    transport?.event({
+      type: "interaction.closed",
+      requestId: "cancel-question",
+      reason: "cancelled",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: cancelledInteraction.interactionId,
+      reason: "cancelled",
+    });
     transport?.event({
       type: "tool.completed",
       callId: "long-1",
@@ -470,8 +707,21 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
+    transports[0]?.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "fault-question",
+        method: "input",
+        title: "Value",
+      },
+    });
+    await nextInteraction(iterator);
 
     transports[0]?.fault(new PiRpcFaultError("processExited", "synthetic process exit"));
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
     expect((await nextEvent(iterator)).type).toBe("session.faulted");
@@ -486,9 +736,22 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
+    transports[0]?.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "close-question",
+        method: "editor",
+        title: "Value",
+      },
+    });
+    await nextInteraction(iterator);
 
     await session.close();
     expect(transports[0]?.abort).toHaveBeenCalledOnce();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
       snapshot: { outcome: { status: "failed" } },
@@ -498,6 +761,18 @@ describe("Pi HarnessAdapter Session", () => {
       outcome: { status: "failed" },
     });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("passes the controlled Question Extension path only when native startup begins", async () => {
+    const extensionPath = "/synthetic/codexhost-question-extension.js";
+    const { adapter, dependencies, transports } = fixture({ extensionPath });
+    const session = await openSession(adapter);
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    await session.execute(textTurn("extension-path"));
+    expect(transports[0]?.options).toMatchObject({ extensionPath });
+    transports[0]?.succeed("done");
+    await session.close();
   });
 
   it("does not create a transport for unused prewarm and closes idempotently", async () => {

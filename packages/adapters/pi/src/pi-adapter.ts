@@ -1,8 +1,10 @@
 import { parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import {
   HarnessOutputChannel,
+  validateHostQuestionResponse,
   type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
@@ -13,11 +15,15 @@ import {
   type HostAgentMessageItem,
   type HostCommand,
   type HostCommandExecutionItem,
+  type HostEvent,
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
+  type HostQuestionInteraction,
   type HostToolExecutionItem,
   type HostToolOutput,
+  type InteractionRespondAccepted,
+  type InteractionRespondCommand,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -26,8 +32,10 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  hostInteractionIdSchema,
   hostItemIdSchema,
   type HarnessId,
+  type HostInteractionId,
   type HostItemId,
   type JsonValue,
 } from "@codexhost/shared-contracts";
@@ -35,6 +43,8 @@ import {
 import {
   PiRpcFaultError,
   PiRpcSession,
+  type PiInteractionRequest,
+  type PiInteractionResponse,
   type PiRpcSessionOptions,
   type PiSessionState,
   type PiTurnEvent,
@@ -47,6 +57,7 @@ export interface PiAdapterOptions {
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
+  extensionPath?: string;
   toolOutputLimit?: number;
 }
 
@@ -54,6 +65,7 @@ export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
+  respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -68,10 +80,17 @@ interface ActiveTool {
   startedAtMs: number;
 }
 
+interface ActiveInteraction {
+  interaction: HostQuestionInteraction;
+  nativeRequest: PiInteractionRequest;
+}
+
 interface ActiveTurn {
   command: TurnStartCommand;
   agentItem: HostAgentMessageItem;
   tools: Map<string, ActiveTool>;
+  interactions: Map<HostInteractionId, ActiveInteraction>;
+  interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -80,6 +99,9 @@ interface ActiveTurn {
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const piHarnessId = harnessIdSchema.parse("pi");
+const DEFAULT_QUESTION_EXTENSION_PATH = fileURLToPath(
+  new URL("./codexhost-question-extension.js", import.meta.url),
+);
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -198,6 +220,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #cwd: string;
+  readonly #extensionPath: string | undefined;
   readonly #onClosed: () => void;
   readonly #toolOutputLimit: number;
   #acceptingTurn = false;
@@ -212,25 +235,28 @@ class PiHarnessSession implements HarnessSession {
     cwd: string,
     createTransport: PiAdapterDependencies["createTransport"],
     onClosed: () => void,
-    options: { closeTimeoutMs: number; toolOutputLimit: number },
+    options: { closeTimeoutMs: number; extensionPath?: string; toolOutputLimit: number },
   ) {
     this.#cwd = cwd;
     this.#createTransport = createTransport;
     this.#onClosed = onClosed;
     this.#closeTimeoutMs = options.closeTimeoutMs;
+    this.#extensionPath = options.extensionPath;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.outputs = this.#channel.outputs;
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted>> {
+  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "interaction.respond") return this.#respond(command);
     if (this.#acceptingTurn || this.#active) {
       return {
         ok: false,
@@ -278,6 +304,8 @@ class PiHarnessSession implements HarnessSession {
         command,
         agentItem: item,
         tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
         cancellationRequested: false,
         completion,
         resolveCompletion,
@@ -317,6 +345,52 @@ class PiHarnessSession implements HarnessSession {
     return this.#closePromise;
   }
 
+  async #respond(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const active = this.#active;
+    const pending = active?.interactions.get(command.interactionId);
+    if (!active || !pending) {
+      return {
+        ok: false,
+        error: invalidState("Pi Interaction Response must reference a pending Question"),
+      };
+    }
+    const validationError = validateHostQuestionResponse(pending.interaction, command.response);
+    if (validationError) return { ok: false, error: validationError };
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Pi transport is unavailable") };
+    const answers = command.response.answers.answer ?? [];
+    let response: PiInteractionResponse;
+    if (command.response.cancelled) {
+      response = { requestId: pending.nativeRequest.requestId, cancelled: true };
+    } else if (pending.nativeRequest.method === "confirm") {
+      response = {
+        requestId: pending.nativeRequest.requestId,
+        confirmed: answers[0] === "yes",
+      };
+    } else {
+      const value = answers[0];
+      if (value === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Pi Question Response has no answer",
+            retryable: false,
+          },
+        };
+      }
+      response = { requestId: pending.nativeRequest.requestId, value };
+    }
+    try {
+      await transport.respondToInteraction(response);
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -345,6 +419,7 @@ class PiHarnessSession implements HarnessSession {
     if (this.#starting) return this.#starting;
     const transport = this.#createTransport({
       cwd: this.#cwd,
+      ...(this.#extensionPath ? { extensionPath: this.#extensionPath } : {}),
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
     });
     const starting = transport
@@ -382,6 +457,12 @@ class PiHarnessSession implements HarnessSession {
       case "text.delta":
         this.#appendText(active, event.delta);
         return;
+      case "interaction.requested":
+        this.#startInteraction(active, event.request);
+        return;
+      case "interaction.closed":
+        this.#closeInteraction(active, event.requestId, event.reason);
+        return;
       case "tool.started":
         this.#startTool(active, event);
         return;
@@ -391,6 +472,91 @@ class PiHarnessSession implements HarnessSession {
       case "tool.completed":
         this.#completeTool(active, event);
     }
+  }
+
+  #startInteraction(active: ActiveTurn, request: PiInteractionRequest): void {
+    if (active.interactionByNativeId.has(request.requestId)) {
+      throw new Error("Pi Interaction started more than once");
+    }
+    const interactionId = hostInteractionIdSchema.parse(randomUUID());
+    const question =
+      request.method === "select"
+        ? {
+            id: "answer",
+            type: "choice" as const,
+            prompt: request.title,
+            options: request.options.map((option) => ({ value: option, label: option })),
+            multiple: false,
+            allowOther: false,
+            optional: false,
+          }
+        : request.method === "confirm"
+          ? {
+              id: "answer",
+              type: "choice" as const,
+              prompt: request.message || request.title,
+              options: [
+                { value: "yes", label: "Yes" },
+                { value: "no", label: "No" },
+              ],
+              multiple: false,
+              allowOther: false,
+              optional: false,
+            }
+          : {
+              id: "answer",
+              type: "text" as const,
+              prompt: request.title,
+              multiline: request.method === "editor",
+              secret: false,
+              optional: false,
+              ...(request.method === "input" && request.placeholder
+                ? { placeholder: request.placeholder }
+                : {}),
+              ...(request.method === "editor" && request.prefill
+                ? { prefill: request.prefill }
+                : {}),
+            };
+    const matchingQuestionTools = [...active.tools.values()].filter(
+      ({ nativeName }) => nativeName === "codexhost_question",
+    );
+    const associatedTool =
+      matchingQuestionTools.length === 1
+        ? matchingQuestionTools[0]
+        : active.tools.size === 1
+          ? [...active.tools.values()][0]
+          : undefined;
+    const interaction: HostQuestionInteraction = {
+      type: "question",
+      interactionId,
+      turnId: active.command.turnId,
+      ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
+      title: "Pi",
+      questions: [question],
+      ...(request.timeoutMs !== undefined
+        ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+        : {}),
+    };
+    active.interactions.set(interactionId, { interaction, nativeRequest: request });
+    active.interactionByNativeId.set(request.requestId, interactionId);
+    this.#channel.emit({ kind: "interaction", interaction });
+  }
+
+  #closeInteraction(
+    active: ActiveTurn,
+    nativeRequestId: string,
+    reason: "responded" | "cancelled" | "expired" | "superseded",
+  ): void {
+    const interactionId = active.interactionByNativeId.get(nativeRequestId);
+    if (!interactionId) throw new Error("Pi Interaction close references an unknown request");
+    active.interactionByNativeId.delete(nativeRequestId);
+    active.interactions.delete(interactionId);
+    this.#event({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
   }
 
   #appendText(active: ActiveTurn, text: string): void {
@@ -511,8 +677,28 @@ class PiHarnessSession implements HarnessSession {
     });
   }
 
+  #closeActiveInteractions(
+    active: ActiveTurn,
+    reason: "cancelled" | "expired" | "superseded",
+  ): void {
+    for (const [interactionId, pending] of active.interactions) {
+      active.interactions.delete(interactionId);
+      active.interactionByNativeId.delete(pending.nativeRequest.requestId);
+      this.#event({
+        type: "interaction.closed",
+        interactionId,
+        turnId: active.command.turnId,
+        reason,
+      });
+    }
+  }
+
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, finalText?: string): void {
     if (this.#active !== active) return;
+    this.#closeActiveInteractions(
+      active,
+      outcome.status === "succeeded" ? "superseded" : "cancelled",
+    );
     this.#active = null;
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
@@ -567,7 +753,7 @@ class PiHarnessSession implements HarnessSession {
     }
   }
 
-  #event(event: HarnessOutput["event"]): void {
+  #event(event: HostEvent): void {
     this.#channel.emit({ kind: "event", event });
   }
 
@@ -580,6 +766,7 @@ export class PiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = piHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
+  readonly #extensionPath: string | undefined;
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -592,6 +779,7 @@ export class PiAdapter implements HarnessAdapter {
   ) {
     this.#createTransport = dependencies.createTransport;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
+    this.#extensionPath = options.extensionPath ?? DEFAULT_QUESTION_EXTENSION_PATH;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
@@ -615,7 +803,11 @@ export class PiAdapter implements HarnessAdapter {
       () => {
         this.#sessions.delete(session);
       },
-      { closeTimeoutMs: this.#closeTimeoutMs, toolOutputLimit: this.#toolOutputLimit },
+      {
+        closeTimeoutMs: this.#closeTimeoutMs,
+        ...(this.#extensionPath ? { extensionPath: this.#extensionPath } : {}),
+        toolOutputLimit: this.#toolOutputLimit,
+      },
     );
     this.#sessions.add(session);
     return { ok: true, value: session };

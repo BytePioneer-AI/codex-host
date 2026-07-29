@@ -1,5 +1,6 @@
 import type {
   HarnessId,
+  HostInteractionId,
   HostItemId,
   HostTurnId,
   JsonValue,
@@ -53,7 +54,60 @@ export interface TurnCancelCommand {
   turnId: HostTurnId;
 }
 
-export type HostCommand = TurnStartCommand | TurnCancelCommand;
+export interface HostChoiceQuestion {
+  id: string;
+  type: "choice";
+  prompt: string;
+  options: Array<{
+    value: string;
+    label: string;
+    description?: string;
+  }>;
+  multiple: boolean;
+  allowOther: boolean;
+  optional: boolean;
+}
+
+export interface HostTextQuestion {
+  id: string;
+  type: "text";
+  prompt: string;
+  multiline: boolean;
+  secret: boolean;
+  optional: boolean;
+  placeholder?: string;
+  prefill?: string;
+}
+
+export type HostQuestion = HostChoiceQuestion | HostTextQuestion;
+
+export interface HostQuestionInteraction {
+  type: "question";
+  interactionId: HostInteractionId;
+  turnId: HostTurnId;
+  itemId?: HostItemId;
+  title?: string;
+  questions: HostQuestion[];
+  expiresAt?: string;
+}
+
+export type HostInteraction = HostQuestionInteraction;
+
+export interface HostQuestionResponse {
+  type: "question";
+  answers: Record<string, string[]>;
+  cancelled?: boolean;
+}
+
+export type HostInteractionResponse = HostQuestionResponse;
+
+export interface InteractionRespondCommand {
+  type: "interaction.respond";
+  interactionId: HostInteractionId;
+  response: HostInteractionResponse;
+}
+
+export type HostCommand = TurnStartCommand | TurnCancelCommand | InteractionRespondCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
@@ -61,6 +115,10 @@ export interface TurnStartAccepted {
 
 export interface TurnCancelAccepted {
   cancellationRequested: true;
+}
+
+export interface InteractionRespondAccepted {
+  accepted: true;
 }
 
 export interface HostAgentMessageItem {
@@ -168,6 +226,13 @@ export interface TurnCompletedEvent {
   outcome: TurnOutcome;
 }
 
+export interface InteractionClosedEvent {
+  type: "interaction.closed";
+  interactionId: HostInteractionId;
+  turnId: HostTurnId;
+  reason: "responded" | "cancelled" | "expired" | "superseded";
+}
+
 export interface SessionFaultedEvent {
   type: "session.faulted";
   error: HarnessError;
@@ -179,13 +244,12 @@ export type HostEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
 
-export interface HarnessOutput {
-  kind: "event";
-  event: HostEvent;
-}
+export type HarnessOutput =
+  { kind: "event"; event: HostEvent } | { kind: "interaction"; interaction: HostInteraction };
 
 export interface HarnessSession {
   readonly harnessId: HarnessId;
@@ -194,6 +258,7 @@ export interface HarnessSession {
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   close(): Promise<void>;
 }
 

@@ -6,7 +6,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PiRpcSession, type PiRpcProcessAdapter, type PiTurnEvent } from "../src/pi-rpc-session.js";
 
-type Scenario = "final-only" | "empty" | "tools" | "cancel" | "malformed-tool";
+type Scenario =
+  | "final-only"
+  | "empty"
+  | "tools"
+  | "cancel"
+  | "malformed-tool"
+  | "interaction"
+  | "interaction-timeout"
+  | "interaction-cancel"
+  | "malformed-interaction";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -47,6 +56,19 @@ class FakePiRpcProcess extends EventEmitter {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return;
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
+    if (command.type === "extension_ui_response") {
+      if (
+        (this.#scenario === "interaction" &&
+          command.id === "native-question" &&
+          command.value === "continue") ||
+        (this.#scenario === "interaction-timeout" &&
+          command.id === "native-question" &&
+          command.cancelled === true)
+      ) {
+        this.#completeInteractionTurn();
+      }
+      return;
+    }
     if (command.type === "get_state") {
       this.#respond(command, {
         sessionId: "synthetic-session",
@@ -55,15 +77,32 @@ class FakePiRpcProcess extends EventEmitter {
       });
       return;
     }
+    if (
+      command.type === "prompt" &&
+      [
+        "interaction",
+        "interaction-timeout",
+        "interaction-cancel",
+        "malformed-interaction",
+      ].includes(this.#scenario)
+    ) {
+      this.#startInteractionTurn(command);
+      return;
+    }
     this.#respond(command);
-    if (command.type === "abort" && this.#scenario === "cancel") {
-      this.#output({
-        type: "tool_execution_end",
-        toolCallId: "long-tool",
-        toolName: "gate_long_tool",
-        result: { content: [{ type: "text", text: "cancelled" }] },
-        isError: true,
-      });
+    if (
+      command.type === "abort" &&
+      (this.#scenario === "cancel" || this.#scenario === "interaction-cancel")
+    ) {
+      if (this.#scenario === "cancel") {
+        this.#output({
+          type: "tool_execution_end",
+          toolCallId: "long-tool",
+          toolName: "gate_long_tool",
+          result: { content: [{ type: "text", text: "cancelled" }] },
+          isError: true,
+        });
+      }
       this.#output({ type: "agent_settled" });
       return;
     }
@@ -99,6 +138,36 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     this.#toolEvents();
+  }
+
+  #startInteractionTurn(command: Record<string, unknown>): void {
+    if (this.#scenario === "malformed-interaction") {
+      this.#output({
+        type: "extension_ui_request",
+        id: "native-question",
+        method: "select",
+        title: "Synthetic",
+        options: [],
+      });
+      this.#respond(command);
+      return;
+    }
+    this.#output({
+      type: "extension_ui_request",
+      id: "native-question",
+      method: "select",
+      title: "Synthetic",
+      options: ["continue", "stop"],
+      ...(this.#scenario === "interaction-timeout" ? { timeout: 10 } : {}),
+    });
+    this.#respond(command);
+  }
+
+  #completeInteractionTurn(): void {
+    const message = { role: "assistant", content: [{ type: "text", text: "answered" }] };
+    this.#output({ type: "message_start", message });
+    this.#output({ type: "message_end", message });
+    this.#output({ type: "agent_settled" });
   }
 
   #toolEvents(): void {
@@ -195,6 +264,28 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("passes an explicit controlled Extension path into native process startup", async () => {
+    const spawnProcess = vi.fn(
+      () => new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams,
+    );
+    const rpc = new PiRpcSession(
+      {
+        cwd: process.cwd(),
+        extensionPath: "/synthetic/codexhost-question-extension.js",
+        commandTimeoutMs: 2_000,
+        turnTimeoutMs: 2_000,
+        closeTimeoutMs: 500,
+      },
+      { spawn: spawnProcess },
+    );
+
+    await rpc.start();
+    expect(spawnProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ extensionPath: "/synthetic/codexhost-question-extension.js" }),
+    );
+    await rpc.close();
+  });
+
   it("recovers final assistant text when no streaming delta was emitted", async () => {
     const rpc = session("final-only");
     const events: PiTurnEvent[] = [];
@@ -265,6 +356,83 @@ describe("Pi RPC Turn aggregation", () => {
       text: "continued",
       cancelled: false,
     });
+    await rpc.close();
+  });
+
+  it("round-trips an Interaction that arrives before the Prompt response", async () => {
+    const rpc = session("interaction");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    const turn = rpc.runTurn("ask", (event) => events.push(event));
+    await waitFor(() => events.some(({ type }) => type === "interaction.requested"));
+    expect(events[0]).toMatchObject({
+      type: "interaction.requested",
+      request: {
+        requestId: "native-question",
+        method: "select",
+        options: ["continue", "stop"],
+      },
+    });
+    await expect(
+      rpc.respondToInteraction({ requestId: "native-question", value: "continue" }),
+    ).resolves.toBeUndefined();
+    await expect(turn).resolves.toEqual({ text: "answered", cancelled: false });
+    expect(events.map(({ type }) => type)).toEqual([
+      "interaction.requested",
+      "interaction.closed",
+      "text.delta",
+    ]);
+    expect(events[1]).toMatchObject({ type: "interaction.closed", reason: "responded" });
+    await rpc.close();
+  });
+
+  it("expires a native Interaction and rejects its late response", async () => {
+    const rpc = session("interaction-timeout");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    const turn = rpc.runTurn("expire", (event) => events.push(event));
+    await waitFor(() =>
+      events.some((event) => event.type === "interaction.closed" && event.reason === "expired"),
+    );
+    await expect(
+      rpc.respondToInteraction({ requestId: "native-question", value: "late" }),
+    ).rejects.toThrow("not pending");
+    await expect(turn).resolves.toEqual({ text: "answered", cancelled: false });
+    expect(
+      events.filter(
+        (event) => event.type === "interaction.closed" && event.requestId === "native-question",
+      ),
+    ).toHaveLength(1);
+    await rpc.close();
+  });
+
+  it("closes a pending Interaction before a cancelled Turn settles", async () => {
+    const rpc = session("interaction-cancel");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    const turn = rpc.runTurn("cancel question", (event) => events.push(event));
+    await waitFor(() => events.some(({ type }) => type === "interaction.requested"));
+    await rpc.abort();
+    await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+    expect(events.at(-1)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
+    await rpc.close();
+  });
+
+  it("faults malformed blocking Interaction input", async () => {
+    const onFault = vi.fn();
+    const rpc = session("malformed-interaction", onFault);
+    await rpc.start();
+
+    await expect(rpc.runTurn("malformed", () => undefined)).rejects.toThrow(
+      "select request has invalid options",
+    );
+    expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await rpc.close();
   });
 

@@ -86,6 +86,7 @@ function textTurn(id: string) {
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   const output = await iterator.next();
   if (output.done) throw new Error("Harness output ended unexpectedly");
+  if (output.value.kind !== "event") throw new Error("Expected a Harness event output");
   return output.value.event;
 }
 

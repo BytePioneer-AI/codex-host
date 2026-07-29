@@ -1,6 +1,7 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { HarnessOutputChannel } from "./output-channel.js";
+export { validateHostQuestionResponse } from "./question.js";
 export type {
   CreateSessionInput,
   HarnessAdapter,
@@ -11,18 +12,28 @@ export type {
   HarnessSession,
   HarnessSessionState,
   HostAgentMessageItem,
+  HostChoiceQuestion,
   HostCommand,
   HostCommandExecutionItem,
   HostEvent,
   HostFileChange,
   HostFileChangeItem,
+  HostInteraction,
+  HostInteractionResponse,
   HostItem,
   HostItemOutcome,
   HostItemSnapshot,
   HostItemUpdate,
+  HostQuestion,
+  HostQuestionInteraction,
+  HostQuestionResponse,
   HostTextInput,
+  HostTextQuestion,
   HostToolExecutionItem,
   HostToolOutput,
+  InteractionClosedEvent,
+  InteractionRespondAccepted,
+  InteractionRespondCommand,
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,

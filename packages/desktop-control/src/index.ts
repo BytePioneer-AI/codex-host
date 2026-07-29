@@ -21,6 +21,16 @@ export type {
   RendererDomNodeSummary,
   RendererShadowRootSummary,
 } from "./renderer-dom.js";
+export {
+  installMainProcessTitlePolicy,
+  markRendererTitlePolicyReady,
+  readMainProcessTitlePolicyCounters,
+} from "./main-process-title-policy.js";
+export type {
+  MainProcessTitlePolicyCounters,
+  MainProcessTitlePolicyStatus,
+  RendererTitlePolicyReadiness,
+} from "./main-process-title-policy.js";
 
 export const packageMetadata = {
   name: "@codexhost/desktop-control",

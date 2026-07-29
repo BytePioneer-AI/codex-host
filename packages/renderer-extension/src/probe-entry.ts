@@ -3,6 +3,22 @@ import { installCurrentRendererAdapter } from "./versioned-renderer-adapter.js";
 
 window.__codexhostRendererBindingProbeV1?.dispose();
 const probe = installRendererBindingProbe();
-void installCurrentRendererAdapter(() => probe.lockedSelection()).then((adapter) => {
-  probe.setAdapter(adapter.status, adapter.dispose);
-});
+try {
+  const adapter = installCurrentRendererAdapter();
+  probe.setAdapter(adapter.status, adapter.dispose, adapter.applyAgent);
+} catch (error) {
+  console.error(
+    "codexhost Renderer Adapter installation failed",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  probe.setAdapter({
+    state: "unsupported",
+    asset: null,
+    reason: "bridge-unavailable",
+    decoratedRequests: 0,
+    modelUpdates: 0,
+    candidateCount: 0,
+    candidates: [],
+    hook: null,
+  });
+}

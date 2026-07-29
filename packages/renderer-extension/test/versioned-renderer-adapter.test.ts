@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   decorateThreadStartParams,
   findPrewarmTargets,
+  isMainProcessTitlePolicyReady,
+  modelSelectionForAgent,
   PI_TRANSPORT_MODEL_ID,
+  selectOptimisticModelAtom,
   wrapElectronRendererBridge,
   wrapPrewarmDispatcher,
   wrapPrewarmTarget,
@@ -16,6 +19,47 @@ const lockedPi = {
 } as const;
 
 describe("versioned Renderer Agent adapter", () => {
+  it("selects one optimistic Model atom from equivalent Fiber cache copies", () => {
+    const optimistic = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
+    const committed = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
+    const firstTarget = ["conversation", "opaque-id"];
+    const secondTarget = [...firstTarget];
+
+    expect(
+      selectOptimisticModelAtom([
+        { optimistic, committed, target: firstTarget },
+        { optimistic, committed, target: secondTarget },
+      ]),
+    ).toBe(optimistic);
+    expect(
+      selectOptimisticModelAtom([
+        { optimistic, committed, target: firstTarget },
+        {
+          optimistic: { atom: {}, get: vi.fn(() => null), set: vi.fn() },
+          committed,
+          target: secondTarget,
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("requires the main-process title policy readiness marker", () => {
+    expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
+    expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);
+    expect(isMainProcessTitlePolicyReady(null)).toBe(false);
+  });
+
+  it("creates a Pi optimistic selection and restores the original Codex snapshot", () => {
+    const official = { model: "official/model", reasoningEffort: "medium" };
+
+    expect(modelSelectionForAgent(null, "high", "pi")).toEqual({
+      model: PI_TRANSPORT_MODEL_ID,
+      reasoningEffort: "high",
+    });
+    expect(modelSelectionForAgent(null, "high", "codex")).toBeNull();
+    expect(modelSelectionForAgent(official, "high", "codex")).toBe(official);
+  });
+
   it("clones Pi create params and leaves Codex params unchanged", () => {
     const original = { model: "official/model", cwd: "<workspace>" };
 
@@ -147,6 +191,65 @@ describe("versioned Renderer Agent adapter", () => {
 
     dispose();
     expect(target.prewarmThreadStart).toBe(original);
+  });
+
+  it("decorates thread/start sent through the active request client", () => {
+    const sendRequest = vi.fn();
+    const target = { prewarmThreadStart: vi.fn(), sendRequest };
+    const params = { model: "official/model", cwd: "<workspace>" };
+    const decorated = vi.fn();
+    const dispose = wrapPrewarmTarget(target, () => lockedPi, decorated);
+
+    target.sendRequest("thread/start", params, { priority: "critical" });
+    target.sendRequest("thread/read", { threadId: "thread-1" });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(
+      1,
+      "thread/start",
+      { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
+      { priority: "critical" },
+    );
+    expect(sendRequest).toHaveBeenNthCalledWith(
+      2,
+      "thread/read",
+      { threadId: "thread-1" },
+      undefined,
+    );
+    expect(params.model).toBe("official/model");
+    expect(decorated).toHaveBeenCalledOnce();
+
+    dispose();
+    expect(target.sendRequest).toBe(sendRequest);
+  });
+
+  it("passes Codex calls through with the original params object", () => {
+    const original = vi.fn();
+    const target = { prewarmThreadStart: original };
+    const params = { model: "official/model", cwd: "<workspace>" };
+    const decorated = vi.fn();
+    const dispose = wrapPrewarmTarget(
+      target,
+      () => ({ agent: "codex", composerId: "composer-1", phase: "locked" }),
+      decorated,
+    );
+
+    target.prewarmThreadStart(params);
+
+    expect(original).toHaveBeenCalledWith(params, undefined);
+    expect(decorated).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it("does not decorate when the Composer association is ambiguous", () => {
+    const original = vi.fn();
+    const target = { prewarmThreadStart: original };
+    const params = { model: "official/model" };
+    const dispose = wrapPrewarmTarget(target, () => null, vi.fn());
+
+    target.prewarmThreadStart(params);
+
+    expect(original).toHaveBeenCalledWith(params, undefined);
+    dispose();
   });
 
   it("fails closed on an invalid create shape", () => {

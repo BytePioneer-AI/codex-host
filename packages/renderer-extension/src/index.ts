@@ -8,7 +8,10 @@ export type {
   RendererSubmissionObservation,
   SubmissionTrigger,
 } from "./agent-selection-state.js";
-export { installRendererBindingProbe } from "./renderer-binding-probe.js";
+export {
+  installRendererBindingProbe,
+  shouldTransferComposerState,
+} from "./renderer-binding-probe.js";
 export type {
   RendererBindingProbeApi,
   RendererBindingProbeStatus,
@@ -17,9 +20,13 @@ export {
   decorateThreadStartParams,
   describePrewarmTargets,
   findActivePrewarmTargets,
+  findComposerModelTarget,
   findPrewarmTargets,
   installCurrentRendererAdapter,
+  isMainProcessTitlePolicyReady,
+  modelSelectionForAgent,
   PI_TRANSPORT_MODEL_ID,
+  selectOptimisticModelAtom,
   SUPPORTED_DESKTOP_PACKAGE_VERSION,
   SUPPORTED_RENDERER_ASSET,
   wrapElectronRendererBridge,
@@ -28,6 +35,10 @@ export {
 } from "./versioned-renderer-adapter.js";
 export type {
   LockedComposerSelection,
+  ModelAtomPair,
+  ModelAtomState,
+  ModelPowerSelection,
+  ModelStateController,
   RendererAdapterCandidateShape,
   RendererAdapterState,
   RendererAdapterStatus,

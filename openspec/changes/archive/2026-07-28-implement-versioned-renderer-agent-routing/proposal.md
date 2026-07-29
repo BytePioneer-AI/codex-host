@@ -6,14 +6,16 @@
 
 - 新 Thread 首次输入前锁定 Composer Agent；锁定后只能通过新建 Thread 选择其他 Agent。
 - 为当前已验证 Codex Desktop build 实现结构签名校验、版本锁定且 fail-closed 的 Renderer Adapter。
-- Pi 创建请求使用内部 `codexhost/pi-native` transport token；Codex 创建请求保持官方 Model 不变。
-- 先验证所有相关 `thread/start` 的 transport carrier，再启用真实 Pi 路由。
+- 通过当前 Composer 的 optimistic Model atom 让 Pi 创建使用内部 `codexhost/pi-native` transport token；Codex 恢复不透明官方状态。
+- 通过主进程 metadata service 的直接窗口归属阻止 Pi 自动标题进入 Codex ephemeral Thread，并使用现有本地 fallback。
+- 使用匿名 create ordinal 验证全部 conversation `thread/start` carrier及最终 `turn/start` 归属。
 - 识别最终承载首个 `turn/start` 的预热 Thread，并有界关闭未消费的 Pi 预热 Session。
 - 版本、结构、Composer归属或绑定不明确时阻止 Pi 创建，不静默回落 Codex。
 
 ## Capabilities
 
 ### New Capabilities
+
 - `versioned-renderer-agent-routing`: 当前 Codex Desktop版本中 Composer Agent锁定、创建请求装饰、Host路由确认和预热资源收敛。
 
 ### Modified Capabilities

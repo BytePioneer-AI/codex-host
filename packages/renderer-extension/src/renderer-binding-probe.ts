@@ -1,12 +1,14 @@
 import {
   AgentSelectionRegistry,
+  type ComposerAgentPhase,
   type RendererAgent,
   type RendererSubmissionObservation,
   type SubmissionTrigger,
 } from "./agent-selection-state.js";
-import type {
-  LockedComposerSelection,
-  RendererAdapterStatus,
+import {
+  findComposerModelTarget,
+  type LockedComposerSelection,
+  type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 
 export interface RendererBindingProbeStatus {
@@ -49,7 +51,11 @@ export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
   setAgent(composerId: string, agent: RendererAgent): boolean;
   lockedSelection(): LockedComposerSelection | null;
-  setAdapter(status: RendererAdapterStatus, dispose?: () => void): void;
+  setAdapter(
+    status: RendererAdapterStatus,
+    dispose?: () => void,
+    applyAgent?: (agent: RendererAgent) => boolean,
+  ): void;
   dispose(): void;
 }
 
@@ -65,6 +71,13 @@ interface MountedComposer {
   control: HTMLElement;
   sendButton: HTMLButtonElement;
   buttons: Record<RendererAgent, HTMLButtonElement>;
+  modelTarget: readonly unknown[] | null;
+}
+
+interface PendingComposerReplacement {
+  source: Element;
+  sourceModelTarget: readonly unknown[] | null;
+  target: Element;
 }
 
 const CONTROL_ATTRIBUTE = "data-codexhost-agent-probe";
@@ -112,6 +125,20 @@ export function isComposerInputIntent(event: KeyboardEvent): boolean {
   if (event.key === "Process") return true;
   if ((event.ctrlKey || event.metaKey) && ["v", "x"].includes(event.key.toLowerCase())) return true;
   return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+export function shouldTransferComposerState(
+  sourceTarget: readonly unknown[] | null,
+  replacementTarget: readonly unknown[] | null,
+  sourcePhase: ComposerAgentPhase,
+): boolean {
+  if (!sourceTarget || !replacementTarget) return false;
+  if (sourceTarget === replacementTarget) return true;
+  return (
+    sourcePhase === "locked" &&
+    sourceTarget[0] === "default" &&
+    replacementTarget[0] === "conversation"
+  );
 }
 
 function composerForEditor(editor: Element): Element | null {
@@ -233,16 +260,19 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
 
   const registry = new AgentSelectionRegistry<Element>();
   const mountedByComposer = new Map<Element, MountedComposer>();
+  const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   const observations: RendererSubmissionObservation[] = [];
   let disposed = false;
   let scanScheduled = false;
   let replacementTransfers = 0;
   let adapterDispose: (() => void) | null = null;
+  let applyAdapterAgent: ((agent: RendererAgent) => boolean) | null = null;
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     asset: "app-initial-BbEVL4-_.js",
     reason: "installing",
     decoratedRequests: 0,
+    modelUpdates: 0,
     candidateCount: 0,
     candidates: [],
     hook: null,
@@ -292,9 +322,11 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       control,
       sendButton,
       buttons,
+      modelTarget: findComposerModelTarget(composer),
     };
     for (const agent of ["codex", "pi"] as const) {
       buttons[agent].addEventListener("click", () => {
+        if (!applyAdapterAgent?.(agent) || !composer.isConnected) return;
         updateButtons(mounted, registry.setAgent(composer, agent), adapterStatus.state);
       });
     }
@@ -302,12 +334,27 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     if (toolbar) toolbar.insertBefore(control, sendButton);
     else composer.append(control);
     mountedByComposer.set(composer, mounted);
+    applyAdapterAgent?.(state.agent);
     updateButtons(mounted, state, adapterStatus.state);
   };
 
   const scan = (): void => {
     scanScheduled = false;
     if (disposed) return;
+    for (const replacement of pendingReplacements.values()) {
+      const sourceState = registry.get(replacement.source);
+      if (
+        shouldTransferComposerState(
+          replacement.sourceModelTarget,
+          findComposerModelTarget(replacement.target),
+          sourceState.phase,
+        ) &&
+        registry.transfer(replacement.source, replacement.target)
+      ) {
+        replacementTransfers += 1;
+      }
+    }
+    pendingReplacements.clear();
     for (const [composer, mounted] of mountedByComposer) {
       if (!composer.isConnected || !mounted.control.isConnected) {
         mounted.control.remove();
@@ -364,32 +411,67 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       if (replacement.removed.size !== 1 || replacement.added.size !== 1) continue;
       const source = replacement.removed.values().next().value as Element;
       const target = replacement.added.values().next().value as Element;
-      if (source !== target && registry.transfer(source, target)) replacementTransfers += 1;
+      const mounted = mountedByComposer.get(source);
+      if (source !== target && mounted) {
+        pendingReplacements.set(target, {
+          source,
+          sourceModelTarget: mounted.modelTarget,
+          target,
+        });
+      }
     }
   };
 
-  const lockForTarget = (target: EventTarget | null): Element | null => {
+  const applyComposerAgent = (composer: Element): boolean => {
+    const agent = registry.get(composer).agent;
+    return applyAdapterAgent?.(agent) ?? agent === "codex";
+  };
+  const blockEvent = (event: Event): void => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const lockForTarget = (
+    target: EventTarget | null,
+  ): { composer: Element; applied: boolean } | null => {
     const element = eventElement(target);
     const editor = element ? editorForElement(element) : null;
     if (!editor) return null;
     const composer = composerForEditor(editor);
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (!composer || !mounted) return null;
-    updateButtons(mounted, registry.lock(composer), adapterStatus.state);
-    return composer;
+    const current = registry.get(composer);
+    if (current.phase === "locked") return { composer, applied: true };
+    if (!applyComposerAgent(composer)) return { composer, applied: false };
+    const locked = registry.lock(composer);
+    updateButtons(mounted, locked, adapterStatus.state);
+    return { composer, applied: true };
   };
   const onBeforeInput = (event: InputEvent): void => {
-    lockForTarget(event.target);
+    const prepared = lockForTarget(event.target);
+    if (prepared && !prepared.applied) blockEvent(event);
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
     const composer = element ? composerForElement(element) : null;
-    if (composer && mountedByComposer.has(composer)) record(composer, "submit");
+    if (!composer || !mountedByComposer.has(composer)) return;
+    if (!applyComposerAgent(composer)) {
+      blockEvent(event);
+      return;
+    }
+    record(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    const composer = isComposerInputIntent(event) ? lockForTarget(event.target) : null;
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-    if (composer) record(composer, "enter");
+    const prepared = isComposerInputIntent(event) ? lockForTarget(event.target) : null;
+    if (prepared && !prepared.applied) {
+      blockEvent(event);
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || !prepared) return;
+    if (!applyComposerAgent(prepared.composer)) {
+      blockEvent(event);
+      return;
+    }
+    record(prepared.composer, "enter");
   };
   const onClick = (event: MouseEvent): void => {
     const element = eventElement(event.target);
@@ -397,26 +479,39 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     if (!button) return;
     const composer = composerForElement(button);
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (composer && mounted?.sendButton === button) record(composer, "click");
+    if (!composer || mounted?.sendButton !== button) return;
+    if (!applyComposerAgent(composer)) {
+      blockEvent(event);
+      return;
+    }
+    record(composer, "click");
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
     scheduleScan();
   });
+  const onAdapterStatus = () => {
+    for (const mounted of mountedByComposer.values()) {
+      updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
+    }
+  };
   mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener("beforeinput", onBeforeInput, true);
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
+  window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
 
   const api: RendererBindingProbeApi = {
     status() {
-      const selections = [...mountedByComposer.values()].map((mounted) => ({
-        composerId: mounted.composerId,
-        agent: registry.get(mounted.composer).agent,
-        phase: registry.get(mounted.composer).phase,
-      }));
+      const selections = [...mountedByComposer.values()]
+        .filter((mounted) => mounted.composer.isConnected && mounted.control.isConnected)
+        .map((mounted) => ({
+          composerId: mounted.composerId,
+          agent: registry.get(mounted.composer).agent,
+          phase: registry.get(mounted.composer).phase,
+        }));
       return {
         version: 1,
         mountedComposers: selections.length,
@@ -431,12 +526,15 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         (candidate) => candidate.composerId === composerId,
       );
       if (!mounted) return false;
+      const applied = applyAdapterAgent?.(agent);
+      if (applied !== true) return false;
       const state = registry.setAgent(mounted.composer, agent);
       updateButtons(mounted, state, adapterStatus.state);
       return state.agent === agent;
     },
     lockedSelection() {
       const locked = [...mountedByComposer.values()]
+        .filter((mounted) => mounted.composer.isConnected && mounted.control.isConnected)
         .map((mounted) => registry.get(mounted.composer))
         .filter((state) => state.phase === "locked");
       const selection = locked[0];
@@ -447,10 +545,18 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         phase: "locked",
       };
     },
-    setAdapter(status, dispose) {
+    setAdapter(status, dispose, applyAgent) {
       adapterDispose?.();
       adapterDispose = dispose ?? null;
-      adapterStatus = { ...status };
+      applyAdapterAgent = applyAgent ?? null;
+      adapterStatus = status;
+      const connected = [...mountedByComposer.values()].filter(
+        (mounted) => mounted.composer.isConnected && mounted.control.isConnected,
+      );
+      if (connected.length === 1) {
+        const mounted = connected[0];
+        if (mounted) applyAdapterAgent?.(registry.get(mounted.composer).agent);
+      }
       for (const mounted of mountedByComposer.values()) {
         updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
       }
@@ -460,13 +566,16 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       disposed = true;
       adapterDispose?.();
       adapterDispose = null;
+      applyAdapterAgent = null;
       mutationObserver.disconnect();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
+      window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       for (const mounted of mountedByComposer.values()) mounted.control.remove();
       mountedByComposer.clear();
+      pendingReplacements.clear();
       delete window.__codexhostRendererBindingProbeV1;
     },
   };

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { editorForElement, isComposerInputIntent } from "../src/renderer-binding-probe.js";
+import {
+  editorForElement,
+  isComposerInputIntent,
+  shouldTransferComposerState,
+} from "../src/renderer-binding-probe.js";
 
 describe("Renderer binding event targeting", () => {
   it("resolves an inner contenteditable paragraph to its editor", () => {
@@ -25,5 +29,21 @@ describe("Renderer binding event targeting", () => {
     expect(isComposerInputIntent(event("v", { ctrlKey: true }))).toBe(true);
     expect(isComposerInputIntent(event("ArrowLeft"))).toBe(false);
     expect(isComposerInputIntent(event("c", { ctrlKey: true }))).toBe(false);
+  });
+
+  it("transfers only the same Model target or a locked first-create transition", () => {
+    const defaultTarget = ["default"];
+    const firstConversationTarget = ["conversation", "opaque-1"];
+    const otherConversationTarget = ["conversation", "opaque-2"];
+
+    expect(shouldTransferComposerState(defaultTarget, defaultTarget, "draft")).toBe(true);
+    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "locked")).toBe(
+      true,
+    );
+    expect(shouldTransferComposerState(firstConversationTarget, ["default"], "locked")).toBe(false);
+    expect(
+      shouldTransferComposerState(firstConversationTarget, otherConversationTarget, "locked"),
+    ).toBe(false);
+    expect(shouldTransferComposerState(null, firstConversationTarget, "locked")).toBe(false);
   });
 });

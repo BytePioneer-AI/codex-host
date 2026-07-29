@@ -28,10 +28,10 @@ const host = new AppServerHost({
   defaultAgent,
   environment,
   ...(process.env[PI_COMMAND_ENV] ? { piCommand: process.env[PI_COMMAND_ENV] } : {}),
-  onCreateRequestRoute(observation) {
+  onRequestRoute(observation) {
     fs.appendFileSync(
       observationPath,
-      `${JSON.stringify({ schemaVersion: 1, ...observation })}\n`,
+      `${JSON.stringify({ schemaVersion: 2, ...observation })}\n`,
       "utf8",
     );
   },

@@ -5,6 +5,12 @@ import type { Readable, Writable } from "node:stream";
 import { PiRpcSession } from "@codexhost/adapter-pi";
 import { LazyPiSession, type PiTextSession } from "./lazy-pi-session.js";
 import {
+  classifyThreadPurpose,
+  RequestRouteObservationTracker,
+  type CreateRequestRouteObservation,
+  type RequestRouteObservation,
+} from "./route-observation.js";
+import {
   decodeCreateRoute,
   parseJsonFrame,
   readLfFrames,
@@ -15,13 +21,6 @@ import {
   type JsonRpcRequest,
   type JsonValue,
 } from "@codexhost/protocol-core";
-
-export interface CreateRequestRouteObservation {
-  requestMethod: "thread/start";
-  modelCarrier: "official-model" | "pi-transport";
-  selectedHarness: "codex" | "pi";
-  selectionSource: "default-agent" | "official-model" | "transport-model";
-}
 
 export interface AppServerHostOptions {
   stockCodexPath: string;
@@ -34,6 +33,7 @@ export interface AppServerHostOptions {
   piCommand?: string;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
+  onRequestRoute?: (observation: RequestRouteObservation) => void;
 }
 
 interface PiThread {
@@ -208,6 +208,7 @@ export class AppServerHost {
     AppServerHostOptions;
   #official: ChildProcessWithoutNullStreams | null = null;
   #piThreads = new Map<string, PiThread>();
+  #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
 
   constructor(options: AppServerHostOptions) {
@@ -249,6 +250,7 @@ export class AppServerHost {
     } finally {
       await Promise.allSettled([...this.#piThreads.values()].map(({ session }) => session.close()));
       this.#piThreads.clear();
+      this.#routeObservationTracker.clear();
     }
   }
 
@@ -264,7 +266,16 @@ export class AppServerHost {
       }
       const request = requestResult.data;
       const createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
-      if (createRoute) this.#options.onCreateRequestRoute?.(createRoute);
+      if (createRoute) {
+        this.#options.onCreateRequestRoute?.(createRoute);
+        this.#options.onRequestRoute?.(
+          this.#routeObservationTracker.registerCreate(
+            request.id,
+            createRoute,
+            classifyThreadPurpose(request),
+          ),
+        );
+      }
       if (createRoute?.selectedHarness === "pi") {
         await this.#startPiThread(request);
         continue;
@@ -273,6 +284,11 @@ export class AppServerHost {
         const params = requestObject(request);
         const threadId = params.threadId;
         const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
+        if (typeof threadId === "string") {
+          this.#options.onRequestRoute?.(
+            this.#routeObservationTracker.observeTurn(threadId, piThread ? "pi" : "codex"),
+          );
+        }
         if (piThread) {
           await this.#startPiTurn(request, piThread);
           continue;
@@ -296,7 +312,8 @@ export class AppServerHost {
     const official = this.#official;
     if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(official.stdout)) {
-      parseJsonFrame(frame);
+      const parsed = parseJsonFrame(frame);
+      this.#routeObservationTracker.bindOfficialResponse(parsed);
       await this.#writer.frame(frame);
     }
   }
@@ -309,6 +326,7 @@ export class AppServerHost {
       return;
     }
     const threadId = randomUUID();
+    this.#routeObservationTracker.bindCreatedThread(request.id, threadId);
     const session = new LazyPiSession(
       (): PiTextSession =>
         new PiRpcSession({

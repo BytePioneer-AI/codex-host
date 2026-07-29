@@ -383,14 +383,20 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
 
-    transports[0]?.fail(new Error("synthetic Turn failure"));
+    const nativeMessage = '503: {"message":"Service temporarily unavailable","type":"api_error"}';
+    transports[0]?.fail(new Error(nativeMessage));
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
-      snapshot: { outcome: { status: "failed" } },
+      snapshot: {
+        outcome: { status: "failed", error: { code: "nativeFailure", message: nativeMessage } },
+      },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
-      outcome: { status: "failed" },
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message: nativeMessage },
+      },
     });
 
     await expect(session.execute(textTurn("turn-2"))).resolves.toMatchObject({ ok: true });

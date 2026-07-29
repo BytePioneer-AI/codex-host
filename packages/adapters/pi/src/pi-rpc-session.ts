@@ -142,6 +142,16 @@ function assistantText(value: unknown): string | null {
     .join("");
 }
 
+function assistantFailure(value: unknown): Error | null | undefined {
+  if (!isRecord(value) || value.role !== "assistant") return undefined;
+  if (value.stopReason !== "error" && value.stopReason !== "aborted") return null;
+  const fallback =
+    value.stopReason === "aborted"
+      ? "Pi assistant message was aborted"
+      : "Pi assistant message failed";
+  return new Error(nonBlankString(value.errorMessage) ? value.errorMessage : fallback);
+}
+
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
@@ -433,7 +443,10 @@ export class PiRpcSession {
         active.streamedMessageText += event.delta;
         active.onEvent({ type: "text.delta", delta: event.delta });
       } else if (event.type === "error") {
-        active.failure = new Error("Pi assistant message failed");
+        active.failure =
+          assistantFailure(event.error) ??
+          assistantFailure(value.message) ??
+          new Error("Pi assistant message failed");
       }
       return;
     }
@@ -566,7 +579,9 @@ export class PiRpcSession {
 
   #finalizeAssistantMessage(active: ActiveTurn, value: unknown): void {
     const finalText = assistantText(value);
-    if (finalText === null) return;
+    const failure = assistantFailure(value);
+    if (finalText === null || failure === undefined) return;
+    active.failure = failure;
     if (finalText === active.lastFinalizedMessageText && active.streamedMessageText.length === 0) {
       return;
     }

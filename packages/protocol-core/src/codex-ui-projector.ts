@@ -108,7 +108,13 @@ function turnStatus(
 }
 
 function turnError(outcome: TurnCompletedEvent["outcome"]): JsonObject | null {
-  return outcome.status === "failed" ? { message: outcome.error.message } : null;
+  return outcome.status === "failed"
+    ? {
+        message: outcome.error.message,
+        codexErrorInfo: "other",
+        additionalDetails: null,
+      }
+    : null;
 }
 
 function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
@@ -294,6 +300,7 @@ export class CodexTurnProjector {
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
+    const error = turnError(event.outcome);
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),
@@ -305,7 +312,7 @@ export class CodexTurnProjector {
           ? [projectItem(projected.item, projected.outcome, this.#cwd)]
           : [];
       }),
-      error: turnError(event.outcome),
+      error,
       startedAt: this.#startedAt,
       completedAt,
       durationMs: Math.max(0, completedAtMs - this.#startedAtMs),
@@ -314,6 +321,19 @@ export class CodexTurnProjector {
     return {
       completedTurn: turn,
       messages: [
+        ...(error
+          ? [
+              {
+                method: "error",
+                params: {
+                  error,
+                  willRetry: false,
+                  threadId: this.#threadId,
+                  turnId: this.#turnId,
+                },
+              },
+            ]
+          : []),
         {
           method: "turn/completed",
           emittedAtMs: completedAtMs,

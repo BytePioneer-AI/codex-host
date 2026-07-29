@@ -7,7 +7,14 @@ import { describe, expect, it, vi } from "vitest";
 import { PiRpcSession, type PiRpcProcessAdapter, type PiTurnEvent } from "../src/pi-rpc-session.js";
 
 type Scenario =
-  "final-only" | "empty" | "tools" | "cancel" | "malformed-tool" | "malformed-catalog";
+  | "final-only"
+  | "assistant-error"
+  | "retry-success"
+  | "empty"
+  | "tools"
+  | "cancel"
+  | "malformed-tool"
+  | "malformed-catalog";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -102,6 +109,45 @@ class FakePiRpcProcess extends EventEmitter {
       const message = { role: "assistant", content: [{ type: "text", text }] };
       this.#output({ type: "message_start", message });
       this.#output({ type: "message_end", message });
+      this.#output({ type: "agent_settled" });
+      return;
+    }
+    if (this.#scenario === "assistant-error" || this.#scenario === "retry-success") {
+      const failure = {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: '503: {"message":"Service temporarily unavailable","type":"api_error"}',
+      };
+      this.#output({ type: "message_start", message: failure });
+      this.#output({ type: "message_end", message: failure });
+      this.#output({ type: "turn_end", message: failure, toolResults: [] });
+      this.#output({
+        type: "agent_end",
+        messages: [failure],
+        willRetry: this.#scenario === "retry-success",
+      });
+      if (this.#scenario === "assistant-error") {
+        this.#output({ type: "agent_settled" });
+        return;
+      }
+      this.#output({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 0,
+        errorMessage: failure.errorMessage,
+      });
+      const recovered = {
+        role: "assistant",
+        content: [{ type: "text", text: "recovered" }],
+        stopReason: "stop",
+      };
+      this.#output({ type: "message_start", message: recovered });
+      this.#output({ type: "message_end", message: recovered });
+      this.#output({ type: "turn_end", message: recovered, toolResults: [] });
+      this.#output({ type: "agent_end", messages: [recovered], willRetry: false });
+      this.#output({ type: "auto_retry_end", success: true, attempt: 1 });
       this.#output({ type: "agent_settled" });
       return;
     }
@@ -236,7 +282,30 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("rejects a settled Turn that has no displayable text or Tool", async () => {
+  it("preserves a settled Assistant error from the final Pi message", async () => {
+    const rpc = session("assistant-error");
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
+      '503: {"message":"Service temporarily unavailable","type":"api_error"}',
+    );
+    await rpc.close();
+  });
+
+  it("clears a transient Assistant error when Pi auto-retry succeeds", async () => {
+    const rpc = session("retry-success");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "recovered",
+      cancelled: false,
+    });
+    expect(events).toEqual([{ type: "text.delta", delta: "recovered" }]);
+    await rpc.close();
+  });
+
+  it("rejects a settled Turn that has no displayable text, Tool, or native error", async () => {
     const rpc = session("empty");
     await rpc.start();
 

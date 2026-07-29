@@ -492,7 +492,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("projects Item completion before a failed Turn terminal", async () => {
+  it("projects a visible native failure before the failed Turn terminal", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
     const session = fixture.adapter.sessions[0];
@@ -506,22 +506,47 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) => method(message, "item/started"));
     session.failTurn({
       code: "nativeFailure",
-      message: "synthetic native failure",
+      message: '503: {"message":"Service temporarily unavailable","type":"api_error"}',
       retryable: false,
     });
     const completed = await fixture.collector.waitFor((message) =>
       method(message, "turn/completed"),
     );
-    expect(completed).toMatchObject({ params: { turn: { status: "failed" } } });
+    expect(completed).toMatchObject({
+      params: {
+        turn: {
+          status: "failed",
+          error: {
+            message: expect.stringContaining("Service temporarily unavailable"),
+            codexErrorInfo: "other",
+            additionalDetails: null,
+          },
+        },
+      },
+    });
+    const visibleError = fixture.collector.messages.find((message) => method(message, "error"));
+    expect(visibleError).toMatchObject({
+      params: {
+        error: {
+          message: expect.stringContaining("Service temporarily unavailable"),
+          codexErrorInfo: "other",
+          additionalDetails: null,
+        },
+        willRetry: false,
+        threadId,
+      },
+    });
 
     const itemIndex = fixture.collector.messages.findIndex((message) =>
       method(message, "item/completed"),
     );
+    const errorIndex = fixture.collector.messages.findIndex((message) => method(message, "error"));
     const turnIndex = fixture.collector.messages.findIndex((message) =>
       method(message, "turn/completed"),
     );
     expect(itemIndex).toBeGreaterThanOrEqual(0);
-    expect(turnIndex).toBeGreaterThan(itemIndex);
+    expect(errorIndex).toBeGreaterThan(itemIndex);
+    expect(turnIndex).toBeGreaterThan(errorIndex);
     await stopFixture(fixture);
   });
 

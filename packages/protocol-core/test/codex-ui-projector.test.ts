@@ -263,6 +263,42 @@ describe("Codex UI projector", () => {
     expect(completed.completedTurn).toMatchObject({ items: [] });
   });
 
+  it("projects failed Turns through the complete Codex error notification shape", () => {
+    const value = projector();
+    const message = '503: {"message":"Service temporarily unavailable","type":"api_error"}';
+    value.project({ type: "turn.started", turnId });
+
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message, retryable: false },
+      },
+    });
+
+    const error = {
+      message,
+      codexErrorInfo: "other",
+      additionalDetails: null,
+    };
+    expect(completed.messages).toEqual([
+      {
+        method: "error",
+        params: { error, willRetry: false, threadId: "thread-1", turnId },
+      },
+      {
+        method: "turn/completed",
+        emittedAtMs: expect.any(Number),
+        params: {
+          threadId: "thread-1",
+          turn: expect.objectContaining({ status: "failed", error }),
+        },
+      },
+    ]);
+    expect(completed.completedTurn).toMatchObject({ status: "failed", error });
+  });
+
   it("rejects invalid ordering and maps cancelled Turns to interrupted", () => {
     const value = projector();
     expect(() =>

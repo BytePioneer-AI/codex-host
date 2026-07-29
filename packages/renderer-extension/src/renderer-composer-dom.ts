@@ -1,5 +1,3 @@
-import type { HarnessModelCatalog, HarnessModelRef } from "@codexhost/shared-contracts";
-
 import type { ComposerAgentPhase, RendererAgent } from "./agent-selection-state.js";
 import {
   CONTROL_ATTRIBUTE,
@@ -7,18 +5,19 @@ import {
   renderRendererAgentPicker,
   type RendererAgentPickerControl,
 } from "./renderer-agent-picker.js";
+import {
+  mountRendererModelPicker,
+  renderRendererModelPicker,
+  syncRendererModelTriggerClass,
+  type RendererModelControlView,
+  type RendererModelPickerControl,
+} from "./renderer-model-picker.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
 export { CONTROL_ATTRIBUTE };
+export type PiModelControlView = RendererModelControlView;
 export const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
 export const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
-
-export interface PiModelControlView {
-  status: "idle" | "loading" | "ready" | "selecting" | "empty" | "error";
-  catalog?: HarnessModelCatalog;
-  selected?: HarnessModelRef;
-  error?: string;
-}
 
 interface NativeModelControlState {
   element: HTMLElement;
@@ -30,7 +29,7 @@ export interface ComposerAgentControl {
   composer: Element;
   root: HTMLElement;
   picker: RendererAgentPickerControl;
-  modelSelect: HTMLSelectElement;
+  modelPicker: RendererModelPickerControl;
   nativeModelControl: NativeModelControlState | null;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
@@ -179,6 +178,7 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
   if (!candidate || candidate === control.nativeModelControl?.element) return;
   restoreNativeModelControl(control.nativeModelControl);
   control.nativeModelControl = captureNativeModelControl(candidate);
+  syncRendererModelTriggerClass(control.modelPicker, candidate.className);
 }
 
 function setNativeModelControlHidden(state: NativeModelControlState | null, hidden: boolean): void {
@@ -203,34 +203,24 @@ export function mountComposerAgentControl(
 ): ComposerAgentControl {
   const nativeModelControl = captureNativeModelControl(nativeModelControlForComposer(composer));
   const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect);
-  const modelSelect = document.createElement("select");
-  modelSelect.setAttribute("aria-label", "Model");
-  modelSelect.setAttribute("data-codexhost-model-control", composerId);
-  modelSelect.style.display = "none";
-  modelSelect.style.height = "28px";
-  modelSelect.style.width = "clamp(132px, 18vw, 220px)";
-  modelSelect.style.padding = "0 24px 0 8px";
-  modelSelect.style.marginInline = "4px";
-  modelSelect.style.border = "1px solid rgba(127, 127, 127, 0.28)";
-  modelSelect.style.borderRadius = "6px";
-  modelSelect.style.background = "rgba(127, 127, 127, 0.08)";
-  modelSelect.style.color = "inherit";
-  modelSelect.style.font = "500 12px/1 system-ui, sans-serif";
-  modelSelect.style.letterSpacing = "0";
-  modelSelect.addEventListener("change", () => onSelectModel(modelSelect.value));
+  const modelPicker = mountRendererModelPicker(
+    composerId,
+    nativeModelControl?.element.className,
+    onSelectModel,
+  );
 
   const toolbar = sendButton.parentElement;
   if (toolbar) {
-    toolbar.insertBefore(modelSelect, sendButton);
+    toolbar.insertBefore(modelPicker.root, sendButton);
     toolbar.insertBefore(picker.root, sendButton);
   } else {
-    composer.append(modelSelect, picker.root);
+    composer.append(modelPicker.root, picker.root);
   }
   return {
     composer,
     root: picker.root,
     picker,
-    modelSelect,
+    modelPicker,
     nativeModelControl,
     sendButton,
     sendDisabledBeforeSwitch: null,
@@ -261,44 +251,7 @@ export function renderComposerAgentControl(
   const pickerView = renderRendererAgentPicker(control.picker, state, adapterState, switching);
   refreshNativeModelControl(control);
   setNativeModelControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
-  control.modelSelect.style.display = state.agent === "pi" ? "inline-block" : "none";
-  if (state.agent === "pi") {
-    const catalogSignature =
-      modelView.catalog?.models
-        .map((model) => `${model.ref.id}\u0000${model.label}`)
-        .join("\u0001") ?? `:${modelView.status}`;
-    if (control.modelSelect.dataset.catalogSignature !== catalogSignature) {
-      control.modelSelect.replaceChildren();
-      if (modelView.catalog && modelView.catalog.models.length > 0) {
-        for (const model of modelView.catalog.models) {
-          const option = document.createElement("option");
-          option.value = model.ref.id;
-          option.textContent = model.label;
-          control.modelSelect.append(option);
-        }
-      } else {
-        const option = document.createElement("option");
-        option.value = "";
-        option.textContent =
-          modelView.status === "loading"
-            ? "Loading models..."
-            : modelView.status === "empty"
-              ? "No Pi models"
-              : "Models unavailable";
-        control.modelSelect.append(option);
-      }
-      control.modelSelect.dataset.catalogSignature = catalogSignature;
-    }
-    if (selectedModel) control.modelSelect.value = selectedModel.id;
-    control.modelSelect.disabled =
-      modelView.status === "loading" ||
-      modelView.status === "selecting" ||
-      modelView.status === "empty" ||
-      modelView.catalog === undefined;
-    control.modelSelect.title = modelView.error ?? "Pi Model";
-    control.modelSelect.style.cursor = control.modelSelect.disabled ? "not-allowed" : "pointer";
-    control.modelSelect.style.opacity = control.modelSelect.disabled ? "0.65" : "1";
-  }
+  renderRendererModelPicker(control.modelPicker, modelView, state.agent === "pi");
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
@@ -306,6 +259,6 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
   }
   restoreNativeModelControl(control.nativeModelControl);
+  control.modelPicker.dispose();
   control.picker.dispose();
-  control.modelSelect.remove();
 }

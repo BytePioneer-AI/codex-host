@@ -1,12 +1,12 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts/version";
 
-export { AgentSelectionRegistry } from "./agent-selection-state.js";
+export { DraftAgentController } from "./agent-selection-state.js";
 export type {
-  AgentSelectionRegistryOptions,
   ComposerAgentPhase,
+  DraftAgentControllerOptions,
+  DraftAgentSwitchOperations,
+  DraftComposerState,
   RendererAgent,
-  RendererSubmissionObservation,
-  SubmissionTrigger,
 } from "./agent-selection-state.js";
 export {
   installRendererBindingProbe,

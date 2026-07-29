@@ -18,7 +18,8 @@ The runner:
 - confirms that ownership and writes a non-sensitive title-policy readiness marker into the Renderer;
 - installs a narrow Renderer bridge that only clears official local-host prewarms;
 - injects the browser-safe Renderer Agent selector and Model-state Adapter;
-- records sanitized Adapter, Composer, replacement, submission, and title-policy counters.
+- installs a tooling-only observer for sanitized submission, switch, and structural diagnostics;
+- records the minimal production binding status separately from tooling observations and title-policy counters.
 
 The optional observed Host additionally records schema v2 route evidence:
 
@@ -65,4 +66,4 @@ npm run probe:renderer-binding -- --endpoint http://127.0.0.1:9222 --inspector-e
 
 To start a controlled Desktop instance, also pass an absolute `--desktop` executable path. Use `--until-submissions <count>` for a run that completes after a fixed number of sanitized observations.
 
-The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer probe.
+The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer binding and its tooling-only observer. The schema v2 local report stores production state under `status` and Gate-only observations, switch counters, and structural diagnostics under `observer`.

@@ -13,6 +13,7 @@ import {
   readMainProcessTitlePolicyCounters,
   waitForRendererTarget,
 } from "../../packages/desktop-control/dist/index.js";
+import { installRendererObserver, readRendererObserver } from "./renderer-observer.mjs";
 import {
   selectRendererWebContents,
   waitForRendererTitlePolicyReady,
@@ -99,26 +100,14 @@ function isRecord(value) {
 function validateProbeStatus(value) {
   if (
     !isRecord(value) ||
-    value.version !== 1 ||
+    value.version !== 2 ||
     !Number.isInteger(value.mountedComposers) ||
-    !Number.isInteger(value.switchingComposers) ||
-    !isRecord(value.switchCounters) ||
-    !Number.isInteger(value.switchCounters.attempts) ||
-    !Number.isInteger(value.switchCounters.committed) ||
-    !Number.isInteger(value.switchCounters.rejected) ||
-    value.switchCounters.committed + value.switchCounters.rejected >
-      value.switchCounters.attempts ||
     !Array.isArray(value.selections) ||
-    !Array.isArray(value.observations) ||
     !isRecord(value.adapter) ||
     !["installing", "ready", "unsupported"].includes(value.adapter.state) ||
     !Number.isInteger(value.adapter.decoratedRequests) ||
     !Number.isInteger(value.adapter.modelUpdates) ||
-    !Number.isInteger(value.adapter.candidateCount) ||
-    !isRecord(value.diagnostics) ||
-    !Number.isInteger(value.diagnostics.editorCandidates) ||
-    !Number.isInteger(value.diagnostics.replacementTransfers) ||
-    !Array.isArray(value.diagnostics.shapes)
+    !Number.isInteger(value.adapter.candidateCount)
   ) {
     throw new Error("Renderer binding probe returned an invalid status");
   }
@@ -130,18 +119,6 @@ function validateProbeStatus(value) {
       !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
-    }
-  }
-  for (const observation of value.observations) {
-    if (
-      !isRecord(observation) ||
-      typeof observation.submissionId !== "string" ||
-      typeof observation.composerId !== "string" ||
-      !["codex", "pi"].includes(observation.agent) ||
-      !["click", "enter", "submit"].includes(observation.trigger) ||
-      typeof observation.capturedAt !== "string"
-    ) {
-      throw new Error("Renderer binding probe returned an invalid observation");
     }
   }
   return value;
@@ -453,9 +430,12 @@ async function run() {
     console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
     const source = fs.readFileSync(probeBundlePath, "utf8");
     await executeInWebContents(inspectorClient, selectedRenderer.id, source);
+    const executeInRenderer = (expression) =>
+      executeInWebContents(inspectorClient, selectedRenderer.id, expression);
+    await installRendererObserver(executeInRenderer);
 
     const report = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       recordedAt: new Date().toISOString(),
       target: {
         id: target.id,
@@ -471,6 +451,7 @@ async function run() {
       draftPrewarmPolicy,
       titlePolicyCounters: null,
       status: null,
+      observer: null,
       creationBinding: {
         status: "pending",
         rendererSubmissionObserved: false,
@@ -481,24 +462,24 @@ async function run() {
     let observedCount = 0;
     const deadline = Date.now() + options.observeSeconds * 1000;
     while (!interrupted && Date.now() < deadline) {
-      const status = validateProbeStatus(
-        await executeInWebContents(
-          inspectorClient,
-          selectedRenderer.id,
-          "window.__codexhostRendererBindingProbeV1?.status() ?? null",
+      const [status, observer] = await Promise.all([
+        executeInRenderer("window.__codexhostRendererBindingProbeV1?.status() ?? null").then(
+          validateProbeStatus,
         ),
-      );
+        readRendererObserver(executeInRenderer),
+      ]);
       report.status = status;
+      report.observer = observer;
       report.creationBinding.status = status.adapter.state === "ready" ? "ready" : "blocked";
       report.creationBinding.reason =
         status.adapter.state === "ready"
           ? "Versioned Model-state, draft-prewarm, and title policies are ready"
           : `Renderer Adapter is ${status.adapter.state}: ${status.adapter.reason}`;
-      report.creationBinding.rendererSubmissionObserved = status.observations.length > 0;
-      for (const observation of status.observations.slice(observedCount)) {
+      report.creationBinding.rendererSubmissionObserved = observer.observations.length > 0;
+      for (const observation of observer.observations.slice(observedCount)) {
         console.log(JSON.stringify({ type: "submission-observed", ...observation }));
       }
-      observedCount = status.observations.length;
+      observedCount = observer.observations.length;
       if (options.untilSubmissions !== null && observedCount >= options.untilSubmissions) break;
       await sleep(250);
     }
@@ -510,7 +491,7 @@ async function run() {
       JSON.stringify({
         type: "probe-completed",
         mountedComposers: report.status?.mountedComposers ?? 0,
-        observedSubmissions: report.status?.observations.length ?? 0,
+        observedSubmissions: report.observer?.observations.length ?? 0,
         creationBindingStatus: report.creationBinding.status,
         selectedRendererId: selectedRenderer.id,
         reportPath,

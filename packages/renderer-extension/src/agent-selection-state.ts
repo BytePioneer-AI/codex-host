@@ -1,59 +1,46 @@
 export type RendererAgent = "codex" | "pi";
-export type SubmissionTrigger = "click" | "enter" | "submit";
-
-export interface RendererSubmissionObservation {
-  submissionId: string;
-  composerId: string;
-  agent: RendererAgent;
-  trigger: SubmissionTrigger;
-  capturedAt: string;
-}
-
 export type ComposerAgentPhase = "draft" | "locked";
 
-interface ComposerState {
+export interface DraftComposerState {
   agent: RendererAgent;
   phase: ComposerAgentPhase;
   composerId: string;
-  lastCapturedAt: number | null;
-  lastObservation: RendererSubmissionObservation | null;
 }
 
-export interface AgentSelectionRegistryOptions {
-  clock?: () => number;
-  dedupeWindowMs?: number;
-  idFactory?: (kind: "composer" | "submission", sequence: number) => string;
+type MutableComposerState = DraftComposerState;
+
+export interface DraftAgentControllerOptions {
+  idFactory?: (sequence: number) => string;
 }
 
-function defaultIdFactory(kind: "composer" | "submission", sequence: number): string {
-  return `codexhost-${kind}-${Date.now().toString(36)}-${sequence.toString(36)}`;
+export interface DraftAgentSwitchOperations {
+  applyAgent(agent: RendererAgent): boolean;
+  clearPrewarm(): Promise<void>;
 }
 
-export class AgentSelectionRegistry<Composer extends object> {
-  readonly #clock: () => number;
-  readonly #dedupeWindowMs: number;
-  readonly #idFactory: (kind: "composer" | "submission", sequence: number) => string;
-  readonly #states = new WeakMap<Composer, ComposerState>();
+function defaultIdFactory(sequence: number): string {
+  return `codexhost-composer-${Date.now().toString(36)}-${sequence.toString(36)}`;
+}
+
+export class DraftAgentController<Composer extends object> {
+  readonly #idFactory: (sequence: number) => string;
+  readonly #states = new WeakMap<Composer, MutableComposerState>();
+  readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
-  #submissionSequence = 0;
 
-  constructor(options: AgentSelectionRegistryOptions = {}) {
-    this.#clock = options.clock ?? Date.now;
-    this.#dedupeWindowMs = options.dedupeWindowMs ?? 250;
+  constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
   }
 
-  get(composer: Composer): Readonly<ComposerState> {
+  get(composer: Composer): Readonly<DraftComposerState> {
     return this.#state(composer);
   }
 
-  setAgent(composer: Composer, agent: RendererAgent): Readonly<ComposerState> {
-    const state = this.#state(composer);
-    if (state.phase === "draft") state.agent = agent;
-    return state;
+  isSwitching(composer: Composer): boolean {
+    return this.#switching.has(this.#state(composer));
   }
 
-  lock(composer: Composer): Readonly<ComposerState> {
+  lock(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     state.phase = "locked";
     return state;
@@ -68,37 +55,42 @@ export class AgentSelectionRegistry<Composer extends object> {
     return true;
   }
 
-  capture(composer: Composer, trigger: SubmissionTrigger): RendererSubmissionObservation | null {
+  async switchAgent(
+    composer: Composer,
+    nextAgent: RendererAgent,
+    operations: DraftAgentSwitchOperations,
+  ): Promise<boolean> {
     const state = this.#state(composer);
-    const now = this.#clock();
-    if (
-      state.lastCapturedAt !== null &&
-      state.lastObservation !== null &&
-      now - state.lastCapturedAt <= this.#dedupeWindowMs
-    ) {
-      return null;
+    if (state.phase !== "draft" || this.#switching.has(state)) return false;
+    if (state.agent === nextAgent) return true;
+
+    this.#switching.add(state);
+    try {
+      if (!operations.applyAgent(nextAgent)) return false;
+      try {
+        await operations.clearPrewarm();
+      } catch (error) {
+        if (!operations.applyAgent(state.agent)) {
+          throw new Error("Draft Agent switch could not restore the prior Agent", {
+            cause: error,
+          });
+        }
+        return false;
+      }
+      state.agent = nextAgent;
+      return true;
+    } finally {
+      this.#switching.delete(state);
     }
-    const observation: RendererSubmissionObservation = {
-      submissionId: this.#idFactory("submission", ++this.#submissionSequence),
-      composerId: state.composerId,
-      agent: state.agent,
-      trigger,
-      capturedAt: new Date(now).toISOString(),
-    };
-    state.lastCapturedAt = now;
-    state.lastObservation = observation;
-    return observation;
   }
 
-  #state(composer: Composer): ComposerState {
+  #state(composer: Composer): MutableComposerState {
     const existing = this.#states.get(composer);
     if (existing) return existing;
-    const created: ComposerState = {
+    const created: MutableComposerState = {
       agent: "codex",
       phase: "draft",
-      composerId: this.#idFactory("composer", ++this.#composerSequence),
-      lastCapturedAt: null,
-      lastObservation: null,
+      composerId: this.#idFactory(++this.#composerSequence),
     };
     this.#states.set(composer, created);
     return created;

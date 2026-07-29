@@ -27,12 +27,21 @@ export class PiRpcFaultError extends Error {
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
-  commandArguments?: string[];
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
   onFault?: (error: PiRpcFaultError) => void;
+}
+
+export interface PiRpcProcessOptions {
+  cwd: string;
+  command?: string;
+  environment: NodeJS.ProcessEnv;
+}
+
+export interface PiRpcProcessAdapter {
+  spawn(options: PiRpcProcessOptions): ChildProcessWithoutNullStreams;
 }
 
 interface PendingCommand {
@@ -97,13 +106,13 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
   ]);
 }
 
-function spawnCommand(options: PiRpcSessionOptions): {
+function spawnCommand(options: PiRpcProcessOptions): {
   command: string;
   arguments: string[];
   windowsVerbatimArguments: boolean;
 } {
-  const command = options.command ?? options.environment?.PI_COMMAND ?? "pi";
-  const arguments_ = options.commandArguments ?? ["--mode", "rpc"];
+  const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
+  const arguments_ = ["--mode", "rpc"];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -116,11 +125,26 @@ function spawnCommand(options: PiRpcSessionOptions): {
   };
 }
 
+const nodeProcessAdapter: PiRpcProcessAdapter = {
+  spawn(options) {
+    const invocation = spawnCommand(options);
+    return spawn(invocation.command, invocation.arguments, {
+      cwd: options.cwd,
+      env: options.environment,
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
+  },
+};
+
 export class PiRpcSession {
   readonly #options: Required<
     Pick<PiRpcSessionOptions, "commandTimeoutMs" | "turnTimeoutMs" | "closeTimeoutMs">
   > &
     PiRpcSessionOptions;
+  readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
@@ -129,13 +153,17 @@ export class PiRpcSession {
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
 
-  constructor(options: PiRpcSessionOptions) {
+  constructor(
+    options: PiRpcSessionOptions,
+    processAdapter: PiRpcProcessAdapter = nodeProcessAdapter,
+  ) {
     this.#options = {
       commandTimeoutMs: 30_000,
       turnTimeoutMs: 180_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
+    this.#processAdapter = processAdapter;
   }
 
   get state(): PiSessionState {
@@ -145,20 +173,15 @@ export class PiRpcSession {
 
   async start(): Promise<this> {
     if (this.#child || this.#closed) throw new Error("Pi RPC Session cannot be started twice");
-    const invocation = spawnCommand(this.#options);
-    const environment = {
-      ...process.env,
-      ...this.#options.environment,
-      PI_SKIP_VERSION_CHECK: "1",
-      PI_TELEMETRY: "0",
-    };
-    const child = spawn(invocation.command, invocation.arguments, {
+    const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
-      env: environment,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      ...(this.#options.command ? { command: this.#options.command } : {}),
+      environment: {
+        ...process.env,
+        ...this.#options.environment,
+        PI_SKIP_VERSION_CHECK: "1",
+        PI_TELEMETRY: "0",
+      },
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));

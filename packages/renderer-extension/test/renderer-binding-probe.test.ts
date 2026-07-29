@@ -1,15 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { shouldTransferComposerState } from "../src/renderer-binding-probe.js";
 import {
-  applyDraftAgentSwitch,
   editorForElement,
   isComposerInputIntent,
   isComposerSubmissionKey,
   isComposerSubmitButton,
-  shouldTransferComposerState,
-} from "../src/renderer-binding-probe.js";
+} from "../src/renderer-composer-dom.js";
 
-describe("Renderer binding event targeting", () => {
+describe("Renderer Composer DOM behavior", () => {
   it("resolves an inner contenteditable paragraph to its editor", () => {
     const editor = {} as Element;
     const paragraph = {
@@ -75,64 +74,5 @@ describe("Renderer binding event targeting", () => {
       shouldTransferComposerState(firstConversationTarget, otherConversationTarget, "locked"),
     ).toBe(false);
     expect(shouldTransferComposerState(null, firstConversationTarget, "locked")).toBe(false);
-  });
-
-  it("does not clear when the selected Agent is unchanged", async () => {
-    const applyAgent = vi.fn(() => true);
-    const clearPrewarm = vi.fn(async () => undefined);
-
-    await expect(applyDraftAgentSwitch("pi", "pi", { applyAgent, clearPrewarm })).resolves.toBe(
-      true,
-    );
-    expect(applyAgent).not.toHaveBeenCalled();
-    expect(clearPrewarm).not.toHaveBeenCalled();
-  });
-
-  it("applies the final Agent before clearing the stale prewarm", async () => {
-    const operations: string[] = [];
-
-    await expect(
-      applyDraftAgentSwitch("codex", "pi", {
-        applyAgent(agent) {
-          operations.push(`apply:${agent}`);
-          return true;
-        },
-        async clearPrewarm() {
-          operations.push("clear");
-        },
-      }),
-    ).resolves.toBe(true);
-    expect(operations).toEqual(["apply:pi", "clear"]);
-  });
-
-  it("restores the prior Agent when prewarm clearing fails", async () => {
-    const operations: string[] = [];
-
-    await expect(
-      applyDraftAgentSwitch("pi", "codex", {
-        applyAgent(agent) {
-          operations.push(`apply:${agent}`);
-          return true;
-        },
-        async clearPrewarm() {
-          operations.push("clear");
-          throw new Error("synthetic clear failure");
-        },
-      }),
-    ).resolves.toBe(false);
-    expect(operations).toEqual(["apply:codex", "clear", "apply:pi"]);
-  });
-
-  it("fails closed when the prior Agent cannot be restored", async () => {
-    await expect(
-      applyDraftAgentSwitch("codex", "pi", {
-        applyAgent(agent) {
-          return agent === "pi";
-        },
-        async clearPrewarm() {
-          throw new Error("synthetic clear failure");
-        },
-      }),
-    ).rejects.toThrow("could not restore the prior Agent");
   });
 });

@@ -1,97 +1,172 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { AgentSelectionRegistry } from "../src/index.js";
+import { DraftAgentController } from "../src/index.js";
 
-describe("Renderer Agent selection state", () => {
-  it("isolates Agent selection by Composer", () => {
+function controller(): DraftAgentController<object> {
+  return new DraftAgentController<object>({
+    idFactory: (sequence) => `composer-${sequence}`,
+  });
+}
+
+describe("Renderer draft Agent controller", () => {
+  it("isolates Agent selection by Composer", async () => {
     const firstComposer = {};
     const secondComposer = {};
-    const registry = new AgentSelectionRegistry<object>({
-      idFactory: (kind, sequence) => `${kind}-${sequence}`,
+    const agents = controller();
+
+    await agents.switchAgent(firstComposer, "pi", {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
     });
 
-    registry.setAgent(firstComposer, "pi");
-
-    expect(registry.get(firstComposer)).toMatchObject({
+    expect(agents.get(firstComposer)).toEqual({
       composerId: "composer-1",
       agent: "pi",
       phase: "draft",
     });
-    expect(registry.get(secondComposer)).toMatchObject({
+    expect(agents.get(secondComposer)).toEqual({
       composerId: "composer-2",
       agent: "codex",
       phase: "draft",
     });
   });
 
-  it("keeps the draft mutable until submission locks the final Agent", () => {
+  it("keeps the draft mutable until submission locks the final Agent", async () => {
     const composer = {};
-    const registry = new AgentSelectionRegistry<object>({
-      idFactory: (kind, sequence) => `${kind}-${sequence}`,
-    });
+    const agents = controller();
+    const operations = {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    };
 
-    registry.setAgent(composer, "pi");
-    registry.setAgent(composer, "codex");
-    registry.setAgent(composer, "pi");
-    expect(registry.get(composer)).toMatchObject({ agent: "pi", phase: "draft" });
+    await agents.switchAgent(composer, "pi", operations);
+    await agents.switchAgent(composer, "codex", operations);
+    await agents.switchAgent(composer, "pi", operations);
+    expect(agents.get(composer)).toMatchObject({ agent: "pi", phase: "draft" });
 
-    registry.lock(composer);
-    registry.setAgent(composer, "codex");
-    expect(registry.get(composer)).toMatchObject({
+    agents.lock(composer);
+    await expect(agents.switchAgent(composer, "codex", operations)).resolves.toBe(false);
+    expect(agents.get(composer)).toEqual({
       composerId: "composer-1",
       agent: "pi",
       phase: "locked",
     });
   });
 
-  it("transfers state only to an untracked replacement Composer", () => {
+  it("transfers identity, selection, and switching state to one replacement Composer", async () => {
     const originalComposer = {};
     const replacementComposer = {};
     const existingComposer = {};
-    const registry = new AgentSelectionRegistry<object>({
-      idFactory: (kind, sequence) => `${kind}-${sequence}`,
+    const agents = controller();
+    let releaseClear: (() => void) | undefined;
+    const switching = agents.switchAgent(originalComposer, "pi", {
+      applyAgent: () => true,
+      clearPrewarm: () =>
+        new Promise<void>((resolve) => {
+          releaseClear = resolve;
+        }),
     });
-    registry.setAgent(originalComposer, "pi");
-    registry.lock(originalComposer);
-    registry.setAgent(existingComposer, "codex");
+    agents.get(existingComposer);
 
-    expect(registry.transfer(originalComposer, replacementComposer)).toBe(true);
-    expect(registry.get(replacementComposer)).toMatchObject({
+    expect(agents.transfer(originalComposer, replacementComposer)).toBe(true);
+    expect(agents.isSwitching(replacementComposer)).toBe(true);
+    expect(agents.transfer(originalComposer, existingComposer)).toBe(false);
+    releaseClear?.();
+    await switching;
+
+    expect(agents.get(replacementComposer)).toEqual({
       composerId: "composer-1",
       agent: "pi",
-      phase: "locked",
+      phase: "draft",
     });
-    expect(registry.transfer(originalComposer, existingComposer)).toBe(false);
-    expect(registry.get(existingComposer)).toMatchObject({
+    expect(agents.get(existingComposer)).toEqual({
       composerId: "composer-2",
       agent: "codex",
+      phase: "draft",
     });
   });
 
-  it("captures the final Agent once for duplicate DOM submit signals", () => {
-    let now = Date.parse("2026-07-27T12:00:00.000Z");
+  it("applies the target Agent before clearing stale prewarm", async () => {
     const composer = {};
-    const registry = new AgentSelectionRegistry<object>({
-      clock: () => now,
-      dedupeWindowMs: 250,
-      idFactory: (kind, sequence) => `${kind}-${sequence}`,
-    });
-    registry.setAgent(composer, "pi");
+    const agents = controller();
+    const operations: string[] = [];
 
-    expect(registry.capture(composer, "enter")).toEqual({
-      submissionId: "submission-1",
-      composerId: "composer-1",
-      agent: "pi",
-      trigger: "enter",
-      capturedAt: "2026-07-27T12:00:00.000Z",
+    await expect(
+      agents.switchAgent(composer, "pi", {
+        applyAgent(agent) {
+          operations.push(`apply:${agent}`);
+          return true;
+        },
+        async clearPrewarm() {
+          operations.push("clear");
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(operations).toEqual(["apply:pi", "clear"]);
+    expect(agents.get(composer).agent).toBe("pi");
+  });
+
+  it("rejects concurrent switching for the same logical Composer", async () => {
+    const composer = {};
+    const agents = controller();
+    let releaseClear: (() => void) | undefined;
+    const first = agents.switchAgent(composer, "pi", {
+      applyAgent: () => true,
+      clearPrewarm: () =>
+        new Promise<void>((resolve) => {
+          releaseClear = resolve;
+        }),
     });
-    now += 100;
-    expect(registry.capture(composer, "submit")).toBeNull();
-    now += 200;
-    expect(registry.capture(composer, "click")).toMatchObject({
-      submissionId: "submission-2",
-      agent: "pi",
-      trigger: "click",
-    });
+
+    expect(agents.isSwitching(composer)).toBe(true);
+    await expect(
+      agents.switchAgent(composer, "pi", {
+        applyAgent: vi.fn(() => true),
+        clearPrewarm: vi.fn(async () => undefined),
+      }),
+    ).resolves.toBe(false);
+    releaseClear?.();
+    await first;
+    expect(agents.isSwitching(composer)).toBe(false);
+  });
+
+  it("restores the prior Agent when prewarm clearing fails", async () => {
+    const composer = {};
+    const agents = controller();
+    const operations: string[] = [];
+
+    await expect(
+      agents.switchAgent(composer, "pi", {
+        applyAgent(agent) {
+          operations.push(`apply:${agent}`);
+          return true;
+        },
+        async clearPrewarm() {
+          operations.push("clear");
+          throw new Error("synthetic clear failure");
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(operations).toEqual(["apply:pi", "clear", "apply:codex"]);
+    expect(agents.get(composer).agent).toBe("codex");
+  });
+
+  it("fails closed when the prior Agent cannot be restored", async () => {
+    const composer = {};
+    const agents = controller();
+
+    await expect(
+      agents.switchAgent(composer, "pi", {
+        applyAgent(agent) {
+          return agent === "pi";
+        },
+        async clearPrewarm() {
+          throw new Error("synthetic clear failure");
+        },
+      }),
+    ).rejects.toThrow("could not restore the prior Agent");
+    expect(agents.isSwitching(composer)).toBe(false);
   });
 });

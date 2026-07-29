@@ -16,9 +16,12 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@codexhost/adapter-claude-code": "0.0.0",
     "@codexhost/adapter-pi": "0.0.0",
     "@codexhost/desktop-control": "0.0.0",
+    "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/mapping-store": "0.0.0",
-    "@codexhost/protocol-core": "0.0.0"
+    "@codexhost/protocol-core": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0"
   }
 }

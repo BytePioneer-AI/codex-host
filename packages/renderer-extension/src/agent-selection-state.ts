@@ -1,104 +1,175 @@
-export type RendererAgent = "codex" | "pi";
-export type SubmissionTrigger = "click" | "enter" | "submit";
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
 
-export interface RendererSubmissionObservation {
-  submissionId: string;
-  composerId: string;
-  agent: RendererAgent;
-  trigger: SubmissionTrigger;
-  capturedAt: string;
-}
-
+export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi"] as const;
+export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ComposerAgentPhase = "draft" | "locked";
 
-interface ComposerState {
+export interface DraftComposerState {
   agent: RendererAgent;
   phase: ComposerAgentPhase;
   composerId: string;
-  lastCapturedAt: number | null;
-  lastObservation: RendererSubmissionObservation | null;
+  piModel?: HarnessModelRef;
 }
 
-export interface AgentSelectionRegistryOptions {
-  clock?: () => number;
-  dedupeWindowMs?: number;
-  idFactory?: (kind: "composer" | "submission", sequence: number) => string;
+type MutableComposerState = DraftComposerState;
+
+interface ConversationState {
+  target: readonly unknown[];
+  state: MutableComposerState;
 }
 
-function defaultIdFactory(kind: "composer" | "submission", sequence: number): string {
-  return `codexhost-${kind}-${Date.now().toString(36)}-${sequence.toString(36)}`;
+export interface DraftAgentControllerOptions {
+  idFactory?: (sequence: number) => string;
+  enabledAgents?: readonly RendererAgent[];
 }
 
-export class AgentSelectionRegistry<Composer extends object> {
-  readonly #clock: () => number;
-  readonly #dedupeWindowMs: number;
-  readonly #idFactory: (kind: "composer" | "submission", sequence: number) => string;
-  readonly #states = new WeakMap<Composer, ComposerState>();
+export interface DraftAgentSwitchOperations {
+  applyAgent(agent: RendererAgent): boolean;
+  clearPrewarm(): Promise<void>;
+}
+
+function defaultIdFactory(sequence: number): string {
+  return `codexhost-composer-${Date.now().toString(36)}-${sequence.toString(36)}`;
+}
+
+function isConversationTarget(target: readonly unknown[] | null): target is readonly unknown[] {
+  return target?.[0] === "conversation";
+}
+
+function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export class DraftAgentController<Composer extends object> {
+  readonly #idFactory: (sequence: number) => string;
+  readonly #enabledAgents: ReadonlySet<RendererAgent>;
+  readonly #conversationStates: ConversationState[] = [];
+  readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
+  readonly #states = new WeakMap<Composer, MutableComposerState>();
+  readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
-  #submissionSequence = 0;
 
-  constructor(options: AgentSelectionRegistryOptions = {}) {
-    this.#clock = options.clock ?? Date.now;
-    this.#dedupeWindowMs = options.dedupeWindowMs ?? 250;
+  constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
+    this.#enabledAgents = new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS);
+    if (!this.#enabledAgents.has("codex")) {
+      throw new Error("Renderer enabled Agents must include Codex");
+    }
   }
 
-  get(composer: Composer): Readonly<ComposerState> {
+  get(composer: Composer): Readonly<DraftComposerState> {
     return this.#state(composer);
   }
 
-  setAgent(composer: Composer, agent: RendererAgent): Readonly<ComposerState> {
+  mount(composer: Composer, target: readonly unknown[] | null): Readonly<DraftComposerState> {
+    const bound = this.#conversationState(target);
+    if (bound) {
+      this.#states.set(composer, bound);
+      return bound;
+    }
     const state = this.#state(composer);
-    if (state.phase === "draft") state.agent = agent;
+    if (isConversationTarget(target)) {
+      this.#conversationStates.push({ target, state });
+    }
     return state;
   }
 
-  lock(composer: Composer): Readonly<ComposerState> {
+  isSwitching(composer: Composer): boolean {
+    return this.#switching.has(this.#state(composer));
+  }
+
+  beginModelRequest(composer: Composer): number {
+    const state = this.#state(composer);
+    const generation = (this.#modelRequestGenerations.get(state) ?? 0) + 1;
+    this.#modelRequestGenerations.set(state, generation);
+    return generation;
+  }
+
+  invalidateModelRequests(composer: Composer): void {
+    this.beginModelRequest(composer);
+  }
+
+  isCurrentModelRequest(composer: Composer, generation: number): boolean {
+    return (this.#modelRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+  }
+
+  setPiModel(composer: Composer, model: HarnessModelRef): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piModel = model;
+    return state;
+  }
+
+  lock(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     state.phase = "locked";
     return state;
   }
 
-  transfer(source: Composer, replacement: Composer): boolean {
+  transfer(
+    source: Composer,
+    replacement: Composer,
+    target: readonly unknown[] | null = null,
+  ): boolean {
     const state = this.#states.get(source);
     if (!state) return false;
-    if (source === replacement) return true;
-    if (this.#states.has(replacement)) return false;
-    this.#states.set(replacement, state);
+    const bound = this.#conversationState(target);
+    if (bound && bound !== state) return false;
+    if (source !== replacement) {
+      if (this.#states.has(replacement)) return false;
+      this.#states.set(replacement, state);
+    }
+    if (isConversationTarget(target) && !bound) {
+      this.#conversationStates.push({ target, state });
+    }
     return true;
   }
 
-  capture(composer: Composer, trigger: SubmissionTrigger): RendererSubmissionObservation | null {
+  async switchAgent(
+    composer: Composer,
+    nextAgent: RendererAgent,
+    operations: DraftAgentSwitchOperations,
+  ): Promise<boolean> {
     const state = this.#state(composer);
-    const now = this.#clock();
-    if (
-      state.lastCapturedAt !== null &&
-      state.lastObservation !== null &&
-      now - state.lastCapturedAt <= this.#dedupeWindowMs
-    ) {
-      return null;
+    if (!this.#enabledAgents.has(nextAgent)) return false;
+    if (state.phase !== "draft" || this.#switching.has(state)) return false;
+    if (state.agent === nextAgent) return true;
+
+    this.#switching.add(state);
+    try {
+      if (!operations.applyAgent(nextAgent)) return false;
+      try {
+        await operations.clearPrewarm();
+      } catch (error) {
+        if (!operations.applyAgent(state.agent)) {
+          throw new Error("Draft Agent switch could not restore the prior Agent", {
+            cause: error,
+          });
+        }
+        return false;
+      }
+      state.agent = nextAgent;
+      return true;
+    } finally {
+      this.#switching.delete(state);
     }
-    const observation: RendererSubmissionObservation = {
-      submissionId: this.#idFactory("submission", ++this.#submissionSequence),
-      composerId: state.composerId,
-      agent: state.agent,
-      trigger,
-      capturedAt: new Date(now).toISOString(),
-    };
-    state.lastCapturedAt = now;
-    state.lastObservation = observation;
-    return observation;
   }
 
-  #state(composer: Composer): ComposerState {
+  #conversationState(target: readonly unknown[] | null): MutableComposerState | null {
+    if (!isConversationTarget(target)) return null;
+    return (
+      this.#conversationStates.find((candidate) => sameTarget(candidate.target, target))?.state ??
+      null
+    );
+  }
+
+  #state(composer: Composer): MutableComposerState {
     const existing = this.#states.get(composer);
     if (existing) return existing;
-    const created: ComposerState = {
+    const created: MutableComposerState = {
       agent: "codex",
       phase: "draft",
-      composerId: this.#idFactory("composer", ++this.#composerSequence),
-      lastCapturedAt: null,
-      lastObservation: null,
+      composerId: this.#idFactory(++this.#composerSequence),
     };
     this.#states.set(composer, created);
     return created;

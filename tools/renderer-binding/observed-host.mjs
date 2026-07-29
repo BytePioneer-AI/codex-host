@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { AppServerHost } from "../../packages/host-runtime/dist/index.js";
+import {
+  AppServerHost,
+  createExternalHarnessAdapters,
+} from "../../packages/host-runtime/dist/index.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
-const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 const OBSERVATION_PATH_ENV = "CODEXHOST_ROUTE_OBSERVATION_PATH";
 
@@ -27,11 +29,11 @@ const host = new AppServerHost({
   arguments: process.argv.slice(2),
   defaultAgent,
   environment,
-  ...(process.env[PI_COMMAND_ENV] ? { piCommand: process.env[PI_COMMAND_ENV] } : {}),
-  onCreateRequestRoute(observation) {
+  externalAdapters: createExternalHarnessAdapters(environment),
+  onRequestRoute(observation) {
     fs.appendFileSync(
       observationPath,
-      `${JSON.stringify({ schemaVersion: 1, ...observation })}\n`,
+      `${JSON.stringify({ schemaVersion: 2, ...observation })}\n`,
       "utf8",
     );
   },

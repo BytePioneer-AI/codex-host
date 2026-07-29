@@ -1,40 +1,60 @@
 # Renderer Agent Binding Probe
 
-This diagnostic probe tests whether codexhost can inject a browser-safe `Codex / Pi` selector into the official Codex Composer and capture the selected Agent at DOM submission time.
+This controlled probe validates the version-locked `Codex / Pi` Agent binding in a real Codex Desktop Renderer. It can also expose `Claude Code` as an internal development-only third Agent when both the Host and Renderer gates are explicitly enabled.
 
-The complete versioned result is recorded in [VALIDATION.md](./VALIDATION.md). It documents the actual behavior of Codex Desktop `26.721.4979.0`, including the phased `thread/start` timing and the current public-interface limitation.
+The current full result is recorded in:
+
+- `docs/CodexRendererAgent绑定验证记录.md`
+- `docs/RendererAgent路由阶段验证记录-2026-07-28.md`
 
 ## Scope
 
-The probe:
+The runner:
 
 - starts or attaches to Codex Desktop through loopback CDP and the Electron main-process Inspector;
-- uses the public Electron `webContents` API to locate the populated Renderer when the production window has `devTools: false`;
-- keeps Agent selection isolated by Composer and emits sanitized submission observations;
-- records structural counts, tag names, attribute names, generated probe IDs, and binding status only.
+- locates the populated primary Renderer through Electron `webContents`, excluding the avatar overlay;
+- installs the version-locked main-process title policy;
+- reloads the Renderer so its AppHost metadata service is associated with the owning `webContents`;
+- confirms that ownership and writes a non-sensitive title-policy readiness marker into the Renderer;
+- installs a narrow Renderer bridge that only clears official local-host prewarms;
+- injects the browser-safe Renderer Agent selector and Model-state Adapter;
+- installs a tooling-only observer for sanitized submission, switch, and structural diagnostics;
+- records the minimal production binding status separately from tooling observations and title-policy counters.
 
-The probe does not read or persist Prompt text, input values, complete DOM payloads, page titles, URL query/hash values, or screenshots. Reports and logs are written under the ignored `.codexhost/renderer-binding/` directory.
+The optional observed Host additionally records schema v2 route evidence:
+
+```text
+thread/start → carrier + selected Harness + anonymous create ordinal + purpose
+turn/start   → matched ordinal + selected Harness + purpose
+```
+
+The probe does not persist Prompt text, input values, Transcript, full DOM, Model values, request IDs, Thread IDs, RPC payloads, URL query/hash values, or screenshots. Reports and logs are written under ignored `.codexhost/` directories.
 
 ## Current Result
 
-A controlled Windows test against Codex Desktop `26.721.4979.0` confirmed that:
+The public DOM/preload surface still has no stable Agent-to-create binding. The supported build instead uses three version-locked structural policies:
 
-- direct CDP exposes only the outer `app://-/index.html` page;
-- the Electron main-process Inspector can inject the selector into the populated Renderer;
-- the selector mounts beside the native Composer controls;
-- an Enter submission can retain and report a Composer-scoped `pi` selection.
+1. The Renderer Adapter uniquely locates the current Composer's optimistic Model atom and writes the internal `codexhost/pi-native` transport token for Pi.
+2. The draft prewarm policy recovers the owned official request bridge through CDP and exposes only `clear-prewarmed-threads-for-host({ hostId: "local" })` as a no-argument Renderer operation.
+3. The main-process title policy locates `ThreadMetadataGenerationService.generateTitle`; Pi uses the Desktop's local fallback instead of creating an official Codex ephemeral title Thread.
 
-Creation binding remains `BLOCKED`. The probe neither controls the Host creation boundary nor modifies the native Model state. This result must not be interpreted as Pi routing or as permission to silently fall back to Codex.
+A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: a draft or locked `default → conversation` transition transfers state, a new task or previously unseen conversation starts as Codex, and revisiting a known conversation in the same Renderer process restores its final Agent and locked phase.
 
-A controlled Windows test then launched Desktop through the codexhost Shim and a Host route observer with the process default fixed to Codex. One submission produced a Renderer observation with `agent: "pi"`, while every real `thread/start` request was classified as `official-model` and selected Codex. The visible response also came from Codex. This proves the independent selector does not currently set `thread/start.params.model` to `codexhost/pi-native`.
+The final controlled Gates proved:
 
-A phased follow-up established the creation timing: Renderer ready, New Task, and Pi selection produced no `thread/start`; beginning input produced the first request; clicking Send produced two more requests. All three requests occurred after Pi selection and all three retained the official Model carrier. The Pi selection survived two unambiguous Composer DOM replacements and was captured on the click submission. The missing behavior is therefore specifically the connection from independent Agent state to the native request builder, not pre-selection prewarming or lost Composer state.
+```text
+Codex → Pi      → stale official create unconsumed; final Pi create matched
+Pi → Codex      → stale Pi create deleted locally; final official create matched
+Pi → Codex → Pi → repeated stale Pi deletion; final Pi create matched
+Pi lazy start   → no Pi process for any unconsumed prewarm
+Pi title        → official generation skipped; fallback name updated locally
+Codex title     → official ephemeral create and Turn preserved
+New task        → codex / draft
+Submission      → final Agent locked across default → conversation replacement
+Persistence     → codexhost/pi-native absent from Codex configuration
+```
 
-Read-only package inspection found no public DOM action or preload method for setting the native Model. The Model picker updates React-owned state through an `onModelChange` callback, while the standard `thread/start` parameters do not carry the Renderer Composer identity. Consequently, a public side channel cannot currently correlate an Agent intent to one exact create request without adding an unstable global/ordered assumption.
-
-The combined test also exposed and fixed a Windows Shim launch defect: canonical Host Runtime paths use the `\\?\` verbatim prefix, which Node.js cannot consume as its entrypoint argument. The Shim now passes a normalized Win32 path to Node after canonical validation.
-
-The controlled interaction did not exercise rapid concurrent creation, retry, Renderer reload, or a live DOM-root replacement. Registry replacement transfer has unit coverage, but its Renderer mutation path remains a residual live-test gap.
+Structure mismatch, ambiguous Composer association, missing title ownership, or unsupported assets fail closed. Renderer inspection has a bounded timeout across reloads, and Probe injection waits for metadata-service ownership before marking the primary Renderer ready.
 
 ## Run
 
@@ -44,4 +64,14 @@ Build the workspace, then attach to existing loopback endpoints:
 npm run probe:renderer-binding -- --endpoint http://127.0.0.1:9222 --inspector-endpoint http://127.0.0.1:9223
 ```
 
-To start a controlled Desktop instance, also pass an absolute `--desktop` executable path. Use `--until-submissions <count>` for an interaction run that completes after a fixed number of sanitized observations.
+To start a controlled Desktop instance, also pass an absolute `--desktop` executable path. Use `--until-submissions <count>` for a run that completes after a fixed number of sanitized observations.
+
+For the internal Claude Code vertical Gate, configure the Host runtime with `CODEXHOST_ENABLE_CLAUDE_CODE=1` and pass `--enable-claude-code` to the runner. The runner then injects a three-Agent enabled list before loading the Renderer bundle. Neither switch is enabled by default, and the Claude option must fail closed if the Host has no registered Claude Adapter.
+
+```text
+CODEXHOST_ENABLE_CLAUDE_CODE=1 npm run probe:renderer-binding -- \
+  --desktop <absolute-desktop-executable> \
+  --enable-claude-code
+```
+
+The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer binding and its tooling-only observer. The schema v2 local report stores production state under `status` and Gate-only observations, switch counters, and structural diagnostics under `observer`.

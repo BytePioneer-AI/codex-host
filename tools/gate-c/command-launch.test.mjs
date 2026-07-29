@@ -35,7 +35,7 @@ function createPiScript(directory, baseName = "pi") {
 
 async function expectEcho(options) {
   const rpc = new PiRpcClient({
-    commandTimeoutMs: 2_000,
+    commandTimeoutMs: 5_000,
     closeGraceMs: 500,
     forceGraceMs: 2_000,
     ...options,

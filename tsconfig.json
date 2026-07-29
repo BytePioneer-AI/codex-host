@@ -7,6 +7,7 @@
     { "path": "./packages/protocol-core/tsconfig.json" },
     { "path": "./packages/desktop-control/tsconfig.json" },
     { "path": "./packages/adapters/pi/tsconfig.json" },
+    { "path": "./packages/adapters/claude-code/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

@@ -6,9 +6,18 @@ import {
   CdpClient,
   getCdpBrowserVersion,
   inspectRendererDom,
+  installMainProcessTitlePolicy,
+  installRendererDraftPrewarmPolicy,
   listCdpTargets,
+  markRendererTitlePolicyReady,
+  readMainProcessTitlePolicyCounters,
   waitForRendererTarget,
 } from "../../packages/desktop-control/dist/index.js";
+import { installRendererObserver, readRendererObserver } from "./renderer-observer.mjs";
+import {
+  selectRendererWebContents,
+  waitForRendererTitlePolicyReady,
+} from "./renderer-selection.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultOutputDirectory = path.join(repositoryRoot, ".codexhost", "renderer-binding");
@@ -18,7 +27,7 @@ function usage() {
   node tools/renderer-binding/run.mjs [--endpoint <loopback-url>]
     [--inspector-endpoint <loopback-url>] [--desktop <absolute-file>]
     [--observe-seconds <seconds>] [--until-submissions <count>]
-    [--output <directory>] [--keep-desktop]
+    [--output <directory>] [--keep-desktop] [--enable-claude-code]
 
 When --desktop is provided, the probe starts that executable with CDP and main-process Inspector
 ports, then closes only the process tree it started. Without --desktop, it attaches to both existing
@@ -42,6 +51,7 @@ function parseArguments(arguments_) {
     untilSubmissions: null,
     outputDirectory: defaultOutputDirectory,
     keepDesktop: false,
+    enableClaudeCode: false,
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -72,6 +82,9 @@ function parseArguments(arguments_) {
       case "--keep-desktop":
         options.keepDesktop = true;
         break;
+      case "--enable-claude-code":
+        options.enableClaudeCode = true;
+        break;
       case "--help":
       case "-h":
         usage();
@@ -91,18 +104,19 @@ function isRecord(value) {
 function validateProbeStatus(value) {
   if (
     !isRecord(value) ||
-    value.version !== 1 ||
+    value.version !== 2 ||
     !Number.isInteger(value.mountedComposers) ||
+    !Array.isArray(value.enabledAgents) ||
+    value.enabledAgents.length < 2 ||
+    value.enabledAgents.some((agent) => !["codex", "pi", "claude-code"].includes(agent)) ||
+    !value.enabledAgents.includes("codex") ||
+    !value.enabledAgents.includes("pi") ||
     !Array.isArray(value.selections) ||
-    !Array.isArray(value.observations) ||
     !isRecord(value.adapter) ||
     !["installing", "ready", "unsupported"].includes(value.adapter.state) ||
     !Number.isInteger(value.adapter.decoratedRequests) ||
-    !Number.isInteger(value.adapter.candidateCount) ||
-    !isRecord(value.diagnostics) ||
-    !Number.isInteger(value.diagnostics.editorCandidates) ||
-    !Number.isInteger(value.diagnostics.replacementTransfers) ||
-    !Array.isArray(value.diagnostics.shapes)
+    !Number.isInteger(value.adapter.modelUpdates) ||
+    !Number.isInteger(value.adapter.candidateCount)
   ) {
     throw new Error("Renderer binding probe returned an invalid status");
   }
@@ -110,22 +124,10 @@ function validateProbeStatus(value) {
     if (
       !isRecord(selection) ||
       typeof selection.composerId !== "string" ||
-      !["codex", "pi"].includes(selection.agent) ||
+      !["codex", "pi", "claude-code"].includes(selection.agent) ||
       !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
-    }
-  }
-  for (const observation of value.observations) {
-    if (
-      !isRecord(observation) ||
-      typeof observation.submissionId !== "string" ||
-      typeof observation.composerId !== "string" ||
-      !["codex", "pi"].includes(observation.agent) ||
-      !["click", "enter", "submit"].includes(observation.trigger) ||
-      typeof observation.capturedAt !== "string"
-    ) {
-      throw new Error("Renderer binding probe returned an invalid observation");
     }
   }
   return value;
@@ -139,15 +141,25 @@ function endpointPort(endpoint, option) {
   return url.port ? parseInteger(url.port, `${option} port`, 1, 65_535) : 80;
 }
 
-function launchDesktop(executable, cdpPort, inspectorPort) {
+function launchDesktop(executable, cdpPort, inspectorPort, enableClaudeCode) {
   if (!fs.statSync(executable).isFile()) {
     throw new Error(`Desktop executable is not a file: ${executable}`);
   }
-  return spawn(executable, [`--remote-debugging-port=${cdpPort}`, `--inspect=${inspectorPort}`], {
-    detached: process.platform !== "win32",
-    stdio: "ignore",
-    windowsHide: false,
-  });
+  const child = spawn(
+    executable,
+    [`--remote-debugging-port=${cdpPort}`, `--inspect=${inspectorPort}`],
+    {
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+      windowsHide: false,
+      env: {
+        ...process.env,
+        ...(enableClaudeCode ? { CODEXHOST_ENABLE_CLAUDE_CODE: "1" } : {}),
+      },
+    },
+  );
+  child.unref();
+  return child;
 }
 
 function stopDesktop(child) {
@@ -301,9 +313,19 @@ async function inspectElectronWebContents(inspector) {
     for (const contents of webContents.getAllWebContents()) {
       let runtime = { available: false, elementCount: null, editorCandidates: null, sendButtonCandidates: null };
       try {
-        runtime = { available: true, ...(await contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true)) };
+        const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
+        const timeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
+        });
+        runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
       } catch {}
-      result.push({ id: contents.id, type: contents.getType(), url: contents.getURL(), runtime });
+      result.push({
+        id: contents.id,
+        type: contents.getType(),
+        surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
+        url: contents.getURL(),
+        runtime,
+      });
     }
     return result;
   })()`;
@@ -314,6 +336,7 @@ async function inspectElectronWebContents(inspector) {
       !isRecord(item) ||
       !Number.isInteger(item.id) ||
       typeof item.type !== "string" ||
+      !["primary", "overlay"].includes(item.surface) ||
       !isRecord(item.runtime)
     ) {
       throw new Error("Electron webContents inspection returned an invalid item");
@@ -321,6 +344,7 @@ async function inspectElectronWebContents(inspector) {
     return {
       id: item.id,
       type: item.type,
+      surface: item.surface,
       url: safeTargetUrl(item.url),
       runtime: {
         available: item.runtime.available === true,
@@ -336,14 +360,6 @@ async function inspectElectronWebContents(inspector) {
       },
     };
   });
-}
-
-function selectRendererWebContents(contents) {
-  const candidates = contents
-    .filter((item) => item.runtime.available && item.runtime.elementCount !== null)
-    .toSorted((left, right) => right.runtime.elementCount - left.runtime.elementCount);
-  const selected = candidates[0];
-  return selected && selected.runtime.elementCount >= 50 ? selected : null;
 }
 
 async function waitForElectronRenderer(inspector, timeoutMs = 60_000) {
@@ -396,7 +412,9 @@ async function run() {
     const cdpPort = endpointPort(options.endpoint, "--endpoint");
     const inspectorPort = endpointPort(options.inspectorEndpoint, "--inspector-endpoint");
     if (cdpPort === inspectorPort) throw new Error("CDP and Inspector ports must differ");
-    if (options.desktop) desktop = launchDesktop(options.desktop, cdpPort, inspectorPort);
+    if (options.desktop) {
+      desktop = launchDesktop(options.desktop, cdpPort, inspectorPort, options.enableClaudeCode);
+    }
 
     const [target, inspectorTarget] = await Promise.all([
       waitForRendererTarget(options.endpoint, { timeoutMs: 30_000 }),
@@ -409,14 +427,49 @@ async function run() {
     const cdpDom = await inspectRendererDom(pageClient);
     const rendererResult = await waitForElectronRenderer(inspectorClient);
     const electronWebContents = rendererResult.contents;
-    const selectedRenderer = rendererResult.selected;
+    let selectedRenderer = rendererResult.selected;
     console.log(JSON.stringify({ type: "renderer-inventory", webContents: electronWebContents }));
+    const titlePolicy = await installMainProcessTitlePolicy(inspectorClient);
+    console.log(JSON.stringify({ type: "main-process-title-policy", ...titlePolicy }));
+    await inspectorClient.evaluate(`(() => {
+      const { webContents } = ${electronModuleExpression};
+      const contents = webContents.fromId(${selectedRenderer.id});
+      if (contents == null || contents.isDestroyed()) throw new Error('Renderer webContents is unavailable');
+      contents.reload();
+      return null;
+    })()`);
+    await sleep(750);
+    selectedRenderer = (await waitForElectronRenderer(inspectorClient)).selected;
+    const titlePolicyReadiness = await waitForRendererTitlePolicyReady(() =>
+      markRendererTitlePolicyReady(inspectorClient),
+    );
+    console.log(JSON.stringify({ type: "renderer-title-policy", ...titlePolicyReadiness }));
+    const draftPrewarmPolicy = await installRendererDraftPrewarmPolicy(
+      inspectorClient,
+      selectedRenderer.id,
+    );
+    console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
     const source = fs.readFileSync(probeBundlePath, "utf8");
+    await executeInWebContents(
+      inspectorClient,
+      selectedRenderer.id,
+      `(() => {
+        Object.defineProperty(window, "__codexhostRendererConfigurationV1", {
+          configurable: true,
+          value: { enableClaudeCode: ${JSON.stringify(options.enableClaudeCode)} },
+        });
+        return null;
+      })()`,
+    );
     await executeInWebContents(inspectorClient, selectedRenderer.id, source);
+    const executeInRenderer = (expression) =>
+      executeInWebContents(inspectorClient, selectedRenderer.id, expression);
+    await installRendererObserver(executeInRenderer);
 
     const report = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       recordedAt: new Date().toISOString(),
+      enabledDevelopmentHarnesses: options.enableClaudeCode ? ["claude-code"] : [],
       target: {
         id: target.id,
         type: target.type,
@@ -426,41 +479,52 @@ async function run() {
       cdpDom,
       electronWebContents,
       selectedRendererId: selectedRenderer.id,
+      titlePolicy,
+      titlePolicyReadiness,
+      draftPrewarmPolicy,
+      titlePolicyCounters: null,
       status: null,
+      observer: null,
       creationBinding: {
-        status: "blocked",
+        status: "pending",
         rendererSubmissionObserved: false,
         creationBoundaryObserved: false,
-        reason: "No validated Adapter controls the active connect-app-host MessagePort boundary",
+        reason: "Waiting for the versioned Renderer Adapter status",
       },
     };
     let observedCount = 0;
     const deadline = Date.now() + options.observeSeconds * 1000;
     while (!interrupted && Date.now() < deadline) {
-      const status = validateProbeStatus(
-        await executeInWebContents(
-          inspectorClient,
-          selectedRenderer.id,
-          "window.__codexhostRendererBindingProbeV1?.status() ?? null",
+      const [status, observer] = await Promise.all([
+        executeInRenderer("window.__codexhostRendererBindingProbeV1?.status() ?? null").then(
+          validateProbeStatus,
         ),
-      );
+        readRendererObserver(executeInRenderer),
+      ]);
       report.status = status;
-      report.creationBinding.rendererSubmissionObserved = status.observations.length > 0;
-      for (const observation of status.observations.slice(observedCount)) {
+      report.observer = observer;
+      report.creationBinding.status = status.adapter.state === "ready" ? "ready" : "blocked";
+      report.creationBinding.reason =
+        status.adapter.state === "ready"
+          ? "Versioned Model-state, draft-prewarm, and title policies are ready"
+          : `Renderer Adapter is ${status.adapter.state}: ${status.adapter.reason}`;
+      report.creationBinding.rendererSubmissionObserved = observer.observations.length > 0;
+      for (const observation of observer.observations.slice(observedCount)) {
         console.log(JSON.stringify({ type: "submission-observed", ...observation }));
       }
-      observedCount = status.observations.length;
+      observedCount = observer.observations.length;
       if (options.untilSubmissions !== null && observedCount >= options.untilSubmissions) break;
       await sleep(250);
     }
 
+    report.titlePolicyCounters = await readMainProcessTitlePolicyCounters(inspectorClient);
     const reportPath = path.join(options.outputDirectory, "renderer-binding.local.json");
     fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(
       JSON.stringify({
         type: "probe-completed",
         mountedComposers: report.status?.mountedComposers ?? 0,
-        observedSubmissions: report.status?.observations.length ?? 0,
+        observedSubmissions: report.observer?.observations.length ?? 0,
         creationBindingStatus: report.creationBinding.status,
         selectedRendererId: selectedRenderer.id,
         reportPath,

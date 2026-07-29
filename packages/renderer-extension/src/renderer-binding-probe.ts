@@ -1,55 +1,62 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 import {
-  AgentSelectionRegistry,
+  DEFAULT_RENDERER_AGENTS,
+  DraftAgentController,
+  type ComposerAgentPhase,
   type RendererAgent,
-  type RendererSubmissionObservation,
-  type SubmissionTrigger,
 } from "./agent-selection-state.js";
-import type {
-  LockedComposerSelection,
-  RendererAdapterStatus,
+import {
+  CODEX_COMPOSER_SELECTOR,
+  EDITOR_SELECTOR,
+  composerForEditor,
+  composerForElement,
+  disposeComposerAgentControl,
+  editorForElement,
+  eventElement,
+  isComposerInputIntent,
+  isComposerSubmissionKey,
+  mountComposerAgentControl,
+  renderComposerAgentControl,
+  sendButtonWithin,
+  type ComposerAgentControl,
+  type PiModelControlView,
+} from "./renderer-composer-dom.js";
+import {
+  findComposerModelTarget,
+  isDraftPrewarmPolicyReady,
+  threadIdFromComposerModelTarget,
+  type LockedComposerSelection,
+  type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
+import type { RendererModelClient } from "./renderer-model-client.js";
 
 export interface RendererBindingProbeStatus {
-  version: 1;
+  version: 2;
   mountedComposers: number;
+  enabledAgents: RendererAgent[];
   selections: Array<{
     composerId: string;
     agent: RendererAgent;
-    phase: "draft" | "locked";
+    phase: ComposerAgentPhase;
   }>;
-  observations: RendererSubmissionObservation[];
   adapter: RendererAdapterStatus;
-  diagnostics: {
-    editorCandidates: number;
-    replacementTransfers: number;
-    shapes: Array<{
-      tagName: string;
-      role: string | null;
-      contentEditable: string | null;
-      hasPlaceholder: boolean;
-      hasDataPlaceholder: boolean;
-      ancestorTags: string[];
-      ancestorButtonCounts: number[];
-    }>;
-    bottomCenterStack: Array<{
-      tagName: string;
-      attributeNames: string[];
-      tabIndex: number;
-      contentEditable: string;
-    }>;
-    bottomFocusable: Array<{
-      tagName: string;
-      attributeNames: string[];
-      tabIndex: number;
-    }>;
-  };
+}
+
+export interface RendererBindingProbeOptions {
+  enabledAgents?: readonly RendererAgent[];
 }
 
 export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
-  setAgent(composerId: string, agent: RendererAgent): boolean;
   lockedSelection(): LockedComposerSelection | null;
-  setAdapter(status: RendererAdapterStatus, dispose?: () => void): void;
+  setAdapter(
+    status: RendererAdapterStatus,
+    dispose?: () => void,
+    applyAgent?: (agent: RendererAgent, model?: HarnessModelRef) => boolean,
+    applyPiModel?: (model: HarnessModelRef) => boolean,
+    modelControl?: RendererModelClient | null,
+  ): void;
   dispose(): void;
 }
 
@@ -62,202 +69,239 @@ declare global {
 interface MountedComposer {
   composer: Element;
   composerId: string;
-  control: HTMLElement;
-  sendButton: HTMLButtonElement;
-  buttons: Record<RendererAgent, HTMLButtonElement>;
+  control: ComposerAgentControl;
+  modelTarget: readonly unknown[] | null;
+  modelView: PiModelControlView;
 }
 
-const CONTROL_ATTRIBUTE = "data-codexhost-agent-probe";
-const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
-const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
-const DIAGNOSTIC_SELECTOR =
-  "[placeholder], [data-placeholder], [contenteditable], [role='textbox']";
-
-function eventElement(target: EventTarget | null): Element | null {
-  if (target instanceof Element) return target;
-  return target instanceof Node ? target.parentElement : null;
+interface PendingComposerReplacement {
+  source: Element;
+  sourceModelTarget: readonly unknown[] | null;
+  target: Element;
 }
 
-function buttonText(button: HTMLButtonElement): string {
-  return [
-    button.type,
-    button.getAttribute("aria-label"),
-    button.getAttribute("title"),
-    button.getAttribute("data-testid"),
-  ]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
-}
+type SubmissionTrigger = "click" | "enter" | "submit";
 
-function isSendButton(button: HTMLButtonElement): boolean {
-  if (button.type === "submit") return true;
-  return /(^|\s)(send|submit|发送|提交)(\s|$)/u.test(buttonText(button));
-}
-
-function sendButtonWithin(root: Element): HTMLButtonElement | null {
+export function shouldTransferComposerState(
+  sourceTarget: readonly unknown[] | null,
+  replacementTarget: readonly unknown[] | null,
+  sourcePhase: ComposerAgentPhase,
+): boolean {
+  if (!sourceTarget || !replacementTarget) return false;
+  if (sourceTarget === replacementTarget) return true;
   return (
-    [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      isSendButton(button),
-    ) ?? null
+    (sourcePhase === "draft" || sourcePhase === "locked") &&
+    sourceTarget[0] === "default" &&
+    replacementTarget[0] === "conversation"
   );
 }
 
-export function editorForElement(element: Element): Element | null {
-  return element.matches(EDITOR_SELECTOR) ? element : element.closest(EDITOR_SELECTOR);
-}
-
-export function isComposerInputIntent(event: KeyboardEvent): boolean {
-  if (event.key === "Backspace" || event.key === "Delete" || event.key === "Enter") return true;
-  if (event.key === "Process") return true;
-  if ((event.ctrlKey || event.metaKey) && ["v", "x"].includes(event.key.toLowerCase())) return true;
-  return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
-}
-
-function composerForEditor(editor: Element): Element | null {
-  const codexComposer = editor.closest(CODEX_COMPOSER_SELECTOR);
-  if (codexComposer) return codexComposer;
-  const form = editor.closest("form");
-  if (form && sendButtonWithin(form)) return form;
-  let candidate = editor.parentElement;
-  for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-    if (sendButtonWithin(candidate)) return candidate;
-    candidate = candidate.parentElement;
-  }
-  return null;
-}
-
-function composerForElement(element: Element): Element | null {
-  const codexComposer = element.closest(CODEX_COMPOSER_SELECTOR);
-  if (codexComposer) return codexComposer;
-  const mounted = element.closest(`[${CONTROL_ATTRIBUTE}]`);
-  if (mounted) return mounted.parentElement;
-  const editor = editorForElement(element);
-  if (editor) return composerForEditor(editor);
-  let candidate: Element | null = element;
-  for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-    if (candidate.querySelector(`[${CONTROL_ATTRIBUTE}]`)) return candidate;
-    candidate = candidate.parentElement;
-  }
-  return null;
-}
-
-function structuralDiagnostics(
-  replacementTransfers: number,
-): RendererBindingProbeStatus["diagnostics"] {
-  const candidates = [...document.querySelectorAll(DIAGNOSTIC_SELECTOR)].slice(0, 12);
-  const elementShape = (element: Element) => ({
-    tagName: element.tagName.toLowerCase(),
-    attributeNames: element.getAttributeNames().sort(),
-    tabIndex: element instanceof HTMLElement ? element.tabIndex : -1,
-  });
-  const bottomCenterStack = document
-    .elementsFromPoint(window.innerWidth / 2, Math.max(0, window.innerHeight - 90))
-    .slice(0, 12)
-    .map((element) => ({
-      ...elementShape(element),
-      contentEditable: element instanceof HTMLElement ? element.contentEditable : "inherit",
-    }));
-  const bottomFocusable = [...document.querySelectorAll<HTMLElement>("*")]
-    .filter((element) => {
-      const bounds = element.getBoundingClientRect();
-      return element.tabIndex >= 0 && bounds.top >= window.innerHeight * 0.65 && bounds.height > 0;
-    })
-    .slice(0, 20)
-    .map(elementShape);
-  return {
-    editorCandidates: document.querySelectorAll(EDITOR_SELECTOR).length,
-    replacementTransfers,
-    shapes: candidates.map((candidate) => {
-      const ancestorTags: string[] = [];
-      const ancestorButtonCounts: number[] = [];
-      let ancestor: Element | null = candidate;
-      for (let depth = 0; ancestor && ancestor !== document.body && depth < 6; depth += 1) {
-        ancestorTags.push(ancestor.tagName.toLowerCase());
-        ancestorButtonCounts.push(ancestor.querySelectorAll("button").length);
-        ancestor = ancestor.parentElement;
-      }
-      return {
-        tagName: candidate.tagName.toLowerCase(),
-        role: candidate.getAttribute("role"),
-        contentEditable: candidate.getAttribute("contenteditable"),
-        hasPlaceholder: candidate.hasAttribute("placeholder"),
-        hasDataPlaceholder: candidate.hasAttribute("data-placeholder"),
-        ancestorTags,
-        ancestorButtonCounts,
-      };
-    }),
-    bottomCenterStack,
-    bottomFocusable,
-  };
-}
-
-function createAgentButton(agent: RendererAgent, label: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.dataset.agent = agent;
-  button.textContent = label;
-  button.style.height = "24px";
-  button.style.minWidth = "44px";
-  button.style.padding = "0 8px";
-  button.style.border = "0";
-  button.style.borderRadius = "4px";
-  button.style.background = "transparent";
-  button.style.color = "inherit";
-  button.style.font = "500 12px/1 system-ui, sans-serif";
-  button.style.letterSpacing = "0";
-  button.style.cursor = "pointer";
-  return button;
-}
-
-function updateButtons(
-  mounted: MountedComposer,
-  state: { agent: RendererAgent; phase: "draft" | "locked" },
-  adapterState: RendererAdapterStatus["state"],
-): void {
-  for (const candidate of ["codex", "pi"] as const) {
-    const selected = candidate === state.agent;
-    const button = mounted.buttons[candidate];
-    button.setAttribute("aria-pressed", String(selected));
-    button.disabled = state.phase === "locked" || (candidate === "pi" && adapterState !== "ready");
-    button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
-    button.style.boxShadow = selected ? "inset 0 0 0 1px rgba(127, 127, 127, 0.3)" : "none";
-    button.style.cursor = button.disabled ? "not-allowed" : "pointer";
-    button.style.opacity = button.disabled && !selected ? "0.55" : "1";
-  }
-}
-
-export function installRendererBindingProbe(): RendererBindingProbeApi {
+export function installRendererBindingProbe(
+  options: RendererBindingProbeOptions = {},
+): RendererBindingProbeApi {
   const existing = window.__codexhostRendererBindingProbeV1;
   if (existing) return existing;
 
-  const registry = new AgentSelectionRegistry<Element>();
+  const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
+  const controller = new DraftAgentController<Element>({ enabledAgents });
   const mountedByComposer = new Map<Element, MountedComposer>();
-  const observations: RendererSubmissionObservation[] = [];
+  const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   let scanScheduled = false;
-  let replacementTransfers = 0;
   let adapterDispose: (() => void) | null = null;
+  let applyAdapterAgent: ((agent: RendererAgent, model?: HarnessModelRef) => boolean) | null = null;
+  let applyAdapterPiModel: ((model: HarnessModelRef) => boolean) | null = null;
+  let modelControl: RendererModelClient | null = null;
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
-    asset: "app-initial-BbEVL4-_.js",
     reason: "installing",
     decoratedRequests: 0,
+    modelUpdates: 0,
     candidateCount: 0,
     candidates: [],
     hook: null,
   };
 
-  const record = (composer: Element, trigger: SubmissionTrigger): void => {
-    const observation = registry.capture(composer, trigger);
-    if (!observation) return;
-    observations.push(observation);
-    if (observations.length > 50) observations.shift();
+  const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
+    const state = controller.get(composer);
     window.dispatchEvent(
       new CustomEvent("codexhost:renderer-submission", {
-        detail: observation,
+        detail: {
+          composerId: state.composerId,
+          agent: state.agent,
+          trigger,
+        },
       }),
     );
+  };
+
+  const renderMounted = (mounted: MountedComposer): void => {
+    renderComposerAgentControl(
+      mounted.control,
+      controller.get(mounted.composer),
+      adapterStatus.state,
+      controller.isSwitching(mounted.composer),
+      mounted.modelView,
+    );
+  };
+
+  const clearDraftPrewarm = async (): Promise<void> => {
+    const policy = window.__codexhostDraftPrewarmPolicyV1;
+    if (!isDraftPrewarmPolicyReady(policy)) {
+      throw new Error("Renderer draft prewarm policy is unavailable");
+    }
+    await policy.clear();
+  };
+
+  const loadPiCatalog = async (mounted: MountedComposer): Promise<void> => {
+    const state = controller.get(mounted.composer);
+    if (state.agent !== "pi") return;
+    const generation = controller.beginModelRequest(mounted.composer);
+    mounted.modelView = { status: "loading" };
+    renderMounted(mounted);
+    try {
+      if (!modelControl) throw new Error("Pi Model control is unavailable");
+      const inspection = await modelControl.inspectPi({ harnessId: "pi" });
+      if (
+        !controller.isCurrentModelRequest(mounted.composer, generation) ||
+        controller.get(mounted.composer).agent !== "pi"
+      ) {
+        return;
+      }
+      if (inspection.status !== "ready") throw new Error(inspection.error.message);
+      if (inspection.catalog.models.length === 0) {
+        mounted.modelView = { status: "empty", catalog: inspection.catalog };
+        return;
+      }
+      const current = controller.get(mounted.composer);
+      const selected =
+        current.piModel &&
+        inspection.catalog.models.some((model) => model.ref.id === current.piModel?.id)
+          ? current.piModel
+          : inspection.catalog.defaultModel;
+      if (!selected) throw new Error("Pi did not report its current Model");
+      if (current.phase === "draft" && current.piModel?.id !== selected.id) {
+        if (!(applyAdapterPiModel?.(selected) ?? false)) {
+          throw new Error("Pi Model could not be applied to the Composer");
+        }
+        try {
+          await clearDraftPrewarm();
+        } catch (error) {
+          applyAdapterAgent?.("pi", current.piModel);
+          throw error;
+        }
+      }
+      controller.setPiModel(mounted.composer, selected);
+      mounted.modelView = {
+        status: "ready",
+        catalog: inspection.catalog,
+        selected,
+      };
+    } catch (error) {
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      mounted.modelView = {
+        status: "error",
+        ...(mounted.modelView.catalog ? { catalog: mounted.modelView.catalog } : {}),
+        ...(controller.get(mounted.composer).piModel
+          ? { selected: controller.get(mounted.composer).piModel }
+          : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (controller.isCurrentModelRequest(mounted.composer, generation)) renderMounted(mounted);
+    }
+  };
+
+  const selectPiModel = async (mounted: MountedComposer, modelId: string): Promise<void> => {
+    const current = controller.get(mounted.composer);
+    const catalog = mounted.modelView.catalog;
+    const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
+    if (current.agent !== "pi" || !catalog || !selected) return;
+    const previous = current.piModel;
+    const generation = controller.beginModelRequest(mounted.composer);
+    mounted.modelView = { status: "selecting", catalog, selected: previous ?? selected };
+    renderMounted(mounted);
+    try {
+      let effective = selected;
+      if (current.phase === "draft") {
+        if (!(applyAdapterPiModel?.(selected) ?? false)) {
+          throw new Error("Pi Model could not be applied to the Composer");
+        }
+        try {
+          await clearDraftPrewarm();
+        } catch (error) {
+          applyAdapterAgent?.("pi", previous);
+          throw error;
+        }
+      } else {
+        const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+        if (!threadId || !modelControl) {
+          throw new Error("Pi Thread identity is unavailable for Model selection");
+        }
+        const state = await modelControl.selectPiThreadModel({ threadId, model: selected });
+        if (!state.effectiveModel) throw new Error("Pi did not confirm an effective Model");
+        effective = state.effectiveModel;
+        if (!catalog.models.some((model) => model.ref.id === effective.id)) {
+          throw new Error("Pi activated a Model outside the current catalog");
+        }
+        if (!(applyAdapterPiModel?.(effective) ?? false)) {
+          throw new Error("Confirmed Pi Model could not be applied to the Composer");
+        }
+      }
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      controller.setPiModel(mounted.composer, effective);
+      mounted.modelView = { status: "ready", catalog, selected: effective };
+    } catch (error) {
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      if (previous) applyAdapterPiModel?.(previous);
+      mounted.modelView = {
+        status: "error",
+        catalog,
+        ...(previous ? { selected: previous } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (controller.isCurrentModelRequest(mounted.composer, generation)) renderMounted(mounted);
+    }
+  };
+
+  const switchComposerAgent = async (
+    mounted: MountedComposer,
+    agent: RendererAgent,
+  ): Promise<boolean> => {
+    const composerId = controller.get(mounted.composer).composerId;
+    controller.invalidateModelRequests(mounted.composer);
+    const switching = controller.switchAgent(mounted.composer, agent, {
+      applyAgent(nextAgent) {
+        return (
+          applyAdapterAgent?.(nextAgent, controller.get(mounted.composer).piModel) ??
+          nextAgent === "codex"
+        );
+      },
+      clearPrewarm: clearDraftPrewarm,
+    });
+    renderMounted(mounted);
+    try {
+      const switched = await switching;
+      if (switched && controller.get(mounted.composer).agent === "pi") {
+        void loadPiCatalog(mounted);
+      } else if (controller.get(mounted.composer).agent !== "pi") {
+        mounted.modelView = { status: "idle" };
+      }
+      return switched;
+    } catch {
+      adapterStatus = {
+        ...adapterStatus,
+        state: "unsupported",
+        reason: "draft-prewarm-clear-failed",
+        hook: null,
+      };
+      return false;
+    } finally {
+      for (const candidate of mountedByComposer.values()) {
+        if (controller.get(candidate.composer).composerId === composerId) renderMounted(candidate);
+      }
+    }
   };
 
   const mount = (composer: Element): void => {
@@ -265,52 +309,57 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
-    const state = registry.get(composer);
-    const control = document.createElement("div");
-    control.setAttribute(CONTROL_ATTRIBUTE, state.composerId);
-    control.setAttribute("role", "group");
-    control.setAttribute("aria-label", "Agent");
-    control.style.display = "inline-flex";
-    control.style.alignItems = "center";
-    control.style.gap = "2px";
-    control.style.height = "28px";
-    control.style.padding = "2px";
-    control.style.marginInline = "4px";
-    control.style.border = "1px solid rgba(127, 127, 127, 0.28)";
-    control.style.borderRadius = "6px";
-    control.style.background = "rgba(127, 127, 127, 0.08)";
-    control.style.color = "inherit";
-
-    const buttons = {
-      codex: createAgentButton("codex", "Codex"),
-      pi: createAgentButton("pi", "Pi"),
-    };
-    control.append(buttons.codex, buttons.pi);
+    const modelTarget = findComposerModelTarget(composer);
+    const state = controller.mount(composer, modelTarget);
+    const control = mountComposerAgentControl(
+      composer,
+      state.composerId,
+      sendButton,
+      enabledAgents,
+      (agent) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void switchComposerAgent(mounted, agent);
+      },
+      (modelId) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void selectPiModel(mounted, modelId);
+      },
+    );
     const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
       control,
-      sendButton,
-      buttons,
+      modelTarget,
+      modelView: { status: "idle" },
     };
-    for (const agent of ["codex", "pi"] as const) {
-      buttons[agent].addEventListener("click", () => {
-        updateButtons(mounted, registry.setAgent(composer, agent), adapterStatus.state);
-      });
-    }
-    const toolbar = sendButton.parentElement;
-    if (toolbar) toolbar.insertBefore(control, sendButton);
-    else composer.append(control);
     mountedByComposer.set(composer, mounted);
-    updateButtons(mounted, state, adapterStatus.state);
+    applyAdapterAgent?.(state.agent, state.piModel);
+    renderMounted(mounted);
+    if (state.agent === "pi") void loadPiCatalog(mounted);
   };
 
   const scan = (): void => {
     scanScheduled = false;
     if (disposed) return;
+    for (const replacement of pendingReplacements.values()) {
+      const sourceState = controller.get(replacement.source);
+      const replacementTarget = findComposerModelTarget(replacement.target);
+      if (
+        shouldTransferComposerState(
+          replacement.sourceModelTarget,
+          replacementTarget,
+          sourceState.phase,
+        )
+      ) {
+        controller.transfer(replacement.source, replacement.target, replacementTarget);
+      }
+    }
+    pendingReplacements.clear();
     for (const [composer, mounted] of mountedByComposer) {
-      if (!composer.isConnected || !mounted.control.isConnected) {
-        mounted.control.remove();
+      if (!composer.isConnected || !mounted.control.root.isConnected) {
+        disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
       }
     }
@@ -355,41 +404,84 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         }
       }
       for (const addedNode of mutation.addedNodes) {
-        for (const composer of composerRootsWithin(addedNode)) {
-          replacement.added.add(composer);
-        }
+        for (const composer of composerRootsWithin(addedNode)) replacement.added.add(composer);
       }
     }
     for (const replacement of replacements.values()) {
       if (replacement.removed.size !== 1 || replacement.added.size !== 1) continue;
       const source = replacement.removed.values().next().value as Element;
       const target = replacement.added.values().next().value as Element;
-      if (source !== target && registry.transfer(source, target)) replacementTransfers += 1;
+      const mounted = mountedByComposer.get(source);
+      if (source !== target && mounted) {
+        pendingReplacements.set(target, {
+          source,
+          sourceModelTarget: mounted.modelTarget,
+          target,
+        });
+      }
     }
   };
 
-  const lockForTarget = (target: EventTarget | null): Element | null => {
+  const applyComposerAgent = (composer: Element): boolean => {
+    const state = controller.get(composer);
+    return applyAdapterAgent?.(state.agent, state.piModel) ?? state.agent === "codex";
+  };
+  const blockEvent = (event: Event): void => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const prepareComposer = (composer: Element): boolean | null => {
+    const mounted = mountedByComposer.get(composer);
+    if (!mounted) return null;
+    const current = controller.get(composer);
+    if (controller.isSwitching(composer)) return false;
+    const modelReady =
+      current.agent !== "pi" ||
+      (mounted.modelView.status !== "selecting" &&
+        mounted.modelView.catalog?.models.some(
+          (model) => model.ref.id === mounted.modelView.selected?.id,
+        ) === true);
+    if (!modelReady) return false;
+    if (current.phase === "locked") return true;
+    if (!applyComposerAgent(composer)) return false;
+    controller.lock(composer);
+    renderMounted(mounted);
+    return true;
+  };
+  const composerForTarget = (target: EventTarget | null): Element | null => {
     const element = eventElement(target);
     const editor = element ? editorForElement(element) : null;
-    if (!editor) return null;
-    const composer = composerForEditor(editor);
-    const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (!composer || !mounted) return null;
-    updateButtons(mounted, registry.lock(composer), adapterStatus.state);
-    return composer;
+    return editor ? composerForEditor(editor) : null;
   };
   const onBeforeInput = (event: InputEvent): void => {
-    lockForTarget(event.target);
+    const composer = composerForTarget(event.target);
+    if (!composer) return;
+    if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
     const composer = element ? composerForElement(element) : null;
-    if (composer && mountedByComposer.has(composer)) record(composer, "submit");
+    if (!composer) return;
+    const prepared = prepareComposer(composer);
+    if (prepared === null) return;
+    if (!prepared) {
+      blockEvent(event);
+      return;
+    }
+    notifySubmission(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    const composer = isComposerInputIntent(event) ? lockForTarget(event.target) : null;
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-    if (composer) record(composer, "enter");
+    const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
+    if (composer && (controller.isSwitching(composer) || !applyComposerAgent(composer))) {
+      blockEvent(event);
+      return;
+    }
+    if (!isComposerSubmissionKey(event) || !composer) return;
+    if (!prepareComposer(composer)) {
+      blockEvent(event);
+      return;
+    }
+    notifySubmission(composer, "enter");
   };
   const onClick = (event: MouseEvent): void => {
     const element = eventElement(event.target);
@@ -397,47 +489,51 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     if (!button) return;
     const composer = composerForElement(button);
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (composer && mounted?.sendButton === button) record(composer, "click");
+    if (!composer || mounted?.control.sendButton !== button) return;
+    if (!prepareComposer(composer)) {
+      blockEvent(event);
+      return;
+    }
+    notifySubmission(composer, "click");
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
     scheduleScan();
   });
+  const onAdapterStatus = () => {
+    for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+  };
   mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener("beforeinput", onBeforeInput, true);
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
+  window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+
+  const connectedComposers = (): MountedComposer[] =>
+    [...mountedByComposer.values()].filter(
+      (mounted) => mounted.composer.isConnected && mounted.control.root.isConnected,
+    );
 
   const api: RendererBindingProbeApi = {
     status() {
-      const selections = [...mountedByComposer.values()].map((mounted) => ({
+      const selections = connectedComposers().map((mounted) => ({
         composerId: mounted.composerId,
-        agent: registry.get(mounted.composer).agent,
-        phase: registry.get(mounted.composer).phase,
+        agent: controller.get(mounted.composer).agent,
+        phase: controller.get(mounted.composer).phase,
       }));
       return {
-        version: 1,
+        version: 2,
         mountedComposers: selections.length,
+        enabledAgents: [...enabledAgents],
         selections,
-        observations: observations.map((observation) => ({ ...observation })),
         adapter: { ...adapterStatus },
-        diagnostics: structuralDiagnostics(replacementTransfers),
       };
     },
-    setAgent(composerId, agent) {
-      const mounted = [...mountedByComposer.values()].find(
-        (candidate) => candidate.composerId === composerId,
-      );
-      if (!mounted) return false;
-      const state = registry.setAgent(mounted.composer, agent);
-      updateButtons(mounted, state, adapterStatus.state);
-      return state.agent === agent;
-    },
     lockedSelection() {
-      const locked = [...mountedByComposer.values()]
-        .map((mounted) => registry.get(mounted.composer))
+      const locked = connectedComposers()
+        .map((mounted) => controller.get(mounted.composer))
         .filter((state) => state.phase === "locked");
       const selection = locked[0];
       if (locked.length !== 1 || !selection) return null;
@@ -445,28 +541,45 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         composerId: selection.composerId,
         agent: selection.agent,
         phase: "locked",
+        ...(selection.piModel ? { model: selection.piModel } : {}),
       };
     },
-    setAdapter(status, dispose) {
+    setAdapter(status, dispose, applyAgent, applyPiModel, nextModelControl) {
       adapterDispose?.();
       adapterDispose = dispose ?? null;
-      adapterStatus = { ...status };
-      for (const mounted of mountedByComposer.values()) {
-        updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
+      applyAdapterAgent = applyAgent ?? null;
+      applyAdapterPiModel = applyPiModel ?? null;
+      modelControl = nextModelControl ?? null;
+      adapterStatus = status;
+      const connected = connectedComposers();
+      if (connected.length === 1) {
+        const mounted = connected[0];
+        if (mounted) {
+          const state = controller.get(mounted.composer);
+          applyAdapterAgent?.(state.agent, state.piModel);
+          if (state.agent === "pi") void loadPiCatalog(mounted);
+        }
       }
+      for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       adapterDispose?.();
       adapterDispose = null;
+      applyAdapterAgent = null;
+      applyAdapterPiModel = null;
+      modelControl = null;
       mutationObserver.disconnect();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
-      for (const mounted of mountedByComposer.values()) mounted.control.remove();
+      window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+      for (const mounted of mountedByComposer.values())
+        disposeComposerAgentControl(mounted.control);
       mountedByComposer.clear();
+      pendingReplacements.clear();
       delete window.__codexhostRendererBindingProbeV1;
     },
   };

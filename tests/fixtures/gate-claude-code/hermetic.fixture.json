@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "fixtureType": "fake-claude-hermetic",
+  "results": [
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "terminal_reason": "completed"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": true,
+      "terminal_reason": "api_error"
+    },
+    {
+      "type": "result",
+      "subtype": "error_during_execution",
+      "is_error": true,
+      "terminal_reason": "aborted_tools"
+    }
+  ],
+  "unknownMessage": {
+    "type": "future_control_event",
+    "subtype": "synthetic"
+  },
+  "structuredPatch": [
+    {
+      "oldStart": 1,
+      "oldLines": 2,
+      "newStart": 1,
+      "newLines": 2,
+      "lines": [" alpha", "-beta", "+gamma"]
+    },
+    {
+      "oldStart": 4,
+      "oldLines": 1,
+      "newStart": 4,
+      "newLines": 2,
+      "lines": [" delta", "+epsilon"]
+    }
+  ]
+}

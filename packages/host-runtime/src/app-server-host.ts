@@ -2,26 +2,50 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
-import { PiRpcSession } from "@codexhost/adapter-pi";
-import { LazyPiSession, type PiTextSession } from "./lazy-pi-session.js";
+import { PiAdapter } from "@codexhost/adapter-pi";
+import type {
+  HarnessAdapter,
+  HarnessOutput,
+  HarnessSession,
+  HostQuestionInteraction,
+} from "@codexhost/harness-adapter";
 import {
+  harnessInspectionSchema,
+  harnessModelSelectionStateSchema,
+  hostItemIdSchema,
+  hostTurnIdSchema,
+  jsonValueSchema,
+  piHarnessInspectParamsSchema,
+  threadModelSelectParamsSchema,
+  type HarnessModelRef,
+  type HostInteractionId,
+  type HostTurnId,
+} from "@codexhost/shared-contracts";
+import { SessionStateObserver } from "./session-state-observer.js";
+import {
+  classifyThreadPurpose,
+  RequestRouteObservationTracker,
+  type CreateRequestRouteObservation,
+  type RequestRouteObservation,
+} from "./route-observation.js";
+import {
+  CodexTurnProjector,
   decodeCreateRoute,
+  decodePiTransportModel,
   parseJsonFrame,
   readLfFrames,
   writeFrame,
   writeJsonFrame,
   jsonRpcRequestSchema,
+  transportModelIdForHarness,
+  type CodexQuestionProjection,
+  type CodexQuestionRequestProjection,
+  type ExternalHarnessId,
   type JsonObject,
   type JsonRpcRequest,
   type JsonValue,
+  type ProjectableHostEvent,
 } from "@codexhost/protocol-core";
-
-export interface CreateRequestRouteObservation {
-  requestMethod: "thread/start";
-  modelCarrier: "official-model" | "pi-transport";
-  selectedHarness: "codex" | "pi";
-  selectionSource: "default-agent" | "official-model" | "transport-model";
-}
 
 export interface AppServerHostOptions {
   stockCodexPath: string;
@@ -32,17 +56,49 @@ export interface AppServerHostOptions {
   desktopOutput?: Writable;
   diagnosticOutput?: Writable;
   piCommand?: string;
+  piAdapter?: HarnessAdapter;
+  externalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
+  onRequestRoute?: (observation: RequestRouteObservation) => void;
 }
 
-interface PiThread {
+interface TurnProjectionGate {
+  promise: Promise<void>;
+  resolve(): void;
+}
+
+interface ProjectedTurn {
+  projector: CodexTurnProjector;
+}
+
+type HostQuestionRequestId = number;
+
+interface PendingDesktopQuestion {
+  thread: ExternalThread;
+  interaction: HostQuestionInteraction;
+  projection: CodexQuestionRequestProjection;
+  timeout: NodeJS.Timeout | null;
+}
+
+type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
+
+interface ExternalThread {
   id: string;
   cwd: string;
-  session: LazyPiSession;
+  harnessId: ExternalHarnessId;
+  session: HarnessSession;
+  outputTask: Promise<void>;
+  requestedModel?: HarnessModelRef;
+  stateObserver: SessionStateObserver;
   thread: JsonObject;
+  transportModelId: string;
   turns: JsonObject[];
   running: boolean;
+  activeTurnId: HostTurnId | null;
+  projectedTurns: Map<HostTurnId, ProjectedTurn>;
+  responseGates: Map<HostTurnId, TurnProjectionGate>;
+  ignoredInteractionIds: Set<HostInteractionId>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,6 +116,8 @@ function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     "CODEXHOST_DEFAULT_AGENT",
     "CODEXHOST_HOST_RUNTIME_PATH",
     "CODEXHOST_PI_COMMAND",
+    "CODEXHOST_ENABLE_CLAUDE_CODE",
+    "CODEXHOST_CLAUDE_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
   ]);
   return Object.fromEntries(Object.entries(source).filter(([key]) => !internal.has(key)));
@@ -81,17 +139,29 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
+const HOST_QUESTION_REQUEST_ID_MAX = -1;
+
+function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= HOST_QUESTION_REQUEST_ID_MIN &&
+    value <= HOST_QUESTION_REQUEST_ID_MAX
+  );
+}
+
 export function classifyCreateRequestRoute(
   request: JsonRpcRequest,
   defaultAgent: "codex" | "pi",
 ): CreateRequestRouteObservation | null {
   const route = decodeCreateRoute(request);
   if (!route) return null;
-  if (route.harnessId === "pi") {
+  if (route.harnessId !== "codex") {
     return {
       requestMethod: "thread/start",
-      modelCarrier: "pi-transport",
-      selectedHarness: "pi",
+      modelCarrier: `${route.harnessId}-transport`,
+      selectedHarness: route.harnessId,
       selectionSource: "transport-model",
     };
   }
@@ -132,53 +202,12 @@ function sandboxResult(params: JsonObject): JsonObject {
   };
 }
 
-function pendingTurn(id: string, startedAt: number | null): JsonObject {
-  return {
-    id,
-    status: "inProgress",
-    items: [],
-    error: null,
-    startedAt,
-    completedAt: null,
-    durationMs: null,
-    itemsView: "full",
-  };
-}
-
-function completedTurn(
-  id: string,
-  startedAt: number,
-  completedAt: number,
-  item: JsonObject,
-): JsonObject {
-  return {
-    id,
-    status: "completed",
-    items: [item],
-    error: null,
-    startedAt,
-    completedAt,
-    durationMs: Math.max(0, completedAt - startedAt) * 1000,
-    itemsView: "full",
-  };
-}
-
-function failedTurn(
-  id: string,
-  startedAt: number,
-  completedAt: number,
-  message: string,
-): JsonObject {
-  return {
-    id,
-    status: "failed",
-    items: [],
-    error: { message },
-    startedAt,
-    completedAt,
-    durationMs: Math.max(0, completedAt - startedAt) * 1000,
-    itemsView: "full",
-  };
+function turnProjectionGate(): TurnProjectionGate {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }
 
 class OrderedWriter {
@@ -207,7 +236,11 @@ export class AppServerHost {
   > &
     AppServerHostOptions;
   #official: ChildProcessWithoutNullStreams | null = null;
-  #piThreads = new Map<string, PiThread>();
+  #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
+  #externalThreads = new Map<string, ExternalThread>();
+  #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
+  #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
+  #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
 
   constructor(options: AppServerHostOptions) {
@@ -218,6 +251,23 @@ export class AppServerHost {
       ...options,
     };
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
+    this.#externalAdapters = options.externalAdapters
+      ? new Map(options.externalAdapters)
+      : new Map([
+          [
+            "pi",
+            options.piAdapter ??
+              new PiAdapter({
+                ...(options.piCommand ? { command: options.piCommand } : {}),
+                environment: options.environment ?? process.env,
+              }),
+          ],
+        ]);
+    for (const [harnessId, adapter] of this.#externalAdapters) {
+      if (adapter.harnessId !== harnessId) {
+        throw new Error(`External Adapter '${harnessId}' has mismatched Harness ID`);
+      }
+    }
   }
 
   async run(): Promise<number> {
@@ -247,8 +297,19 @@ export class AppServerHost {
       await exited.catch(() => undefined);
       return 1;
     } finally {
-      await Promise.allSettled([...this.#piThreads.values()].map(({ session }) => session.close()));
-      this.#piThreads.clear();
+      const threads = [...this.#externalThreads.values()];
+      await Promise.allSettled(threads.map(({ session }) => session.close()));
+      await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
+      await Promise.allSettled(
+        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+      );
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId).catch(
+          () => undefined,
+        );
+      }
+      this.#externalThreads.clear();
+      this.#routeObservationTracker.clear();
     }
   }
 
@@ -257,33 +318,94 @@ export class AppServerHost {
     if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
+      if (await this.#handleDesktopQuestionResponse(parsed)) continue;
       const requestResult = jsonRpcRequestSchema.safeParse(parsed);
       if (!requestResult.success) {
         await writeFrame(official.stdin, frame);
         continue;
       }
       const request = requestResult.data;
-      const createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
-      if (createRoute) this.#options.onCreateRequestRoute?.(createRoute);
-      if (createRoute?.selectedHarness === "pi") {
-        await this.#startPiThread(request);
+      if (request.method === "codexhost/harness/inspect") {
+        await this.#inspectHarness(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/model/select") {
+        await this.#selectPiThreadModel(request);
+        continue;
+      }
+      let createRoute: CreateRequestRouteObservation | null;
+      try {
+        createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        continue;
+      }
+      if (createRoute) {
+        this.#options.onCreateRequestRoute?.(createRoute);
+        this.#options.onRequestRoute?.(
+          this.#routeObservationTracker.registerCreate(
+            request.id,
+            createRoute,
+            classifyThreadPurpose(request),
+          ),
+        );
+      }
+      if (createRoute && createRoute.selectedHarness !== "codex") {
+        await this.#startExternalThread(request, createRoute.selectedHarness);
         continue;
       }
       if (request.method === "turn/start") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#startPiTurn(request, piThread);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (typeof threadId === "string") {
+          this.#options.onRequestRoute?.(
+            this.#routeObservationTracker.observeTurn(threadId, thread?.harnessId ?? "codex"),
+          );
+        }
+        if (thread) {
+          await this.#startExternalTurn(request, thread);
+          continue;
+        }
+      }
+      if (request.method === "turn/interrupt") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#interruptExternalTurn(request, thread, params.turnId);
           continue;
         }
       }
       if (request.method === "thread/read") {
         const params = requestObject(request);
         const threadId = params.threadId;
-        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
-        if (piThread) {
-          await this.#readPiThread(request, piThread, params.includeTurns === true);
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#readExternalThread(request, thread, params.includeTurns === true);
+          continue;
+        }
+      }
+      if (request.method === "thread/name/set") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#setExternalThreadName(request, thread, params.name);
+          continue;
+        }
+      }
+      if (request.method === "thread/delete") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const thread =
+          typeof threadId === "string" ? this.#externalThreads.get(threadId) : undefined;
+        if (thread) {
+          await this.#deleteExternalThread(request, thread);
           continue;
         }
       }
@@ -296,27 +418,122 @@ export class AppServerHost {
     const official = this.#official;
     if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(official.stdout)) {
-      parseJsonFrame(frame);
+      const parsed = parseJsonFrame(frame);
+      this.#routeObservationTracker.bindOfficialResponse(parsed);
       await this.#writer.frame(frame);
     }
   }
 
-  async #startPiThread(request: JsonRpcRequest): Promise<void> {
-    const params = requestObject(request);
-    const cwd = params.cwd;
-    if (typeof cwd !== "string" || cwd.length === 0) {
-      await this.#writer.json(rpcError(request, -32602, "Pi thread/start requires cwd"));
+  async #inspectHarness(request: JsonRpcRequest): Promise<void> {
+    const params = piHarnessInspectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Pi Harness inspection params"));
       return;
     }
-    const threadId = randomUUID();
-    const session = new LazyPiSession(
-      (): PiTextSession =>
-        new PiRpcSession({
-          cwd,
-          ...(this.#options.piCommand ? { command: this.#options.piCommand } : {}),
-          environment: this.#options.environment ?? process.env,
-        }),
+    const adapter = this.#externalAdapters.get("pi");
+    if (!adapter) {
+      await this.#writer.json(rpcError(request, -32077, "Pi Harness is unavailable"));
+      return;
+    }
+    let inspection: unknown;
+    try {
+      inspection = await adapter.inspect({
+        ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
+        ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
+      });
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32077, `Pi Harness inspection failed: ${errorMessage(error)}`),
+      );
+      return;
+    }
+    const validated = harnessInspectionSchema.safeParse(inspection);
+    if (!validated.success) {
+      await this.#writer.json(
+        rpcError(request, -32077, "Pi Harness inspection returned an invalid result"),
+      );
+      return;
+    }
+    await this.#writer.json(
+      rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
     );
+  }
+
+  async #selectPiThreadModel(request: JsonRpcRequest): Promise<void> {
+    const params = threadModelSelectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Pi Model selection params"));
+      return;
+    }
+    const thread = this.#externalThreads.get(params.data.threadId);
+    if (!thread || thread.harnessId !== "pi") {
+      await this.#writer.json(
+        rpcError(request, -32078, "Model selection requires a current-process Pi Thread"),
+      );
+      return;
+    }
+    const beforeRevision = thread.stateObserver.revision;
+    const result = await thread.session.execute({
+      type: "model.select",
+      model: params.data.model,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32078, result.error.message));
+      return;
+    }
+    try {
+      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const projected = harnessModelSelectionStateSchema.parse({
+        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+      });
+      if (!projected.effectiveModel) {
+        throw new Error("Pi Session did not report an effective Model");
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32078, `Pi Model state was not confirmed: ${errorMessage(error)}`),
+      );
+    }
+  }
+
+  async #startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void> {
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(request, -32070, `External Harness '${harnessId}' is unavailable`),
+      );
+      return;
+    }
+    const params = requestObject(request);
+    const route = decodeCreateRoute(request);
+    const requestedModel = route?.harnessId === "pi" ? route.model : undefined;
+    const transportModelId =
+      route && route.harnessId === harnessId
+        ? route.transportModelId
+        : transportModelIdForHarness(harnessId);
+    const cwd = params.cwd;
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(request, -32602, `External Harness '${harnessId}' thread/start requires cwd`),
+      );
+      return;
+    }
+    const sessionResult = await adapter.open({
+      kind: "create",
+      cwd,
+      ...(requestedModel ? { model: requestedModel } : {}),
+    });
+    if (!sessionResult.ok) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(rpcError(request, -32071, sessionResult.error.message));
+      return;
+    }
+    const session = sessionResult.value;
+    const threadId = randomUUID();
+    this.#routeObservationTracker.bindCreatedThread(request.id, threadId);
     try {
       const now = unixSeconds();
       const thread: JsonObject = {
@@ -324,7 +541,8 @@ export class AppServerHost {
         sessionId: threadId,
         path: null,
         cwd,
-        source: "appServer",
+        // Codex Desktop keys its live timeline by the same client and persistence metadata.
+        source: "vscode",
         threadSource: null,
         modelProvider: "codexhost",
         cliVersion: "codexhost",
@@ -338,26 +556,37 @@ export class AppServerHost {
         gitInfo: null,
         forkedFromId: null,
         parentThreadId: null,
-        ephemeral: true,
+        ephemeral: params.ephemeral === true,
         canAcceptDirectInput: true,
-        historyMode: "paginated",
+        historyMode: params.historyMode === "paginated" ? "paginated" : "legacy",
         agentNickname: null,
         agentRole: null,
         extra: null,
       };
-      this.#piThreads.set(threadId, {
+      const externalThread: ExternalThread = {
         id: threadId,
         cwd,
+        harnessId,
         session,
+        outputTask: Promise.resolve(),
+        ...(requestedModel ? { requestedModel } : {}),
+        stateObserver: new SessionStateObserver(session.initialState),
         thread,
+        transportModelId,
         turns: [],
         running: false,
-      });
+        activeTurnId: null,
+        projectedTurns: new Map(),
+        responseGates: new Map(),
+        ignoredInteractionIds: new Set(),
+      };
+      externalThread.outputTask = this.#consumeHarnessOutputs(externalThread);
+      this.#externalThreads.set(threadId, externalThread);
       await this.#writer.json(
         rpcEnvelope(request, {
           result: {
             thread,
-            model: "codexhost/pi-native",
+            model: transportModelId,
             modelProvider: "codexhost",
             cwd,
             approvalPolicy:
@@ -381,109 +610,394 @@ export class AppServerHost {
         params: { thread },
       });
     } catch (error) {
+      this.#externalThreads.delete(threadId);
+      this.#routeObservationTracker.forgetThread(threadId);
       await session.close().catch(() => undefined);
       await this.#writer.json(
-        rpcError(request, -32071, `Pi Session could not start: ${errorMessage(error)}`),
+        rpcError(
+          request,
+          -32071,
+          `External Harness '${harnessId}' Session could not open: ${errorMessage(error)}`,
+        ),
       );
     }
   }
 
-  async #readPiThread(
+  async #setExternalThreadName(
     request: JsonRpcRequest,
-    piThread: PiThread,
+    thread: ExternalThread,
+    name: JsonValue | undefined,
+  ): Promise<void> {
+    if (typeof name !== "string" || name.length === 0) {
+      await this.#writer.json(
+        rpcError(request, -32602, "External Thread name must be a non-empty string"),
+      );
+      return;
+    }
+    thread.thread.name = name;
+    thread.thread.updatedAt = unixSeconds();
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    await this.#writer.json({
+      method: "thread/name/updated",
+      params: { threadId: thread.id, threadName: name },
+    });
+  }
+
+  async #deleteExternalThread(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    this.#externalThreads.delete(thread.id);
+    this.#routeObservationTracker.forgetThread(thread.id);
+    thread.stateObserver.fault(new Error("External Thread was deleted"));
+    try {
+      await thread.session.close();
+      await thread.outputTask;
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32075, `External Thread could not close: ${errorMessage(error)}`),
+      );
+    }
+  }
+
+  async #readExternalThread(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
     includeTurns: boolean,
   ): Promise<void> {
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
           thread: {
-            ...piThread.thread,
-            turns: includeTurns ? piThread.turns : [],
+            ...thread.thread,
+            turns: includeTurns ? thread.turns : [],
           },
         },
       }),
     );
   }
 
-  async #startPiTurn(request: JsonRpcRequest, thread: PiThread): Promise<void> {
+  async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     if (thread.running) {
-      await this.#writer.json(rpcError(request, -32072, "Pi Thread already has an active Turn"));
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread already has an active Turn"),
+      );
       return;
     }
-    let text: string;
+    const params = requestObject(request);
+    let requestedModel: HarnessModelRef | null | undefined;
     try {
-      text = requestText(requestObject(request));
+      requestedModel = thread.harnessId === "pi" ? decodePiTransportModel(params.model) : null;
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const turnId = randomUUID();
-    const itemId = randomUUID();
+    if (requestedModel) {
+      const current = thread.stateObserver.state.effectiveModel;
+      const pendingCreateSelection =
+        current === undefined && thread.requestedModel?.id === requestedModel.id;
+      if (current?.id !== requestedModel.id && !pendingCreateSelection) {
+        const beforeRevision = thread.stateObserver.revision;
+        const selection = await thread.session.execute({
+          type: "model.select",
+          model: requestedModel,
+        });
+        if (!selection.ok) {
+          await this.#writer.json(rpcError(request, -32078, selection.error.message));
+          return;
+        }
+        try {
+          const state = await thread.stateObserver.waitForChange(beforeRevision);
+          if (state.effectiveModel?.id !== requestedModel.id) {
+            throw new Error("Pi Session activated a different Model");
+          }
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
+          return;
+        }
+      }
+      thread.transportModelId = params.model as string;
+      thread.requestedModel = requestedModel;
+    }
+    let text: string;
+    try {
+      text = requestText(params);
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
-    const startedAt = Math.floor(startedAtMs / 1000);
-    const item: JsonObject = {
-      id: itemId,
-      type: "agentMessage",
-      text: "",
-      phase: null,
-      memoryCitation: null,
+    const projection: ProjectedTurn = {
+      projector: new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs,
+      }),
     };
+    const gate = turnProjectionGate();
     thread.running = true;
-    await this.#writer.json(rpcEnvelope(request, { result: { turn: pendingTurn(turnId, null) } }));
-    await this.#writer.json({
-      method: "turn/started",
-      emittedAtMs: startedAtMs,
-      params: { threadId: thread.id, turn: pendingTurn(turnId, startedAt) },
-    });
-    await this.#writer.json({
-      method: "item/started",
-      emittedAtMs: startedAtMs,
-      params: { threadId: thread.id, turnId, startedAtMs, item },
-    });
+    thread.activeTurnId = turnId;
+    thread.projectedTurns.set(turnId, projection);
+    thread.responseGates.set(turnId, gate);
 
-    void thread.session
-      .runTextTurn(text, (delta) => {
-        void this.#writer.json({
-          method: "item/agentMessage/delta",
-          emittedAtMs: Date.now(),
-          params: { threadId: thread.id, turnId, itemId, delta },
-        });
-      })
-      .then(async ({ text: output }) => {
-        const completedAtMs = Date.now();
-        const completedAt = Math.floor(completedAtMs / 1000);
-        const completedItem: JsonObject = { ...item, text: output };
-        const completed = completedTurn(turnId, startedAt, completedAt, completedItem);
-        thread.turns.push(completed);
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
-        await this.#writer.json({
-          method: "item/completed",
-          emittedAtMs: completedAtMs,
-          params: { threadId: thread.id, turnId, completedAtMs, item: completedItem },
-        });
-        await this.#writer.json({
-          method: "turn/completed",
-          emittedAtMs: completedAtMs,
-          params: { threadId: thread.id, turn: completed },
-        });
-      })
-      .catch(async (error) => {
-        const completedAtMs = Date.now();
-        const completedAt = Math.floor(completedAtMs / 1000);
-        const failed = failedTurn(turnId, startedAt, completedAt, errorMessage(error));
-        thread.turns.push(failed);
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
-        await this.#writer.json({
-          method: "turn/completed",
-          emittedAtMs: completedAtMs,
-          params: { threadId: thread.id, turn: failed },
-        });
-      })
-      .finally(() => {
-        thread.running = false;
+    const result = await thread.session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text }],
+    });
+    if (!result.ok) {
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.projectedTurns.delete(turnId);
+      thread.responseGates.delete(turnId);
+      gate.resolve();
+      await this.#writer.json(rpcError(request, -32073, result.error.message));
+      return;
+    }
+    try {
+      await this.#writer.json(
+        rpcEnvelope(request, { result: { turn: projection.projector.pendingTurn() } }),
+      );
+    } finally {
+      gate.resolve();
+    }
+  }
+
+  async #interruptExternalTurn(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    requestedTurnId: JsonValue | undefined,
+  ): Promise<void> {
+    if (
+      typeof requestedTurnId !== "string" ||
+      !thread.running ||
+      thread.activeTurnId !== requestedTurnId
+    ) {
+      await this.#writer.json(
+        rpcError(request, -32074, "External turn/interrupt must reference the active Turn"),
+      );
+      return;
+    }
+    const turnId = thread.activeTurnId;
+    const gate = turnProjectionGate();
+    thread.responseGates.set(turnId, gate);
+    const result = await thread.session.execute({ type: "turn.cancel", turnId });
+    if (!result.ok) {
+      gate.resolve();
+      await this.#writer.json(rpcError(request, -32074, result.error.message));
+      return;
+    }
+    try {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } finally {
+      gate.resolve();
+    }
+  }
+
+  async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
+    try {
+      for await (const output of thread.session.outputs) {
+        await this.#projectHarnessOutput(thread, output);
+      }
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
+  async #projectHarnessOutput(thread: ExternalThread, output: HarnessOutput): Promise<void> {
+    if (output.kind === "interaction") {
+      await this.#projectQuestion(thread, output.interaction);
+      return;
+    }
+    const event = output.event;
+    if (event.type === "session.state.changed") {
+      thread.stateObserver.update(event.state);
+      return;
+    }
+    if (event.type === "session.faulted") {
+      thread.stateObserver.fault(new Error(event.error.message));
+      this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      return;
+    }
+
+    const projection = this.#projectedTurn(thread, event.turnId);
+    await this.#waitForTurnResponse(thread, event.turnId);
+    if (
+      event.type === "interaction.closed" &&
+      thread.ignoredInteractionIds.delete(event.interactionId)
+    ) {
+      return;
+    }
+    if (event.type === "interaction.closed") {
+      await this.#resolveDesktopQuestion(event.interactionId);
+    }
+    const result = projection.projector.project(event as ProjectableHostEvent);
+    if (event.type === "turn.started") {
+      await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
+    }
+    if (event.type === "turn.completed") {
+      if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
+      const completedAt = Math.floor(Date.now() / 1000);
+      thread.turns.push(result.completedTurn);
+      thread.thread.updatedAt = completedAt;
+      thread.thread.recencyAt = completedAt;
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.projectedTurns.delete(event.turnId);
+      thread.responseGates.delete(event.turnId);
+    }
+    for (const message of result.messages) await this.#writer.json(message);
+    if (event.type === "turn.completed") {
+      await this.#setThreadStatus(thread, { type: "idle" });
+    }
+  }
+
+  async #projectQuestion(
+    thread: ExternalThread,
+    interaction: HostQuestionInteraction,
+  ): Promise<void> {
+    const projection = this.#projectedTurn(thread, interaction.turnId);
+    await this.#waitForTurnResponse(thread, interaction.turnId);
+    let result: CodexQuestionProjection;
+    try {
+      result = projection.projector.projectQuestion(
+        interaction,
+        hostItemIdSchema.parse(randomUUID()),
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      thread.ignoredInteractionIds.add(interaction.interactionId);
+      const cancelled = await thread.session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
       });
+      if (!cancelled.ok) {
+        thread.ignoredInteractionIds.delete(interaction.interactionId);
+        this.#diagnose(`Unsupported Question cancellation failed: ${cancelled.error.message}`);
+      }
+      return;
+    }
+    for (const message of result.messages) await this.#writer.json(message);
+
+    const requestId = this.#allocateQuestionRequestId();
+    const expiresAtMs = interaction.expiresAt ? Date.parse(interaction.expiresAt) : Number.NaN;
+    const timeoutMs = Number.isFinite(expiresAtMs) ? Math.max(0, expiresAtMs - Date.now()) : null;
+    const pending: PendingDesktopQuestion = {
+      thread,
+      interaction,
+      projection: result.questionRequest,
+      timeout: null,
+    };
+    if (timeoutMs !== null) {
+      pending.timeout = setTimeout(() => {
+        void this.#cancelExpiredQuestion(requestId);
+      }, timeoutMs);
+    }
+    this.#pendingDesktopQuestions.set(requestId, pending);
+    try {
+      await this.#writer.json({ id: requestId, ...result.questionRequest.request });
+    } catch (error) {
+      this.#retireDesktopQuestion(interaction.interactionId);
+      await thread.session
+        .execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "question", answers: {}, cancelled: true },
+        })
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async #handleDesktopQuestionResponse(value: JsonValue): Promise<boolean> {
+    if (!isRecord(value) || !isHostQuestionRequestId(value.id)) return false;
+    const pending = this.#pendingDesktopQuestions.get(value.id);
+    if (!pending) return true;
+    this.#pendingDesktopQuestions.delete(value.id);
+    if (pending.timeout) clearTimeout(pending.timeout);
+
+    let response;
+    try {
+      response =
+        "error" in value
+          ? { type: "question" as const, answers: {}, cancelled: true as const }
+          : pending.projection.parseResponse(value.result);
+    } catch (error) {
+      this.#diagnose(error);
+      response = { type: "question" as const, answers: {}, cancelled: true as const };
+    }
+    const result = await pending.thread.session.execute({
+      type: "interaction.respond",
+      interactionId: pending.interaction.interactionId,
+      response,
+    });
+    if (!result.ok && result.error.code !== "invalidState") {
+      this.#diagnose(`Question response failed: ${result.error.message}`);
+    }
+    return true;
+  }
+
+  async #cancelExpiredQuestion(requestId: HostQuestionRequestId): Promise<void> {
+    const pending = this.#pendingDesktopQuestions.get(requestId);
+    if (!pending) return;
+    await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+    const result = await pending.thread.session.execute({
+      type: "interaction.respond",
+      interactionId: pending.interaction.interactionId,
+      response: { type: "question", answers: {}, cancelled: true },
+    });
+    if (!result.ok && result.error.code !== "invalidState") {
+      this.#diagnose(`Question expiry failed: ${result.error.message}`);
+    }
+  }
+
+  #retireDesktopQuestion(interactionId: HostInteractionId): void {
+    for (const [requestId, pending] of this.#pendingDesktopQuestions) {
+      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pendingDesktopQuestions.delete(requestId);
+    }
+  }
+
+  async #resolveDesktopQuestion(interactionId: HostInteractionId): Promise<void> {
+    for (const [requestId, pending] of this.#pendingDesktopQuestions) {
+      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pendingDesktopQuestions.delete(requestId);
+      await this.#writer.json({
+        method: "serverRequest/resolved",
+        params: { threadId: pending.thread.id, requestId },
+      });
+    }
+  }
+
+  #allocateQuestionRequestId(): HostQuestionRequestId {
+    if (this.#nextQuestionRequestId < HOST_QUESTION_REQUEST_ID_MIN) {
+      throw new Error("Host Question Request ID namespace is exhausted");
+    }
+    const requestId = this.#nextQuestionRequestId;
+    this.#nextQuestionRequestId -= 1;
+    return requestId;
+  }
+
+  async #setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void> {
+    thread.thread.status = status;
+    await this.#writer.json({
+      method: "thread/status/changed",
+      emittedAtMs: Date.now(),
+      params: { threadId: thread.id, status },
+    });
+  }
+
+  #projectedTurn(thread: ExternalThread, turnId: HostTurnId): ProjectedTurn {
+    const projection = thread.projectedTurns.get(turnId);
+    if (!projection) throw new Error("Harness output references an unknown Host Turn");
+    return projection;
+  }
+
+  async #waitForTurnResponse(thread: ExternalThread, turnId: HostTurnId): Promise<void> {
+    await thread.responseGates.get(turnId)?.promise;
   }
 
   #diagnose(error: unknown): void {

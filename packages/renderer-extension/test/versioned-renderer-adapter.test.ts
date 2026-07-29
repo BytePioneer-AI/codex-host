@@ -1,9 +1,18 @@
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CLAUDE_CODE_TRANSPORT_MODEL_ID,
   decorateThreadStartParams,
   findPrewarmTargets,
+  isDraftPrewarmPolicyReady,
+  isMainProcessTitlePolicyReady,
+  isPiTransportModelId,
+  modelSelectionForAgent,
+  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
+  threadIdFromComposerModelTarget,
+  selectOptimisticModelAtom,
   wrapElectronRendererBridge,
   wrapPrewarmDispatcher,
   wrapPrewarmTarget,
@@ -15,12 +24,93 @@ const lockedPi = {
   phase: "locked",
 } as const;
 
+const lockedClaudeCode = {
+  agent: "claude-code",
+  composerId: "composer-1",
+  phase: "locked",
+} as const;
+
 describe("versioned Renderer Agent adapter", () => {
-  it("clones Pi create params and leaves Codex params unchanged", () => {
+  it("selects one optimistic Model atom from equivalent Fiber cache copies", () => {
+    const optimistic = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
+    const committed = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
+    const firstTarget = ["conversation", "opaque-id"];
+    const secondTarget = [...firstTarget];
+
+    expect(
+      selectOptimisticModelAtom([
+        { optimistic, committed, target: firstTarget },
+        { optimistic, committed, target: secondTarget },
+      ]),
+    ).toBe(optimistic);
+    expect(
+      selectOptimisticModelAtom([
+        { optimistic, committed, target: firstTarget },
+        {
+          optimistic: { atom: {}, get: vi.fn(() => null), set: vi.fn() },
+          committed,
+          target: secondTarget,
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("requires both version policy readiness markers", () => {
+    expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
+    expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);
+    expect(isMainProcessTitlePolicyReady(null)).toBe(false);
+    expect(isDraftPrewarmPolicyReady({ state: "ready", clear: vi.fn() })).toBe(true);
+    expect(isDraftPrewarmPolicyReady({ state: "ready" })).toBe(false);
+    expect(isDraftPrewarmPolicyReady(null)).toBe(false);
+  });
+
+  it("creates external optimistic selections and restores the original Codex snapshot", () => {
+    const official = { model: "official/model", reasoningEffort: "medium" };
+
+    expect(modelSelectionForAgent(null, "high", "pi")).toEqual({
+      model: PI_TRANSPORT_MODEL_ID,
+      reasoningEffort: "high",
+    });
+    expect(modelSelectionForAgent(null, "high", "claude-code")).toEqual({
+      model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
+      reasoningEffort: "high",
+    });
+    expect(modelSelectionForAgent(null, "high", "codex")).toBeNull();
+    expect(modelSelectionForAgent(official, "high", "codex")).toBe(official);
+  });
+
+  it("encodes a selected Pi Model in the internal carrier without displaying semantics", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
+    const selected = piTransportModelId(model);
+
+    expect(selected).toBe(`${PI_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(isPiTransportModelId(selected)).toBe(true);
+    expect(isPiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@provider/model`)).toBe(false);
+    expect(modelSelectionForAgent(null, "high", "pi", model)).toEqual({
+      model: selected,
+      reasoningEffort: "high",
+    });
+    expect(decorateThreadStartParams({ model: "official/model" }, { ...lockedPi, model })).toEqual({
+      model: selected,
+    });
+  });
+
+  it("extracts only a validated conversation Thread identity", () => {
+    expect(threadIdFromComposerModelTarget(["conversation", "thread-1"])).toBe("thread-1");
+    expect(threadIdFromComposerModelTarget(["default", "thread-1"])).toBeNull();
+    expect(threadIdFromComposerModelTarget(["conversation", ""])).toBeNull();
+    expect(threadIdFromComposerModelTarget(["conversation", {}])).toBeNull();
+  });
+
+  it("clones external create params and leaves Codex params unchanged", () => {
     const original = { model: "official/model", cwd: "<workspace>" };
 
     expect(decorateThreadStartParams(original, lockedPi)).toEqual({
       model: PI_TRANSPORT_MODEL_ID,
+      cwd: "<workspace>",
+    });
+    expect(decorateThreadStartParams(original, lockedClaudeCode)).toEqual({
+      model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
       cwd: "<workspace>",
     });
     expect(decorateThreadStartParams(original, lockedPi)).not.toBe(original);
@@ -147,6 +237,65 @@ describe("versioned Renderer Agent adapter", () => {
 
     dispose();
     expect(target.prewarmThreadStart).toBe(original);
+  });
+
+  it("decorates thread/start sent through the active request client", () => {
+    const sendRequest = vi.fn();
+    const target = { prewarmThreadStart: vi.fn(), sendRequest };
+    const params = { model: "official/model", cwd: "<workspace>" };
+    const decorated = vi.fn();
+    const dispose = wrapPrewarmTarget(target, () => lockedPi, decorated);
+
+    target.sendRequest("thread/start", params, { priority: "critical" });
+    target.sendRequest("thread/read", { threadId: "thread-1" });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(
+      1,
+      "thread/start",
+      { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
+      { priority: "critical" },
+    );
+    expect(sendRequest).toHaveBeenNthCalledWith(
+      2,
+      "thread/read",
+      { threadId: "thread-1" },
+      undefined,
+    );
+    expect(params.model).toBe("official/model");
+    expect(decorated).toHaveBeenCalledOnce();
+
+    dispose();
+    expect(target.sendRequest).toBe(sendRequest);
+  });
+
+  it("passes Codex calls through with the original params object", () => {
+    const original = vi.fn();
+    const target = { prewarmThreadStart: original };
+    const params = { model: "official/model", cwd: "<workspace>" };
+    const decorated = vi.fn();
+    const dispose = wrapPrewarmTarget(
+      target,
+      () => ({ agent: "codex", composerId: "composer-1", phase: "locked" }),
+      decorated,
+    );
+
+    target.prewarmThreadStart(params);
+
+    expect(original).toHaveBeenCalledWith(params, undefined);
+    expect(decorated).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it("does not decorate when the Composer association is ambiguous", () => {
+    const original = vi.fn();
+    const target = { prewarmThreadStart: original };
+    const params = { model: "official/model" };
+    const dispose = wrapPrewarmTarget(target, () => null, vi.fn());
+
+    target.prewarmThreadStart(params);
+
+    expect(original).toHaveBeenCalledWith(params, undefined);
+    dispose();
   });
 
   it("fails closed on an invalid create shape", () => {

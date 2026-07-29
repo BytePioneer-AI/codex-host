@@ -16,7 +16,10 @@ export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   EXTERNAL_HARNESS_IDS,
   PI_NATIVE_TRANSPORT_MODEL_ID,
+  PI_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeCreateRoute,
+  decodePiTransportModel,
+  encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
 export type { CreateRoute, ExternalHarnessId, RoutedHarnessId } from "./model-routing.js";

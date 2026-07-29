@@ -1,10 +1,14 @@
 import {
   harnessIdSchema,
+  harnessModelCatalogSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
 } from "@codexhost/shared-contracts";
 import type {
   HarnessId,
+  HarnessInspection,
+  HarnessModelCatalog,
+  HarnessModelRef,
   HostInteractionId,
   HostItemId,
   JsonValue,
@@ -19,7 +23,9 @@ import type {
   HarnessOutput,
   HarnessResult,
   HarnessSession,
+  HarnessSessionCapabilities,
   HarnessSessionState,
+  InspectHarnessInput,
   HostAgentMessageItem,
   HostCommand,
   HostCommandExecutionItem,
@@ -34,6 +40,8 @@ import type {
   HostToolOutput,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ModelSelectCommand,
+  ModelSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnStartAccepted,
@@ -53,34 +61,67 @@ const invalidStateError: HarnessError = {
   retryable: false,
 };
 
+const defaultFakeCatalog = harnessModelCatalogSchema.parse({
+  models: [
+    { ref: { id: "fake-model-v1.primary" }, label: "Fake Primary" },
+    { ref: { id: "fake-model-v1.secondary" }, label: "Fake Secondary" },
+  ],
+  defaultModel: { id: "fake-model-v1.primary" },
+});
+
+function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
+  return catalog.models.some((candidate) => candidate.ref.id === model.id);
+}
+
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
 export class FakeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId;
-  readonly initialState: HarnessSessionState = {};
+  readonly capabilities: HarnessSessionCapabilities = {
+    configuration: { selectModel: true },
+  };
+  readonly initialState: HarnessSessionState;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
+  readonly #catalog: HarnessModelCatalog;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #active: ActiveFakeTurn | null = null;
   #closed = false;
   #completeCancellationDuringRequest = false;
   #interactionOrdinal = 0;
   #itemOrdinal = 0;
+  #nextModelRejection: HarnessError | null = null;
   #nextQuestion: {
     question: HostQuestion;
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
   } | null = null;
   #nextRejection: HarnessError | null = null;
+  #state: HarnessSessionState;
 
-  constructor(harnessId: HarnessId) {
+  constructor(
+    harnessId: HarnessId,
+    catalog: HarnessModelCatalog = defaultFakeCatalog,
+    initialModel: HarnessModelRef | undefined = catalog.defaultModel,
+  ) {
     this.harnessId = harnessId;
+    this.#catalog = catalog;
+    this.initialState = initialModel ? { effectiveModel: initialModel } : {};
+    this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+  }
+
+  get state(): HarnessSessionState {
+    return this.#state;
   }
 
   rejectNextTurn(error: HarnessError): void {
     this.#nextRejection = error;
+  }
+
+  rejectNextModelSelection(error: HarnessError): void {
+    this.#nextModelRejection = error;
   }
 
   completeCancellationOnRequest(): void {
@@ -97,12 +138,18 @@ export class FakeHarnessSession implements HarnessSession {
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted>> {
+  ): Promise<
+    HarnessResult<
+      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+    >
+  > {
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
+    if (command.type === "model.select") return this.#selectModel(command);
     if (this.#nextRejection) {
       const error = this.#nextRejection;
       this.#nextRejection = null;
@@ -326,6 +373,37 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: { accepted: true } };
   }
 
+  #selectModel(command: ModelSelectCommand): HarnessResult<ModelSelectCompleted> {
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Fake Harness Session cannot select a Model during an active Turn",
+          retryable: true,
+        },
+      };
+    }
+    if (this.#nextModelRejection) {
+      const error = this.#nextModelRejection;
+      this.#nextModelRejection = null;
+      return { ok: false, error };
+    }
+    if (!catalogHasModel(this.#catalog, command.model)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Harness Model Ref is not in the current catalog",
+          retryable: false,
+        },
+      };
+    }
+    this.#state = { ...this.#state, effectiveModel: command.model };
+    this.#event({ type: "session.state.changed", state: this.#state });
+    return { ok: true, value: { completed: true } };
+  }
+
   #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -401,11 +479,37 @@ export class FakeHarnessSession implements HarnessSession {
 
 export class FakeHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
+  readonly catalog: HarnessModelCatalog;
   readonly sessions: FakeHarnessSession[] = [];
+  inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
 
-  constructor(harnessId: HarnessId = harnessIdSchema.parse("fake")) {
+  constructor(
+    harnessId: HarnessId = harnessIdSchema.parse("fake"),
+    catalog: HarnessModelCatalog = defaultFakeCatalog,
+  ) {
     this.harnessId = harnessId;
+    this.catalog = catalog;
+  }
+
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    void input;
+    this.inspectionCalls += 1;
+    if (this.#closePromise) {
+      return {
+        status: "unavailable",
+        error: {
+          code: "invalidState",
+          message: "Fake Harness Adapter is closed",
+          retryable: false,
+        },
+      };
+    }
+    return {
+      status: "ready",
+      catalog: this.catalog,
+      capabilities: { configuration: { selectModel: true } },
+    };
   }
 
   async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -420,7 +524,17 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    const session = new FakeHarnessSession(this.harnessId);
+    if (input.model && !catalogHasModel(this.catalog, input.model)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Adapter create Model is not in the current catalog",
+          retryable: false,
+        },
+      };
+    }
+    const session = new FakeHarnessSession(this.harnessId, this.catalog, input.model);
     this.sessions.push(session);
     return { ok: true, value: session };
   }

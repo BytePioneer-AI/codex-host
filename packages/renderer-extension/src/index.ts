@@ -13,6 +13,12 @@ export type {
   RendererAgent,
 } from "./agent-selection-state.js";
 export {
+  HARNESS_INSPECT_METHOD,
+  THREAD_MODEL_SELECT_METHOD,
+  createRendererModelClient,
+} from "./renderer-model-client.js";
+export type { RendererModelClient } from "./renderer-model-client.js";
+export {
   installRendererBindingProbe,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";
@@ -31,9 +37,13 @@ export {
   installCurrentRendererAdapter,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
+  isPiTransportModelId,
   modelSelectionForAgent,
+  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
+  PI_TRANSPORT_MODEL_PREFIX,
   selectOptimisticModelAtom,
+  threadIdFromComposerModelTarget,
   wrapElectronRendererBridge,
   wrapPrewarmDispatcher,
   wrapPrewarmTarget,
@@ -49,6 +59,7 @@ export type {
   RendererAdapterState,
   RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
+export type { PiModelControlView } from "./renderer-composer-dom.js";
 
 export const rendererBuildMetadata = {
   name: "@codexhost/renderer-extension",

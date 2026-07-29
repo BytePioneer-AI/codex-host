@@ -12,6 +12,7 @@ import {
   type PiAdapterOptions,
   type PiTurnTransport,
 } from "../src/pi-adapter.js";
+import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import {
   PiRpcFaultError,
   type PiInteractionResponse,
@@ -22,7 +23,7 @@ import {
 } from "../src/pi-rpc-session.js";
 
 class FakePiTransport implements PiTurnTransport {
-  readonly state: PiSessionState = {
+  state: PiSessionState = {
     sessionId: "pi-session-1",
     sessionFile: "/synthetic/pi-session.jsonl",
     provider: "synthetic-provider",
@@ -37,6 +38,14 @@ class FakePiTransport implements PiTurnTransport {
     });
   });
   readonly start = vi.fn(async () => undefined);
+  readonly getAvailableModels = vi.fn(async () => [
+    { provider: "synthetic-provider", id: "synthetic-model" },
+    { provider: "synthetic-provider", id: "alternate-model" },
+  ]);
+  readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
+    this.state = { ...this.state, provider: model.provider, modelId: model.id };
+    return this.state;
+  });
   readonly close = vi.fn(async () => {
     this.fail(new Error("Fake Pi transport closed"));
   });
@@ -140,6 +149,47 @@ async function nextInteraction(
 }
 
 describe("Pi HarnessAdapter Session", () => {
+  it("inspects the native catalog through an ephemeral transport and closes it", async () => {
+    const { adapter, dependencies, transports } = fixture();
+
+    await expect(adapter.inspect({ cwd: "/synthetic", refresh: true })).resolves.toMatchObject({
+      status: "ready",
+      catalog: {
+        models: [
+          { label: "synthetic-provider / alternate-model" },
+          { label: "synthetic-provider / synthetic-model" },
+        ],
+        defaultModel: encodePiModelRef({
+          provider: "synthetic-provider",
+          id: "synthetic-model",
+        }),
+      },
+      capabilities: { configuration: { selectModel: true } },
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledOnce();
+    expect(transports[0]?.getAvailableModels).toHaveBeenCalledOnce();
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("closes the ephemeral transport when inspection fails", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.getAvailableModels.mockRejectedValueOnce(new Error("synthetic catalog failure"));
+      transports.push(transport);
+      return transport;
+    });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "error",
+      error: { code: "unavailable", message: "synthetic catalog failure" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
   it("starts lazily and emits an ordered successful text lifecycle", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);
@@ -180,6 +230,158 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("applies a create Model before publishing state and starting the first Turn", async () => {
+    const { adapter, transports } = fixture();
+    const model = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
+    expect(transports[0]?.selectModel).toHaveBeenCalledWith({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: model },
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[0]?.succeed("done");
+    await session.close();
+  });
+
+  it("selects an idle Model with state-before-result ordering and rejects active races", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("first"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.succeed("first");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const alternate = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    const selecting = session.execute({ type: "model.select", model: alternate });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: alternate },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    await session.execute(textTurn("active"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(
+      session.execute({
+        type: "model.select",
+        model: encodePiModelRef({ provider: "synthetic-provider", id: "synthetic-model" }),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports[0]?.selectModel).toHaveBeenCalledOnce();
+    transports[0]?.succeed("active");
+    await session.close();
+  });
+
+  it("rejects Turn acceptance while native Model selection is pending", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("start"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.succeed("start");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    let releaseSelection!: () => void;
+    const selectionGate = new Promise<void>((resolve) => {
+      releaseSelection = resolve;
+    });
+    transport.selectModel.mockImplementationOnce(async (model) => {
+      await selectionGate;
+      transport.state = { ...transport.state, provider: model.provider, modelId: model.id };
+      return transport.state;
+    });
+    const model = encodePiModelRef({ provider: "synthetic-provider", id: "alternate-model" });
+    const selecting = session.execute({ type: "model.select", model });
+
+    await expect(session.execute(textTurn("racing"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    releaseSelection();
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: model },
+    });
+    await session.close();
+  });
+
+  it("publishes actual readback on mismatch and faults uncertain selection state", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("start"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.succeed("start");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    transport.selectModel.mockImplementationOnce(async () => transport.state);
+    const requested = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    const mismatch = session.execute({ type: "model.select", model: requested });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: encodePiModelRef({
+          provider: "synthetic-provider",
+          id: "synthetic-model",
+        }),
+      },
+    });
+    await expect(mismatch).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: "Pi did not activate the requested Model" },
+    });
+
+    transport.selectModel.mockRejectedValueOnce(
+      new PiRpcFaultError("protocolError", "synthetic uncertain Model state"),
+    );
+    await expect(
+      session.execute({ type: "model.select", model: requested }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.faulted",
+      error: { code: "protocolError" },
+    });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
   it("rejects startup before Turn acceptance without lifecycle events", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);
@@ -207,14 +409,20 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
 
-    transports[0]?.fail(new Error("synthetic Turn failure"));
+    const nativeMessage = '503: {"message":"Service temporarily unavailable","type":"api_error"}';
+    transports[0]?.fail(new Error(nativeMessage));
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
-      snapshot: { outcome: { status: "failed" } },
+      snapshot: {
+        outcome: { status: "failed", error: { code: "nativeFailure", message: nativeMessage } },
+      },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
-      outcome: { status: "failed" },
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message: nativeMessage },
+      },
     });
 
     await expect(session.execute(textTurn("turn-2"))).resolves.toMatchObject({ ok: true });

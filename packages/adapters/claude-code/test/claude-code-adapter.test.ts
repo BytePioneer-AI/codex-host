@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -98,6 +98,27 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
+  });
+
+  it("reports Model configuration as unsupported without starting a Transport", async () => {
+    const { adapter, dependencies } = fixture();
+    const model = harnessModelRefSchema.parse({ id: "claude-model-v1.synthetic" });
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "unsupported", retryable: false },
+    });
+    const session = await openSession(adapter);
+    expect(session.capabilities).toEqual({ configuration: { selectModel: false } });
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    await expect(adapter.open({ kind: "create", cwd: "/synthetic", model })).resolves.toMatchObject(
+      { ok: false, error: { code: "unsupported" } },
+    );
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    await session.close();
   });
 
   it("starts lazily and emits a complete text lifecycle", async () => {

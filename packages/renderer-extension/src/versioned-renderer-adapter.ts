@@ -1,6 +1,17 @@
+import {
+  harnessModelRefSchema,
+  hostThreadIdSchema,
+  type HarnessModelRef,
+  type HostThreadId,
+  type PiHarnessInspectParams,
+  type ThreadModelSelectParams,
+} from "@codexhost/shared-contracts";
+
 import type { RendererAgent } from "./agent-selection-state.js";
+import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
+export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
@@ -9,6 +20,7 @@ export interface LockedComposerSelection {
   agent: RendererAgent;
   composerId: string;
   phase: "locked";
+  model?: HarnessModelRef;
 }
 
 export interface RendererAdapterCandidateShape {
@@ -107,11 +119,38 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
 }
 
 function isTransportModelId(model: unknown): boolean {
-  return model === PI_TRANSPORT_MODEL_ID || model === CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  return isPiTransportModelId(model) || model === CLAUDE_CODE_TRANSPORT_MODEL_ID;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function piTransportModelId(model?: HarnessModelRef): string {
+  return model
+    ? `${PI_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}`
+    : PI_TRANSPORT_MODEL_ID;
+}
+
+export function isPiTransportModelId(value: unknown): value is string {
+  if (value === PI_TRANSPORT_MODEL_ID) return true;
+  if (typeof value !== "string" || !value.startsWith(PI_TRANSPORT_MODEL_PREFIX)) return false;
+  return harnessModelRefSchema.safeParse({
+    id: value.slice(PI_TRANSPORT_MODEL_PREFIX.length),
+  }).success;
+}
+
+export function threadIdFromComposerModelTarget(
+  target: readonly unknown[] | null,
+): HostThreadId | null {
+  if (
+    target?.[0] !== "conversation" ||
+    typeof target[1] !== "string" ||
+    target[1].trim().length === 0
+  ) {
+    return null;
+  }
+  return hostThreadIdSchema.parse(target[1]);
 }
 
 function hasPrewarmMethod(value: unknown): value is PrewarmTarget {
@@ -154,7 +193,7 @@ function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
   );
 }
 
-export function findActivePrewarmTargets(root: Element): PrewarmTarget[] {
+export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   const editor = root.querySelector<HTMLElement>(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   );
@@ -242,9 +281,14 @@ export function decorateThreadStartParams(
   if (!isRecord(params) || typeof params.model !== "string") {
     throw new Error("thread/start params must contain a text Model");
   }
-  const transportModelId = selection ? transportModelIdForAgent(selection.agent) : null;
-  if (!transportModelId) return params as ThreadStartParams;
-  return { ...params, model: transportModelId } as ThreadStartParams;
+  if (!selection) return params as ThreadStartParams;
+  const transportModelId =
+    selection.agent === "pi"
+      ? piTransportModelId(selection.model)
+      : transportModelIdForAgent(selection.agent);
+  return transportModelId
+    ? ({ ...params, model: transportModelId } as ThreadStartParams)
+    : (params as ThreadStartParams);
 }
 
 export function wrapElectronRendererBridge(
@@ -551,14 +595,18 @@ export function modelSelectionForAgent(
   officialSelection: ModelPowerSelection | null,
   reasoningEffort: unknown,
   agent: RendererAgent,
+  model?: HarnessModelRef,
 ): ModelPowerSelection | null {
-  const transportModelId = transportModelIdForAgent(agent);
+  const transportModelId =
+    agent === "pi" ? piTransportModelId(model) : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
 export function installCurrentRendererAdapter(): {
   status: RendererAdapterStatus;
-  applyAgent(agent: RendererAgent): boolean;
+  modelControl: RendererModelClient | null;
+  applyAgent(agent: RendererAgent, model?: HarnessModelRef): boolean;
+  applyPiModel(model: HarnessModelRef): boolean;
   dispose(): void;
 } {
   let disposed = false;
@@ -588,13 +636,32 @@ export function installCurrentRendererAdapter(): {
     window.dispatchEvent(new CustomEvent("codexhost:renderer-adapter-status"));
   };
 
+  const unsupportedResult = () => ({
+    status: liveStatus,
+    modelControl: null,
+    applyAgent: () => false,
+    applyPiModel: () => false,
+    dispose() {},
+  });
+  const modelControl: RendererModelClient = Object.freeze({
+    async inspectPi(input: PiHarnessInspectParams) {
+      const client = createRendererModelClient(findActivePrewarmTargets(document));
+      if (!client) throw new Error("Renderer Model request manager is unavailable");
+      return client.inspectPi(input);
+    },
+    async selectPiThreadModel(input: ThreadModelSelectParams) {
+      const client = createRendererModelClient(findActivePrewarmTargets(document));
+      if (!client) throw new Error("Renderer Model request manager is unavailable");
+      return client.selectPiThreadModel(input);
+    },
+  });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
-    return { status: liveStatus, applyAgent: () => false, dispose() {} };
+    return unsupportedResult();
   }
   if (!isDraftPrewarmPolicyReady(window.__codexhostDraftPrewarmPolicyV1)) {
     updateStatus("unsupported", "draft-prewarm-policy-unavailable", null);
-    return { status: liveStatus, applyAgent: () => false, dispose() {} };
+    return unsupportedResult();
   }
 
   const captureController = (): boolean => {
@@ -612,7 +679,7 @@ export function installCurrentRendererAdapter(): {
     updateStatus("ready", "ready", "model-state");
     return true;
   };
-  const applyAgent = (agent: RendererAgent): boolean => {
+  const applyAgent = (agent: RendererAgent, model?: HarnessModelRef): boolean => {
     if (disposed) return false;
     if (agent === "codex" && !hasOfficialSelection) {
       selectedAgent = "codex";
@@ -624,7 +691,9 @@ export function installCurrentRendererAdapter(): {
       return false;
     }
     modelController = controller;
-    controller.apply(modelSelectionForAgent(officialSelection, controller.reasoningEffort, agent));
+    controller.apply(
+      modelSelectionForAgent(officialSelection, controller.reasoningEffort, agent, model),
+    );
     selectedAgent = agent;
     modelUpdates += 1;
     liveStatus.modelUpdates = modelUpdates;
@@ -640,7 +709,12 @@ export function installCurrentRendererAdapter(): {
   observer.observe(document.documentElement, { childList: true, subtree: true });
   return {
     status: liveStatus,
+    modelControl,
     applyAgent,
+    applyPiModel(model) {
+      if (selectedAgent !== "pi") return false;
+      return applyAgent("pi", model);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

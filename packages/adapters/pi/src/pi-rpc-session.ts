@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 
 import { jsonValueSchema, type JsonValue } from "@codexhost/shared-contracts";
 
+import type { PiNativeModelRef } from "./pi-model-catalog.js";
+
 export interface PiSessionState {
   sessionId: string;
   sessionFile: string | null;
@@ -133,6 +135,44 @@ function message(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function parseNativeModel(value: unknown, context: string): PiNativeModelRef | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || !nonBlankString(value.provider) || !nonBlankString(value.id)) {
+    throw new PiRpcFaultError("protocolError", `Pi RPC returned an invalid ${context} Model`);
+  }
+  return { provider: value.provider, id: value.id };
+}
+
+function parseSessionState(response: Record<string, unknown>): PiSessionState {
+  const data = isRecord(response.data) ? response.data : null;
+  if (!data) throw new PiRpcFaultError("protocolError", "Pi RPC state response has no data");
+  const model = parseNativeModel(data.model, "state");
+  return {
+    sessionId: nonBlankString(data.sessionId) ? data.sessionId : randomUUID(),
+    sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
+    provider: model?.provider ?? null,
+    modelId: model?.id ?? null,
+  };
+}
+
+function parseAvailableModels(response: Record<string, unknown>): PiNativeModelRef[] {
+  const data = isRecord(response.data) ? response.data : null;
+  if (!data || !Array.isArray(data.models)) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC Model catalog response has no models");
+  }
+  return data.models.map((model) => {
+    const parsed = parseNativeModel(model, "catalog");
+    if (!parsed) {
+      throw new PiRpcFaultError("protocolError", "Pi RPC catalog contains an empty Model");
+    }
+    return parsed;
+  });
+}
+
 function assistantText(value: unknown): string | null {
   if (!isRecord(value) || value.role !== "assistant" || !Array.isArray(value.content)) return null;
   return value.content
@@ -142,6 +182,16 @@ function assistantText(value: unknown): string | null {
     )
     .map((content) => content.text as string)
     .join("");
+}
+
+function assistantFailure(value: unknown): Error | null | undefined {
+  if (!isRecord(value) || value.role !== "assistant") return undefined;
+  if (value.stopReason !== "error" && value.stopReason !== "aborted") return null;
+  const fallback =
+    value.stopReason === "aborted"
+      ? "Pi assistant message was aborted"
+      : "Pi assistant message failed";
+  return new Error(nonBlankString(value.errorMessage) ? value.errorMessage : fallback);
 }
 
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
@@ -276,9 +326,8 @@ export class PiRpcSession {
         ),
       ),
     ]);
-    let state: Record<string, unknown>;
     try {
-      state = await this.#send("get_state", {});
+      this.#state = parseSessionState(await this.#send("get_state", {}));
     } catch (error) {
       const fault =
         error instanceof PiRpcFaultError
@@ -287,17 +336,34 @@ export class PiRpcSession {
       this.#fail(fault);
       throw fault;
     }
-    const data = isRecord(state.data) ? state.data : null;
-    this.#state = {
-      sessionId: typeof data?.sessionId === "string" ? data.sessionId : randomUUID(),
-      sessionFile: typeof data?.sessionFile === "string" ? data.sessionFile : null,
-      provider:
-        isRecord(data?.model) && typeof data.model.provider === "string"
-          ? data.model.provider
-          : null,
-      modelId: isRecord(data?.model) && typeof data.model.id === "string" ? data.model.id : null,
-    };
     return this;
+  }
+
+  async getAvailableModels(): Promise<PiNativeModelRef[]> {
+    try {
+      return parseAvailableModels(await this.#send("get_available_models", {}));
+    } catch (error) {
+      if (error instanceof PiRpcFaultError) this.#fail(error);
+      throw error;
+    }
+  }
+
+  async selectModel(model: PiNativeModelRef): Promise<PiSessionState> {
+    await this.#send("set_model", { provider: model.provider, modelId: model.id });
+    try {
+      this.#state = parseSessionState(await this.#send("get_state", {}));
+      return this.#state;
+    } catch (error) {
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError(
+              "protocolError",
+              `Pi RPC Model state could not be confirmed: ${message(error)}`,
+            );
+      this.#fail(fault);
+      throw fault;
+    }
   }
 
   async runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult> {
@@ -476,7 +542,10 @@ export class PiRpcSession {
         active.streamedMessageText += event.delta;
         active.onEvent({ type: "text.delta", delta: event.delta });
       } else if (event.type === "error") {
-        active.failure = new Error("Pi assistant message failed");
+        active.failure =
+          assistantFailure(event.error) ??
+          assistantFailure(value.message) ??
+          new Error("Pi assistant message failed");
       }
       return;
     }
@@ -708,7 +777,9 @@ export class PiRpcSession {
 
   #finalizeAssistantMessage(active: ActiveTurn, value: unknown): void {
     const finalText = assistantText(value);
-    if (finalText === null) return;
+    const failure = assistantFailure(value);
+    if (finalText === null || failure === undefined) return;
+    active.failure = failure;
     if (finalText === active.lastFinalizedMessageText && active.streamedMessageText.length === 0) {
       return;
     }

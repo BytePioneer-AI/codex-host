@@ -13,6 +13,8 @@ import {
 
 type Scenario =
   | "final-only"
+  | "assistant-error"
+  | "retry-success"
   | "empty"
   | "tools"
   | "cancel"
@@ -20,7 +22,8 @@ type Scenario =
   | "interaction"
   | "interaction-timeout"
   | "interaction-cancel"
-  | "malformed-interaction";
+  | "malformed-interaction"
+  | "malformed-catalog";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -31,6 +34,8 @@ class FakePiRpcProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
+  #provider = "synthetic-provider";
+  #modelId = "synthetic-model";
   readonly #scenario: Scenario;
 
   constructor(scenario: Scenario) {
@@ -78,8 +83,33 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command, {
         sessionId: "synthetic-session",
         sessionFile: null,
-        model: { provider: "synthetic-provider", id: "synthetic-model" },
+        model: { provider: this.#provider, id: this.#modelId },
       });
+      return;
+    }
+    if (command.type === "get_available_models") {
+      this.#respond(command, {
+        models:
+          this.#scenario === "malformed-catalog"
+            ? [{ id: "missing-provider" }]
+            : [
+                {
+                  provider: "synthetic-provider",
+                  id: "synthetic-model",
+                  baseUrl: "https://private.invalid",
+                  apiKey: "secret",
+                },
+                { provider: "other/provider", id: "family/model" },
+              ],
+      });
+      return;
+    }
+    if (command.type === "set_model") {
+      if (typeof command.provider === "string" && typeof command.modelId === "string") {
+        this.#provider = command.provider;
+        this.#modelId = command.modelId;
+      }
+      this.#respond(command);
       return;
     }
     if (
@@ -118,6 +148,45 @@ class FakePiRpcProcess extends EventEmitter {
       const message = { role: "assistant", content: [{ type: "text", text }] };
       this.#output({ type: "message_start", message });
       this.#output({ type: "message_end", message });
+      this.#output({ type: "agent_settled" });
+      return;
+    }
+    if (this.#scenario === "assistant-error" || this.#scenario === "retry-success") {
+      const failure = {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: '503: {"message":"Service temporarily unavailable","type":"api_error"}',
+      };
+      this.#output({ type: "message_start", message: failure });
+      this.#output({ type: "message_end", message: failure });
+      this.#output({ type: "turn_end", message: failure, toolResults: [] });
+      this.#output({
+        type: "agent_end",
+        messages: [failure],
+        willRetry: this.#scenario === "retry-success",
+      });
+      if (this.#scenario === "assistant-error") {
+        this.#output({ type: "agent_settled" });
+        return;
+      }
+      this.#output({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 0,
+        errorMessage: failure.errorMessage,
+      });
+      const recovered = {
+        role: "assistant",
+        content: [{ type: "text", text: "recovered" }],
+        stopReason: "stop",
+      };
+      this.#output({ type: "message_start", message: recovered });
+      this.#output({ type: "message_end", message: recovered });
+      this.#output({ type: "turn_end", message: recovered, toolResults: [] });
+      this.#output({ type: "agent_end", messages: [recovered], willRetry: false });
+      this.#output({ type: "auto_retry_end", success: true, attempt: 1 });
       this.#output({ type: "agent_settled" });
       return;
     }
@@ -303,7 +372,30 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("rejects a settled Turn that has no displayable text or Tool", async () => {
+  it("preserves a settled Assistant error from the final Pi message", async () => {
+    const rpc = session("assistant-error");
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
+      '503: {"message":"Service temporarily unavailable","type":"api_error"}',
+    );
+    await rpc.close();
+  });
+
+  it("clears a transient Assistant error when Pi auto-retry succeeds", async () => {
+    const rpc = session("retry-success");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "recovered",
+      cancelled: false,
+    });
+    expect(events).toEqual([{ type: "text.delta", delta: "recovered" }]);
+    await rpc.close();
+  });
+
+  it("rejects a settled Turn that has no displayable text, Tool, or native error", async () => {
     const rpc = session("empty");
     await rpc.start();
 
@@ -342,6 +434,36 @@ describe("Pi RPC Turn aggregation", () => {
       callId: "custom-1",
       output: { content: [{ text: "first second" }] },
     });
+    await rpc.close();
+  });
+
+  it("reads only exact native Model identity and confirms selection through state", async () => {
+    const rpc = session("final-only");
+    await rpc.start();
+
+    await expect(rpc.getAvailableModels()).resolves.toEqual([
+      { provider: "synthetic-provider", id: "synthetic-model" },
+      { provider: "other/provider", id: "family/model" },
+    ]);
+    await expect(
+      rpc.selectModel({ provider: "other/provider", id: "family/model" }),
+    ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    await rpc.close();
+  });
+
+  it("faults a malformed native Model catalog", async () => {
+    const onFault = vi.fn();
+    const rpc = session("malformed-catalog", onFault);
+    await rpc.start();
+
+    await expect(rpc.getAvailableModels()).rejects.toThrow("invalid catalog Model");
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "protocolError",
+        message: "Pi RPC returned an invalid catalog Model",
+      }),
+    );
     await rpc.close();
   });
 

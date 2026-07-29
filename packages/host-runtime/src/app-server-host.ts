@@ -10,11 +10,18 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import {
+  harnessInspectionSchema,
+  harnessModelSelectionStateSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  jsonValueSchema,
+  piHarnessInspectParamsSchema,
+  threadModelSelectParamsSchema,
+  type HarnessModelRef,
   type HostInteractionId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
+import { SessionStateObserver } from "./session-state-observer.js";
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -24,6 +31,7 @@ import {
 import {
   CodexTurnProjector,
   decodeCreateRoute,
+  decodePiTransportModel,
   parseJsonFrame,
   readLfFrames,
   writeFrame,
@@ -81,7 +89,10 @@ interface ExternalThread {
   harnessId: ExternalHarnessId;
   session: HarnessSession;
   outputTask: Promise<void>;
+  requestedModel?: HarnessModelRef;
+  stateObserver: SessionStateObserver;
   thread: JsonObject;
+  transportModelId: string;
   turns: JsonObject[];
   running: boolean;
   activeTurnId: HostTurnId | null;
@@ -314,7 +325,21 @@ export class AppServerHost {
         continue;
       }
       const request = requestResult.data;
-      const createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      if (request.method === "codexhost/harness/inspect") {
+        await this.#inspectHarness(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/model/select") {
+        await this.#selectPiThreadModel(request);
+        continue;
+      }
+      let createRoute: CreateRequestRouteObservation | null;
+      try {
+        createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        continue;
+      }
       if (createRoute) {
         this.#options.onCreateRequestRoute?.(createRoute);
         this.#options.onRequestRoute?.(
@@ -399,6 +424,79 @@ export class AppServerHost {
     }
   }
 
+  async #inspectHarness(request: JsonRpcRequest): Promise<void> {
+    const params = piHarnessInspectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Pi Harness inspection params"));
+      return;
+    }
+    const adapter = this.#externalAdapters.get("pi");
+    if (!adapter) {
+      await this.#writer.json(rpcError(request, -32077, "Pi Harness is unavailable"));
+      return;
+    }
+    let inspection: unknown;
+    try {
+      inspection = await adapter.inspect({
+        ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
+        ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
+      });
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32077, `Pi Harness inspection failed: ${errorMessage(error)}`),
+      );
+      return;
+    }
+    const validated = harnessInspectionSchema.safeParse(inspection);
+    if (!validated.success) {
+      await this.#writer.json(
+        rpcError(request, -32077, "Pi Harness inspection returned an invalid result"),
+      );
+      return;
+    }
+    await this.#writer.json(
+      rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
+    );
+  }
+
+  async #selectPiThreadModel(request: JsonRpcRequest): Promise<void> {
+    const params = threadModelSelectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Pi Model selection params"));
+      return;
+    }
+    const thread = this.#externalThreads.get(params.data.threadId);
+    if (!thread || thread.harnessId !== "pi") {
+      await this.#writer.json(
+        rpcError(request, -32078, "Model selection requires a current-process Pi Thread"),
+      );
+      return;
+    }
+    const beforeRevision = thread.stateObserver.revision;
+    const result = await thread.session.execute({
+      type: "model.select",
+      model: params.data.model,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32078, result.error.message));
+      return;
+    }
+    try {
+      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const projected = harnessModelSelectionStateSchema.parse({
+        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+      });
+      if (!projected.effectiveModel) {
+        throw new Error("Pi Session did not report an effective Model");
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32078, `Pi Model state was not confirmed: ${errorMessage(error)}`),
+      );
+    }
+  }
+
   async #startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void> {
     const adapter = this.#externalAdapters.get(harnessId);
     if (!adapter) {
@@ -409,6 +507,12 @@ export class AppServerHost {
       return;
     }
     const params = requestObject(request);
+    const route = decodeCreateRoute(request);
+    const requestedModel = route?.harnessId === "pi" ? route.model : undefined;
+    const transportModelId =
+      route && route.harnessId === harnessId
+        ? route.transportModelId
+        : transportModelIdForHarness(harnessId);
     const cwd = params.cwd;
     if (typeof cwd !== "string" || cwd.length === 0) {
       this.#routeObservationTracker.rejectCreate(request.id);
@@ -417,7 +521,11 @@ export class AppServerHost {
       );
       return;
     }
-    const sessionResult = await adapter.open({ kind: "create", cwd });
+    const sessionResult = await adapter.open({
+      kind: "create",
+      cwd,
+      ...(requestedModel ? { model: requestedModel } : {}),
+    });
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
       await this.#writer.json(rpcError(request, -32071, sessionResult.error.message));
@@ -425,7 +533,6 @@ export class AppServerHost {
     }
     const session = sessionResult.value;
     const threadId = randomUUID();
-    const transportModelId = transportModelIdForHarness(harnessId);
     this.#routeObservationTracker.bindCreatedThread(request.id, threadId);
     try {
       const now = unixSeconds();
@@ -461,7 +568,10 @@ export class AppServerHost {
         harnessId,
         session,
         outputTask: Promise.resolve(),
+        ...(requestedModel ? { requestedModel } : {}),
+        stateObserver: new SessionStateObserver(session.initialState),
         thread,
+        transportModelId,
         turns: [],
         running: false,
         activeTurnId: null,
@@ -535,6 +645,7 @@ export class AppServerHost {
   async #deleteExternalThread(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     this.#externalThreads.delete(thread.id);
     this.#routeObservationTracker.forgetThread(thread.id);
+    thread.stateObserver.fault(new Error("External Thread was deleted"));
     try {
       await thread.session.close();
       await thread.outputTask;
@@ -570,9 +681,44 @@ export class AppServerHost {
       );
       return;
     }
+    const params = requestObject(request);
+    let requestedModel: HarnessModelRef | null | undefined;
+    try {
+      requestedModel = thread.harnessId === "pi" ? decodePiTransportModel(params.model) : null;
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    if (requestedModel) {
+      const current = thread.stateObserver.state.effectiveModel;
+      const pendingCreateSelection =
+        current === undefined && thread.requestedModel?.id === requestedModel.id;
+      if (current?.id !== requestedModel.id && !pendingCreateSelection) {
+        const beforeRevision = thread.stateObserver.revision;
+        const selection = await thread.session.execute({
+          type: "model.select",
+          model: requestedModel,
+        });
+        if (!selection.ok) {
+          await this.#writer.json(rpcError(request, -32078, selection.error.message));
+          return;
+        }
+        try {
+          const state = await thread.stateObserver.waitForChange(beforeRevision);
+          if (state.effectiveModel?.id !== requestedModel.id) {
+            throw new Error("Pi Session activated a different Model");
+          }
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
+          return;
+        }
+      }
+      thread.transportModelId = params.model as string;
+      thread.requestedModel = requestedModel;
+    }
     let text: string;
     try {
-      text = requestText(requestObject(request));
+      text = requestText(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
@@ -663,8 +809,12 @@ export class AppServerHost {
       return;
     }
     const event = output.event;
-    if (event.type === "session.state.changed") return;
+    if (event.type === "session.state.changed") {
+      thread.stateObserver.update(event.state);
+      return;
+    }
     if (event.type === "session.faulted") {
+      thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
       return;
     }

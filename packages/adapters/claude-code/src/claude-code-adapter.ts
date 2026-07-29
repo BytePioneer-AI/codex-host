@@ -5,16 +5,21 @@ import {
   type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
+  type HarnessInspection,
   type HarnessOutput,
   type HarnessResult,
   type HarnessSession,
+  type HarnessSessionCapabilities,
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostCommand,
   type HostEvent,
   type HostItemOutcome,
+  type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
+  type ModelSelectCommand,
+  type ModelSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -112,6 +117,9 @@ function delay(milliseconds: number): Promise<void> {
 
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly capabilities: HarnessSessionCapabilities = {
+    configuration: { selectModel: false },
+  };
   readonly initialState: HarnessSessionState = {};
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -146,9 +154,14 @@ class ClaudeHarnessSession implements HarnessSession {
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   async execute(
     command: HostCommand,
-  ): Promise<HarnessResult<TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted>> {
+  ): Promise<
+    HarnessResult<
+      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+    >
+  > {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
@@ -159,6 +172,16 @@ class ClaudeHarnessSession implements HarnessSession {
         error: {
           code: "unsupported",
           message: "Claude Code Interaction is not implemented in this Adapter slice",
+          retryable: false,
+        },
+      };
+    }
+    if (command.type === "model.select") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Claude Code Model selection is not supported",
           retryable: false,
         },
       };
@@ -385,6 +408,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     };
   }
 
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    void input;
+    return {
+      status: "unavailable",
+      error: {
+        code: "unsupported",
+        message: "Claude Code Model inspection is not supported",
+        retryable: false,
+      },
+    };
+  }
+
   async open(input: CreateSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closePromise) {
       return {
@@ -398,6 +433,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: {
           code: "invalidRequest",
           message: "Claude Code Adapter requires a create input with cwd",
+          retryable: false,
+        },
+      };
+    }
+    if (input.model) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Claude Code create-time Model selection is not supported",
           retryable: false,
         },
       };

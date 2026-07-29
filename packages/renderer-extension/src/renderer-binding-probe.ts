@@ -1,3 +1,5 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 import {
   DEFAULT_RENDERER_AGENTS,
   DraftAgentController,
@@ -18,13 +20,16 @@ import {
   renderComposerAgentControl,
   sendButtonWithin,
   type ComposerAgentControl,
+  type PiModelControlView,
 } from "./renderer-composer-dom.js";
 import {
   findComposerModelTarget,
   isDraftPrewarmPolicyReady,
+  threadIdFromComposerModelTarget,
   type LockedComposerSelection,
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
+import type { RendererModelClient } from "./renderer-model-client.js";
 
 export interface RendererBindingProbeStatus {
   version: 2;
@@ -48,7 +53,9 @@ export interface RendererBindingProbeApi {
   setAdapter(
     status: RendererAdapterStatus,
     dispose?: () => void,
-    applyAgent?: (agent: RendererAgent) => boolean,
+    applyAgent?: (agent: RendererAgent, model?: HarnessModelRef) => boolean,
+    applyPiModel?: (model: HarnessModelRef) => boolean,
+    modelControl?: RendererModelClient | null,
   ): void;
   dispose(): void;
 }
@@ -64,6 +71,7 @@ interface MountedComposer {
   composerId: string;
   control: ComposerAgentControl;
   modelTarget: readonly unknown[] | null;
+  modelView: PiModelControlView;
 }
 
 interface PendingComposerReplacement {
@@ -101,7 +109,9 @@ export function installRendererBindingProbe(
   let disposed = false;
   let scanScheduled = false;
   let adapterDispose: (() => void) | null = null;
-  let applyAdapterAgent: ((agent: RendererAgent) => boolean) | null = null;
+  let applyAdapterAgent: ((agent: RendererAgent, model?: HarnessModelRef) => boolean) | null = null;
+  let applyAdapterPiModel: ((model: HarnessModelRef) => boolean) | null = null;
+  let modelControl: RendererModelClient | null = null;
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",
@@ -131,7 +141,128 @@ export function installRendererBindingProbe(
       controller.get(mounted.composer),
       adapterStatus.state,
       controller.isSwitching(mounted.composer),
+      mounted.modelView,
     );
+  };
+
+  const clearDraftPrewarm = async (): Promise<void> => {
+    const policy = window.__codexhostDraftPrewarmPolicyV1;
+    if (!isDraftPrewarmPolicyReady(policy)) {
+      throw new Error("Renderer draft prewarm policy is unavailable");
+    }
+    await policy.clear();
+  };
+
+  const loadPiCatalog = async (mounted: MountedComposer): Promise<void> => {
+    const state = controller.get(mounted.composer);
+    if (state.agent !== "pi") return;
+    const generation = controller.beginModelRequest(mounted.composer);
+    mounted.modelView = { status: "loading" };
+    renderMounted(mounted);
+    try {
+      if (!modelControl) throw new Error("Pi Model control is unavailable");
+      const inspection = await modelControl.inspectPi({ harnessId: "pi" });
+      if (
+        !controller.isCurrentModelRequest(mounted.composer, generation) ||
+        controller.get(mounted.composer).agent !== "pi"
+      ) {
+        return;
+      }
+      if (inspection.status !== "ready") throw new Error(inspection.error.message);
+      if (inspection.catalog.models.length === 0) {
+        mounted.modelView = { status: "empty", catalog: inspection.catalog };
+        return;
+      }
+      const current = controller.get(mounted.composer);
+      const selected =
+        current.piModel &&
+        inspection.catalog.models.some((model) => model.ref.id === current.piModel?.id)
+          ? current.piModel
+          : inspection.catalog.defaultModel;
+      if (!selected) throw new Error("Pi did not report its current Model");
+      if (current.phase === "draft" && current.piModel?.id !== selected.id) {
+        if (!(applyAdapterPiModel?.(selected) ?? false)) {
+          throw new Error("Pi Model could not be applied to the Composer");
+        }
+        try {
+          await clearDraftPrewarm();
+        } catch (error) {
+          applyAdapterAgent?.("pi", current.piModel);
+          throw error;
+        }
+      }
+      controller.setPiModel(mounted.composer, selected);
+      mounted.modelView = {
+        status: "ready",
+        catalog: inspection.catalog,
+        selected,
+      };
+    } catch (error) {
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      mounted.modelView = {
+        status: "error",
+        ...(mounted.modelView.catalog ? { catalog: mounted.modelView.catalog } : {}),
+        ...(controller.get(mounted.composer).piModel
+          ? { selected: controller.get(mounted.composer).piModel }
+          : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (controller.isCurrentModelRequest(mounted.composer, generation)) renderMounted(mounted);
+    }
+  };
+
+  const selectPiModel = async (mounted: MountedComposer, modelId: string): Promise<void> => {
+    const current = controller.get(mounted.composer);
+    const catalog = mounted.modelView.catalog;
+    const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
+    if (current.agent !== "pi" || !catalog || !selected) return;
+    const previous = current.piModel;
+    const generation = controller.beginModelRequest(mounted.composer);
+    mounted.modelView = { status: "selecting", catalog, selected: previous ?? selected };
+    renderMounted(mounted);
+    try {
+      let effective = selected;
+      if (current.phase === "draft") {
+        if (!(applyAdapterPiModel?.(selected) ?? false)) {
+          throw new Error("Pi Model could not be applied to the Composer");
+        }
+        try {
+          await clearDraftPrewarm();
+        } catch (error) {
+          applyAdapterAgent?.("pi", previous);
+          throw error;
+        }
+      } else {
+        const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+        if (!threadId || !modelControl) {
+          throw new Error("Pi Thread identity is unavailable for Model selection");
+        }
+        const state = await modelControl.selectPiThreadModel({ threadId, model: selected });
+        if (!state.effectiveModel) throw new Error("Pi did not confirm an effective Model");
+        effective = state.effectiveModel;
+        if (!catalog.models.some((model) => model.ref.id === effective.id)) {
+          throw new Error("Pi activated a Model outside the current catalog");
+        }
+        if (!(applyAdapterPiModel?.(effective) ?? false)) {
+          throw new Error("Confirmed Pi Model could not be applied to the Composer");
+        }
+      }
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      controller.setPiModel(mounted.composer, effective);
+      mounted.modelView = { status: "ready", catalog, selected: effective };
+    } catch (error) {
+      if (!controller.isCurrentModelRequest(mounted.composer, generation)) return;
+      if (previous) applyAdapterPiModel?.(previous);
+      mounted.modelView = {
+        status: "error",
+        catalog,
+        ...(previous ? { selected: previous } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (controller.isCurrentModelRequest(mounted.composer, generation)) renderMounted(mounted);
+    }
   };
 
   const switchComposerAgent = async (
@@ -139,21 +270,25 @@ export function installRendererBindingProbe(
     agent: RendererAgent,
   ): Promise<boolean> => {
     const composerId = controller.get(mounted.composer).composerId;
+    controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
       applyAgent(nextAgent) {
-        return applyAdapterAgent?.(nextAgent) ?? nextAgent === "codex";
+        return (
+          applyAdapterAgent?.(nextAgent, controller.get(mounted.composer).piModel) ??
+          nextAgent === "codex"
+        );
       },
-      async clearPrewarm() {
-        const policy = window.__codexhostDraftPrewarmPolicyV1;
-        if (!isDraftPrewarmPolicyReady(policy)) {
-          throw new Error("Renderer draft prewarm policy is unavailable");
-        }
-        await policy.clear();
-      },
+      clearPrewarm: clearDraftPrewarm,
     });
     renderMounted(mounted);
     try {
-      return await switching;
+      const switched = await switching;
+      if (switched && controller.get(mounted.composer).agent === "pi") {
+        void loadPiCatalog(mounted);
+      } else if (controller.get(mounted.composer).agent !== "pi") {
+        mounted.modelView = { status: "idle" };
+      }
+      return switched;
     } catch {
       adapterStatus = {
         ...adapterStatus,
@@ -186,16 +321,23 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         void switchComposerAgent(mounted, agent);
       },
+      (modelId) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void selectPiModel(mounted, modelId);
+      },
     );
-    const mounted = {
+    const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
       control,
       modelTarget,
+      modelView: { status: "idle" },
     };
     mountedByComposer.set(composer, mounted);
-    applyAdapterAgent?.(state.agent);
+    applyAdapterAgent?.(state.agent, state.piModel);
     renderMounted(mounted);
+    if (state.agent === "pi") void loadPiCatalog(mounted);
   };
 
   const scan = (): void => {
@@ -281,8 +423,8 @@ export function installRendererBindingProbe(
   };
 
   const applyComposerAgent = (composer: Element): boolean => {
-    const agent = controller.get(composer).agent;
-    return applyAdapterAgent?.(agent) ?? agent === "codex";
+    const state = controller.get(composer);
+    return applyAdapterAgent?.(state.agent, state.piModel) ?? state.agent === "codex";
   };
   const blockEvent = (event: Event): void => {
     event.preventDefault();
@@ -293,6 +435,13 @@ export function installRendererBindingProbe(
     if (!mounted) return null;
     const current = controller.get(composer);
     if (controller.isSwitching(composer)) return false;
+    const modelReady =
+      current.agent !== "pi" ||
+      (mounted.modelView.status !== "selecting" &&
+        mounted.modelView.catalog?.models.some(
+          (model) => model.ref.id === mounted.modelView.selected?.id,
+        ) === true);
+    if (!modelReady) return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
     controller.lock(composer);
@@ -392,17 +541,24 @@ export function installRendererBindingProbe(
         composerId: selection.composerId,
         agent: selection.agent,
         phase: "locked",
+        ...(selection.piModel ? { model: selection.piModel } : {}),
       };
     },
-    setAdapter(status, dispose, applyAgent) {
+    setAdapter(status, dispose, applyAgent, applyPiModel, nextModelControl) {
       adapterDispose?.();
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
+      applyAdapterPiModel = applyPiModel ?? null;
+      modelControl = nextModelControl ?? null;
       adapterStatus = status;
       const connected = connectedComposers();
       if (connected.length === 1) {
         const mounted = connected[0];
-        if (mounted) applyAdapterAgent?.(controller.get(mounted.composer).agent);
+        if (mounted) {
+          const state = controller.get(mounted.composer);
+          applyAdapterAgent?.(state.agent, state.piModel);
+          if (state.agent === "pi") void loadPiCatalog(mounted);
+        }
       }
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
@@ -412,6 +568,8 @@ export function installRendererBindingProbe(
       adapterDispose?.();
       adapterDispose = null;
       applyAdapterAgent = null;
+      applyAdapterPiModel = null;
+      modelControl = null;
       mutationObserver.disconnect();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

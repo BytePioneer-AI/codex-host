@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessModelRefSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import { HarnessOutputChannel } from "../src/index.js";
 import type { HarnessError, HarnessOutput, HostEvent } from "../src/index.js";
@@ -458,6 +462,82 @@ describe("minimal Harness text Session", () => {
         (event) => event.type === "interaction.closed" && event.interactionId === closedInteraction,
       ),
     ).toBeLessThan(closeEvents.findIndex(({ type }) => type === "turn.completed"));
+  });
+
+  it("inspects a deterministic catalog without opening a Session", async () => {
+    const adapter = new FakeHarnessAdapter();
+
+    await expect(adapter.inspect({ cwd: "/synthetic", refresh: true })).resolves.toEqual({
+      status: "ready",
+      catalog: adapter.catalog,
+      capabilities: { configuration: { selectModel: true } },
+    });
+    expect(adapter.inspectionCalls).toBe(1);
+    expect(adapter.sessions).toHaveLength(0);
+    await adapter.close();
+  });
+
+  it("publishes the selected effective Model before completing the command", async () => {
+    const adapter = new FakeHarnessAdapter();
+    const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!result.ok) throw new Error(result.error.message);
+    const session = result.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const model = adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+
+    const selecting = session.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: { effectiveModel: model },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    await session.close();
+  });
+
+  it("rejects Model writes during a Turn and preserves the confirmed state on failure", async () => {
+    const adapter = new FakeHarnessAdapter();
+    const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!result.ok) throw new Error(result.error.message);
+    const session = result.value as FakeHarnessSession;
+    const original = session.state.effectiveModel;
+    const model = adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+
+    await session.execute(textTurn("active"));
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(session.state.effectiveModel).toEqual(original);
+    session.succeedTurn();
+
+    session.rejectNextModelSelection(failure);
+    await expect(session.execute({ type: "model.select", model })).resolves.toEqual({
+      ok: false,
+      error: failure,
+    });
+    expect(session.state.effectiveModel).toEqual(original);
+    await session.close();
+  });
+
+  it("rejects a create Model that is outside the inspected catalog", async () => {
+    const adapter = new FakeHarnessAdapter();
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        model: harnessModelRefSchema.parse({ id: "fake-model-v1.unknown" }),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(adapter.sessions).toHaveLength(0);
+    await adapter.close();
   });
 
   it("closes every opened Session idempotently", async () => {

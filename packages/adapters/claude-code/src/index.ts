@@ -7,9 +7,14 @@ export { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./comman
 export { ClaudeNativeTurnAccumulator } from "./native-message.js";
 export type {
   ClaudeAdapterDependencies,
+  ClaudeInteractionResponse,
+  ClaudeQuestion,
+  ClaudeQuestionOption,
+  ClaudeQuestionRequest,
   ClaudeTransportFactoryInput,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
+  ClaudeTurnEvent,
   ClaudeTurnTransport,
 } from "./transport.js";
 

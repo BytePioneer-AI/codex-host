@@ -36,7 +36,7 @@
 
 - [x] 6.1 添加显式真实Claude Adapter Live测试，验证文本、多Turn、Cancel和有界close
 - [x] 6.2 运行Fake双Adapter Host纵向测试及真实Claude到Host JSON-RPC投影Gate
-- [ ] 6.3 运行真实Codex Desktop受控Gate，验证Claude选择、流式文本、取消和同Thread继续
+- [x] 6.3 运行真实Codex Desktop受控Gate，验证Claude选择、流式文本、取消和同Thread继续
 - [x] 6.4 保存脱敏验证结论，不记录Prompt、Transcript、完整ID、账号或本地绝对路径
 
 ## 7. 完成检查

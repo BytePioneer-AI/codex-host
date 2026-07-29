@@ -39,13 +39,13 @@ Alternative：在Host直接消费SDK消息。拒绝，因为会恢复具体Harne
 
 Alternative：让生产Adapter导入`tools/gate-claude-code`。拒绝，因为Gate是开发证据工具，不是运行时所有者；生产模块独立实现并由Gate事实与测试约束。
 
-### 2. 第一切片禁用Tool，只证明共享文本和Cancel链路
+### 2. 第一切片继承默认Tool，只投影共享文本和Cancel链路
 
-SDK Query使用AsyncIterable输入维持一个Native Session的多Turn执行，显式设置用户安装的可执行文件、`settingSources: ["user"]`、`tools: []`、`permissionMode: "dontAsk"`和client-app标识。`open(create)`不解析命令、不启动进程；第一个`turn.start`才解析可执行文件并初始化Query。
+SDK Query使用AsyncIterable输入维持一个Native Session的多Turn执行，显式设置用户安装的可执行文件、`settingSources: ["user"]`、`permissionMode: "dontAsk"`和client-app标识，并省略`tools`选项以继承Claude Code的默认工具集。`open(create)`不解析命令、不启动进程；第一个`turn.start`才解析可执行文件并初始化Query。
 
 调用方预分配Session UUID和每Turn User UUID。初始化握手确认Query后，Adapter发布`session.state.changed`，再发布Turn/Agent Message lifecycle并写入User消息。多个顺序Turn复用同一Query。
 
-Tool禁用仅限定本切片，避免在第一次UI证明中混合Interaction和Tool映射；它不宣称Claude未来没有Tool。
+默认Tool执行是当前开发Gate中的原生内部行为；本切片仍只投影Agent Message文本和Turn终态，不投影Tool、File Change或Interaction。`permissionMode: "dontAsk"`保持不变，因此未被当前原生配置预先允许的操作应由Claude Code拒绝，而不是在缺少Host审批桥接时等待交互。
 
 ### 3. Streaming delta优先，完整Assistant消息只做确定性补齐
 
@@ -57,7 +57,7 @@ Result分类联合`subtype`、`is_error`、`terminal_reason`、Assistant error�
 
 `turn.cancel`校验当前Turn后调用`Query.interrupt()`并返回`cancellationRequested: true`。Transport继续消费，只有`aborted_streaming`或`aborted_tools`与已接受cancel同时成立时才产生cancelled；无法证明时failed。取消后Query仍可接收下一Turn。
 
-`close()`复用cancel/finalization，关闭输入和Query，等待被Adapter拥有的Claude直系进程在时限内退出；超时升级终止。第一切片禁用Tool，因此不声称任意Tool/MCP后代进程树已跨平台关闭。
+`close()`复用cancel/finalization，关闭输入和Query，等待被Adapter拥有的Claude直系进程在时限内退出；超时升级终止。本切片尚未监督Tool/MCP后代进程，因此不声称任意Tool/MCP后代进程树已跨平台关闭。
 
 ### 5. Protocol Core维护有限transport路由表
 
@@ -78,6 +78,8 @@ claude-code <-> codexhost/claude-code-native
 
 `ExternalThread`保存`harnessId`、transport token、HarnessSession、Projector和当前进程内Thread快照。create、turn、interrupt、read、rename、delete、close和Fault消费均只有一套实现。错误和诊断使用Harness ID，不增加Claude分支。
 
+External Thread的`thread/start`响应必须保持Desktop客户端分类`source: "vscode"`，并原样反映请求的`ephemeral`与`historyMode`。当前Desktop使用这组三字段选择live timeline；旧实现强制`appServer/true/paginated`时，Host虽然发出了完整Agent Message与Turn终态，Desktop仍丢弃可见文本和后续轮次。该兼容元数据不等于Mapping Store或跨重启持久化已经实现。
+
 Host默认Agent仍只允许`codex | pi`，Claude开发链路必须来自Renderer transport token；本Change不改变Launcher或公开默认Agent选项。
 
 ### 7. Renderer使用显式启用列表而不是新增固定旁路
@@ -91,7 +93,7 @@ Host默认Agent仍只允许`codex | pi`，Claude开发链路必须来自Renderer
 ### 8. 验证分成Hermetic、真实SDK和真实Desktop三层
 
 - 普通Vitest使用Fake Claude Transport和Fake HarnessAdapter，不启动Claude。
-- 显式Live Adapter测试使用真实用户安装、临时cwd、固定小Prompt、Tool禁用、预算/超时和忽略Capture。
+- 显式Live Adapter测试使用真实用户安装、临时cwd、不要求Tool的固定小Prompt、预算/超时和忽略Capture；默认Tool配置调整后需重新运行该Gate。
 - Renderer/Host真实Gate通过显式环境与`--enable-claude-code`启动；用户在真实Desktop选择Claude、提交一个合成Prompt、观察流式回复和Cancel/继续。报告只保存ordinal、Harness、事件计数和结果枚举。
 
 没有真实Desktop证据时只能宣布Host纵向测试通过，不能宣布Codex UI接入完成。
@@ -104,6 +106,7 @@ Host默认Agent仍只允许`codex | pi`，Claude开发链路必须来自Renderer
 - [Claude未安装或认证失效] -> 首Turn acceptance前映射为`notInstalled`或`authenticationRequired`；外部token不回落Codex。
 - [Renderer显示Claude但Host未启用] -> 只有同一受控Gate同时设置Host环境和Renderer配置；Host仍对未注册token fail closed。
 - [私有Renderer结构随Desktop变化] -> 继续复用现有asset/结构签名和fail-closed策略，不为Claude增加第二套Hook。
+- [External Thread元数据进入错误的Desktop timeline] -> 与同一Desktop官方app-server差分`source`、`ephemeral`和`historyMode`，Host测试约束请求值与响应值一致，并用可见文本及同Thread续轮Gate验证。
 - [开发Gate被误认为产品支持] -> 默认enabled列表不含Claude，OpenSpec/报告明确非发布，法律与跨平台决策保持阻塞。
 
 ## Migration Plan
@@ -118,6 +121,5 @@ Rollback删除Claude Adapter注册和开发Renderer配置，并保留注册式Ho
 
 ## Open Questions
 
-- 当前真实Desktop build是否会正确渲染Claude失败Result和取消后的同Thread继续，需要最终人工Gate确认。
-- 真实Desktop Gate使用现有Launcher还是附着到用户已启动的受控Desktop，取决于本机当前Launcher/Inspector可用状态。
+- 当前真实Desktop build已验证Claude正常文本、Question回答后文本、点击停止后的`interrupted`终态和同Thread续轮；失败Result的更多可见形状仍可在后续专门Gate中扩大覆盖。
 - Windows完整Claude进程树和发布依赖不在本Change完成条件内。

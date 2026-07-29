@@ -6,7 +6,10 @@ import {
   ClaudeCodeAdapter,
   ClaudeCodeExecutableError,
   type ClaudeAdapterDependencies,
+  type ClaudeInteractionResponse,
+  type ClaudeQuestionRequest,
   type ClaudeTransportTurnResult,
+  type ClaudeTurnEvent,
   type ClaudeTurnTransport,
 } from "../src/index.js";
 
@@ -14,11 +17,18 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
+  readonly respondToInteraction = vi.fn(async (response: ClaudeInteractionResponse) => {
+    this.event({
+      type: "interaction.closed",
+      requestId: response.requestId,
+      reason: "cancelled" in response ? "cancelled" : "responded",
+    });
+  });
   readonly start = vi.fn(async () => undefined);
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
   #active:
     | {
-        onTextDelta(delta: string): void;
+        onEvent(event: ClaudeTurnEvent): void;
         resolve(result: ClaudeTransportTurnResult): void;
         reject(error: unknown): void;
       }
@@ -31,16 +41,25 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   runTurn(
     text: string,
     userMessageId: string,
-    onTextDelta: (delta: string) => void,
+    onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
     this.turns.push({ text, userMessageId });
     return new Promise((resolve, reject) => {
-      this.#active = { onTextDelta, resolve, reject };
+      this.#active = { onEvent, resolve, reject };
     });
   }
 
+  event(event: ClaudeTurnEvent): void {
+    if (!this.#active) throw new Error("No active fake Claude Turn");
+    this.#active.onEvent(event);
+  }
+
+  question(request: ClaudeQuestionRequest): void {
+    this.event({ type: "interaction.requested", request });
+  }
+
   delta(text: string): void {
-    this.#active?.onTextDelta(text);
+    this.event({ type: "text.delta", delta: text });
   }
 
   finish(result: ClaudeTransportTurnResult): void {
@@ -88,6 +107,13 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   if (output.done) throw new Error("Harness output ended unexpectedly");
   if (output.value.kind !== "event") throw new Error("Expected a Harness event output");
   return output.value.event;
+}
+
+async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
+  const output = await iterator.next();
+  if (output.done) throw new Error("Harness output ended unexpectedly");
+  if (output.value.kind !== "interaction") throw new Error("Expected a Harness Interaction");
+  return output.value.interaction;
 }
 
 describe("Claude Code HarnessAdapter", () => {
@@ -191,6 +217,160 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("round-trips native multiple, multi-select, and Other Questions then continues", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("question"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.question({
+      requestId: "native-request",
+      toolUseId: "native-tool",
+      questions: [
+        {
+          question: "Which path?",
+          header: "Path",
+          options: [
+            { label: "Alpha", description: "First" },
+            { label: "Beta", description: "Second" },
+          ],
+          multiSelect: false,
+        },
+        {
+          question: "Which features?",
+          header: "Features",
+          options: [
+            { label: "Search", description: "Enable search" },
+            { label: "Export", description: "Enable export" },
+          ],
+          multiSelect: true,
+        },
+      ],
+    });
+    const interaction = await nextInteraction(iterator);
+    expect(interaction).toMatchObject({
+      type: "question",
+      title: "Claude Code",
+      questions: [
+        {
+          id: "question-1",
+          type: "choice",
+          multiple: false,
+          allowOther: true,
+          options: [{ value: "Alpha", description: "First" }, { value: "Beta" }],
+        },
+        {
+          id: "question-2",
+          type: "choice",
+          multiple: true,
+          allowOther: true,
+        },
+      ],
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: { "question-1": ["Alpha"] } },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: {
+          type: "question",
+          answers: {
+            "question-1": ["Alpha"],
+            "question-2": ["Search", "Custom feature"],
+          },
+        },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "native-request",
+      answers: {
+        "Which path?": "Alpha",
+        "Which features?": "Search, Custom feature",
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: interaction.interactionId,
+      reason: "responded",
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    await session.execute(textTurn("continued"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.delta("continued");
+    await nextEvent(iterator);
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(transports[0]?.start).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("maps Desktop dismissal to native Question cancellation", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("dismissed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.question({
+      requestId: "dismiss-request",
+      toolUseId: "dismiss-tool",
+      questions: [
+        {
+          question: "Continue?",
+          header: "Continue",
+          options: [
+            { label: "Yes", description: "Continue" },
+            { label: "No", description: "Stop" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    const interaction = await nextInteraction(iterator);
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "dismiss-request",
+      cancelled: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
   it("maps proven cancellation and continues on the same Transport", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -200,6 +380,22 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
+    transports[0]?.question({
+      requestId: "cancel-request",
+      toolUseId: "cancel-tool",
+      questions: [
+        {
+          question: "Continue?",
+          header: "Continue",
+          options: [
+            { label: "Yes", description: "Continue" },
+            { label: "No", description: "Stop" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    const cancelledInteraction = await nextInteraction(iterator);
     const cancel = {
       type: "turn.cancel" as const,
       turnId: hostTurnIdSchema.parse("cancelled"),
@@ -213,6 +409,16 @@ describe("Claude Code HarnessAdapter", () => {
       value: { cancellationRequested: true },
     });
     expect(transports[0]?.abort).toHaveBeenCalledOnce();
+    transports[0]?.event({
+      type: "interaction.closed",
+      requestId: "cancel-request",
+      reason: "cancelled",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: cancelledInteraction.interactionId,
+      reason: "cancelled",
+    });
     transports[0]?.finish({ status: "cancelled", reason: "aborted_streaming" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
@@ -265,8 +471,28 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
+    transports[0]?.question({
+      requestId: "fault-request",
+      toolUseId: "fault-tool",
+      questions: [
+        {
+          question: "Continue?",
+          header: "Continue",
+          options: [
+            { label: "Yes", description: "Continue" },
+            { label: "No", description: "Stop" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    await nextInteraction(iterator);
     transports[0]?.fault(new Error("synthetic Query fault"));
 
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
     expect(await nextEvent(iterator)).toMatchObject({
@@ -285,6 +511,7 @@ describe("Claude Code HarnessAdapter", () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
         runTurn: async () => ({ status: "succeeded" }),
+        respondToInteraction: async () => undefined,
         abort: async () => undefined,
         close: async () => undefined,
       }),

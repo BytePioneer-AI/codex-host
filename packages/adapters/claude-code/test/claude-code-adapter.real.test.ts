@@ -62,6 +62,137 @@ async function startTurn(session: HarnessSession, id: ReturnType<typeof turnId>,
 
 describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
   it(
+    "round-trips native AskUserQuestion and continues the Session",
+    async () => {
+      const workspace = path.resolve(".codexhost", "claude-question-real", "workspace");
+      await fs.mkdir(workspace, { recursive: true });
+      const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 10_000 });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd: workspace });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const collector = new OutputCollector(session);
+        const questionTurnId = turnId("11");
+        await startTurn(
+          session,
+          questionTurnId,
+          [
+            "Use AskUserQuestion to ask exactly one question.",
+            "Use header Path and exactly two options named Alpha and Beta.",
+            "After receiving the answer, reply with exactly CLAUDE_QUESTION_DONE.",
+          ].join(" "),
+        );
+        const questionOutput = await collector.waitFor(
+          (output) => output.kind === "interaction" && output.interaction.turnId === questionTurnId,
+        );
+        if (questionOutput.kind !== "interaction") throw new Error("Question was not emitted");
+        const question = questionOutput.interaction.questions[0];
+        if (!question || question.type !== "choice") throw new Error("Choice was not emitted");
+        const answer = question.options[0]?.value;
+        if (!answer) throw new Error("Question has no declared answer");
+        await expect(
+          session.execute({
+            type: "interaction.respond",
+            interactionId: questionOutput.interaction.interactionId,
+            response: { type: "question", answers: { [question.id]: [answer] } },
+          }),
+        ).resolves.toEqual({ ok: true, value: { accepted: true } });
+        await expect(
+          collector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "interaction.closed" &&
+              output.event.interactionId === questionOutput.interaction.interactionId,
+          ),
+        ).resolves.toMatchObject({ event: { reason: "responded" } });
+        await expect(
+          collector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === questionTurnId,
+          ),
+        ).resolves.toMatchObject({ event: { outcome: { status: "succeeded" } } });
+
+        const continuationTurnId = turnId("12");
+        await startTurn(
+          session,
+          continuationTurnId,
+          "Reply with exactly CLAUDE_QUESTION_CONTINUED.",
+        );
+        await expect(
+          collector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === continuationTurnId,
+          ),
+        ).resolves.toMatchObject({ event: { outcome: { status: "succeeded" } } });
+
+        await session.close();
+        await collector.consuming;
+      } finally {
+        await adapter.close();
+      }
+    },
+    REAL_TIMEOUT_MS,
+  );
+
+  it(
+    "cancels a pending native AskUserQuestion before the Turn terminal",
+    async () => {
+      const workspace = path.resolve(".codexhost", "claude-question-cancel-real", "workspace");
+      await fs.mkdir(workspace, { recursive: true });
+      const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 10_000 });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd: workspace });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const collector = new OutputCollector(session);
+        const questionTurnId = turnId("21");
+        await startTurn(
+          session,
+          questionTurnId,
+          [
+            "Use AskUserQuestion to ask exactly one question.",
+            "Use header Continue and exactly two options named Yes and No.",
+            "Wait for the answer.",
+          ].join(" "),
+        );
+        const questionOutput = await collector.waitFor(
+          (output) => output.kind === "interaction" && output.interaction.turnId === questionTurnId,
+        );
+        if (questionOutput.kind !== "interaction") throw new Error("Question was not emitted");
+        await expect(
+          session.execute({ type: "turn.cancel", turnId: questionTurnId }),
+        ).resolves.toEqual({ ok: true, value: { cancellationRequested: true } });
+        await expect(
+          collector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "interaction.closed" &&
+              output.event.interactionId === questionOutput.interaction.interactionId,
+          ),
+        ).resolves.toMatchObject({ event: { reason: "cancelled" } });
+        await expect(
+          collector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === questionTurnId,
+          ),
+        ).resolves.toMatchObject({ event: { outcome: { status: "cancelled" } } });
+
+        await session.close();
+        await collector.consuming;
+      } finally {
+        await adapter.close();
+      }
+    },
+    REAL_TIMEOUT_MS,
+  );
+
+  it(
     "runs text, cancels authoritatively, continues the Session, and closes",
     async () => {
       const workspace = path.resolve(".codexhost", "claude-adapter-real", "workspace");

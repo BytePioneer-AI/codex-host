@@ -210,6 +210,53 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("preserves the Desktop Thread persistence mode for an external Harness", async () => {
+    const fixture = createFixture();
+    writeRequest(fixture.desktopInput, {
+      id: 1,
+      method: "thread/start",
+      params: {
+        model: "codexhost/pi-native",
+        cwd: "/synthetic",
+        ephemeral: false,
+        historyMode: "legacy",
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 1)),
+    ).resolves.toMatchObject({
+      result: {
+        thread: { ephemeral: false, historyMode: "legacy", source: "vscode" },
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/started")),
+    ).resolves.toMatchObject({
+      params: {
+        thread: { ephemeral: false, historyMode: "legacy", source: "vscode" },
+      },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "thread/start",
+      params: {
+        model: "codexhost/pi-native",
+        cwd: "/synthetic",
+        ephemeral: true,
+        historyMode: "paginated",
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({
+      result: {
+        thread: { ephemeral: true, historyMode: "paginated", source: "vscode" },
+      },
+    });
+    await stopFixture(fixture);
+  });
+
   it("selects an existing Pi Thread Model from ordered Session state", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

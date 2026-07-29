@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   HarnessOutputChannel,
+  validateHostQuestionResponse,
   type CreateSessionInput,
   type HarnessAdapter,
   type HarnessError,
@@ -15,6 +16,7 @@ import {
   type HostCommand,
   type HostEvent,
   type HostItemOutcome,
+  type HostQuestionInteraction,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -26,14 +28,23 @@ import {
   type TurnStartAccepted,
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
-import { harnessIdSchema, hostItemIdSchema, type HarnessId } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostInteractionIdSchema,
+  hostItemIdSchema,
+  type HarnessId,
+  type HostInteractionId,
+} from "@codexhost/shared-contracts";
 
 import { ClaudeCodeExecutableError } from "./command.js";
 import { ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
+  ClaudeInteractionResponse,
+  ClaudeQuestionRequest,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
+  ClaudeTurnEvent,
   ClaudeTurnTransport,
 } from "./transport.js";
 
@@ -45,9 +56,16 @@ export interface ClaudeCodeAdapterOptions {
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
+interface ActiveInteraction {
+  interaction: HostQuestionInteraction;
+  nativeRequest: ClaudeQuestionRequest;
+}
+
 interface ActiveTurn {
   command: TurnStartCommand;
   item: HostAgentMessageItem;
+  interactions: Map<HostInteractionId, ActiveInteraction>;
+  interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -166,16 +184,7 @@ class ClaudeHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "interaction.respond") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Claude Code Interaction is not implemented in this Adapter slice",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") {
       return {
         ok: false,
@@ -233,6 +242,8 @@ class ClaudeHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       item,
+      interactions: new Map(),
+      interactionByNativeId: new Map(),
       cancellationRequested: false,
       completion,
       resolveCompletion,
@@ -241,8 +252,8 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
     try {
-      const running = transport.runTurn(text, this.#randomUUID(), (delta) => {
-        this.#appendText(active, delta);
+      const running = transport.runTurn(text, this.#randomUUID(), (event) => {
+        this.#handleTurnEvent(active, event);
       });
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -257,6 +268,49 @@ class ClaudeHarnessSession implements HarnessSession {
   close(): Promise<void> {
     if (!this.#closePromise) this.#closePromise = this.#close();
     return this.#closePromise;
+  }
+
+  async #respond(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const active = this.#active;
+    const pending = active?.interactions.get(command.interactionId);
+    if (!active || !pending) {
+      return {
+        ok: false,
+        error: invalidState("Claude Code Interaction Response must reference a pending Question"),
+      };
+    }
+    const validationError = validateHostQuestionResponse(pending.interaction, command.response);
+    if (validationError) return { ok: false, error: validationError };
+    const transport = this.#transport;
+    if (!transport) {
+      return { ok: false, error: invalidState("Claude Code transport is unavailable") };
+    }
+    let response: ClaudeInteractionResponse;
+    if (command.response.cancelled) {
+      response = { requestId: pending.nativeRequest.requestId, cancelled: true };
+    } else {
+      const answers: Record<string, string> = {};
+      for (const [index, question] of pending.nativeRequest.questions.entries()) {
+        answers[question.question] =
+          command.response.answers[`question-${index + 1}`]?.join(", ") ?? "";
+      }
+      response = { requestId: pending.nativeRequest.requestId, answers };
+    }
+    try {
+      await transport.respondToInteraction(response);
+      return { ok: true, value: { accepted: true } };
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: "Claude Code Question response failed",
+          retryable: false,
+        },
+      };
+    }
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
@@ -333,6 +387,79 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
+  #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
+    if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
+    if (event.type === "text.delta") {
+      this.#appendText(active, event.delta);
+    } else if (event.type === "interaction.requested") {
+      this.#startInteraction(active, event.request);
+    } else {
+      this.#closeInteraction(active, event.requestId, event.reason);
+    }
+  }
+
+  #startInteraction(active: ActiveTurn, request: ClaudeQuestionRequest): void {
+    if (active.interactionByNativeId.has(request.requestId)) {
+      throw new Error("Claude Code Interaction started more than once");
+    }
+    const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
+    const firstQuestion = request.questions[0];
+    if (!firstQuestion) throw new Error("Claude Code Question request is empty");
+    const interaction: HostQuestionInteraction = {
+      type: "question",
+      interactionId,
+      turnId: active.command.turnId,
+      title: request.questions.length === 1 ? firstQuestion.header : "Claude Code",
+      questions: request.questions.map((question, index) => ({
+        id: `question-${index + 1}`,
+        type: "choice",
+        prompt: question.question,
+        options: question.options.map((option) => ({
+          value: option.label,
+          label: option.label,
+          description: option.description,
+        })),
+        multiple: question.multiSelect,
+        allowOther: true,
+        optional: false,
+      })),
+    };
+    active.interactions.set(interactionId, { interaction, nativeRequest: request });
+    active.interactionByNativeId.set(request.requestId, interactionId);
+    this.#channel.emit({ kind: "interaction", interaction });
+  }
+
+  #closeInteraction(
+    active: ActiveTurn,
+    nativeRequestId: string,
+    reason: "responded" | "cancelled" | "superseded",
+  ): void {
+    const interactionId = active.interactionByNativeId.get(nativeRequestId);
+    if (!interactionId)
+      throw new Error("Claude Code Interaction close references an unknown request");
+    active.interactionByNativeId.delete(nativeRequestId);
+    active.interactions.delete(interactionId);
+    this.#event({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
+  }
+
+  #closeActiveInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
+    for (const [interactionId, pending] of active.interactions) {
+      active.interactions.delete(interactionId);
+      active.interactionByNativeId.delete(pending.nativeRequest.requestId);
+      this.#event({
+        type: "interaction.closed",
+        interactionId,
+        turnId: active.command.turnId,
+        reason,
+      });
+    }
+  }
+
   #appendText(active: ActiveTurn, delta: string): void {
     if (this.#active !== active || delta.length === 0) return;
     active.item = { ...active.item, text: active.item.text + delta };
@@ -360,6 +487,10 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #finish(active: ActiveTurn, outcome: TurnOutcome): void {
     if (this.#active !== active) return;
+    this.#closeActiveInteractions(
+      active,
+      outcome.status === "succeeded" ? "superseded" : "cancelled",
+    );
     const itemOutcome: HostItemOutcome = outcome;
     this.#event({
       type: "item.completed",

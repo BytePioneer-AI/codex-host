@@ -24,16 +24,19 @@ describe("Renderer Agent selection state", () => {
     });
   });
 
-  it("locks the first-input Agent and rejects later switches", () => {
+  it("keeps the draft mutable until submission locks the final Agent", () => {
     const composer = {};
     const registry = new AgentSelectionRegistry<object>({
       idFactory: (kind, sequence) => `${kind}-${sequence}`,
     });
 
     registry.setAgent(composer, "pi");
+    registry.setAgent(composer, "codex");
+    registry.setAgent(composer, "pi");
+    expect(registry.get(composer)).toMatchObject({ agent: "pi", phase: "draft" });
+
     registry.lock(composer);
     registry.setAgent(composer, "codex");
-
     expect(registry.get(composer)).toMatchObject({
       composerId: "composer-1",
       agent: "pi",

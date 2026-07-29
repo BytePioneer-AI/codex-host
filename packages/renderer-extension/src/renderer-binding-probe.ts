@@ -7,6 +7,7 @@ import {
 } from "./agent-selection-state.js";
 import {
   findComposerModelTarget,
+  isDraftPrewarmPolicyReady,
   type LockedComposerSelection,
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
@@ -14,6 +15,12 @@ import {
 export interface RendererBindingProbeStatus {
   version: 1;
   mountedComposers: number;
+  switchingComposers: number;
+  switchCounters: {
+    attempts: number;
+    committed: number;
+    rejected: number;
+  };
   selections: Array<{
     composerId: string;
     agent: RendererAgent;
@@ -49,7 +56,7 @@ export interface RendererBindingProbeStatus {
 
 export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
-  setAgent(composerId: string, agent: RendererAgent): boolean;
+  setAgent(composerId: string, agent: RendererAgent): Promise<boolean>;
   lockedSelection(): LockedComposerSelection | null;
   setAdapter(
     status: RendererAdapterStatus,
@@ -72,6 +79,7 @@ interface MountedComposer {
   sendButton: HTMLButtonElement;
   buttons: Record<RendererAgent, HTMLButtonElement>;
   modelTarget: readonly unknown[] | null;
+  sendDisabledBeforeSwitch: boolean | null;
 }
 
 interface PendingComposerReplacement {
@@ -103,7 +111,7 @@ function buttonText(button: HTMLButtonElement): string {
     .toLowerCase();
 }
 
-function isSendButton(button: HTMLButtonElement): boolean {
+export function isComposerSubmitButton(button: HTMLButtonElement): boolean {
   if (button.type === "submit") return true;
   return /(^|\s)(send|submit|发送|提交)(\s|$)/u.test(buttonText(button));
 }
@@ -111,7 +119,7 @@ function isSendButton(button: HTMLButtonElement): boolean {
 function sendButtonWithin(root: Element): HTMLButtonElement | null {
   return (
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      isSendButton(button),
+      isComposerSubmitButton(button),
     ) ?? null
   );
 }
@@ -127,6 +135,10 @@ export function isComposerInputIntent(event: KeyboardEvent): boolean {
   return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
 }
 
+export function isComposerSubmissionKey(event: KeyboardEvent): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
+}
+
 export function shouldTransferComposerState(
   sourceTarget: readonly unknown[] | null,
   replacementTarget: readonly unknown[] | null,
@@ -135,7 +147,7 @@ export function shouldTransferComposerState(
   if (!sourceTarget || !replacementTarget) return false;
   if (sourceTarget === replacementTarget) return true;
   return (
-    sourcePhase === "locked" &&
+    (sourcePhase === "draft" || sourcePhase === "locked") &&
     sourceTarget[0] === "default" &&
     replacementTarget[0] === "conversation"
   );
@@ -241,16 +253,41 @@ function updateButtons(
   mounted: MountedComposer,
   state: { agent: RendererAgent; phase: "draft" | "locked" },
   adapterState: RendererAdapterStatus["state"],
+  switching = false,
 ): void {
   for (const candidate of ["codex", "pi"] as const) {
     const selected = candidate === state.agent;
     const button = mounted.buttons[candidate];
     button.setAttribute("aria-pressed", String(selected));
-    button.disabled = state.phase === "locked" || (candidate === "pi" && adapterState !== "ready");
+    button.disabled =
+      switching || state.phase === "locked" || (candidate === "pi" && adapterState !== "ready");
     button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
     button.style.boxShadow = selected ? "inset 0 0 0 1px rgba(127, 127, 127, 0.3)" : "none";
     button.style.cursor = button.disabled ? "not-allowed" : "pointer";
     button.style.opacity = button.disabled && !selected ? "0.55" : "1";
+  }
+}
+
+interface DraftAgentSwitchOperations {
+  applyAgent(agent: RendererAgent): boolean;
+  clearPrewarm(): Promise<void>;
+}
+
+export async function applyDraftAgentSwitch(
+  currentAgent: RendererAgent,
+  nextAgent: RendererAgent,
+  operations: DraftAgentSwitchOperations,
+): Promise<boolean> {
+  if (currentAgent === nextAgent) return true;
+  if (!operations.applyAgent(nextAgent)) return false;
+  try {
+    await operations.clearPrewarm();
+    return true;
+  } catch (error) {
+    if (!operations.applyAgent(currentAgent)) {
+      throw new Error("Draft Agent switch could not restore the prior Agent", { cause: error });
+    }
+    return false;
   }
 }
 
@@ -261,7 +298,13 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
   const registry = new AgentSelectionRegistry<Element>();
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
+  const switchingComposerIds = new Set<string>();
   const observations: RendererSubmissionObservation[] = [];
+  const switchCounters = {
+    attempts: 0,
+    committed: 0,
+    rejected: 0,
+  };
   let disposed = false;
   let scanScheduled = false;
   let replacementTransfers = 0;
@@ -288,6 +331,69 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         detail: observation,
       }),
     );
+  };
+
+  const renderMounted = (mounted: MountedComposer): void => {
+    const state = registry.get(mounted.composer);
+    const switching = switchingComposerIds.has(state.composerId);
+    if (switching && mounted.sendDisabledBeforeSwitch === null) {
+      mounted.sendDisabledBeforeSwitch = mounted.sendButton.disabled;
+      mounted.sendButton.disabled = true;
+    } else if (!switching && mounted.sendDisabledBeforeSwitch !== null) {
+      mounted.sendButton.disabled = mounted.sendDisabledBeforeSwitch;
+      mounted.sendDisabledBeforeSwitch = null;
+    }
+    updateButtons(mounted, state, adapterStatus.state, switching);
+  };
+
+  const switchComposerAgent = async (
+    mounted: MountedComposer,
+    agent: RendererAgent,
+  ): Promise<boolean> => {
+    const current = registry.get(mounted.composer);
+    if (current.phase !== "draft" || switchingComposerIds.has(current.composerId)) return false;
+    if (current.agent === agent) return true;
+    switchCounters.attempts += 1;
+    switchingComposerIds.add(current.composerId);
+    renderMounted(mounted);
+    let switched = false;
+    try {
+      switched = await applyDraftAgentSwitch(current.agent, agent, {
+        applyAgent(nextAgent) {
+          return applyAdapterAgent?.(nextAgent) ?? nextAgent === "codex";
+        },
+        async clearPrewarm() {
+          const policy = window.__codexhostDraftPrewarmPolicyV1;
+          if (!isDraftPrewarmPolicyReady(policy)) {
+            throw new Error("Renderer draft prewarm policy is unavailable");
+          }
+          await policy.clear();
+        },
+      });
+      if (switched) {
+        registry.setAgent(mounted.composer, agent);
+        switchCounters.committed += 1;
+      } else {
+        switchCounters.rejected += 1;
+      }
+      return switched;
+    } catch {
+      switchCounters.rejected += 1;
+      adapterStatus = {
+        ...adapterStatus,
+        state: "unsupported",
+        reason: "draft-prewarm-clear-failed",
+        hook: null,
+      };
+      return false;
+    } finally {
+      switchingComposerIds.delete(current.composerId);
+      for (const candidate of mountedByComposer.values()) {
+        if (registry.get(candidate.composer).composerId === current.composerId) {
+          renderMounted(candidate);
+        }
+      }
+    }
   };
 
   const mount = (composer: Element): void => {
@@ -323,11 +429,12 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       sendButton,
       buttons,
       modelTarget: findComposerModelTarget(composer),
+      sendDisabledBeforeSwitch: null,
     };
     for (const agent of ["codex", "pi"] as const) {
       buttons[agent].addEventListener("click", () => {
-        if (!applyAdapterAgent?.(agent) || !composer.isConnected) return;
-        updateButtons(mounted, registry.setAgent(composer, agent), adapterStatus.state);
+        if (!composer.isConnected) return;
+        void switchComposerAgent(mounted, agent);
       });
     }
     const toolbar = sendButton.parentElement;
@@ -335,7 +442,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     else composer.append(control);
     mountedByComposer.set(composer, mounted);
     applyAdapterAgent?.(state.agent);
-    updateButtons(mounted, state, adapterStatus.state);
+    renderMounted(mounted);
   };
 
   const scan = (): void => {
@@ -430,48 +537,58 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     event.preventDefault();
     event.stopImmediatePropagation();
   };
-  const lockForTarget = (
-    target: EventTarget | null,
-  ): { composer: Element; applied: boolean } | null => {
-    const element = eventElement(target);
-    const editor = element ? editorForElement(element) : null;
-    if (!editor) return null;
-    const composer = composerForEditor(editor);
-    const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (!composer || !mounted) return null;
+  const prepareComposer = (composer: Element): { composer: Element; applied: boolean } | null => {
+    const mounted = mountedByComposer.get(composer);
+    if (!mounted) return null;
     const current = registry.get(composer);
+    if (switchingComposerIds.has(current.composerId)) return { composer, applied: false };
     if (current.phase === "locked") return { composer, applied: true };
     if (!applyComposerAgent(composer)) return { composer, applied: false };
-    const locked = registry.lock(composer);
-    updateButtons(mounted, locked, adapterStatus.state);
+    registry.lock(composer);
+    renderMounted(mounted);
     return { composer, applied: true };
   };
+  const composerForTarget = (target: EventTarget | null): Element | null => {
+    const element = eventElement(target);
+    const editor = element ? editorForElement(element) : null;
+    return editor ? composerForEditor(editor) : null;
+  };
   const onBeforeInput = (event: InputEvent): void => {
-    const prepared = lockForTarget(event.target);
-    if (prepared && !prepared.applied) blockEvent(event);
+    const composer = composerForTarget(event.target);
+    if (!composer) return;
+    const state = registry.get(composer);
+    if (switchingComposerIds.has(state.composerId) || !applyComposerAgent(composer)) {
+      blockEvent(event);
+    }
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
     const composer = element ? composerForElement(element) : null;
-    if (!composer || !mountedByComposer.has(composer)) return;
-    if (!applyComposerAgent(composer)) {
+    if (!composer) return;
+    const prepared = prepareComposer(composer);
+    if (!prepared) return;
+    if (!prepared.applied) {
       blockEvent(event);
       return;
     }
     record(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    const prepared = isComposerInputIntent(event) ? lockForTarget(event.target) : null;
-    if (prepared && !prepared.applied) {
+    const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
+    if (composer) {
+      const state = registry.get(composer);
+      if (switchingComposerIds.has(state.composerId) || !applyComposerAgent(composer)) {
+        blockEvent(event);
+        return;
+      }
+    }
+    if (!isComposerSubmissionKey(event) || !composer) return;
+    const prepared = prepareComposer(composer);
+    if (!prepared?.applied) {
       blockEvent(event);
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || !prepared) return;
-    if (!applyComposerAgent(prepared.composer)) {
-      blockEvent(event);
-      return;
-    }
-    record(prepared.composer, "enter");
+    record(composer, "enter");
   };
   const onClick = (event: MouseEvent): void => {
     const element = eventElement(event.target);
@@ -480,7 +597,8 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     const composer = composerForElement(button);
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (!composer || mounted?.sendButton !== button) return;
-    if (!applyComposerAgent(composer)) {
+    const prepared = prepareComposer(composer);
+    if (!prepared?.applied) {
       blockEvent(event);
       return;
     }
@@ -492,9 +610,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
     scheduleScan();
   });
   const onAdapterStatus = () => {
-    for (const mounted of mountedByComposer.values()) {
-      updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
-    }
+    for (const mounted of mountedByComposer.values()) renderMounted(mounted);
   };
   mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener("beforeinput", onBeforeInput, true);
@@ -515,22 +631,19 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       return {
         version: 1,
         mountedComposers: selections.length,
+        switchingComposers: switchingComposerIds.size,
+        switchCounters: { ...switchCounters },
         selections,
         observations: observations.map((observation) => ({ ...observation })),
         adapter: { ...adapterStatus },
         diagnostics: structuralDiagnostics(replacementTransfers),
       };
     },
-    setAgent(composerId, agent) {
+    async setAgent(composerId, agent) {
       const mounted = [...mountedByComposer.values()].find(
         (candidate) => candidate.composerId === composerId,
       );
-      if (!mounted) return false;
-      const applied = applyAdapterAgent?.(agent);
-      if (applied !== true) return false;
-      const state = registry.setAgent(mounted.composer, agent);
-      updateButtons(mounted, state, adapterStatus.state);
-      return state.agent === agent;
+      return mounted ? switchComposerAgent(mounted, agent) : false;
     },
     lockedSelection() {
       const locked = [...mountedByComposer.values()]
@@ -557,9 +670,7 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
         const mounted = connected[0];
         if (mounted) applyAdapterAgent?.(registry.get(mounted.composer).agent);
       }
-      for (const mounted of mountedByComposer.values()) {
-        updateButtons(mounted, registry.get(mounted.composer), adapterStatus.state);
-      }
+      for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
     dispose() {
       if (disposed) return;
@@ -573,9 +684,15 @@ export function installRendererBindingProbe(): RendererBindingProbeApi {
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
-      for (const mounted of mountedByComposer.values()) mounted.control.remove();
+      for (const mounted of mountedByComposer.values()) {
+        if (mounted.sendDisabledBeforeSwitch !== null) {
+          mounted.sendButton.disabled = mounted.sendDisabledBeforeSwitch;
+        }
+        mounted.control.remove();
+      }
       mountedByComposer.clear();
       pendingReplacements.clear();
+      switchingComposerIds.clear();
       delete window.__codexhostRendererBindingProbeV1;
     },
   };

@@ -78,6 +78,10 @@ export class RequestRouteObservationTracker {
     }
   }
 
+  forgetThread(threadId: string): void {
+    this.#createByThreadId.delete(threadId);
+  }
+
   observeTurn(threadId: string, fallbackHarness: "codex" | "pi"): TurnRequestRouteObservation {
     const tracked = this.#createByThreadId.get(threadId);
     if (!tracked) {

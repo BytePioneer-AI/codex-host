@@ -354,6 +354,24 @@ export class AppServerHost {
           continue;
         }
       }
+      if (request.method === "thread/name/set") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
+        if (piThread) {
+          await this.#setPiThreadName(request, piThread, params.name);
+          continue;
+        }
+      }
+      if (request.method === "thread/delete") {
+        const params = requestObject(request);
+        const threadId = params.threadId;
+        const piThread = typeof threadId === "string" ? this.#piThreads.get(threadId) : undefined;
+        if (piThread) {
+          await this.#deletePiThread(request, piThread);
+          continue;
+        }
+      }
       await writeFrame(official.stdin, frame);
     }
     official.stdin.end();
@@ -457,6 +475,40 @@ export class AppServerHost {
       await session.close().catch(() => undefined);
       await this.#writer.json(
         rpcError(request, -32071, `Pi Session could not open: ${errorMessage(error)}`),
+      );
+    }
+  }
+
+  async #setPiThreadName(
+    request: JsonRpcRequest,
+    piThread: PiThread,
+    name: JsonValue | undefined,
+  ): Promise<void> {
+    if (typeof name !== "string" || name.length === 0) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Pi Thread name must be a non-empty string"),
+      );
+      return;
+    }
+    piThread.thread.name = name;
+    piThread.thread.updatedAt = unixSeconds();
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    await this.#writer.json({
+      method: "thread/name/updated",
+      params: { threadId: piThread.id, threadName: name },
+    });
+  }
+
+  async #deletePiThread(request: JsonRpcRequest, piThread: PiThread): Promise<void> {
+    this.#piThreads.delete(piThread.id);
+    this.#routeObservationTracker.forgetThread(piThread.id);
+    try {
+      await piThread.session.close();
+      await piThread.outputTask;
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32075, `Pi Thread could not close: ${errorMessage(error)}`),
       );
     }
   }

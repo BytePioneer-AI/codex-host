@@ -27,6 +27,7 @@ export class PiRpcFaultError extends Error {
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
+  commandArguments?: string[];
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
@@ -42,6 +43,8 @@ interface PendingCommand {
 
 interface ActiveTurn {
   text: string;
+  streamedMessageText: string;
+  lastFinalizedMessageText: string | null;
   onDelta(delta: string): void;
   resolve(value: PiTextTurnResult): void;
   reject(error: Error): void;
@@ -57,6 +60,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function message(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
+}
+
+function assistantText(value: unknown): string | null {
+  if (!isRecord(value) || value.role !== "assistant" || !Array.isArray(value.content)) return null;
+  return value.content
+    .filter(
+      (content): content is Record<string, unknown> =>
+        isRecord(content) && content.type === "text" && typeof content.text === "string",
+    )
+    .map((content) => content.text as string)
+    .join("");
 }
 
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
@@ -89,7 +103,7 @@ function spawnCommand(options: PiRpcSessionOptions): {
   windowsVerbatimArguments: boolean;
 } {
   const command = options.command ?? options.environment?.PI_COMMAND ?? "pi";
-  const arguments_ = ["--mode", "rpc"];
+  const arguments_ = options.commandArguments ?? ["--mode", "rpc"];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -211,7 +225,16 @@ export class PiRpcSession {
       const timeout = setTimeout(() => {
         this.#fail(new PiRpcFaultError("protocolError", "Pi text Turn timed out"));
       }, this.#options.turnTimeoutMs);
-      this.#activeTurn = { text: "", onDelta, resolve, reject, timeout, failure: null };
+      this.#activeTurn = {
+        text: "",
+        streamedMessageText: "",
+        lastFinalizedMessageText: null,
+        onDelta,
+        resolve,
+        reject,
+        timeout,
+        failure: null,
+      };
     });
     try {
       await this.#send("prompt", { message: text });
@@ -286,22 +309,58 @@ export class PiRpcSession {
     }
     const active = this.#activeTurn;
     if (!active) return;
+    if (value.type === "message_start" && assistantText(value.message) !== null) {
+      active.streamedMessageText = "";
+      return;
+    }
     if (value.type === "message_update" && isRecord(value.assistantMessageEvent)) {
       const event = value.assistantMessageEvent;
       if (event.type === "text_delta" && typeof event.delta === "string") {
         active.text += event.delta;
+        active.streamedMessageText += event.delta;
         active.onDelta(event.delta);
       } else if (event.type === "error") {
         active.failure = new Error("Pi assistant message failed");
       }
       return;
     }
+    if (value.type === "message_end") {
+      this.#finalizeAssistantMessage(active, value.message);
+      return;
+    }
+    if (value.type === "turn_end") {
+      this.#finalizeAssistantMessage(active, value.message);
+      return;
+    }
     if (value.type === "agent_settled") {
       clearTimeout(active.timeout);
       this.#activeTurn = null;
       if (active.failure) active.reject(active.failure);
-      else active.resolve({ text: active.text });
+      else if (active.text.trim().length === 0) {
+        active.reject(new Error("Pi RPC settled without text output"));
+      } else active.resolve({ text: active.text });
     }
+  }
+
+  #finalizeAssistantMessage(active: ActiveTurn, value: unknown): void {
+    const finalText = assistantText(value);
+    if (finalText === null) return;
+    if (finalText === active.lastFinalizedMessageText && active.streamedMessageText.length === 0) {
+      return;
+    }
+    const missingText = finalText.startsWith(active.streamedMessageText)
+      ? finalText.slice(active.streamedMessageText.length)
+      : active.streamedMessageText.length === 0
+        ? finalText
+        : null;
+    if (missingText === null) {
+      active.text = active.text.slice(0, -active.streamedMessageText.length) + finalText;
+    } else if (missingText.length > 0) {
+      active.text += missingText;
+      active.onDelta(missingText);
+    }
+    active.streamedMessageText = "";
+    active.lastFinalizedMessageText = finalText;
   }
 
   #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {

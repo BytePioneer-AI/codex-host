@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   decorateThreadStartParams,
   findPrewarmTargets,
+  isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
   PI_TRANSPORT_MODEL_ID,
@@ -43,10 +44,13 @@ describe("versioned Renderer Agent adapter", () => {
     ).toBeNull();
   });
 
-  it("requires the main-process title policy readiness marker", () => {
+  it("requires both version policy readiness markers", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
     expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);
     expect(isMainProcessTitlePolicyReady(null)).toBe(false);
+    expect(isDraftPrewarmPolicyReady({ state: "ready", clear: vi.fn() })).toBe(true);
+    expect(isDraftPrewarmPolicyReady({ state: "ready" })).toBe(false);
+    expect(isDraftPrewarmPolicyReady(null)).toBe(false);
   });
 
   it("creates a Pi optimistic selection and restores the original Codex snapshot", () => {

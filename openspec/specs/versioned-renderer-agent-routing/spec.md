@@ -6,26 +6,46 @@ Define the supported Desktop build contract for Composer-scoped Codex/Pi routing
 
 ## Requirements
 
-### Requirement: Composer Agent locks before native creation
+### Requirement: Composer Agent freezes at submission
 
-The Renderer Extension SHALL keep Agent state isolated by logical Composer and SHALL lock the selected Agent during the first input that can trigger native Thread creation.
+The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, and SHALL synchronously freeze the final Agent when that draft is submitted.
 
-#### Scenario: Pi is selected before input
+#### Scenario: User switches after editing
 
-- **WHEN** a user selects Pi in an empty new-Thread Composer and begins input
-- **THEN** the Composer Agent is locked to Pi before any related conversation `thread/start`
+- **WHEN** a user types, pastes, composes with an IME, deletes content, inserts an attachment, or adds a line break before submission
+- **THEN** the Composer remains in the draft phase and the user can still select Codex or Pi
+
+#### Scenario: Agent switch invalidates stale prewarm
+
+- **WHEN** a draft Composer selects a different Agent
+- **THEN** the Renderer first applies that Agent's optimistic Model state and then calls the official `clear-prewarmed-threads-for-host` operation for the uniquely owned local host
+
+#### Scenario: Submission freezes the final Agent
+
+- **WHEN** the user clicks Send, presses Enter without Shift or active IME composition, or submits the Composer form
+- **THEN** the Renderer synchronously reapplies the final Agent, locks the Composer, and records one deduplicated submission before Desktop creates or consumes the submitted Thread
 
 #### Scenario: First creation replaces the Composer DOM
 
-- **WHEN** a locked new-Thread Composer transitions from its opaque `default` Model target to a `conversation` target
-- **THEN** the replacement Composer retains the same Pi selection and locked phase
+- **WHEN** a draft or locked new-Thread Composer transitions from its opaque `default` Model target to a `conversation` target
+- **THEN** the replacement Composer retains the same logical Composer identity, selected Agent, and phase
 
 #### Scenario: User opens a new Thread
 
 - **WHEN** a conversation Composer is replaced by a new default Composer
 - **THEN** the new Composer starts as Codex and draft rather than inheriting the previous Thread Agent
 
-#### Scenario: User attempts to switch after input
+#### Scenario: Switch is in flight
+
+- **WHEN** the official prewarm clear has not settled
+- **THEN** Agent controls and submission are disabled for that Composer
+
+#### Scenario: Switch fails
+
+- **WHEN** prewarm clearing fails
+- **THEN** the Renderer restores the prior Agent; if restoration also fails, the Adapter becomes unsupported and submission fails closed
+
+#### Scenario: User attempts to switch after submission
 
 - **WHEN** a Composer Agent is locked
 - **THEN** the Agent controls are disabled and selecting another Agent requires a new Thread
@@ -49,10 +69,15 @@ For a supported Desktop build, the Renderer Adapter SHALL synchronously update t
 - **WHEN** the asset, atom pair, Model target, installation timing, or Composer association is unsupported or ambiguous
 - **THEN** Pi creation is blocked with an explicit unavailable state and no request is silently routed to Codex
 
+#### Scenario: Official prewarm bridge is unavailable
+
+- **WHEN** the version-locked Adapter cannot uniquely recover the owned official request bridge or its signature is unsupported
+- **THEN** draft Agent switching is unavailable and no generic Desktop request capability is exposed to the Renderer Extension
+
 #### Scenario: Transport state is temporary
 
 - **WHEN** Pi is selected and later a new Codex Composer is mounted
-- **THEN** the Adapter restores the opaque pre-Pi state without persisting `codexhost/pi-native` as the user default Model
+- **THEN** the Adapter restores the opaque pre-Pi state without calling the official persistent Model setter or persisting `codexhost/pi-native` as the user default Model
 
 ### Requirement: Pi title generation does not enter Codex Harness
 
@@ -67,6 +92,11 @@ The versioned main-process policy SHALL bind each supported metadata generation 
 
 - **WHEN** the owning Renderer reports one uniquely locked Codex Composer
 - **THEN** the original official title service behavior is preserved
+
+#### Scenario: Pi fallback title is stored
+
+- **WHEN** Desktop applies its local fallback through `thread/name/set` for a Pi-owned Thread
+- **THEN** the Host updates the Pi Thread and emits `thread/name/updated` locally without forwarding the request to Codex
 
 #### Scenario: Title ownership is ambiguous
 
@@ -86,6 +116,11 @@ The Host SHALL establish Pi Thread ownership at `thread/start` and SHALL defer `
 
 - **WHEN** a later Turn starts for a consumed Pi Thread
 - **THEN** the Host reuses the same Pi Native Session
+
+#### Scenario: Desktop clears an unused Pi prewarm
+
+- **WHEN** official prewarm invalidation sends `thread/delete` for a Pi-owned Thread
+- **THEN** the Host closes and removes that Thread locally, forgets its anonymous create association, and returns success without forwarding the request to Codex
 
 #### Scenario: Host closes with unused prewarms
 
@@ -115,6 +150,16 @@ The controlled Gate SHALL associate sanitized create and Turn observations befor
 
 - **WHEN** the same Pi Thread submits a later Turn
 - **THEN** no new `thread/start` occurs and the existing Pi Native Session is reused
+
+#### Scenario: Bidirectional draft switching verification
+
+- **WHEN** controlled runs switch Codex to Pi and Pi to Codex after a prewarm exists
+- **THEN** the submitted Turn matches the newly created final-Agent ordinal, the stale ordinal remains unconsumed, and stale Pi deletion does not reach Codex
+
+#### Scenario: Repeated draft switching verification
+
+- **WHEN** one draft switches Pi to Codex to Pi before submission
+- **THEN** the final Turn selects Pi, no stale prewarm starts a Pi process, and the transport token remains absent from the persisted Codex configuration
 
 #### Scenario: Diagnostic privacy
 

@@ -35,6 +35,8 @@ export interface RendererAdapterStatus {
     | "asset-signature-missing"
     | "bridge-unavailable"
     | "title-policy-unavailable"
+    | "draft-prewarm-policy-unavailable"
+    | "draft-prewarm-clear-failed"
     | "model-controller-unavailable"
     | "ambiguous-request-client"
     | "invalid-create-params";
@@ -93,9 +95,15 @@ export interface ModelAtomPair {
   target: readonly unknown[];
 }
 
+export interface RendererDraftPrewarmPolicy {
+  state: "ready";
+  clear(): Promise<void>;
+}
+
 declare global {
   interface Window {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
+    __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
   }
 }
 
@@ -528,6 +536,10 @@ export function isMainProcessTitlePolicyReady(value: unknown): boolean {
   return isRecord(value) && value.state === "ready";
 }
 
+export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraftPrewarmPolicy {
+  return isRecord(value) && value.state === "ready" && typeof value.clear === "function";
+}
+
 export function modelSelectionForAgent(
   officialSelection: ModelPowerSelection | null,
   reasoningEffort: unknown,
@@ -588,6 +600,10 @@ export function installCurrentRendererAdapter(): {
   }
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
+    return { status: liveStatus, applyAgent: () => false, dispose() {} };
+  }
+  if (!isDraftPrewarmPolicyReady(window.__codexhostDraftPrewarmPolicyV1)) {
+    updateStatus("unsupported", "draft-prewarm-policy-unavailable", null);
     return { status: liveStatus, applyAgent: () => false, dispose() {} };
   }
 

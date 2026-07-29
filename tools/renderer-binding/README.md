@@ -16,6 +16,7 @@ The runner:
 - installs the version-locked main-process title policy;
 - reloads the Renderer so its AppHost metadata service is associated with the owning `webContents`;
 - confirms that ownership and writes a non-sensitive title-policy readiness marker into the Renderer;
+- installs a narrow Renderer bridge that only clears official local-host prewarms;
 - injects the browser-safe Renderer Agent selector and Model-state Adapter;
 - records sanitized Adapter, Composer, replacement, submission, and title-policy counters.
 
@@ -30,25 +31,26 @@ The probe does not persist Prompt text, input values, Transcript, full DOM, Mode
 
 ## Current Result
 
-The public DOM/preload surface still has no stable Agent-to-create binding. The supported build instead uses two version-locked structural adapters:
+The public DOM/preload surface still has no stable Agent-to-create binding. The supported build instead uses three version-locked structural policies:
 
 1. The Renderer Adapter uniquely locates the current Composer's optimistic Model atom and writes the internal `codexhost/pi-native` transport token for Pi.
-2. The main-process title policy locates `ThreadMetadataGenerationService.generateTitle`; Pi uses the Desktop's local fallback instead of creating an official Codex ephemeral title Thread.
+2. The draft prewarm policy recovers the owned official request bridge through CDP and exposes only `clear-prewarmed-threads-for-host({ hostId: "local" })` as a no-argument Renderer operation.
+3. The main-process title policy locates `ThreadMetadataGenerationService.generateTitle`; Pi uses the Desktop's local fallback instead of creating an official Codex ephemeral title Thread.
 
-Composer replacement uses an opaque React Model target identity. A locked `default → conversation` transition transfers Pi state; a new task or another conversation resets to Codex.
+A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: a draft or locked `default → conversation` transition transfers state, while a new task or another conversation resets to Codex.
 
-The final controlled Gate proved:
+The final controlled Gates proved:
 
 ```text
-Pi create       → pi-transport / conversation / selectedHarness=pi
-Pi first turn   → matched Pi create ordinal
-Pi second turn  → same ordinal, no new create, same Pi process
-Title policy    → Pi skip count increments, no official ephemeral create
+Codex → Pi      → stale official create unconsumed; final Pi create matched
+Pi → Codex      → stale Pi create deleted locally; final official create matched
+Pi → Codex → Pi → repeated stale Pi deletion; final Pi create matched
+Pi lazy start   → no Pi process for any unconsumed prewarm
+Pi title        → official generation skipped; fallback name updated locally
+Codex title     → official ephemeral create and Turn preserved
 New task        → codex / draft
-Created thread  → pi / locked after replacement
-Codex create    → official-model / conversation / selectedHarness=codex
-Codex turn      → matched Codex create ordinal, no Pi process
-Codex title     → official-model / ephemeral / selectedHarness=codex
+Submission      → final Agent locked across default → conversation replacement
+Persistence     → codexhost/pi-native absent from Codex configuration
 ```
 
 Structure mismatch, ambiguous Composer association, missing title ownership, or unsupported assets fail closed. Renderer inspection has a bounded timeout across reloads, and Probe injection waits for metadata-service ownership before marking the primary Renderer ready.
@@ -63,4 +65,4 @@ npm run probe:renderer-binding -- --endpoint http://127.0.0.1:9222 --inspector-e
 
 To start a controlled Desktop instance, also pass an absolute `--desktop` executable path. Use `--until-submissions <count>` for a run that completes after a fixed number of sanitized observations.
 
-The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, marks the Renderer ready, and only then injects the Renderer probe.
+The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer probe.

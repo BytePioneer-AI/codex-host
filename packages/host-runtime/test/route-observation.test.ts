@@ -68,6 +68,14 @@ describe("request route observation", () => {
       threadPurpose: "ephemeral",
       association: "matched",
     });
+    tracker.forgetThread("pi-thread");
+    expect(tracker.observeTurn("pi-thread", "codex")).toEqual({
+      requestMethod: "turn/start",
+      createOrdinal: null,
+      selectedHarness: "codex",
+      threadPurpose: null,
+      association: "unmatched",
+    });
     expect(piCreate).not.toHaveProperty("requestId");
     expect(piCreate).not.toHaveProperty("threadId");
   });

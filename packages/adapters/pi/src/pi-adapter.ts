@@ -155,7 +155,12 @@ class PiHarnessSession implements HarnessSession {
 
       void transport
         .runTextTurn(text, (delta) => this.#appendText(active, delta))
-        .then(({ text: output }) => this.#completeTurn(active, { status: "succeeded" }, output))
+        .then(({ text: output }) => {
+          if (output.trim().length === 0) {
+            throw new Error("Pi Turn settled without text output");
+          }
+          this.#completeTurn(active, { status: "succeeded" }, output);
+        })
         .catch((error: unknown) => {
           this.#completeTurn(active, {
             status: "failed",

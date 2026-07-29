@@ -7,6 +7,7 @@ import {
   getCdpBrowserVersion,
   inspectRendererDom,
   installMainProcessTitlePolicy,
+  installRendererDraftPrewarmPolicy,
   listCdpTargets,
   markRendererTitlePolicyReady,
   readMainProcessTitlePolicyCounters,
@@ -100,6 +101,13 @@ function validateProbeStatus(value) {
     !isRecord(value) ||
     value.version !== 1 ||
     !Number.isInteger(value.mountedComposers) ||
+    !Number.isInteger(value.switchingComposers) ||
+    !isRecord(value.switchCounters) ||
+    !Number.isInteger(value.switchCounters.attempts) ||
+    !Number.isInteger(value.switchCounters.committed) ||
+    !Number.isInteger(value.switchCounters.rejected) ||
+    value.switchCounters.committed + value.switchCounters.rejected >
+      value.switchCounters.attempts ||
     !Array.isArray(value.selections) ||
     !Array.isArray(value.observations) ||
     !isRecord(value.adapter) ||
@@ -438,6 +446,11 @@ async function run() {
       markRendererTitlePolicyReady(inspectorClient),
     );
     console.log(JSON.stringify({ type: "renderer-title-policy", ...titlePolicyReadiness }));
+    const draftPrewarmPolicy = await installRendererDraftPrewarmPolicy(
+      inspectorClient,
+      selectedRenderer.id,
+    );
+    console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
     const source = fs.readFileSync(probeBundlePath, "utf8");
     await executeInWebContents(inspectorClient, selectedRenderer.id, source);
 
@@ -455,6 +468,7 @@ async function run() {
       selectedRendererId: selectedRenderer.id,
       titlePolicy,
       titlePolicyReadiness,
+      draftPrewarmPolicy,
       titlePolicyCounters: null,
       status: null,
       creationBinding: {
@@ -478,7 +492,7 @@ async function run() {
       report.creationBinding.status = status.adapter.state === "ready" ? "ready" : "blocked";
       report.creationBinding.reason =
         status.adapter.state === "ready"
-          ? "Versioned native Model-state Adapter and main-process title policy are ready"
+          ? "Versioned Model-state, draft-prewarm, and title policies are ready"
           : `Renderer Adapter is ${status.adapter.state}: ${status.adapter.reason}`;
       report.creationBinding.rendererSubmissionObserved = status.observations.length > 0;
       for (const observation of status.observations.slice(observedCount)) {

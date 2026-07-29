@@ -136,6 +136,30 @@ describe("Pi HarnessAdapter text Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("fails an accepted Turn that settles without text and remains reusable", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("empty"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transports[0]?.succeed("");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed" },
+    });
+
+    await expect(session.execute(textTurn("second"))).resolves.toMatchObject({ ok: true });
+    transports[0]?.succeed("second response");
+    await session.close();
+  });
+
   it("rejects startup before Turn acceptance without lifecycle events", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);

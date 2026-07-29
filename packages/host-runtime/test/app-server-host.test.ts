@@ -150,6 +150,61 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("updates a Pi Thread name locally", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "thread/name/set",
+      params: { threadId, name: "Pi Thread" },
+    });
+
+    await expect(fixture.collector.waitFor((message) => requestId(message, 2))).resolves.toEqual({
+      id: 2,
+      result: {},
+    });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/name/updated")),
+    ).resolves.toMatchObject({ params: { threadId, threadName: "Pi Thread" } });
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "thread/read",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ result: { thread: { name: "Pi Thread" } } });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("deletes an unused Pi prewarm locally", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const close = vi.spyOn(session, "close");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "thread/delete",
+      params: { threadId },
+    });
+
+    await expect(fixture.collector.waitFor((message) => requestId(message, 2))).resolves.toEqual({
+      id: 2,
+      result: {},
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("returns a command error without lifecycle notifications for a rejected Turn", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

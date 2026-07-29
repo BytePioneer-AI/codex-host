@@ -31,6 +31,8 @@ export type {
   MainProcessTitlePolicyStatus,
   RendererTitlePolicyReadiness,
 } from "./main-process-title-policy.js";
+export { installRendererDraftPrewarmPolicy } from "./renderer-draft-prewarm-policy.js";
+export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
 export const packageMetadata = {
   name: "@codexhost/desktop-control",

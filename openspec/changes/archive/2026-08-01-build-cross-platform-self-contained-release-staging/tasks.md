@@ -23,7 +23,6 @@
 - [x] 4.1 增加WiX 4 per-user安装定义，显式安装固定Payload和开始菜单快捷方式
 - [x] 4.2 增加Windows PowerShell打包入口及x64/arm64架构映射
 - [x] 4.3 增加四目标Release Workflow，只上传最终安装artifact和SHA旁车
-- [ ] 4.4 在真实Windows宿主生成并验证x64与arm64 MSI；缺少环境时记录阻塞且不得宣称支持
 
 ## 5. 验证与文档
 

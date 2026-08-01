@@ -348,14 +348,16 @@ fn wait_for_desktop_exit(
 }
 
 fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<dyn Error>> {
-    if controller.try_wait()?.is_none() {
-        controller.terminate()?;
+    if let Some(status) = controller.try_wait()? {
+        controller.disarm_cleanup();
+        if !status.success() {
+            return Err(format!("Desktop Controller exited unsuccessfully: {status}").into());
+        }
+        return Ok(());
     }
-    let status = controller.wait()?;
+    controller.terminate()?;
+    let _ = controller.wait()?;
     controller.disarm_cleanup();
-    if !status.success() {
-        return Err(format!("Desktop Controller exited unsuccessfully: {status}").into());
-    }
     Ok(())
 }
 
@@ -609,24 +611,37 @@ mod tests {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use std::time::Duration;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "windows")]
+    use codexhost_platform::configure_background_command;
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     use codexhost_platform::spawn_supervised;
 
     #[cfg(target_os = "windows")]
     use super::PI_COMMAND_ENV;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
-    #[cfg(target_os = "windows")]
-    use super::wait_for_desktop_exit;
     use super::{
         Agent, DEFAULT_AGENT_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
         default_launch_options, desktop_controller_command, desktop_environment,
         parse_launch_options,
     };
+    #[cfg(target_os = "windows")]
+    use super::{stop_desktop_controller, wait_for_desktop_exit};
 
     #[test]
     fn no_argument_launch_defaults_to_pi() {
         assert_eq!(default_launch_options().agent.as_str(), "pi");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn intentional_controller_termination_accepts_the_job_exit_status() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/d", "/c", "ping", "-n", "30", "127.0.0.1", ">nul"]);
+        configure_background_command(&mut command);
+        let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
+
+        stop_desktop_controller(&mut controller).expect("stop owned Controller");
     }
 
     #[cfg(target_os = "windows")]

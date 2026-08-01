@@ -17,7 +17,7 @@ const inspection = {
   },
   capabilities: {
     configuration: { selectModel: true },
-    history: { fork: true },
+    history: { fork: true, forkAcrossCwd: true },
   },
 };
 

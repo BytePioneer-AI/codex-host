@@ -65,6 +65,7 @@ export interface ForkSessionInput {
   kind: "fork";
   sourceRef: NativeSessionRef;
   checkpoint: NativeCheckpointRef;
+  /** Execution cwd for the derived Native Session. */
   cwd: string;
 }
 

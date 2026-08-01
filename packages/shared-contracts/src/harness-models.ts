@@ -70,8 +70,13 @@ export const harnessSessionCapabilitiesSchema = z
     history: z
       .object({
         fork: z.boolean(),
+        forkAcrossCwd: z.boolean(),
       })
-      .strict(),
+      .strict()
+      .refine((history) => history.fork || !history.forkAcrossCwd, {
+        path: ["forkAcrossCwd"],
+        message: "Cross-cwd Fork requires exact history Fork support",
+      }),
   })
   .strict();
 

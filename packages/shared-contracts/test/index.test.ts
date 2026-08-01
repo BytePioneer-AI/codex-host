@@ -36,7 +36,7 @@ describe("shared-contracts public package", () => {
         },
         capabilities: {
           configuration: { selectModel: true },
-          history: { fork: true },
+          history: { fork: true, forkAcrossCwd: true },
         },
       }),
     ).toMatchObject({ status: "ready" });

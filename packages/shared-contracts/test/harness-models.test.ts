@@ -27,7 +27,7 @@ function readyInspection() {
     },
     capabilities: {
       configuration: { selectModel: true },
-      history: { fork: true },
+      history: { fork: true, forkAcrossCwd: true },
     },
   };
 }
@@ -41,6 +41,24 @@ describe("Harness Model runtime contracts", () => {
   });
 
   it("rejects native configuration and unknown fields", () => {
+    expect(
+      harnessInspectionSchema.safeParse({
+        ...readyInspection(),
+        capabilities: {
+          configuration: { selectModel: true },
+          history: { fork: true },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessInspectionSchema.safeParse({
+        ...readyInspection(),
+        capabilities: {
+          configuration: { selectModel: true },
+          history: { fork: false, forkAcrossCwd: true },
+        },
+      }).success,
+    ).toBe(false);
     expect(
       harnessInspectionSchema.safeParse({
         ...readyInspection(),

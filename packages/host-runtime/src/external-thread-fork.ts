@@ -1,3 +1,5 @@
+import nodePath from "node:path";
+
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import {
   mapExternalThreadHarnessError,
@@ -35,24 +37,40 @@ export async function executeExternalThreadFork(input: {
   if (source.running) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
+  const targetCwd = fork.cwd ?? source.cwd;
+  const changesCwd = targetCwd !== source.cwd;
   if (
     fork.path ||
-    (fork.cwd !== undefined && fork.cwd !== source.cwd) ||
     (fork.model !== undefined && fork.model !== source.transportModelId) ||
     (fork.modelProvider !== undefined && fork.modelProvider !== "codexhost")
   ) {
     return {
       ok: false,
-      error: {
-        code: -32602,
-        message: "External Fork cannot override source ownership or location",
-      },
+      error: { code: -32602, message: "External Fork cannot override source ownership" },
+    };
+  }
+  if (
+    changesCwd &&
+    (!nodePath.isAbsolute(targetCwd) ||
+      (fork.runtimeWorkspaceRoots !== undefined &&
+        (fork.runtimeWorkspaceRoots.some((root) => !nodePath.isAbsolute(root)) ||
+          !fork.runtimeWorkspaceRoots.includes(targetCwd))))
+  ) {
+    return {
+      ok: false,
+      error: { code: -32602, message: "External Fork target cwd is invalid" },
     };
   }
   if (!source.session.capabilities.history.fork) {
     return {
       ok: false,
       error: { code: -32076, message: "External Harness does not support fork" },
+    };
+  }
+  if (changesCwd && !source.session.capabilities.history.forkAcrossCwd) {
+    return {
+      ok: false,
+      error: { code: -32076, message: "External Harness cannot fork into another cwd" },
     };
   }
   const refreshError = await runtime.refresh(source);
@@ -89,7 +107,7 @@ export async function executeExternalThreadFork(input: {
     provisional = await repository.createProvisional(
       createExternalThreadRecordInput({
         harnessId: source.record.harnessId,
-        cwd: source.cwd,
+        cwd: targetCwd,
         transportModelId: source.transportModelId,
         ephemeral: fork.ephemeral ?? source.record.ephemeral,
         historyMode: source.record.historyMode,
@@ -110,7 +128,7 @@ export async function executeExternalThreadFork(input: {
   try {
     opened = await adapter.open({
       kind: "fork",
-      cwd: source.cwd,
+      cwd: targetCwd,
       sourceRef: nativeSessionRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });

@@ -287,7 +287,7 @@ class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: { selectModel: true },
-    history: { fork: true },
+    history: { fork: true, forkAcrossCwd: true },
   };
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -1052,7 +1052,7 @@ export class PiAdapter implements HarnessAdapter {
         catalog,
         capabilities: {
           configuration: { selectModel: true },
-          history: { fork: true },
+          history: { fork: true, forkAcrossCwd: true },
         },
       };
     } catch (error) {
@@ -1113,20 +1113,7 @@ export class PiAdapter implements HarnessAdapter {
           },
         };
       }
-      transport = this.#createTransport({
-        cwd: input.cwd,
-        sessionFile: sessionFileFromRef(sourceRef),
-        onFault: (error) => session?.handleTransportFault(error),
-      });
-      await transport.start();
-      if (transport.state.sessionId !== sourceRef.nativeSessionId) {
-        throw new PiAdapterFaultError({
-          code: "sessionNotFound",
-          message: "Pi resumed Session identity does not match the persisted Native Session Ref",
-          retryable: false,
-        });
-      }
-
+      const sourceSessionFile = sessionFileFromRef(sourceRef);
       if (input.kind === "fork") {
         const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
         if (
@@ -1139,10 +1126,34 @@ export class PiAdapter implements HarnessAdapter {
             retryable: false,
           });
         }
-        const sourceHistory = await transport.getEntries();
+      }
+      transport = this.#createTransport({
+        cwd: input.cwd,
+        ...(input.kind === "resume"
+          ? { sessionFile: sourceSessionFile }
+          : { forkSessionFile: sourceSessionFile }),
+        onFault: (error) => session?.handleTransportFault(error),
+      });
+      await transport.start();
+
+      if (input.kind === "resume") {
+        if (transport.state.sessionId !== sourceRef.nativeSessionId) {
+          throw new PiAdapterFaultError({
+            code: "sessionNotFound",
+            message: "Pi resumed Session identity does not match the persisted Native Session Ref",
+            retryable: false,
+          });
+        }
+      } else {
+        const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
+        const startupSessionId = transport.state.sessionId;
+        if (startupSessionId === sourceRef.nativeSessionId) {
+          throw new Error("Pi Fork startup did not create a distinct Native Session identity");
+        }
+        const copiedHistory = await transport.getEntries();
         let boundary: ReturnType<typeof resolvePiForkBoundary>;
         try {
-          boundary = resolvePiForkBoundary(sourceHistory, checkpoint.checkpointId);
+          boundary = resolvePiForkBoundary(copiedHistory, checkpoint.checkpointId);
         } catch {
           throw new PiAdapterFaultError({
             code: "checkpointNotFound",
@@ -1152,9 +1163,12 @@ export class PiAdapter implements HarnessAdapter {
         }
         const derivedState = boundary.nextUserEntryId
           ? await transport.fork(boundary.nextUserEntryId)
-          : await transport.clone();
-        if (derivedState.sessionId === sourceRef.nativeSessionId) {
-          throw new Error("Pi Fork did not create a new Native Session identity");
+          : transport.state;
+        if (
+          derivedState.sessionId === sourceRef.nativeSessionId ||
+          (boundary.nextUserEntryId && derivedState.sessionId === startupSessionId)
+        ) {
+          throw new Error("Pi Fork did not create the required Native Session identity");
         }
         const derivedSnapshot = mapPiSnapshot(await transport.getEntries(), {
           sessionId: derivedState.sessionId,

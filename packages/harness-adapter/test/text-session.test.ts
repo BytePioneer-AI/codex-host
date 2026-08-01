@@ -472,7 +472,7 @@ describe("minimal Harness text Session", () => {
       catalog: adapter.catalog,
       capabilities: {
         configuration: { selectModel: true },
-        history: { fork: true },
+        history: { fork: true, forkAcrossCwd: true },
       },
     });
     expect(adapter.inspectionCalls).toBe(1);
@@ -568,10 +568,11 @@ describe("minimal Harness text Session", () => {
       kind: "fork",
       sourceRef,
       checkpoint,
-      cwd: "/synthetic",
+      cwd: "/synthetic-worktree",
     });
     if (!forked.ok) throw new Error(forked.error.message);
     const derived = forked.value as FakeHarnessSession;
+    expect(derived.cwd).toBe("/synthetic-worktree");
     const derivedRead = await derived.readSnapshot();
     if (!derivedRead.ok) throw new Error(derivedRead.error.message);
 
@@ -595,6 +596,40 @@ describe("minimal Harness text Session", () => {
     const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: "/synthetic" });
     if (!resumed.ok) throw new Error(resumed.error.message);
     await expect(resumed.value.readSnapshot()).resolves.toEqual(sourceAfter);
+    await adapter.close();
+  });
+
+  it("rejects a caller-selected Fork cwd when only same-cwd Fork is supported", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("fake"), undefined, true, false);
+    const opened = await adapter.open({ kind: "create", cwd: "/source" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+    await source.execute(textTurn("source-only"));
+    source.succeedTurn();
+    const snapshot = await source.readSnapshot();
+    const sourceRef = source.state.nativeRef;
+    if (!snapshot.ok || !sourceRef || !snapshot.value.turns[0]?.checkpoint) {
+      throw new Error("Fake source has no Fork identity");
+    }
+
+    await expect(
+      adapter.open({
+        kind: "fork",
+        sourceRef,
+        checkpoint: snapshot.value.turns[0].checkpoint,
+        cwd: "/target",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(adapter.sessions).toHaveLength(1);
+
+    await expect(
+      adapter.open({
+        kind: "fork",
+        sourceRef,
+        checkpoint: snapshot.value.turns[0].checkpoint,
+        cwd: "/source",
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { cwd: "/source" } });
     await adapter.close();
   });
 

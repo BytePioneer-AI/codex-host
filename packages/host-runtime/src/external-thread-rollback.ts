@@ -61,8 +61,8 @@ export async function executeExternalThreadRollback(input: {
   if (
     source.id === derived.id ||
     source.harnessId !== derived.harnessId ||
-    source.cwd !== derived.cwd ||
-    !source.session.capabilities.history.fork
+    !source.session.capabilities.history.fork ||
+    (source.cwd !== derived.cwd && !source.session.capabilities.history.forkAcrossCwd)
   ) {
     return {
       ok: false,
@@ -105,7 +105,7 @@ export async function executeExternalThreadRollback(input: {
   try {
     opened = await adapter.open({
       kind: "fork",
-      cwd: source.cwd,
+      cwd: derived.cwd,
       sourceRef: sourceNativeRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });

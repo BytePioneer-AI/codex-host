@@ -138,7 +138,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: { selectModel: false },
-    history: { fork: false },
+    history: { fork: false, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState = {};
   readonly outputs: AsyncIterable<HarnessOutput>;

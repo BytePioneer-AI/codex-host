@@ -194,8 +194,7 @@ export class ExternalThreadRepository {
       !source.nativeSessionRef ||
       !derived.forkSource ||
       derived.forkSource.hostThreadId !== source.hostThreadId ||
-      derived.harnessId !== source.harnessId ||
-      derived.cwd !== source.cwd
+      derived.harnessId !== source.harnessId
     ) {
       throw new Error("External rollback lineage is not a ready source prefix");
     }

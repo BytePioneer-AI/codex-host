@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   PiRpcSession,
+  piRpcProcessCommand,
   type PiRpcProcessAdapter,
   type PiRpcProcessOptions,
   type PiTurnEvent,
@@ -381,20 +382,56 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("passes a Native Session file to the Pi process adapter", async () => {
+  it("builds mutually exclusive Native Session resume and Fork argv", async () => {
+    const options = {
+      cwd: process.cwd(),
+      environment: {},
+      command: "/synthetic/pi",
+    };
+    expect(
+      piRpcProcessCommand({ ...options, sessionFile: "/synthetic/source.jsonl" }),
+    ).toMatchObject({
+      command: "/synthetic/pi",
+      arguments: ["--mode", "rpc", "--session", "/synthetic/source.jsonl"],
+    });
+    expect(
+      piRpcProcessCommand({ ...options, forkSessionFile: "/synthetic/source.jsonl" }),
+    ).toMatchObject({
+      command: "/synthetic/pi",
+      arguments: ["--mode", "rpc", "--fork", "/synthetic/source.jsonl"],
+    });
+    expect(() =>
+      piRpcProcessCommand({
+        ...options,
+        sessionFile: "/synthetic/resume.jsonl",
+        forkSessionFile: "/synthetic/fork.jsonl",
+      }),
+    ).toThrow("cannot combine");
+  });
+
+  it("passes Native resume and Fork Session files to the Pi process adapter", async () => {
     const spawnProcess = vi.fn(
       () => new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams,
     );
-    const rpc = new PiRpcSession(
+    const resumed = new PiRpcSession(
       { cwd: process.cwd(), sessionFile: "/synthetic/source.jsonl" },
       { spawn: spawnProcess },
     );
-
-    await rpc.start();
-    expect(spawnProcess).toHaveBeenCalledWith(
+    await resumed.start();
+    expect(spawnProcess).toHaveBeenLastCalledWith(
       expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
     );
-    await rpc.close();
+    await resumed.close();
+
+    const forked = new PiRpcSession(
+      { cwd: process.cwd(), forkSessionFile: "/synthetic/source.jsonl" },
+      { spawn: spawnProcess },
+    );
+    await forked.start();
+    expect(spawnProcess).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forkSessionFile: "/synthetic/source.jsonl" }),
+    );
+    await forked.close();
   });
 
   it("reads typed Entries and confirms Fork and Clone state", async () => {

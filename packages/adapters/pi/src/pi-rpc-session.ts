@@ -88,6 +88,7 @@ export interface PiRpcSessionOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   sessionFile?: string;
+  forkSessionFile?: string;
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
@@ -99,6 +100,7 @@ export interface PiRpcProcessOptions {
   command?: string;
   environment: NodeJS.ProcessEnv;
   sessionFile?: string;
+  forkSessionFile?: string;
 }
 
 export interface PiRpcProcessAdapter {
@@ -242,17 +244,21 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
   ]);
 }
 
-function spawnCommand(options: PiRpcProcessOptions): {
+export function piRpcProcessCommand(options: PiRpcProcessOptions): {
   command: string;
   arguments: string[];
   windowsVerbatimArguments: boolean;
 } {
+  if (options.sessionFile && options.forkSessionFile) {
+    throw new Error("Pi RPC cannot combine Session resume and Fork startup");
+  }
   const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
-  const arguments_ = [
-    "--mode",
-    "rpc",
-    ...(options.sessionFile ? ["--session", options.sessionFile] : []),
-  ];
+  const sessionArguments = options.forkSessionFile
+    ? ["--fork", options.forkSessionFile]
+    : options.sessionFile
+      ? ["--session", options.sessionFile]
+      : [];
+  const arguments_ = ["--mode", "rpc", ...sessionArguments];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -267,7 +273,7 @@ function spawnCommand(options: PiRpcProcessOptions): {
 
 const nodeProcessAdapter: PiRpcProcessAdapter = {
   spawn(options) {
-    const invocation = spawnCommand(options);
+    const invocation = piRpcProcessCommand(options);
     return spawn(invocation.command, invocation.arguments, {
       cwd: options.cwd,
       env: options.environment,
@@ -297,6 +303,9 @@ export class PiRpcSession {
     options: PiRpcSessionOptions,
     processAdapter: PiRpcProcessAdapter = nodeProcessAdapter,
   ) {
+    if (options.sessionFile && options.forkSessionFile) {
+      throw new Error("Pi RPC cannot combine Session resume and Fork startup");
+    }
     this.#options = {
       commandTimeoutMs: 30_000,
       turnTimeoutMs: 180_000,
@@ -323,6 +332,7 @@ export class PiRpcSession {
         PI_TELEMETRY: "0",
       },
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
+      ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));

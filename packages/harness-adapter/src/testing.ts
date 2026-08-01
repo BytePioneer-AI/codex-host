@@ -91,6 +91,7 @@ function cloneJson<T>(value: T): T {
 export class FakeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
+  readonly cwd: string;
   readonly initialState: HarnessSessionState;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -122,12 +123,15 @@ export class FakeHarnessSession implements HarnessSession {
     },
     snapshot: HostThreadSnapshot = { turns: [] },
     supportsFork = true,
+    cwd = "/synthetic",
+    supportsForkAcrossCwd = supportsFork,
   ) {
     this.harnessId = harnessId;
     this.capabilities = {
       configuration: { selectModel: true },
-      history: { fork: supportsFork },
+      history: { fork: supportsFork, forkAcrossCwd: supportsForkAcrossCwd },
     };
+    this.cwd = cwd;
     this.#catalog = catalog;
     this.initialState = {
       nativeRef,
@@ -569,6 +573,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly catalog: HarnessModelCatalog;
   readonly sessions: FakeHarnessSession[] = [];
   readonly supportsFork: boolean;
+  readonly supportsForkAcrossCwd: boolean;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
   #sessionOrdinal = 0;
@@ -578,10 +583,12 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     harnessId: HarnessId = harnessIdSchema.parse("fake"),
     catalog: HarnessModelCatalog = defaultFakeCatalog,
     supportsFork = true,
+    supportsForkAcrossCwd = supportsFork,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
     this.supportsFork = supportsFork;
+    this.supportsForkAcrossCwd = supportsForkAcrossCwd;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -602,7 +609,10 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       catalog: this.catalog,
       capabilities: {
         configuration: { selectModel: true },
-        history: { fork: this.supportsFork },
+        history: {
+          fork: this.supportsFork,
+          forkAcrossCwd: this.supportsForkAcrossCwd,
+        },
       },
     };
   }
@@ -630,7 +640,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           },
         };
       }
-      return { ok: true, value: this.#createSession(input.model) };
+      return { ok: true, value: this.#createSession(input.cwd, input.model) };
     }
     const sourceRef = input.kind === "resume" ? input.nativeRef : input.sourceRef;
     if (sourceRef.harnessId !== this.harnessId) {
@@ -657,12 +667,12 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     const snapshot = await source.readSnapshot();
     if (!snapshot.ok) return snapshot;
     if (input.kind === "resume") return { ok: true, value: source };
-    if (!this.supportsFork) {
+    if (!this.supportsFork || (!this.supportsForkAcrossCwd && input.cwd !== source.cwd)) {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: "Fake Adapter does not support Fork",
+          message: "Fake Adapter does not support the requested Fork cwd",
           retryable: false,
         },
       };
@@ -696,6 +706,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     return {
       ok: true,
       value: this.#createSession(
+        input.cwd,
         source.state.effectiveModel,
         snapshot.value.turns.slice(0, checkpointIndex + 1),
       ),
@@ -703,6 +714,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   }
 
   #createSession(
+    cwd: string,
     model: HarnessModelRef | undefined,
     sourceTurns: HostTurnSnapshot[] = [],
   ): FakeHarnessSession {
@@ -745,6 +757,8 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       nativeRef,
       { turns },
       this.supportsFork,
+      cwd,
+      this.supportsForkAcrossCwd,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

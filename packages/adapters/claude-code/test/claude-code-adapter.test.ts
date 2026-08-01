@@ -137,7 +137,7 @@ describe("Claude Code HarnessAdapter", () => {
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
       configuration: { selectModel: false },
-      history: { fork: false },
+      history: { fork: false, forkAcrossCwd: false },
     });
     await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
       ok: false,

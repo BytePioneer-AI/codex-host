@@ -233,7 +233,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
         capabilities: {
           configuration: { selectModel: true },
-          history: { fork: true },
+          history: { fork: true, forkAcrossCwd: true },
         },
       },
     });
@@ -494,7 +494,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       return result.thread as JsonObject;
     };
 
-    const inclusive = await forkRequest(10, { lastTurnId: sourceTurnIds[0] });
+    const inclusive = await forkRequest(10, {
+      lastTurnId: sourceTurnIds[0],
+      cwd: "/synthetic-worktree/inclusive",
+      runtimeWorkspaceRoots: ["/synthetic-worktree/inclusive", "/synthetic"],
+    });
     const exclusive = await forkRequest(11, { beforeTurnId: sourceTurnIds[1] });
     const tail = await forkRequest(12, {});
     const excluded = await forkRequest(13, { excludeTurns: true });
@@ -502,6 +506,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(inclusive).toMatchObject({
       forkedFromId: sourceThreadId,
       parentThreadId: null,
+      cwd: "/synthetic-worktree/inclusive",
       turns: [expect.objectContaining({ status: "completed" })],
     });
     expect(exclusive.turns).toHaveLength(1);
@@ -534,7 +539,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("realizes the Desktop tail-Fork plus rollback sequence as one exact derived prefix", async () => {
+  it("realizes Desktop Worktree tail-Fork plus rollback as one exact derived prefix", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
@@ -548,13 +553,22 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 10,
       method: "thread/fork",
-      params: { threadId: sourceThreadId },
+      params: {
+        threadId: sourceThreadId,
+        cwd: "/synthetic-worktree",
+        runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
+      },
     });
     const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(forkResponse.result).toMatchObject({
+      cwd: "/synthetic-worktree",
+      runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
+    });
     const forkedThread = (forkResponse.result as JsonObject).thread as JsonObject;
     const derivedId = forkedThread.id;
     const initialDerivedTurns = forkedThread.turns as JsonObject[];
     if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    expect(forkedThread.cwd).toBe("/synthetic-worktree");
     expect(initialDerivedTurns).toHaveLength(3);
 
     writeRequest(fixture.desktopInput, {
@@ -572,6 +586,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const derivedRecord = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
     expect(derivedRecord).toMatchObject({
       nativeSessionRef: { nativeSessionId: "fake-session-3" },
+      cwd: "/synthetic-worktree",
       forkSource: { hostThreadId: sourceThreadId, hostTurnId: sourceTurnIds[0] },
       turnMappings: [
         {
@@ -581,6 +596,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       ],
     });
+    expect(fixture.adapter.sessions[0]?.cwd).toBe("/synthetic");
+    expect(fixture.adapter.sessions[1]?.cwd).toBe("/synthetic-worktree");
+    expect(fixture.adapter.sessions[2]?.cwd).toBe("/synthetic-worktree");
     await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },
@@ -757,19 +775,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 62,
       method: "thread/fork",
-      params: { threadId, lastTurnId: persistedTurnId },
+      params: {
+        threadId,
+        lastTurnId: persistedTurnId,
+        cwd: "/persisted-worktree",
+        runtimeWorkspaceRoots: ["/persisted-worktree", "/persisted"],
+      },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 62)),
-    ).resolves.toMatchObject({
+    const restartedFork = await fixture.collector.waitFor((message) => requestId(message, 62));
+    expect(restartedFork).toMatchObject({
       result: {
+        cwd: "/persisted-worktree",
         thread: {
           id: expect.not.stringMatching(/^persisted-thread$/u),
+          cwd: "/persisted-worktree",
           forkedFromId: threadId,
           turns: [{ status: "completed" }],
         },
       },
     });
+    const restartedDerivedId = ((restartedFork.result as JsonObject).thread as JsonObject).id;
+    if (typeof restartedDerivedId !== "string") throw new Error("Restarted Fork has no ID");
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(restartedDerivedId)),
+    ).resolves.toMatchObject({ cwd: "/persisted-worktree" });
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -783,6 +812,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         threadId: "official-thread",
         lastTurnId: "one",
         beforeTurnId: "two",
+        cwd: "official-relative-worktree",
+        runtimeWorkspaceRoots: ["official-relative-worktree"],
         extraOfficialField: { keep: true },
       },
     };
@@ -877,6 +908,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
         params: { lastTurnId: firstTurnId, beforeTurnId: firstTurnId },
         code: -32602,
       },
+      { id: 14, params: { cwd: "relative-worktree" }, code: -32602 },
+      {
+        id: 15,
+        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["relative-root"] },
+        code: -32602,
+      },
+      {
+        id: 16,
+        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["/source-only"] },
+        code: -32602,
+      },
     ];
     for (const invalid of invalidForks) {
       writeRequest(fixture.desktopInput, {
@@ -889,6 +931,31 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ).resolves.toMatchObject({ error: { code: invalid.code } });
     }
     expect(fixture.adapter.sessions).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects a changed Fork cwd when the Adapter supports only source-cwd Fork", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"), undefined, true, false);
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: {
+        threadId,
+        cwd: "/synthetic-worktree",
+        runtimeWorkspaceRoots: ["/synthetic-worktree"],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    expect(adapter.sessions).toHaveLength(1);
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });

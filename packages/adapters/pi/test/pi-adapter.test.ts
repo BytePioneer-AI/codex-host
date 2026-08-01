@@ -248,7 +248,7 @@ describe("Pi HarnessAdapter Session", () => {
       },
       capabilities: {
         configuration: { selectModel: true },
-        history: { fork: true },
+        history: { fork: true, forkAcrossCwd: true },
       },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
@@ -317,7 +317,123 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("forks a middle Pi Turn before the next User Entry and verifies the cutoff", async () => {
+  it("forks a middle Pi Turn into a target cwd before the next User Entry", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "target-startup-session",
+        sessionFile: "/synthetic-worktree/target.jsonl",
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-1",
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic-worktree",
+      sourceRef,
+      checkpoint,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/synthetic-worktree",
+        forkSessionFile: "/synthetic/source.jsonl",
+      }),
+    );
+    expect(transports[0]?.options).not.toHaveProperty("sessionFile");
+    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
+    expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "target-startup-session-derived" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("uses the native target-cwd clone for a tail and fails closed for an unknown Checkpoint", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementation((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: `target-startup-session-${transports.length + 1}`,
+        sessionFile: `/synthetic-worktree/target-${transports.length + 1}.jsonl`,
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const terminalCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-2",
+      formatVersion: 1,
+    });
+    const cloned = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic-worktree",
+      sourceRef,
+      checkpoint: terminalCheckpoint,
+    });
+    if (!cloned.ok) throw new Error(cloned.error.message);
+    expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(transports[0]?.fork).not.toHaveBeenCalled();
+    expect(cloned.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "target-startup-session-1" },
+    });
+    await expect(cloned.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await cloned.value.close();
+
+    const missingCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "missing",
+      formatVersion: 1,
+    });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic-worktree",
+        sourceRef,
+        checkpoint: missingCheckpoint,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(transports[1]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("closes a Pi Fork startup that does not create a distinct Native Session", async () => {
     const { adapter, dependencies, transports } = fixture();
     vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
       const transport = new FakePiTransport();
@@ -340,82 +456,19 @@ describe("Pi HarnessAdapter Session", () => {
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: "pi",
       nativeSessionId: "source-session",
-      checkpointId: "source-user-1",
-      formatVersion: 1,
-    });
-
-    const opened = await adapter.open({
-      kind: "fork",
-      cwd: "/synthetic",
-      sourceRef,
-      checkpoint,
-    });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
-    expect(transports[0]?.clone).not.toHaveBeenCalled();
-    expect(opened.value.initialState).toMatchObject({
-      nativeRef: { nativeSessionId: "source-session-derived" },
-    });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
-    });
-    await opened.value.close();
-    await adapter.close();
-  });
-
-  it("clones a terminal Pi Turn and fails closed for an unknown Checkpoint", async () => {
-    const { adapter, dependencies, transports } = fixture();
-    vi.mocked(dependencies.createTransport).mockImplementation((options) => {
-      const transport = new FakePiTransport();
-      transport.options = options;
-      transport.state = {
-        ...transport.state,
-        sessionId: "source-session",
-        sessionFile: "/synthetic/source.jsonl",
-      };
-      transport.history = sourceHistory();
-      transports.push(transport);
-      return transport;
-    });
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
-      locator: { sessionFile: "/synthetic/source.jsonl" },
-      formatVersion: 1,
-    });
-    const terminalCheckpoint = nativeCheckpointRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
       checkpointId: "source-user-2",
       formatVersion: 1,
     });
-    const cloned = await adapter.open({
-      kind: "fork",
-      cwd: "/synthetic",
-      sourceRef,
-      checkpoint: terminalCheckpoint,
-    });
-    if (!cloned.ok) throw new Error(cloned.error.message);
-    expect(transports[0]?.clone).toHaveBeenCalledOnce();
-    expect(transports[0]?.fork).not.toHaveBeenCalled();
-    await cloned.value.close();
 
-    const missingCheckpoint = nativeCheckpointRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
-      checkpointId: "missing",
-      formatVersion: 1,
-    });
     await expect(
       adapter.open({
         kind: "fork",
-        cwd: "/synthetic",
+        cwd: "/synthetic-worktree",
         sourceRef,
-        checkpoint: missingCheckpoint,
+        checkpoint,
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
-    expect(transports[1]?.close).toHaveBeenCalledOnce();
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
   });
 

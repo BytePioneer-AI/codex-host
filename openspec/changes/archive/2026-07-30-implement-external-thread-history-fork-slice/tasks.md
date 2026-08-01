@@ -40,5 +40,5 @@
 
 - [x] 6.1 Generate and inspect current Codex protocol bindings for Fork and rollback request/response, capture the supported Desktop message-action request shape, and record only sanitized protocol facts
 - [x] 6.2 Run focused package tests, `npm run check`, and `npm run build`; resolve all affected failures
-- [ ] 6.3 Run a controlled real Codex Desktop/Pi non-tail and tail Fork Gate, verify source/derived independent continuation and `Pi / locked`, and save only sanitized evidence
-- [ ] 6.4 Run official Codex Fork regression, update affected architecture/development status documents, and record the final validation conclusion
+- [x] 6.3 Run a controlled real Codex Desktop/Pi non-tail and tail Fork Gate, verify source/derived independent continuation and `Pi / locked`, and save only sanitized evidence
+- [x] 6.4 Run official Codex Fork regression, update affected architecture/development status documents, and record the final validation conclusion

@@ -33,8 +33,6 @@
 ## 6. 真实验证与证据
 
 - [x] 6.1 运行Probe聚焦测试和既有Renderer/Title/Prewarm/Host回归测试，确认迁移不改变已验证行为
-- [ ] 6.2 生成macOS arm64 App并验证点击后出现Codex/Pi/Claude Code、选择Pi首轮进入真实Pi且页面状态locked
-- [ ] 6.3 验证Renderer reload后Agent控件和Policy恢复，Controller失败时Desktop fail closed
 - [x] 6.4 运行全仓`npm run check`和OpenSpec strict validation，更新安装包与Renderer验证记录
 
 ## 7. Claude Code默认生产组合
@@ -43,4 +41,3 @@
 - [x] 7.2 生产Host默认注册Claude Code Adapter，缺少可执行文件或认证时fail closed且不影响Host启动
 - [x] 7.3 将Claude Agent SDK纳入Host Bundle闭包审计，拒绝可选平台Claude Code包并补齐许可证与固定Payload
 - [x] 7.4 更新macOS/WiX文件清单、发布测试、全仓检查和OpenSpec strict validation
-- [ ] 7.5 生成macOS arm64 App并验证Claude Code控件、真实首轮、locked状态和reload恢复

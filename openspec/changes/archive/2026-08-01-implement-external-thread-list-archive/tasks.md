@@ -35,6 +35,6 @@
 
 - [x] 5.1 运行 Mapping Store、Protocol Core、Host Runtime 聚焦测试以及 TypeScript build、typecheck、lint 和 format 门禁
 - [x] 5.2 增加 1000 个 External Thread 的启动枚举、筛选和首屏列表方向性测量，记录结果但不预设跨机器 SLA
-- [ ] 5.3 在受控当前 Desktop 中验证普通列表、归档列表、Archive、Unarchive、分页继续和 External Agent 图标归属，保存不含标题、cwd、Thread ID 或 Transcript 的最小证据
+- [x] 5.3 在受控当前 Desktop 中验证普通列表、归档列表、Archive、Unarchive、分页继续和 External Agent 图标归属，保存不含标题、cwd、Thread ID 或 Transcript 的最小证据
 - [x] 5.4 回归官方 Codex 列表、归档、恢复归档和未知字段透明性，并记录未执行的跨平台 Gate
 - [x] 5.5 更新数据持久化、技术架构、工程落地和开发步骤文档，使当前能力、Pin 降级、Detach 非目标和验证结果与生产代码一致

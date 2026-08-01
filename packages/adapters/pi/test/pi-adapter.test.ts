@@ -47,8 +47,8 @@ class FakePiTransport implements PiTurnTransport {
   });
   readonly start = vi.fn(async () => undefined);
   readonly getAvailableModels = vi.fn(async () => [
-    { provider: "synthetic-provider", id: "synthetic-model" },
-    { provider: "synthetic-provider", id: "alternate-model" },
+    { provider: "synthetic-provider", id: "synthetic-model", reasoning: true },
+    { provider: "synthetic-provider", id: "alternate-model", reasoning: false },
   ]);
   readonly getAvailableThinkingLevels = vi.fn<() => Promise<HarnessThinkingOptionId[] | null>>(
     async () =>
@@ -289,8 +289,12 @@ describe("Pi HarnessAdapter Session", () => {
         }),
         thinkingOptions: [
           { id: "off", label: "Off" },
+          { id: "minimal", label: "Minimal" },
           { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
           { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
         ],
         defaultThinkingOptionId: "high",
       },
@@ -306,28 +310,45 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("inspects exact target-Model Thinking through startup selection without set_model", async () => {
-    const { adapter, dependencies, transports } = fixture();
-    const model = encodePiModelRef({
-      provider: "synthetic-provider",
-      id: "alternate-model",
-    });
+  it("caches successful inspection by cwd, coalesces requests, and honors refresh", async () => {
+    const { adapter, dependencies } = fixture();
 
-    await expect(adapter.inspect({ cwd: "/synthetic", model })).resolves.toMatchObject({
+    const first = adapter.inspect({ cwd: "/synthetic" });
+    const concurrent = adapter.inspect({ cwd: "/synthetic" });
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([
+      expect.objectContaining({ status: "ready" }),
+      expect.objectContaining({ status: "ready" }),
+    ]);
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
-      catalog: {
-        defaultModel: model,
-        thinkingOptions: [
-          { id: "off", label: "Off" },
-          { id: "low", label: "Low" },
-        ],
-        defaultThinkingOptionId: "low",
-      },
     });
-    expect(dependencies.createTransport).toHaveBeenCalledWith(
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(1);
+
+    await expect(adapter.inspect({ cwd: "/synthetic", refresh: true })).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toMatchObject({ status: "ready" });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
+  it("assigns unified Draft Thinking options from Model reasoning metadata", async () => {
+    const { adapter, dependencies, transports } = fixture();
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    if (inspection.status !== "ready") throw new Error(inspection.error.message);
+    expect(inspection.catalog.models).toEqual([
       expect.objectContaining({
-        model: { provider: "synthetic-provider", id: "alternate-model" },
+        label: "synthetic-provider / alternate-model",
+        supportedThinkingOptionIds: ["off"],
       }),
+      expect.objectContaining({
+        label: "synthetic-provider / synthetic-model",
+        supportedThinkingOptionIds: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      }),
+    ]);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.not.objectContaining({ model: expect.anything() }),
     );
     expect(transports[0]?.selectModel).not.toHaveBeenCalled();
     expect(transports[0]?.close).toHaveBeenCalledOnce();
@@ -370,6 +391,10 @@ describe("Pi HarnessAdapter Session", () => {
       error: { code: "unavailable", message: "synthetic catalog failure" },
     });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
 

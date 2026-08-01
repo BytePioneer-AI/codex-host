@@ -73,6 +73,7 @@ import {
   normalizePiModelCatalog,
   normalizePiThinkingOptions,
   samePiModel,
+  type PiNativeModel,
   type PiNativeModelRef,
 } from "./pi-model-catalog.js";
 
@@ -88,7 +89,7 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
-  getAvailableModels(): Promise<PiNativeModelRef[]>;
+  getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
   getEntries(): Promise<PiSessionHistory>;
   fork(entryId: string): Promise<PiSessionState>;
@@ -1153,6 +1154,8 @@ export class PiAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = piHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
+  readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
+  readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<PiTurnTransport>();
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
@@ -1181,22 +1184,28 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
-    let inspectionModel: PiNativeModelRef | undefined;
-    if (input.model) {
-      try {
-        inspectionModel = decodePiModelRef(input.model);
-      } catch (error) {
-        return {
-          status: "error",
-          error: normalizedError(error, "invalidRequest"),
-        };
-      }
+    const cwd = input.cwd ?? process.cwd();
+    const inFlight = this.#inspectionInFlight.get(cwd);
+    if (inFlight) return inFlight;
+    if (!input.refresh) {
+      const cached = this.#inspectionCache.get(cwd);
+      if (cached) return cached;
     }
-    const transport = this.#createTransport({
-      cwd: input.cwd ?? process.cwd(),
-      ...(inspectionModel ? { model: inspectionModel } : {}),
-      onFault: () => undefined,
+
+    const inspection = this.#inspectCwd(cwd).then((result) => {
+      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      return result;
     });
+    this.#inspectionInFlight.set(cwd, inspection);
+    return inspection.finally(() => {
+      if (this.#inspectionInFlight.get(cwd) === inspection) {
+        this.#inspectionInFlight.delete(cwd);
+      }
+    });
+  }
+
+  async #inspectCwd(cwd: string): Promise<HarnessInspection> {
+    const transport = this.#createTransport({ cwd, onFault: () => undefined });
     this.#inspections.add(transport);
     try {
       await transport.start();

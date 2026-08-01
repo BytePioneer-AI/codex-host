@@ -11,7 +11,7 @@
 ## 3. Pi 原生映射
 
 - [x] 3.1 解析 Pi `thinkingLevel`, available levels, optional unsupported commands, and Model-target startup arguments in PiRpcSession.
-- [x] 3.2 规范化 Pi Thinking options and current-Model catalog support without Provider or Model allowlists.
+- [x] 3.2 根据 Pi Model `reasoning` 规范化统一 Draft Thinking options及逐Model支持关系，不引入Provider或Model白名单。
 - [x] 3.3 实现 Pi 检查, create/resume/fork state recovery, Model side-effect readback, corrected Thinking selection, and Idle serialization.
 - [x] 3.4 增加针对性的 Pi RPC, catalog, Adapter ordering, correction, unsupported-command, and lifecycle tests.
 
@@ -32,3 +32,10 @@
 - [x] 6.1 执行针对性的包测试, TypeScript build/typecheck, lint/format checks, strict OpenSpec validation, and `git diff --check`.
 - [x] 6.2 执行有界的真实 Pi RPC smoke check for actual available levels, corrected readback, and cleanup without recording private catalog data.
 - [x] 6.3 更新受影响的架构/状态文档 with implemented scope and checks actually executed.
+
+## 7. Pi Draft Thinking Catalog 简化
+
+- [x] 7.1 将 Pi Draft Catalog 改为一次读取 Model `reasoning` 并生成 Paseo 风格统一 Thinking 选项，删除逐目标 Model inspection 语义。
+- [x] 7.2 让 Draft Model 切换只使用内存 Catalog 更新 Composer carrier，同时保留 Native Session 内由 Pi 执行的 Thinking 校正和状态回读。
+- [x] 7.3 更新 Shared Contracts、Pi Adapter、Renderer 和相关聚焦测试，覆盖 reasoning/non-reasoning Model、无目标Pi inspection的Draft切换及严格Catalog关系。
+- [x] 7.4 同步 change artifacts、开发状态与验证记录，区分Desktop注入readiness和真实交互Gate，并执行聚焦测试、typecheck、lint、strict OpenSpec validation 和 `git diff --check`。

@@ -51,7 +51,6 @@ export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: Harn
 export interface InspectHarnessInput {
   cwd?: string;
   refresh?: boolean;
-  model?: HarnessModelRef;
 }
 
 export interface CreateSessionInput {

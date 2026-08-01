@@ -77,6 +77,32 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     expect(view.thinkingOptions.map(({ id }) => id)).not.toContain("max");
   });
 
+  it("does not reuse global Thinking options for a Model without a declared list", () => {
+    const uninspectedCatalog = harnessModelCatalogSchema.parse({
+      models: [{ ref: model, label: "provider / model" }],
+      defaultModel: model,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "high",
+    });
+
+    expect(
+      rendererModelPickerPresentation({
+        status: "ready",
+        catalog: uninspectedCatalog,
+        selected: model,
+        selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toEqual({
+      modelLabel: "provider / model",
+      thinkingOptions: [],
+      showThinkingSection: false,
+      thinkingSelectionEnabled: false,
+    });
+  });
+
   it("omits the Thinking section and trigger suffix when Pi reports only off", () => {
     expect(
       rendererModelPickerPresentation({

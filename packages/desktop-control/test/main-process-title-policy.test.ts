@@ -59,9 +59,9 @@ describe("main-process title policy", () => {
     expect(inspector.command.mock.calls.at(-2)?.[1]).toMatchObject({
       objectId: "get-context",
     });
-    expect(inspector.command.mock.calls.at(-2)?.[1]?.functionDeclaration).toContain(
-      "ownService(sampleService, selected)",
-    );
+    const functionDeclaration = inspector.command.mock.calls.at(-2)?.[1]?.functionDeclaration;
+    expect(functionDeclaration).toContain("ownService(sampleService, selected)");
+    expect(functionDeclaration).toContain("['Dhe', 'Nye']");
     expect(inspector.command.mock.calls.at(-1)?.[1]).toEqual({
       promiseObjectId: "install-promise",
       returnByValue: true,

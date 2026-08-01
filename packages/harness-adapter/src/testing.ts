@@ -105,9 +105,7 @@ function thinkingOptionsForModel(
   const supported = catalog.models.find(
     (candidate) => candidate.ref.id === model?.id,
   )?.supportedThinkingOptionIds;
-  return supported
-    ? catalog.thinkingOptions.filter((option) => supported.includes(option.id))
-    : catalog.thinkingOptions;
+  return supported ? catalog.thinkingOptions.filter((option) => supported.includes(option.id)) : [];
 }
 
 function catalogHasThinkingOption(
@@ -709,6 +707,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    void input;
     this.inspectionCalls += 1;
     if (this.#closePromise) {
       return {
@@ -716,16 +715,6 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         error: {
           code: "invalidState",
           message: "Fake Harness Adapter is closed",
-          retryable: false,
-        },
-      };
-    }
-    if (input.model && !catalogHasModel(this.catalog, input.model)) {
-      return {
-        status: "error",
-        error: {
-          code: "invalidRequest",
-          message: "Fake inspection Model is not in the current catalog",
           retryable: false,
         },
       };

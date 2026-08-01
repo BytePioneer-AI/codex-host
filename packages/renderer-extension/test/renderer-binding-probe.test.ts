@@ -1,7 +1,12 @@
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelCatalogSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  draftThinkingOptionForModel,
   isLateConversationTarget,
   isOwnershipSubmissionBlocked,
   restoredThreadOwnership,
@@ -97,6 +102,44 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isOwnershipSubmissionBlocked("error")).toBe(true);
     expect(isOwnershipSubmissionBlocked("ready")).toBe(false);
     expect(isOwnershipSubmissionBlocked("not-required")).toBe(false);
+  });
+
+  it("resolves Draft Thinking from the selected Model's in-memory Catalog entry", () => {
+    const reasoningModel = harnessModelRefSchema.parse({ id: "pi-model-v1.reasoning" });
+    const plainModel = harnessModelRefSchema.parse({ id: "pi-model-v1.plain" });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: reasoningModel,
+          label: "Reasoning",
+          supportedThinkingOptionIds: ["off", "high", "max"],
+        },
+        {
+          ref: plainModel,
+          label: "Plain",
+          supportedThinkingOptionIds: ["off"],
+        },
+      ],
+      defaultModel: reasoningModel,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ],
+      defaultThinkingOptionId: "high",
+    });
+
+    expect(
+      draftThinkingOptionForModel(
+        catalog,
+        reasoningModel,
+        harnessThinkingOptionIdSchema.parse("max"),
+      ),
+    ).toBe("max");
+    expect(
+      draftThinkingOptionForModel(catalog, plainModel, harnessThinkingOptionIdSchema.parse("max")),
+    ).toBe("off");
+    expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
   });
 
   it("does not bind readable Thinking when current options are unavailable", () => {

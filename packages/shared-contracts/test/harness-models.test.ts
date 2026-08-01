@@ -160,6 +160,18 @@ describe("Harness Model runtime contracts", () => {
       }).success,
     ).toBe(false);
     expect(
+      harnessModelCatalogSchema.safeParse({
+        models: [
+          {
+            ref: firstRef,
+            label: "first",
+            supportedThinkingOptionIds: ["off", "off"],
+          },
+        ],
+        thinkingOptions: [{ id: "off", label: "Off" }],
+      }).success,
+    ).toBe(false);
+    expect(
       harnessModelSelectionStateSchema.safeParse({
         effectiveThinkingOptionId: "high",
         availableThinkingOptions: [{ id: "off", label: "Off" }],
@@ -173,9 +185,8 @@ describe("Harness Model runtime contracts", () => {
         harnessId: "pi",
         cwd: "/synthetic",
         refresh: true,
-        model: firstRef,
       }),
-    ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true, model: firstRef });
+    ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true });
     expect(harnessInspectParamsSchema.parse({ harnessId: "claude-code" })).toEqual({
       harnessId: "claude-code",
     });
@@ -190,6 +201,12 @@ describe("Harness Model runtime contracts", () => {
       }),
     ).toEqual({ threadId: "thread-1", thinkingOptionId: "high" });
 
+    expect(
+      harnessInspectParamsSchema.safeParse({
+        harnessId: "pi",
+        model: firstRef,
+      }).success,
+    ).toBe(false);
     expect(
       harnessInspectParamsSchema.safeParse({
         harnessId: "pi",

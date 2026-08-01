@@ -60,13 +60,15 @@ function popoverOpen(menu: HTMLElement): boolean {
   return menu.matches(":popover-open");
 }
 
-function currentThinkingOptions(view: RendererModelControlView): HarnessThinkingOption[] {
-  const supported = view.catalog?.models.find(
-    (model) => model.ref.id === view.selected?.id,
+export function thinkingOptionsForModel(
+  catalog: HarnessModelCatalog | undefined,
+  selected: HarnessModelRef | undefined,
+): HarnessThinkingOption[] {
+  const supported = catalog?.models.find(
+    (model) => model.ref.id === selected?.id,
   )?.supportedThinkingOptionIds;
-  return supported
-    ? (view.catalog?.thinkingOptions.filter((option) => supported.includes(option.id)) ?? [])
-    : (view.catalog?.thinkingOptions ?? []);
+  if (!supported) return [];
+  return catalog?.thinkingOptions.filter((option) => supported.includes(option.id)) ?? [];
 }
 
 export function isRendererModelPickerDisabled(view: RendererModelControlView): boolean {
@@ -86,7 +88,7 @@ export function rendererModelPickerPresentation(
   view: RendererModelControlView,
 ): RendererModelPickerPresentation {
   const selectedModel = view.catalog?.models.find((model) => model.ref.id === view.selected?.id);
-  const thinkingOptions = currentThinkingOptions(view);
+  const thinkingOptions = thinkingOptionsForModel(view.catalog, view.selected);
   const selectedThinking = thinkingOptions.find(({ id }) => id === view.selectedThinkingOptionId);
   const showThinkingSection =
     thinkingOptions.length > 0 &&

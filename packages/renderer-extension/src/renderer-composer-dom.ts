@@ -9,6 +9,7 @@ import {
   mountRendererModelPicker,
   renderRendererModelPicker,
   syncRendererModelTriggerClass,
+  thinkingOptionsForModel,
   type RendererModelControlView,
   type RendererModelPickerControl,
 } from "./renderer-model-picker.js";
@@ -240,11 +241,7 @@ export function renderComposerAgentControl(
   const selectedCatalogModel = modelView.catalog?.models.find(
     (model) => model.ref.id === selectedModel?.id,
   );
-  const availableThinkingOptions = selectedCatalogModel?.supportedThinkingOptionIds
-    ? (modelView.catalog?.thinkingOptions.filter((option) =>
-        selectedCatalogModel.supportedThinkingOptionIds?.includes(option.id),
-      ) ?? [])
-    : (modelView.catalog?.thinkingOptions ?? []);
+  const availableThinkingOptions = thinkingOptionsForModel(modelView.catalog, selectedModel);
   const thinkingReady =
     availableThinkingOptions.length === 0 ||
     availableThinkingOptions.some(({ id }) => id === modelView.selectedThinkingOptionId);

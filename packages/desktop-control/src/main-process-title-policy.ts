@@ -123,7 +123,7 @@ const INSTALL_POLICY_FUNCTION = `async function () {
   const originalGenerateTitle = servicePrototype?.generateTitle;
   if (
     servicePrototype == null ||
-    sampleService?.constructor?.name !== 'Dhe' ||
+    !['Dhe', 'Nye'].includes(sampleService?.constructor?.name) ||
     typeof originalGenerateTitle !== 'function' ||
     !Function.prototype.toString.call(originalGenerateTitle).includes('Failed to generate thread title')
   ) {

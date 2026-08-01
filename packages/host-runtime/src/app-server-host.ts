@@ -593,7 +593,6 @@ export class AppServerHost {
       inspection = await adapter.inspect({
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
-        ...(params.data.model ? { model: params.data.model } : {}),
       });
     } catch (error) {
       await this.#writer.json(

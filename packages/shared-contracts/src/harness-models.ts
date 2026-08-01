@@ -86,7 +86,16 @@ export const harnessModelCatalogSchema = z
         });
       }
       refs.add(model.ref.id);
+      const supportedThinkingIds = new Set<string>();
       for (const [optionIndex, optionId] of (model.supportedThinkingOptionIds ?? []).entries()) {
+        if (supportedThinkingIds.has(optionId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Supported Thinking option IDs must be unique per Model",
+            path: ["models", index, "supportedThinkingOptionIds", optionIndex],
+          });
+        }
+        supportedThinkingIds.add(optionId);
         if (!thinkingIds.has(optionId)) {
           context.addIssue({
             code: "custom",
@@ -187,7 +196,6 @@ export const harnessInspectParamsSchema = z
     harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
     refresh: z.boolean().optional(),
-    model: harnessModelRefSchema.optional(),
   })
   .strict();
 

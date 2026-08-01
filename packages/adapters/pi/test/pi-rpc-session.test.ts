@@ -120,15 +120,16 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command, {
         models:
           this.#scenario === "malformed-catalog"
-            ? [{ id: "missing-provider" }]
+            ? [{ id: "missing-provider", reasoning: true }]
             : [
                 {
                   provider: "synthetic-provider",
                   id: "synthetic-model",
                   baseUrl: "https://private.invalid",
                   apiKey: "secret",
+                  reasoning: true,
                 },
-                { provider: "other/provider", id: "family/model" },
+                { provider: "other/provider", id: "family/model", reasoning: false },
               ],
       });
       return;
@@ -599,8 +600,8 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
 
     await expect(rpc.getAvailableModels()).resolves.toEqual([
-      { provider: "synthetic-provider", id: "synthetic-model" },
-      { provider: "other/provider", id: "family/model" },
+      { provider: "synthetic-provider", id: "synthetic-model", reasoning: true },
+      { provider: "other/provider", id: "family/model", reasoning: false },
     ]);
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),

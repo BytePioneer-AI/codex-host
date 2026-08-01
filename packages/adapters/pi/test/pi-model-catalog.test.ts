@@ -22,9 +22,9 @@ describe("Pi Model Catalog normalization", () => {
   it("keeps Provider identity distinct, removes exact duplicates, and sorts deterministically", () => {
     const catalog = normalizePiModelCatalog(
       [
-        { provider: "z-provider", id: "same" },
-        { provider: "a-provider", id: "same" },
-        { provider: "a-provider", id: "same" },
+        { provider: "z-provider", id: "same", reasoning: true },
+        { provider: "a-provider", id: "same", reasoning: false },
+        { provider: "a-provider", id: "same", reasoning: false },
       ],
       { provider: "z-provider", id: "same" },
       [harnessThinkingOptionIdSchema.parse("off"), harnessThinkingOptionIdSchema.parse("high")],
@@ -38,8 +38,16 @@ describe("Pi Model Catalog normalization", () => {
     expect(catalog.models[0]?.ref).not.toEqual(catalog.models[1]?.ref);
     expect(catalog.defaultModel).toEqual(catalog.models[1]?.ref);
     expect(catalog.defaultThinkingOptionId).toBe("high");
-    expect(catalog.models[1]?.supportedThinkingOptionIds).toEqual(["off", "high"]);
-    expect(catalog.models[0]?.supportedThinkingOptionIds).toBeUndefined();
+    expect(catalog.models[1]?.supportedThinkingOptionIds).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(catalog.models[0]?.supportedThinkingOptionIds).toEqual(["off"]);
   });
 
   it("normalizes only Pi-reported Thinking levels and keeps unknown labels Adapter-owned", () => {
@@ -59,7 +67,7 @@ describe("Pi Model Catalog normalization", () => {
   it("rejects an effective Model absent from the available catalog", () => {
     expect(() =>
       normalizePiModelCatalog(
-        [{ provider: "available", id: "model" }],
+        [{ provider: "available", id: "model", reasoning: true }],
         {
           provider: "missing",
           id: "model",
@@ -68,6 +76,20 @@ describe("Pi Model Catalog normalization", () => {
         harnessThinkingOptionIdSchema.parse("off"),
       ),
     ).toThrow("absent from the available Model catalog");
+  });
+
+  it("rejects duplicate Model entries with conflicting reasoning metadata", () => {
+    expect(() =>
+      normalizePiModelCatalog(
+        [
+          { provider: "provider", id: "model", reasoning: true },
+          { provider: "provider", id: "model", reasoning: false },
+        ],
+        { provider: "provider", id: "model" },
+        [harnessThinkingOptionIdSchema.parse("off")],
+        harnessThinkingOptionIdSchema.parse("off"),
+      ),
+    ).toThrow("disagree on reasoning capability");
   });
 
   it("rejects malformed, foreign, and non-canonical opaque refs", () => {

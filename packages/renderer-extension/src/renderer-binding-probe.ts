@@ -39,6 +39,7 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
@@ -98,6 +99,19 @@ function selectableThinkingOptionId(
     state.availableThinkingOptions?.some(({ id }) => id === state.effectiveThinkingOptionId)
     ? state.effectiveThinkingOptionId
     : undefined;
+}
+
+export function draftThinkingOptionForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef,
+  requested: HarnessThinkingOptionId | undefined,
+): HarnessThinkingOptionId | undefined {
+  const options = thinkingOptionsForModel(catalog, model);
+  return (
+    options.find(({ id }) => id === requested)?.id ??
+    options.find(({ id }) => id === catalog.defaultThinkingOptionId)?.id ??
+    options[0]?.id
+  );
 }
 
 export function restoredThreadOwnership(inspection: ThreadInspection): RestoredThreadOwnership {
@@ -362,10 +376,7 @@ export function installRendererBindingProbe(
     renderMounted(mounted);
     try {
       if (!modelControl) throw new Error("Pi configuration control is unavailable");
-      const inspection = await modelControl.inspectPi({
-        harnessId: piHarnessId,
-        ...(state.piModel ? { model: state.piModel } : {}),
-      });
+      const inspection = await modelControl.inspectPi({ harnessId: piHarnessId });
       if (
         !isCurrentModelRequest(mounted, generation) ||
         controller.get(mounted.composer).agent !== "pi"
@@ -388,12 +399,11 @@ export function installRendererBindingProbe(
         current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
           : inspection.catalog;
-      const selectedThinkingOptionId =
-        current.piThinkingOptionId &&
-        (effectiveCatalog.thinkingOptions.length === 0 ||
-          effectiveCatalog.thinkingOptions.some(({ id }) => id === current.piThinkingOptionId))
-          ? current.piThinkingOptionId
-          : effectiveCatalog.defaultThinkingOptionId;
+      const selectedThinkingOptionId = draftThinkingOptionForModel(
+        effectiveCatalog,
+        selected,
+        current.piThinkingOptionId,
+      );
       if (
         current.phase === "draft" &&
         (current.piModel?.id !== selected.id ||
@@ -456,23 +466,13 @@ export function installRendererBindingProbe(
       let effectiveThinkingOptionId: HarnessThinkingOptionId | undefined;
       let effectiveCatalog: HarnessModelCatalog;
       if (current.phase === "draft") {
-        const inspection = await modelControl.inspectPi({
-          harnessId: piHarnessId,
-          model: selected,
-        });
-        if (
-          !isCurrentModelRequest(mounted, generation) ||
-          controller.get(mounted.composer).agent !== "pi"
-        ) {
-          return;
-        }
-        if (inspection.status !== "ready") throw new Error(inspection.error.message);
-        if (inspection.catalog.defaultModel?.id !== selected.id) {
-          throw new Error("Pi inspected a different Model than requested");
-        }
-        effectiveModel = inspection.catalog.defaultModel;
-        effectiveThinkingOptionId = inspection.catalog.defaultThinkingOptionId;
-        effectiveCatalog = inspection.catalog;
+        effectiveModel = selected;
+        effectiveThinkingOptionId = draftThinkingOptionForModel(
+          catalog,
+          selected,
+          previousThinking,
+        );
+        effectiveCatalog = catalog;
         if (!(applyAdapterPiModel?.(effectiveModel, effectiveThinkingOptionId) ?? false)) {
           throw new Error("Pi configuration could not be applied to the Composer");
         }
@@ -550,8 +550,7 @@ export function installRendererBindingProbe(
       !catalog ||
       !model ||
       !selectedThinkingOptionId ||
-      (catalogModel?.supportedThinkingOptionIds !== undefined &&
-        !catalogModel.supportedThinkingOptionIds.includes(selectedThinkingOptionId))
+      !catalogModel?.supportedThinkingOptionIds?.includes(selectedThinkingOptionId)
     ) {
       return;
     }

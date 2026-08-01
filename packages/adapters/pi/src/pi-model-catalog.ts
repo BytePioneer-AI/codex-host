@@ -1,6 +1,7 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
   type HarnessModelCatalog,
   type HarnessModelRef,
@@ -13,7 +14,20 @@ export interface PiNativeModelRef {
   id: string;
 }
 
+export interface PiNativeModel extends PiNativeModelRef {
+  reasoning: boolean;
+}
+
 const PI_MODEL_REF_PREFIX = "pi-model-v1.";
+const PI_DRAFT_THINKING_OPTION_IDS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+].map((id) => harnessThinkingOptionIdSchema.parse(id));
 
 const PI_THINKING_LABELS: Readonly<Record<string, string>> = {
   off: "Off",
@@ -101,29 +115,36 @@ export function normalizePiThinkingOptions(
 }
 
 export function normalizePiModelCatalog(
-  nativeModels: readonly PiNativeModelRef[],
+  nativeModels: readonly PiNativeModel[],
   effectiveModel: PiNativeModelRef | null,
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   effectiveThinkingOptionId: HarnessThinkingOptionId | null,
 ): HarnessModelCatalog {
-  const byRef = new Map<string, HarnessModelCatalog["models"][number]>();
+  const byRef = new Map<
+    string,
+    { model: HarnessModelCatalog["models"][number]; reasoning: boolean }
+  >();
   for (const native of nativeModels) {
     const ref = encodePiModelRef(native);
-    if (!byRef.has(ref.id)) {
-      byRef.set(ref.id, {
+    const existing = byRef.get(ref.id);
+    if (existing) {
+      if (existing.reasoning !== native.reasoning) {
+        throw new Error("Pi duplicate Model entries disagree on reasoning capability");
+      }
+      continue;
+    }
+    byRef.set(ref.id, {
+      model: {
         ref,
         label: `${native.provider} / ${native.id}`,
-      });
-    }
+      },
+      reasoning: native.reasoning,
+    });
   }
-  const models = [...byRef.values()].sort(
-    (left, right) => compareText(left.label, right.label) || compareText(left.ref.id, right.ref.id),
-  );
   const defaultModel = effectiveModel ? encodePiModelRef(effectiveModel) : undefined;
   if (defaultModel && !byRef.has(defaultModel.id)) {
     throw new Error("Pi effective Model is absent from the available Model catalog");
   }
-  const thinkingOptions = normalizePiThinkingOptions(thinkingLevels ?? []);
   if (
     thinkingLevels &&
     effectiveThinkingOptionId &&
@@ -134,18 +155,32 @@ export function normalizePiModelCatalog(
   if (thinkingLevels && !effectiveThinkingOptionId) {
     throw new Error("Pi did not report an effective Thinking option");
   }
-  const supportedThinkingOptionIds = thinkingOptions.map(({ id }) => id);
-  const normalizedModels = models.map((model) =>
-    model.ref.id === defaultModel?.id && thinkingLevels
-      ? { ...model, supportedThinkingOptionIds }
-      : model,
-  );
+
+  const thinkingOptions = thinkingLevels
+    ? normalizePiThinkingOptions(PI_DRAFT_THINKING_OPTION_IDS)
+    : [];
+  const allThinkingOptionIds = thinkingOptions.map(({ id }) => id);
+  const offThinkingOptionId = thinkingOptions.find(({ id }) => id === "off")?.id;
+  const models = [...byRef.values()]
+    .map(({ model, reasoning }) => ({
+      ...model,
+      supportedThinkingOptionIds: reasoning
+        ? allThinkingOptionIds
+        : offThinkingOptionId
+          ? [offThinkingOptionId]
+          : [],
+    }))
+    .sort(
+      (left, right) =>
+        compareText(left.label, right.label) || compareText(left.ref.id, right.ref.id),
+    );
+  const defaultThinkingOptionId = thinkingOptions.find(
+    ({ id }) => id === effectiveThinkingOptionId,
+  )?.id;
   return harnessModelCatalogSchema.parse({
-    models: normalizedModels,
+    models,
     ...(defaultModel ? { defaultModel } : {}),
     thinkingOptions,
-    ...(thinkingLevels && effectiveThinkingOptionId
-      ? { defaultThinkingOptionId: effectiveThinkingOptionId }
-      : {}),
+    ...(defaultThinkingOptionId ? { defaultThinkingOptionId } : {}),
   });
 }

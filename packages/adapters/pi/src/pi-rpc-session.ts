@@ -10,7 +10,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { PiSessionHistory } from "./pi-history.js";
-import type { PiNativeModelRef } from "./pi-model-catalog.js";
+import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
 
 export interface PiSessionState {
@@ -237,17 +237,20 @@ function parseAvailableThinkingLevels(
   return levels;
 }
 
-function parseAvailableModels(response: Record<string, unknown>): PiNativeModelRef[] {
+function parseAvailableModels(response: Record<string, unknown>): PiNativeModel[] {
   const data = isRecord(response.data) ? response.data : null;
   if (!data || !Array.isArray(data.models)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC Model catalog response has no models");
   }
   return data.models.map((model) => {
     const parsed = parseNativeModel(model, "catalog");
-    if (!parsed) {
-      throw new PiRpcFaultError("protocolError", "Pi RPC catalog contains an empty Model");
+    if (!parsed || !isRecord(model) || typeof model.reasoning !== "boolean") {
+      throw new PiRpcFaultError(
+        "protocolError",
+        "Pi RPC catalog contains a Model without reasoning capability",
+      );
     }
-    return parsed;
+    return { ...parsed, reasoning: model.reasoning };
   });
 }
 
@@ -468,7 +471,7 @@ export class PiRpcSession {
     });
   }
 
-  async getAvailableModels(): Promise<PiNativeModelRef[]> {
+  async getAvailableModels(): Promise<PiNativeModel[]> {
     try {
       return parseAvailableModels(await this.#send("get_available_models", {}));
     } catch (error) {

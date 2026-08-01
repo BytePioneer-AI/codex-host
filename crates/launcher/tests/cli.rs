@@ -8,6 +8,18 @@ fn launcher_path() -> PathBuf {
 }
 
 #[test]
+fn production_launcher_uses_the_three_state_running_desktop_flow() {
+    let source = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("read Launcher source");
+    assert!(source.contains("StartupState::RecoverStale"));
+    assert!(source.contains("StartupState::CleanLaunch"));
+    assert!(source.contains("StartupState::Attach"));
+    assert!(source.contains("acquire_launcher_ownership"));
+    assert!(source.contains("completely quit it before starting codexhost"));
+    assert!(!source.contains("attach_unmanaged_desktop"));
+}
+
+#[test]
 fn production_launcher_rejects_the_gate_probe_command() {
     let output = Command::new(launcher_path())
         .arg("probe")

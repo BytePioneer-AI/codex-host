@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  activateElectronDesktop,
   createRendererControlSession,
   inspectElectronWebContents,
   selectRendererWebContents,
@@ -33,6 +34,15 @@ function readyBinding() {
 }
 
 describe("Renderer Control Session", () => {
+  it("activates at least one live Electron window through the main Inspector", async () => {
+    const inspector = { evaluate: vi.fn(async () => 2) };
+    await expect(activateElectronDesktop(inspector)).resolves.toBe(2);
+    expect(inspector.evaluate).toHaveBeenCalledWith(expect.stringContaining("window.focus()"));
+    await expect(activateElectronDesktop({ evaluate: vi.fn(async () => 0) })).rejects.toThrow(
+      "found no live window",
+    );
+  });
+
   it("selects the populated primary window even when an overlay is larger", () => {
     const primary = renderer(17, "primary", 100);
     expect(selectRendererWebContents([renderer(18, "overlay", 1_000), primary])).toBe(primary);

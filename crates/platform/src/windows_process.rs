@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, zeroed};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Child;
@@ -11,8 +12,11 @@ type Handle = *mut c_void;
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
+const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+const MOVE_FILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+const MOVE_FILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
 #[repr(C)]
 struct NativeProcessEntry {
@@ -83,6 +87,8 @@ unsafe extern "system" {
     ) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+    fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
+    fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
 }
 
 #[derive(Clone, Copy)]
@@ -152,6 +158,51 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         }
         buffer.truncate(length as usize);
         Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
+    }
+}
+
+pub fn terminate_process(process_id: u32, exit_code: u32) -> io::Result<()> {
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, process_id);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let result = TerminateProcess(process, exit_code);
+        let error = if result == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
+        CloseHandle(process);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+pub fn atomic_replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 

@@ -20,7 +20,10 @@ pub use desktop_launch::launch_desktop;
 #[cfg(target_os = "macos")]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use installation::discover_codex_desktop;
-pub use process::{ProcessSnapshot, desktop_process_ids, parent_process_id, process_exists};
+pub use process::{
+    ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
+    parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
+};
 #[cfg(target_os = "macos")]
 pub use process::{desktop_process_tree, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
@@ -109,6 +112,18 @@ pub fn configure_background_command(command: &mut std::process::Command) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn configure_background_command(_command: &mut std::process::Command) {}
+
+pub fn atomic_replace_file(source: &Path, target: &Path) -> Result<(), PlatformError> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_process::atomic_replace_file(source, target)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::rename(source, target)?;
+    }
+    Ok(())
+}
 
 pub fn canonical_existing_file(path: &Path) -> Result<PathBuf, PlatformError> {
     if !path.is_file() {

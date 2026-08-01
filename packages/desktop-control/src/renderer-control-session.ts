@@ -72,6 +72,7 @@ interface RendererControlOperations {
 export interface RendererControlSession {
   readonly snapshot: RendererControlSnapshot;
   ensureInstalled(): Promise<RendererControlSnapshot>;
+  activateDesktop(): Promise<number>;
   executeRenderer<T>(expression: string): Promise<T>;
   readTitlePolicyCounters(): Promise<MainProcessTitlePolicyCounters | null>;
   close(): void;
@@ -280,6 +281,25 @@ export async function inspectElectronWebContents(
   });
 }
 
+export async function activateElectronDesktop(
+  inspector: Pick<RendererInspector, "evaluate">,
+): Promise<number> {
+  const value = await inspector.evaluate<unknown>(`(() => {
+    const { BrowserWindow } = ${electronModuleExpression};
+    const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
+    for (const window of windows) {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    }
+    return windows.length;
+  })()`);
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new Error("Electron Desktop activation found no live window");
+  }
+  return value as number;
+}
+
 async function executeInWebContents<T>(
   inspector: Pick<RendererInspector, "evaluate">,
   rendererWebContentsId: number,
@@ -424,6 +444,11 @@ class InstalledRendererControlSession implements RendererControlSession {
       binding,
     };
     return this.#snapshot;
+  }
+
+  activateDesktop(): Promise<number> {
+    if (this.#closed) return Promise.reject(new Error("Renderer Control Session is closed"));
+    return activateElectronDesktop(this.inspector);
   }
 
   executeRenderer<T>(expression: string): Promise<T> {

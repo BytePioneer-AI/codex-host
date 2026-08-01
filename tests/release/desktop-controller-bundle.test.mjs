@@ -15,6 +15,7 @@ function validMetafile(extraInputs = {}) {
       "packages/desktop-control/src/release-main.ts": {},
       "packages/desktop-control/src/production-controller.ts": {},
       "packages/desktop-control/src/renderer-control-session.ts": {},
+      "packages/desktop-control/src/controller-attachment-server.ts": {},
       "packages/desktop-control/src/main-process-title-policy.ts": {},
       "packages/desktop-control/src/renderer-draft-prewarm-policy.ts": {},
       ...extraInputs,
@@ -24,7 +25,7 @@ function validMetafile(extraInputs = {}) {
 
 describe("Desktop Controller release Bundle", () => {
   it("accepts the reviewed production closure", () => {
-    expect(auditDesktopControllerMetafile(validMetafile()).inputs).toHaveLength(5);
+    expect(auditDesktopControllerMetafile(validMetafile()).inputs).toHaveLength(6);
   });
 
   it("rejects Tool, Test, and Claude inputs", () => {

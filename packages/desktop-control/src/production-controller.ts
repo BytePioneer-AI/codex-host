@@ -2,6 +2,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  startControllerAttachmentServer,
+  type ControllerAttachmentServer,
+  type StartControllerAttachmentServerOptions,
+} from "./controller-attachment-server.js";
+import {
   installRendererControlSession,
   type RendererControlSession,
 } from "./renderer-control-session.js";
@@ -10,6 +15,8 @@ export interface DesktopControllerOptions {
   inspectorEndpoint: string;
   rendererPath: string;
   defaultAgent: "codex" | "pi";
+  attachmentPort: number;
+  attachmentNonce: string;
 }
 
 export interface DesktopControllerDependencies {
@@ -20,6 +27,9 @@ export interface DesktopControllerDependencies {
     enabledAgents: readonly string[];
     timeoutMs: number;
   }): Promise<RendererControlSession>;
+  startAttachmentServer(
+    options: StartControllerAttachmentServerOptions,
+  ): Promise<ControllerAttachmentServer>;
   ready(): void;
   sleep(milliseconds: number): Promise<void>;
   monitorIntervalMs: number;
@@ -32,6 +42,7 @@ const TRANSIENT_INSTALL_RETRY_MS = 250;
 const defaultDependencies: DesktopControllerDependencies = {
   readRenderer: (filePath) => readFile(filePath, "utf8"),
   install: installRendererControlSession,
+  startAttachmentServer: startControllerAttachmentServer,
   ready: () => {
     process.stdout.write("ready\n");
   },
@@ -62,6 +73,8 @@ export function parseDesktopControllerArguments(
   let endpoint: string | undefined;
   let rendererPath: string | undefined;
   let defaultAgent: "codex" | "pi" | undefined;
+  let attachmentPort: number | undefined;
+  let attachmentNonce: string | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     const value = arguments_[index + 1];
@@ -89,12 +102,43 @@ export function parseDesktopControllerArguments(
       index += 1;
       continue;
     }
+    if (argument === "--attachment-port") {
+      if (attachmentPort !== undefined) {
+        throw new Error("--attachment-port may only be provided once");
+      }
+      const port = Number(value);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        throw new Error("--attachment-port must be a valid TCP port");
+      }
+      attachmentPort = port;
+      index += 1;
+      continue;
+    }
+    if (argument === "--attachment-nonce") {
+      if (attachmentNonce !== undefined) {
+        throw new Error("--attachment-nonce may only be provided once");
+      }
+      if (value === undefined || !/^[0-9a-f]{32}$/.test(value)) {
+        throw new Error("--attachment-nonce must be 32 lowercase hexadecimal characters");
+      }
+      attachmentNonce = value;
+      index += 1;
+      continue;
+    }
     throw new Error(`unknown Desktop Controller option: ${argument}`);
   }
   if (endpoint === undefined) throw new Error("--inspector-endpoint is required");
   if (rendererPath === undefined) throw new Error("--renderer is required");
   if (defaultAgent === undefined) throw new Error("--default-agent is required");
-  return { inspectorEndpoint: endpoint, rendererPath, defaultAgent };
+  if (attachmentPort === undefined) throw new Error("--attachment-port is required");
+  if (attachmentNonce === undefined) throw new Error("--attachment-nonce is required");
+  return {
+    inspectorEndpoint: endpoint,
+    rendererPath,
+    defaultAgent,
+    attachmentPort,
+    attachmentNonce,
+  };
 }
 
 function isTransientElectronInstallError(error: unknown): boolean {
@@ -140,13 +184,34 @@ export async function runDesktopController(
     },
     dependencies,
   );
+  let operation = Promise.resolve<unknown>(undefined);
+  const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
+    const next = operation.then(callback, callback);
+    operation = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
+  let attachmentServer: ControllerAttachmentServer | undefined;
   try {
+    attachmentServer = await dependencies.startAttachmentServer({
+      port: options.attachmentPort,
+      nonce: options.attachmentNonce,
+      attach: () =>
+        useSession(async () => {
+          await session.ensureInstalled();
+          await session.activateDesktop();
+        }),
+    });
     dependencies.ready();
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);
-      if (!signal.aborted) await session.ensureInstalled();
+      if (!signal.aborted) await useSession(() => session.ensureInstalled());
     }
   } finally {
+    await attachmentServer?.close();
+    await operation;
     session.close();
   }
 }

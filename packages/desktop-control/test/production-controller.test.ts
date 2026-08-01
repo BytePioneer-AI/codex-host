@@ -9,8 +9,24 @@ import {
 } from "../src/production-controller.js";
 import type { RendererControlSession } from "../src/renderer-control-session.js";
 
+const attachmentNonce = "0123456789abcdef0123456789abcdef";
+
+function controllerOptions() {
+  return {
+    inspectorEndpoint: "http://127.0.0.1:43123",
+    rendererPath: "/renderer.js",
+    defaultAgent: "pi" as const,
+    attachmentPort: 43124,
+    attachmentNonce,
+  };
+}
+
+function attachmentServer() {
+  return { close: vi.fn(async () => {}) };
+}
+
 describe("production Desktop Controller", () => {
-  it("accepts only a loopback Inspector and absolute Renderer path", () => {
+  it("accepts only a loopback Inspector, absolute Renderer path, and strict attachment fields", () => {
     const rendererPath = path.resolve("fixtures/renderer-extension.js");
     expect(
       parseDesktopControllerArguments([
@@ -20,11 +36,17 @@ describe("production Desktop Controller", () => {
         rendererPath,
         "--default-agent",
         "pi",
+        "--attachment-port",
+        "43124",
+        "--attachment-nonce",
+        attachmentNonce,
       ]),
     ).toEqual({
       inspectorEndpoint: "http://127.0.0.1:43123",
       rendererPath,
       defaultAgent: "pi",
+      attachmentPort: 43124,
+      attachmentNonce,
     });
     expect(() =>
       parseDesktopControllerArguments([
@@ -42,42 +64,57 @@ describe("production Desktop Controller", () => {
         "renderer.js",
       ]),
     ).toThrow("absolute path");
+    expect(() =>
+      parseDesktopControllerArguments([
+        "--inspector-endpoint",
+        "http://127.0.0.1:43123",
+        "--renderer",
+        rendererPath,
+        "--default-agent",
+        "pi",
+        "--attachment-port",
+        "43124",
+        "--attachment-nonce",
+        "bad",
+      ]),
+    ).toThrow("32 lowercase hexadecimal");
   });
 
-  it("signals ready, monitors recovery, and closes on abort", async () => {
+  it("signals ready, serves attachment, monitors recovery, and closes on abort", async () => {
     const abort = new AbortController();
     const snapshot = {} as RendererControlSession["snapshot"];
     const ensureInstalled = vi.fn(async () => {
       abort.abort();
       return snapshot;
     });
+    const activateDesktop = vi.fn(async () => 1);
     const close = vi.fn();
     const session: RendererControlSession = {
       snapshot,
       ensureInstalled,
+      activateDesktop,
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,
     };
     const ready = vi.fn();
     const install = vi.fn(async () => session);
+    const server = attachmentServer();
+    let attach: (() => Promise<void>) | undefined;
+    const startAttachmentServer = vi.fn(async (options) => {
+      attach = options.attach;
+      return server;
+    });
     const dependencies: DesktopControllerDependencies = {
       readRenderer: vi.fn(async () => "production renderer"),
       install,
+      startAttachmentServer,
       ready,
       sleep: vi.fn(async () => {}),
       monitorIntervalMs: 1,
     };
 
-    await runDesktopController(
-      {
-        inspectorEndpoint: "http://127.0.0.1:43123",
-        rendererPath: "/renderer.js",
-        defaultAgent: "pi",
-      },
-      abort.signal,
-      dependencies,
-    );
+    await runDesktopController(controllerOptions(), abort.signal, dependencies);
 
     expect(install).toHaveBeenCalledWith({
       inspectorEndpoint: "http://127.0.0.1:43123",
@@ -86,9 +123,16 @@ describe("production Desktop Controller", () => {
       enabledAgents: ["codex", "pi", "claude-code"],
       timeoutMs: 90_000,
     });
+    expect(startAttachmentServer).toHaveBeenCalledWith({
+      port: 43124,
+      nonce: attachmentNonce,
+      attach: expect.any(Function),
+    });
     expect(ready).toHaveBeenCalledOnce();
     expect(ensureInstalled).toHaveBeenCalledOnce();
+    expect(server.close).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
+    expect(attach).toEqual(expect.any(Function));
   });
 
   it("retries a transient Electron evaluation failure during cold startup", async () => {
@@ -98,6 +142,7 @@ describe("production Desktop Controller", () => {
     const session: RendererControlSession = {
       snapshot: {} as RendererControlSession["snapshot"],
       ensureInstalled: vi.fn(),
+      activateDesktop: vi.fn(async () => 1),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,
@@ -114,21 +159,14 @@ describe("production Desktop Controller", () => {
     const ready = vi.fn();
     const sleep = vi.fn(async () => {});
 
-    await runDesktopController(
-      {
-        inspectorEndpoint: "http://127.0.0.1:43123",
-        rendererPath: "/renderer.js",
-        defaultAgent: "pi",
-      },
-      abort.signal,
-      {
-        readRenderer: vi.fn(async () => "production renderer"),
-        install,
-        ready,
-        sleep,
-        monitorIntervalMs: 1,
-      },
-    );
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer: vi.fn(async () => attachmentServer()),
+      ready,
+      sleep,
+      monitorIntervalMs: 1,
+    });
 
     expect(install).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
@@ -137,30 +175,25 @@ describe("production Desktop Controller", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("does not signal ready or retry when the initial installation fails structurally", async () => {
+  it("does not signal ready or start attachment when installation fails structurally", async () => {
     const ready = vi.fn();
+    const startAttachmentServer = vi.fn(async () => attachmentServer());
     const dependencies: DesktopControllerDependencies = {
       readRenderer: vi.fn(async () => "production renderer"),
       install: vi.fn(async () => {
         throw new Error("signature mismatch");
       }),
+      startAttachmentServer,
       ready,
       sleep: vi.fn(async () => {}),
       monitorIntervalMs: 1,
     };
 
     await expect(
-      runDesktopController(
-        {
-          inspectorEndpoint: "http://127.0.0.1:43123",
-          rendererPath: "/renderer.js",
-          defaultAgent: "pi",
-        },
-        new AbortController().signal,
-        dependencies,
-      ),
+      runDesktopController(controllerOptions(), new AbortController().signal, dependencies),
     ).rejects.toThrow("signature mismatch");
     expect(dependencies.install).toHaveBeenCalledOnce();
+    expect(startAttachmentServer).not.toHaveBeenCalled();
     expect(ready).not.toHaveBeenCalled();
   });
 });

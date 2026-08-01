@@ -29,6 +29,7 @@ export function auditDesktopControllerMetafile(metafile) {
     "/packages/desktop-control/src/release-main.ts/",
     "/packages/desktop-control/src/production-controller.ts/",
     "/packages/desktop-control/src/renderer-control-session.ts/",
+    "/packages/desktop-control/src/controller-attachment-server.ts/",
     "/packages/desktop-control/src/main-process-title-policy.ts/",
     "/packages/desktop-control/src/renderer-draft-prewarm-policy.ts/",
   ]) {

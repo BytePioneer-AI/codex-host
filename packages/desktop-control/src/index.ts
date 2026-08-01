@@ -17,6 +17,7 @@ export type {
 } from "./cdp-client.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
 export {
+  activateElectronDesktop,
   createRendererControlSession,
   inspectElectronWebContents,
   installRendererControlSession,

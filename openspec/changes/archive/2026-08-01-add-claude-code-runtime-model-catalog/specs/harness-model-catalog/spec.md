@@ -13,6 +13,11 @@ The `HarnessAdapter` SHALL provide side-effect-free Model inspection that return
 - **THEN** the Adapter returns a deterministic Catalog of the current Claude Code configuration's selectable values, a default selectable Ref, the observed resolved Model label, and `configuration.selectModel: true`
 - **AND** no model Turn or persistent Native Session is created and every temporary Claude process is closed before inspection resolves
 
+#### Scenario: Inspection cannot start Pi
+- **WHEN** Pi is not installed, cannot start, or returns an invalid catalog
+- **THEN** inspection returns an explicit normalized unavailable or error result
+- **AND** no Native Session, background process, or user configuration change remains
+
 #### Scenario: Inspection cannot start a Harness
 - **WHEN** a registered Harness is not installed, cannot start, lacks required Model operations, or returns an invalid catalog
 - **THEN** inspection returns an explicit normalized unavailable, ready-without-selection, or error result according to the proven capability
@@ -58,6 +63,10 @@ A Session SHALL accept `model.select` only while open and Idle, SHALL serialize 
 - **WHEN** `turn.start` is requested while Model selection is pending
 - **THEN** the Session rejects the Turn as busy or accepts it only after the selection has fully completed
 - **AND** the Model write and Agent Loop do not overlap
+
+#### Scenario: Native readback differs from the request
+- **WHEN** Pi accepts the write but `get_state` reports a different actual Model
+- **THEN** PiAdapter publishes the actual state and returns an explicit failure rather than claiming the requested Model is effective
 
 #### Scenario: Native readback cannot establish the requested selection
 - **WHEN** the owning Adapter's setter rejects or native readback proves that the requested concrete selection was not accepted

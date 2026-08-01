@@ -10,6 +10,7 @@ export {
   CLAUDE_CODE_COMMAND_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
+  prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";

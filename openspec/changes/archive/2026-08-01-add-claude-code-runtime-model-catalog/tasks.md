@@ -14,6 +14,7 @@
 - [x] 2.5 Add normalized-cwd in-memory success caching, per-cwd in-flight coalescing, explicit refresh replacement, and failure non-caching
 - [x] 2.6 Feature-detect missing/older SDK Model operations and return ready empty Catalog with selection disabled instead of guessing from CLI versions or local settings
 - [x] 2.7 Add Hermetic transport/normalization tests for first-party rows, custom gateway rows, aliases, default, absent `resolvedModel`, malformed payloads, privacy rejection, caching, and cleanup
+- [x] 2.8 Start one non-blocking no-Prompt Claude Catalog prefetch during Host composition, reuse the existing cwd cache/in-flight lifecycle, and keep missing or failed Claude inspection isolated from Codex/Pi startup
 
 ## 3. Claude Session Model Control
 

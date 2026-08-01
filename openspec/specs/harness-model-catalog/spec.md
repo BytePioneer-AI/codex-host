@@ -4,20 +4,30 @@
 TBD - created by archiving change implement-pi-model-catalog-slice. Update Purpose after archive.
 ## Requirements
 ### Requirement: Harness inspection returns a normalized Model Catalog without creating a Session
-The `HarnessAdapter` SHALL provide side-effect-free Model inspection that returns browser-safe normalized Models and structural Model-selection capability without exposing native protocol objects or creating a persistent Native Session.
+The `HarnessAdapter` SHALL provide side-effect-free Model inspection that returns browser-safe normalized Models, optional runtime-resolved Model labels, and structural Model-selection capability without exposing native protocol objects or creating a persistent Native Session. Inspection SHALL own and close every temporary runtime resource before resolving.
 
 #### Scenario: Pi inspection succeeds
 - **WHEN** a caller inspects Pi with an optional cwd
 - **THEN** the Adapter returns ready status, a deterministic Model Catalog, the current native Model as the default Ref, and `configuration.selectModel: true`
 - **AND** every temporary Pi process is closed before inspection resolves
 
+#### Scenario: Claude inspection succeeds
+- **WHEN** a caller inspects Claude Code and its official SDK returns a valid initialization Model list plus stable current-Model readback without a Prompt
+- **THEN** the Adapter returns a deterministic Catalog of the current Claude Code configuration's selectable values, a default selectable Ref, the observed resolved Model label, and `configuration.selectModel: true`
+- **AND** no model Turn or persistent Native Session is created and every temporary Claude process is closed before inspection resolves
+
 #### Scenario: Inspection cannot start Pi
 - **WHEN** Pi is not installed, cannot start, or returns an invalid catalog
 - **THEN** inspection returns an explicit normalized unavailable or error result
 - **AND** no Native Session, background process, or user configuration change remains
 
+#### Scenario: Inspection cannot start a Harness
+- **WHEN** a registered Harness is not installed, cannot start, lacks required Model operations, or returns an invalid catalog
+- **THEN** inspection returns an explicit normalized unavailable, ready-without-selection, or error result according to the proven capability
+- **AND** no Native Session, background process, user configuration change, or failed cache entry remains
+
 #### Scenario: Native catalog contains private fields
-- **WHEN** Pi Model objects contain base URLs, prices, authentication data, absolute paths, custom configuration, or unknown fields
+- **WHEN** native Model objects contain base URLs, prices, authentication data, account data, absolute paths, custom configuration, or unknown fields
 - **THEN** those values do not enter the Harness Catalog, Host response, Renderer state, logs, or committed fixtures
 
 ### Requirement: Model references preserve exact Adapter-owned identity
@@ -36,23 +46,31 @@ A `HarnessModelRef` SHALL be opaque outside its owning Adapter, SHALL be stable 
 - **THEN** PiAdapter emits one entry for that pair and returns all entries in deterministic order
 
 ### Requirement: Session effective Model uses the ordered state stream
-A Harness Session SHALL expose structural Model-selection capability and an optional `effectiveModel` in its complete Session state. After `open()` resolves, effective Model changes SHALL be published only through ordered `session.state.changed` events.
+A Harness Session SHALL expose structural Model-selection capability, an optional replayable `effectiveModel`, and an optional display-only `resolvedModelLabel` in its complete Session state. After `open()` resolves, effective or resolved Model changes SHALL be published only through ordered `session.state.changed` events.
 
 #### Scenario: First Pi Turn starts with a requested Model
 - **WHEN** a lazy Pi Session was opened with a Model Ref and receives its first accepted Turn
 - **THEN** PiAdapter starts Pi, applies the requested native Model if needed, reads native state, and emits the confirmed effective Model before `turn.started`
 
+#### Scenario: First Claude Turn starts with a requested alias
+- **WHEN** a lazy Claude Session was opened with a selectable alias Ref and receives its first accepted Turn
+- **THEN** Claude Adapter initializes the Query with that selection and emits the accepted selectable Ref plus stable runtime-resolved Model label before `turn.started`
+
 #### Scenario: Command result is observed
 - **WHEN** `model.select` succeeds
 - **THEN** its result only reports `{completed: true}`
-- **AND** callers derive the effective Model from the complete state event that was enqueued before the result resolved
+- **AND** callers derive the effective and resolved Model state from the complete state event that was enqueued before the result resolved
 
 ### Requirement: Model selection is serialized and Idle-only
-A Session SHALL accept `model.select` only while open and Idle, SHALL serialize it against Turn acceptance and other configuration writes, and SHALL preserve exactly one actual effective state.
+A Session SHALL accept `model.select` only while open and Idle, SHALL serialize it against Turn acceptance and other configuration writes, and SHALL preserve exactly one actual effective state. An Adapter MAY accept a dynamic alias whose resolved native Model differs from its selectable value, but it MUST publish the replayable Ref and valid native readback as distinct fields.
 
 #### Scenario: Idle Pi Session selects another Model
 - **WHEN** an already-started idle Pi Session receives a valid different Model Ref
 - **THEN** PiAdapter calls the native Model setter, reads native state, emits one complete confirmed state, and then completes the command
+
+#### Scenario: Idle Claude Session selects a dynamic alias
+- **WHEN** an already-started idle Claude Session receives a valid alias Ref and the SDK setter plus stable actual-Model readback succeed
+- **THEN** Claude Adapter emits that alias as `effectiveModel`, emits the readback as `resolvedModelLabel`, and then completes the command even when the two native strings differ
 
 #### Scenario: Selection races with an active Turn
 - **WHEN** `model.select` is requested while a Turn is being accepted, active, cancelling, or settling
@@ -68,9 +86,13 @@ A Session SHALL accept `model.select` only while open and Idle, SHALL serialize 
 - **WHEN** Pi accepts the write but `get_state` reports a different actual Model
 - **THEN** PiAdapter publishes the actual state and returns an explicit failure rather than claiming the requested Model is effective
 
+#### Scenario: Native readback cannot establish the requested selection
+- **WHEN** the owning Adapter's setter rejects or native readback proves that the requested concrete selection was not accepted
+- **THEN** the Adapter preserves the prior confirmed state and returns an explicit failure rather than claiming the requested Model is effective
+
 #### Scenario: Native write outcome cannot be determined
-- **WHEN** a Model write may have occurred and Pi state cannot be read reliably
-- **THEN** PiAdapter faults the Session and rejects later writes or Turns
+- **WHEN** a Model write may have occurred and actual Model state cannot be read reliably
+- **THEN** the Adapter faults the Session and rejects later writes or Turns
 
 ### Requirement: Host exposes only fixed Model control operations
 Host Runtime SHALL handle fixed codexhost inspection and Pi Thread Model-selection methods, SHALL runtime-validate their params and results, and SHALL not expose a generic Harness or native RPC escape hatch.
@@ -146,3 +168,15 @@ This change SHALL preserve Model state only for current-process Pi drafts and Th
 - **WHEN** current-process Model state is lost after restart
 - **THEN** this slice does not infer it from cached UI data or create a persisted second source of truth
 - **AND** cross-restart recovery remains assigned to later Snapshot and Mapping Store work
+
+### Requirement: Selectable Model aliases remain distinct from resolved Models
+An Adapter SHALL preserve every distinct native selectable value as an Adapter-owned Model Ref even when multiple values currently resolve to the same underlying Model. A dynamic default or family alias SHALL NOT be replaced by a resolved Model string that cannot reproduce the same policy selection.
+
+#### Scenario: Several Claude aliases resolve to one custom Model
+- **WHEN** Claude Code reports distinct `default`, family alias, and concrete selectable values that currently resolve to one custom Model
+- **THEN** Claude Adapter returns distinct Refs with distinguishable labels and may repeat the same `resolvedModelLabel`
+- **AND** Host and Renderer do not deduplicate those Refs by display name or resolved label
+
+#### Scenario: Default policy changes its resolved Model
+- **WHEN** the same default Ref resolves to a different actual Model after refresh or Session initialization
+- **THEN** the default Ref remains stable while the resolved Model label is refreshed from native readback

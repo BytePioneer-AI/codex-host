@@ -1,4 +1,7 @@
-import { createExternalHarnessAdapters } from "./adapter-composition.js";
+import {
+  createExternalHarnessAdapters,
+  prefetchClaudeCodeModelCatalog,
+} from "./adapter-composition.js";
 import { AppServerHost } from "./app-server-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -11,12 +14,14 @@ if (defaultAgent !== "codex" && defaultAgent !== "pi") {
   throw new Error(`${DEFAULT_AGENT_ENV} must be 'codex' or 'pi'`);
 }
 
+const externalAdapters = createExternalHarnessAdapters(process.env);
 const host = new AppServerHost({
   stockCodexPath,
   arguments: process.argv.slice(2),
   defaultAgent,
   environment: process.env,
-  externalAdapters: createExternalHarnessAdapters(process.env),
+  externalAdapters,
 });
 
+void prefetchClaudeCodeModelCatalog(externalAdapters);
 process.exitCode = await host.run();

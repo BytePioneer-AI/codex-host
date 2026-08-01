@@ -3,10 +3,21 @@
 ### Requirement: Claude inspection separates installation from Model support
 The Claude Code Adapter SHALL inspect its configured user executable and, when available, start one no-Prompt official Agent SDK Query using the same cwd, environment, and setting sources as production to read the initialization Model list and stable actual-Model state. It SHALL normalize only validated Model control data, close all owned resources before resolving, and SHALL NOT create a persistent Native Session or call a model endpoint. Lack of proven Model operations MUST NOT by itself report an installed Harness as unavailable.
 
+#### Scenario: Claude executable is resolvable
+- **WHEN** Claude inspection resolves the configured executable
+- **THEN** the Adapter performs the no-Prompt capability inspection and returns either a ready selectable Catalog or ready empty Catalog according to the structured runtime result
+- **AND** it does not create a model Turn or persistent Native Session
+
 #### Scenario: Claude executable exposes a valid Model catalog
 - **WHEN** Claude inspection receives valid selectable Model information and current actual-Model readback
 - **THEN** the Adapter returns ready inspection with a non-empty deterministic Catalog, a default Ref, optional resolved labels, and `configuration.selectModel=true`
 - **AND** it keeps `configuration.selectThinkingOption=false`
+
+#### Scenario: Host startup prefetches the Claude Catalog
+- **WHEN** production Host composition registers the Claude Adapter
+- **THEN** it starts one background no-Prompt inspection without waiting before starting official Codex routing
+- **AND** a later same-cwd inspection reuses the in-flight or successful memory cache
+- **AND** missing, unavailable, or failed Claude inspection does not block Codex/Pi startup
 
 #### Scenario: Claude executable lacks required Model operations
 - **WHEN** Claude Code initializes but its compatible SDK surface cannot provide a valid selectable Catalog, setter capability, or stable actual-Model readback

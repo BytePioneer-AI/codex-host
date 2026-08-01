@@ -4,7 +4,7 @@
 
 官方`@anthropic-ai/claude-agent-sdk@0.3.220`的初始化响应提供`ModelInfo.value/displayName/description/resolvedModel/supportsEffort/supportedEffortLevels`，`Query.setModel()`提供Session级写入，稳定`Query.getContextUsage()`响应包含当前实际`model`。受控无Prompt探测已确认：当前用户配置可把`default/opus/sonnet/haiku`等selectable alias解析到同一个第三方实际Model；初始化、readback、setter和reset均不创建可恢复Native Session，拥有的Claude进程可有界退出。该证据也说明Paseo式静态manifest或直接读取`settings.json`会把理论Claude模型误报为当前可用模型。
 
-本Change跨越Shared Contracts、HarnessAdapter、Claude Adapter、Protocol Core、Host和Renderer。现有Claude生产Session保持lazy；只有用户打开Claude Model Catalog时允许启动无Prompt临时Query，普通create/resume仍不得为未使用Thread启动Claude。
+本Change跨越Shared Contracts、HarnessAdapter、Claude Adapter、Protocol Core、Host和Renderer。现有Claude生产Session保持lazy；Host composition启动后若Claude Code可用，会后台启动一次无Prompt临时Query预取Catalog，用户主动inspection复用同cwd cache/in-flight；普通create/resume仍不得为未使用Thread启动长期Claude Session。
 
 ## Goals / Non-Goals
 
@@ -51,9 +51,11 @@ resolvedModelLabel   = "当前实际底层模型"
 
 替代方案：用实际Model字符串替换`effectiveModel`。拒绝，因为`default`/alias语义会丢失，回读字符串也未必是可重放setter值。
 
-### 3. Inspection拥有临时Query、缓存和严格清理
+### 3. Inspection拥有临时Query、启动预取、缓存和严格清理
 
-每个cold cwd inspection创建一个临时Query和受监督子进程，不提交User Message、不开始Turn、不调用模型endpoint。成功或失败都按Session close同级边界关闭Query和进程，并确认没有持久Native Session。结果按normalized cwd在Adapter进程内缓存；同cwd并发请求共享in-flight；`refresh:true`重建并原子替换成功缓存；失败不缓存。Adapter close清除缓存并等待所有inspection清理。
+Host composition创建Adapters后立即以fire-and-forget方式调用一次Claude inspection。该调用不等待Catalog，不阻塞Mapping Store、官方Codex app-server或Renderer启动；Claude未安装、认证不可用或inspection失败只产生未缓存的normalized结果，不影响Codex/Pi。用户随后打开Claude Model控件时，复用相同默认cwd的in-flight或成功缓存。
+
+每个cold cwd inspection创建一个临时Query和受监督子进程，不提交User Message、不开始Turn、不调用模型endpoint。成功或失败都按Session close同级边界关闭Query和进程，并确认没有持久Native Session。结果按normalized cwd在Adapter进程内缓存；同cwd并发请求共享in-flight；`refresh:true`重建并原子替换成功缓存；失败不缓存。Adapter close清除缓存并等待所有inspection清理，包括仍在运行的启动预取。
 
 Inspection返回`selectModel=true`仅当目录、默认Ref、实际Model readback和setter能力结构均可用。Thinking Catalog可根据ModelInfo保留shape合法的runtime effort ID供诊断/未来能力使用，以原始ID作为当前显示label，并按每个Model的`supportedThinkingOptionIds`保持不同能力集合；它不维护固定ID或label映射。`selectThinkingOption=false`且Renderer不得开放Claude Thinking控件。
 
@@ -104,7 +106,7 @@ Hermetic tests使用Fake Claude transport和合成ModelInfo。显式inspect Gate
 - [多个alias解析到同一实际Model，UI看似重复] → 保留可重放alias身份并用value区分label，同时显示resolved Model；不错误去重不同控制语义。
 - [default在不同时间解析到不同Model] → Ref保持default策略，实际值每次从稳定readback刷新，不持久化静态映射。
 - [旧CLI缺少`resolvedModel`或能力字段] → 以`getContextUsage().model`补充当前实际值；缺少必需操作则降级为空/不可选，不解析description。
-- [Inspection启动用户Claude hooks/plugins产生副作用] → 使用与生产一致但最小的setting sources和tools，保持无Prompt Gate；若某版本仍产生副作用则Model inspection fail closed。
+- [启动预取会在用户未选择Claude时启动Claude hooks/plugins] → 预取保持非阻塞、无Prompt、最小setting sources/tools和完整资源所有权；若该自动行为在受支持版本产生不可接受副作用，应撤回startup prefetch而不是读取静态配置。
 - [Windows临时cwd在进程退出前被占用] → inspection拥有子进程并等待有界退出后才完成，不在Query close刚返回时提前清理。
 - [resolved Model名称可能包含用户自定义标识] → 仅作为用户主动打开Model控件时的有界显示数据，不记录到日志、Gate或持久Store。
 

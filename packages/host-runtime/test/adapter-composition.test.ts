@@ -1,8 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { CLAUDE_CODE_COMMAND_ENV, createExternalHarnessAdapters } from "../src/index.js";
+import type { HarnessInspection } from "@codexhost/harness-adapter";
+import {
+  CLAUDE_CODE_COMMAND_ENV,
+  createExternalHarnessAdapters,
+  prefetchClaudeCodeModelCatalog,
+} from "../src/index.js";
 
 describe("Host external Harness composition", () => {
+  it("starts Claude Catalog prefetch immediately without waiting for it", async () => {
+    let finish = (): void => undefined;
+    const inspection = new Promise<HarnessInspection>((resolve) => {
+      finish = () => resolve({} as HarnessInspection);
+    });
+    const inspect = vi.fn(() => inspection);
+    const adapters = new Map([["claude-code", { inspect }]] as const);
+
+    const prefetch = prefetchClaudeCodeModelCatalog(adapters);
+
+    expect(inspect).toHaveBeenCalledOnce();
+    finish();
+    await expect(prefetch).resolves.toBeUndefined();
+  });
+
+  it("isolates a missing or failed Claude prefetch from Host startup", async () => {
+    await expect(prefetchClaudeCodeModelCatalog(new Map())).resolves.toBeUndefined();
+    const inspect = vi.fn(() => {
+      throw new Error("synthetic inspection failure");
+    });
+
+    await expect(
+      prefetchClaudeCodeModelCatalog(new Map([["claude-code", { inspect }]] as const)),
+    ).resolves.toBeUndefined();
+  });
+
   it("registers Pi and Claude Code by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 

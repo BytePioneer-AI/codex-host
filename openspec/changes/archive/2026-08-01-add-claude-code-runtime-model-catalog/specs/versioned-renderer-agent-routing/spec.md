@@ -3,6 +3,16 @@
 ### Requirement: Development configuration can enable registered Claude routing
 The versioned Renderer Agent control SHALL use an explicit enabled-Agent list. A controlled or production configuration that includes Claude Code SHALL use the same Composer state machine and SHALL support an optional Composer-scoped Claude Model Ref without introducing another request hook or bypassing submit freeze and prewarm invalidation.
 
+#### Scenario: Default Renderer Probe installs
+- **WHEN** no Claude development configuration is present
+- **THEN** the Agent control SHALL contain only Codex and Pi
+- **AND** existing Pi transport selection and Codex restoration SHALL remain unchanged
+
+#### Scenario: Controlled Probe enables Claude
+- **WHEN** the controlled Gate sets the validated Claude development flag before installing the Probe
+- **THEN** the same Agent control SHALL add a `Claude Code` option
+- **AND** selecting it SHALL use the same draft switch, prewarm clear, submit freeze, replacement transfer, and revisit restoration logic
+
 #### Scenario: Renderer configuration excludes Claude
 - **WHEN** Claude Code is absent from the explicit enabled-Agent list
 - **THEN** the Agent control omits Claude Code
@@ -12,6 +22,11 @@ The versioned Renderer Agent control SHALL use an explicit enabled-Agent list. A
 - **WHEN** the validated enabled-Agent list includes Claude Code
 - **THEN** the same Agent control adds a `Claude Code` option
 - **AND** selecting it uses the same draft switch, prewarm clear, submit freeze, replacement transfer, and revisit restoration logic
+
+#### Scenario: Claude create is submitted
+- **WHEN** a locked Claude Composer creates a Thread on a supported Renderer build
+- **THEN** the existing optimistic Model atom SHALL carry `codexhost/claude-code-native` or its bounded selected-Model form
+- **AND** no shared request object or official persistent Model default SHALL be modified
 
 #### Scenario: Claude create uses native default
 - **WHEN** a locked Claude Composer without an explicit selected Ref creates a Thread on a supported Renderer build

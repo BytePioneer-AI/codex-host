@@ -4,7 +4,7 @@
 
 ## What Changes
 
-- 让 Claude Code Adapter 通过用户安装的 Claude Code 和官方 Agent SDK 初始化结果读取当前 cwd/config/policy 下的可选 Model 与 effort 元数据，并在 inspection 完成前有界关闭临时进程。
+- 让 Claude Code Adapter 通过用户安装的 Claude Code 和官方 Agent SDK 初始化结果读取当前 cwd/config/policy 下的可选 Model 与 effort 元数据，并在 inspection 完成前有界关闭临时进程；Host composition 启动后非阻塞预取一次并复用相同的进程内缓存。
 - 明确区分 Adapter-owned selectable Model Ref、Claude Code 动态别名和 SDK 回读的 runtime-resolved Model；`default` 保持“跟随 Claude Code 默认策略”语义，不固化为某个模型。
 - 支持 Claude create-time Model 请求和 Idle Session Model 控制，所有成功状态以稳定结构化 readback 为准；无法证明实际状态时不得声称切换成功。
 - 将有限外部 transport configuration carrier 从 Pi 专用扩展到 Claude Code，使每个 Composer 的 Claude Model 请求与精确 `thread/start` 绑定，不引入进程级 pending selection。
@@ -28,6 +28,6 @@
 ## Impact
 
 - 影响 `packages/shared-contracts`、`packages/harness-adapter`、`packages/adapters/claude-code`、`packages/protocol-core`、`packages/host-runtime` 和 `packages/renderer-extension` 的契约、实现与聚焦测试；Claude Thinking 写入与实际档位回读不在本 Change 范围。
-- Claude inspection 将启动一个不发送 Prompt 的临时用户 Claude Code 进程；结果限于进程内缓存，失败不缓存，不持久化 Catalog 或第二份配置。
+- Claude inspection 将在 Host composition 启动后后台启动一个不发送 Prompt 的临时用户 Claude Code 进程；结果限于进程内缓存，失败不缓存，不持久化 Catalog 或第二份配置，且 Codex/Pi 启动不等待该结果。
 - 不新增依赖，不修改或写入 `~/.claude/settings.json`，不持久化 Provider、base URL、价格、认证、账户或原始 SDK payload。
 - 不改变 Pi Model/Thinking 语义、官方 Codex Model 路由、Mapping Store 格式、Claude executable 分发策略或模型可调用性承诺。

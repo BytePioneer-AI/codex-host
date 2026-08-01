@@ -71,12 +71,25 @@ export async function ensureNodeArchive({
   }
 }
 
-export function nodeExtractionCommand(target, archivePath, outputDirectory) {
+export function nodeExtractionCommand(
+  target,
+  archivePath,
+  outputDirectory,
+  { hostPlatform = process.platform, environment = process.env } = {},
+) {
   if (target.nodeArchiveFormat === "tar.gz") {
     return { command: "tar", args: ["-xzf", archivePath, "-C", outputDirectory] };
   }
   if (target.nodeArchiveFormat === "zip") {
-    return { command: "tar.exe", args: ["-xf", archivePath, "-C", outputDirectory] };
+    let command = "tar.exe";
+    if (hostPlatform === "win32") {
+      const systemRoot = environment.SystemRoot ?? environment.WINDIR;
+      if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
+        throw new Error("SystemRoot is required to locate the Windows archive extractor");
+      }
+      command = path.win32.join(systemRoot, "System32", "tar.exe");
+    }
+    return { command, args: ["-xf", archivePath, "-C", outputDirectory] };
   }
   throw new Error(`unsupported Node.js archive format: ${target.nodeArchiveFormat}`);
 }

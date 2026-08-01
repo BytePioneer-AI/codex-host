@@ -96,9 +96,12 @@ describe("fixed Node.js Runtime", () => {
       args: ["-xzf", "/node.tgz", "-C", "/out"],
     });
     expect(
-      nodeExtractionCommand(releaseTarget("windows-arm64"), "C:\\node.zip", "C:\\out"),
+      nodeExtractionCommand(releaseTarget("windows-arm64"), "C:\\node.zip", "C:\\out", {
+        hostPlatform: "win32",
+        environment: { SystemRoot: "C:\\Windows" },
+      }),
     ).toEqual({
-      command: "tar.exe",
+      command: "C:\\Windows\\System32\\tar.exe",
       args: ["-xf", "C:\\node.zip", "-C", "C:\\out"],
     });
   });

@@ -6,7 +6,11 @@ export default defineConfig({
   root: path.resolve(import.meta.dirname, ".."),
   test: {
     environment: "node",
-    include: ["packages/**/test/**/*.test.ts", "tools/**/*.test.mjs"],
+    include: [
+      "packages/**/test/**/*.test.ts",
+      "tests/release/**/*.test.mjs",
+      "tools/**/*.test.mjs",
+    ],
     passWithNoTests: false,
   },
 });

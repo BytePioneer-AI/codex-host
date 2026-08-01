@@ -16,6 +16,21 @@ export type {
   CdpTarget,
 } from "./cdp-client.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
+export {
+  createRendererControlSession,
+  inspectElectronWebContents,
+  installRendererControlSession,
+  selectRendererWebContents,
+  waitForInspectorTarget,
+  waitForRendererTitlePolicyReady,
+} from "./renderer-control-session.js";
+export type {
+  ElectronRendererSummary,
+  InstallRendererControlOptions,
+  ProductionRendererStatus,
+  RendererControlSession,
+  RendererControlSnapshot,
+} from "./renderer-control-session.js";
 export type {
   RendererDomInspection,
   RendererDomNodeSummary,
@@ -33,6 +48,12 @@ export type {
 } from "./main-process-title-policy.js";
 export { installRendererDraftPrewarmPolicy } from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
+
+export { parseDesktopControllerArguments, runDesktopController } from "./production-controller.js";
+export type {
+  DesktopControllerDependencies,
+  DesktopControllerOptions,
+} from "./production-controller.js";
 
 export const packageMetadata = {
   name: "@codexhost/desktop-control",

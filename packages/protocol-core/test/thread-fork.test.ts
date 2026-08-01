@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   decodeThreadForkRequest,
+  decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   threadForkResult,
+  threadRollbackResult,
 } from "../src/index.js";
 
 describe("Codex thread/fork protocol boundary", () => {
@@ -63,6 +65,26 @@ describe("Codex thread/fork protocol boundary", () => {
     ).toThrow("excludeTurns must be boolean");
   });
 
+  it("decodes the current bounded thread/rollback request", () => {
+    expect(
+      decodeThreadRollbackRequest({
+        id: 4,
+        method: "thread/rollback",
+        params: { threadId: "derived-thread", numTurns: 2 },
+      }),
+    ).toEqual({ threadId: "derived-thread", numTurns: 2 });
+    expect(decodeThreadRollbackRequest({ id: 5, method: "thread/read", params: {} })).toBeNull();
+    for (const numTurns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "2"]) {
+      expect(() =>
+        decodeThreadRollbackRequest({
+          id: 6,
+          method: "thread/rollback",
+          params: { threadId: "derived-thread", numTurns },
+        }),
+      ).toThrow("positive safe integer");
+    }
+  });
+
   it("maps Harness failures to bounded external errors", () => {
     expect(
       mapExternalThreadHarnessError(
@@ -80,6 +102,12 @@ describe("Codex thread/fork protocol boundary", () => {
         "fork",
       ),
     ).toEqual({ code: -32080, message: "External Fork Checkpoint is unavailable" });
+  });
+
+  it("builds the current ThreadRollbackResponse envelope", () => {
+    expect(threadRollbackResult({ id: "derived", turns: [{}] })).toEqual({
+      thread: { id: "derived", turns: [{}] },
+    });
   });
 
   it("builds the current ThreadForkResponse envelope", () => {

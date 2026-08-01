@@ -14,6 +14,7 @@ function rendererFixture(
     candidateCount?: number;
     hostId?: string;
     signatureSource?: string;
+    bridgeName?: "Rf" | "rp";
   } = {},
 ): {
   contents: RendererWebContents;
@@ -49,7 +50,14 @@ function rendererFixture(
           case "scopes":
             return { result: [{ name: "0", value: { objectId: "local-scope" } }] };
           case "local-scope":
-            return { result: [{ name: "Rf", value: { objectId: "request-bridge" } }] };
+            return {
+              result: [
+                {
+                  name: options.bridgeName ?? "Rf",
+                  value: { objectId: "request-bridge", type: "function" },
+                },
+              ],
+            };
           default:
             throw new Error(`Unexpected Runtime.getProperties object: ${parameters.objectId}`);
         }
@@ -110,31 +118,34 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate.mock.calls[0]?.[0]).toContain("webContents.fromId(17)");
   });
 
-  it("executes the CDP traversal and detaches a debugger it attached", async () => {
-    const fixture = rendererFixture();
+  it.each(["Rf", "rp"] as const)(
+    "executes the CDP traversal through the %s request bridge",
+    async (bridgeName) => {
+      const fixture = rendererFixture({ bridgeName });
 
-    await expect(
-      installDraftPrewarmPolicyInRenderer(
-        fixture.contents,
-        "synthetic-manager-expression",
-        "function syntheticPolicy() {}",
-      ),
-    ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
+      await expect(
+        installDraftPrewarmPolicyInRenderer(
+          fixture.contents,
+          "synthetic-manager-expression",
+          "function syntheticPolicy() {}",
+        ),
+      ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
 
-    expect(fixture.attach).toHaveBeenCalledWith("1.3");
-    expect(fixture.detach).toHaveBeenCalledOnce();
-    expect(fixture.sendCommand).toHaveBeenCalledWith("Runtime.evaluate", {
-      expression: "synthetic-manager-expression",
-    });
-    expect(fixture.sendCommand).toHaveBeenCalledWith(
-      "Runtime.callFunctionOn",
-      expect.objectContaining({
-        objectId: "request-bridge",
-        functionDeclaration: "function syntheticPolicy() {}",
-        arguments: [{ value: "local" }],
-      }),
-    );
-  });
+      expect(fixture.attach).toHaveBeenCalledWith("1.3");
+      expect(fixture.detach).toHaveBeenCalledOnce();
+      expect(fixture.sendCommand).toHaveBeenCalledWith("Runtime.evaluate", {
+        expression: "synthetic-manager-expression",
+      });
+      expect(fixture.sendCommand).toHaveBeenCalledWith(
+        "Runtime.callFunctionOn",
+        expect.objectContaining({
+          objectId: "request-bridge",
+          functionDeclaration: "function syntheticPolicy() {}",
+          arguments: [{ value: "local" }],
+        }),
+      );
+    },
+  );
 
   it.each([
     [{ candidateCount: 2 }, "request manager is ambiguous"],

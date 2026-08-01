@@ -2,6 +2,8 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { HarnessOutputChannel } from "./output-channel.js";
 export { validateHostQuestionResponse } from "./question.js";
+export { parseHostUsage } from "./usage.js";
+export type { HostUsage } from "./usage.js";
 export type {
   CreateSessionInput,
   ForkSessionInput,
@@ -17,6 +19,8 @@ export type {
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSessionState,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
   HostAgentMessageItem,
   HostChoiceQuestion,
   HostCommand,
@@ -53,6 +57,9 @@ export type {
   ResumeSessionInput,
   SessionFaultedEvent,
   SessionStateChangedEvent,
+  SessionUsageChangedEvent,
+  ThinkingSelectCommand,
+  ThinkingSelectCompleted,
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,

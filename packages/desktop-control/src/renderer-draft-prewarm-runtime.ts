@@ -115,10 +115,13 @@ export async function installDraftPrewarmPolicyInRenderer(
       })) as {
         result?: Array<{
           name?: unknown;
-          value?: { objectId?: unknown };
+          value?: { objectId?: unknown; type?: unknown };
         }>;
       };
-      const bridge = scopeProperties.result?.find((property) => property.name === "Rf")?.value;
+      const bridge = scopeProperties.result?.find(
+        (property) =>
+          (property.name === "Rf" || property.name === "rp") && property.value?.type === "function",
+      )?.value;
       if (typeof bridge?.objectId === "string") {
         bridgeCandidates.push({ objectId: bridge.objectId });
       }

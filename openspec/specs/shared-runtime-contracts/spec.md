@@ -175,10 +175,10 @@ Shared Contracts SHALL export browser-safe types and Runtime Schemas for opaque 
 - **THEN** the Model Ref Runtime Schema rejects it
 
 ### Requirement: Shared Model control params are method-specific
-Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness inspection params and current-process Thread Model-selection params, and SHALL NOT provide an arbitrary method/payload control envelope.
+Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness inspection params and current-process Thread Model-selection params, and SHALL NOT provide an arbitrary method/payload control envelope. Harness inspection params SHALL carry a validated opaque Harness ID and MUST NOT be restricted to one concrete Harness.
 
-#### Scenario: Valid Pi inspection params
-- **WHEN** the control boundary receives Pi Harness identity with optional cwd and refresh
+#### Scenario: Valid registered Harness inspection params
+- **WHEN** the control boundary receives a non-empty Harness identity with optional cwd and refresh
 - **THEN** the inspection params schema accepts and preserves only those fields
 
 #### Scenario: Valid Thread Model selection params
@@ -188,4 +188,19 @@ Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness
 #### Scenario: Native method is injected
 - **WHEN** a control request includes a Pi RPC method name, native Provider/Model fields, or another undeclared property
 - **THEN** the method-specific schema rejects the request before Host or Renderer consumes it
+
+### Requirement: Shared Thread ownership-list contracts are strict and bounded
+Shared Contracts SHALL export browser-safe strict Runtime Schemas for a fixed Thread ownership-list request and response. Request params SHALL contain one to 100 unique Host Thread IDs. Each result entry SHALL identify the requested Host Thread as either Codex-owned or external with a bounded non-empty Harness ID, and SHALL expose no Native Ref, path, Transcript, Model, Provider, credential, or arbitrary payload.
+
+#### Scenario: Renderer validates a bounded ownership batch
+- **WHEN** Renderer submits unique valid Host Thread IDs and receives one strict ownership entry for each ID
+- **THEN** the public Runtime Schemas SHALL accept the params and result without importing Node.js, Electron, a Harness SDK, or another codexhost package
+
+#### Scenario: Ownership request is unbounded or ambiguous
+- **WHEN** params are empty, contain more than 100 IDs, contain duplicate IDs, or include an undeclared field
+- **THEN** the params Runtime Schema SHALL reject the request
+
+#### Scenario: Ownership result leaks runtime data
+- **WHEN** a result entry includes a Native Ref, transport Model, cwd, title, history, Provider, or undeclared field
+- **THEN** the result Runtime Schema SHALL reject the response
 

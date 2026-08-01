@@ -2,14 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
+  HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
+  THREAD_OWNERSHIP_LIST_MAX_LENGTH,
+  harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
-  piHarnessInspectParamsSchema,
+  harnessThinkingOptionIdSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadThinkingSelectParamsSchema,
+  threadOwnershipListParamsSchema,
+  threadOwnershipListResultSchema,
 } from "@codexhost/shared-contracts";
 
 const firstRef = { id: "pi-model-v1.cHJvdmlkZXI6bW9kZWw" };
@@ -20,14 +26,23 @@ function readyInspection() {
     status: "ready",
     catalog: {
       models: [
-        { ref: firstRef, label: "provider / model" },
+        {
+          ref: firstRef,
+          label: "provider / model",
+          supportedThinkingOptionIds: ["off", "high"],
+        },
         { ref: secondRef, label: "other / model" },
       ],
       defaultModel: firstRef,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "high",
     },
     capabilities: {
-      configuration: { selectModel: true },
-      history: { fork: true },
+      configuration: { selectModel: true, selectThinkingOption: true },
+      history: { fork: true, forkAcrossCwd: true },
     },
   };
 }
@@ -35,12 +50,37 @@ function readyInspection() {
 describe("Harness Model runtime contracts", () => {
   it("accepts a strict browser-safe ready inspection", () => {
     expect(harnessInspectionSchema.parse(readyInspection())).toEqual(readyInspection());
-    expect(harnessModelSelectionStateSchema.parse({ effectiveModel: firstRef })).toEqual({
-      effectiveModel: firstRef,
-    });
+    expect(
+      harnessModelSelectionStateSchema.parse({
+        effectiveModel: firstRef,
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
+      }),
+    ).toMatchObject({ effectiveModel: firstRef, effectiveThinkingOptionId: "high" });
   });
 
   it("rejects native configuration and unknown fields", () => {
+    expect(
+      harnessInspectionSchema.safeParse({
+        ...readyInspection(),
+        capabilities: {
+          configuration: { selectModel: true, selectThinkingOption: true },
+          history: { fork: true },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessInspectionSchema.safeParse({
+        ...readyInspection(),
+        capabilities: {
+          configuration: { selectModel: true, selectThinkingOption: true },
+          history: { fork: false, forkAcrossCwd: true },
+        },
+      }).success,
+    ).toBe(false);
     expect(
       harnessInspectionSchema.safeParse({
         ...readyInspection(),
@@ -76,6 +116,15 @@ describe("Harness Model runtime contracts", () => {
       expect(harnessModelRefSchema.safeParse({ id }).success).toBe(false);
     }
     expect(harnessModelRefSchema.parse(firstRef)).toEqual(firstRef);
+    for (const id of [
+      "",
+      "thinking option",
+      "thinking/option",
+      "x".repeat(HARNESS_THINKING_OPTION_ID_MAX_LENGTH + 1),
+    ]) {
+      expect(harnessThinkingOptionIdSchema.safeParse(id).success).toBe(false);
+    }
+    expect(harnessThinkingOptionIdSchema.parse("xhigh")).toBe("xhigh");
   });
 
   it("rejects duplicate refs and a default outside the catalog", () => {
@@ -86,31 +135,80 @@ describe("Harness Model runtime contracts", () => {
           { ref: firstRef, label: "duplicate" },
         ],
         defaultModel: firstRef,
+        thinkingOptions: [],
       }).success,
     ).toBe(false);
     expect(
       harnessModelCatalogSchema.safeParse({
         models: [{ ref: firstRef, label: "first" }],
         defaultModel: secondRef,
+        thinkingOptions: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        models: [
+          {
+            ref: firstRef,
+            label: "first",
+            supportedThinkingOptionIds: ["missing"],
+          },
+        ],
+        defaultModel: firstRef,
+        thinkingOptions: [{ id: "off", label: "Off" }],
+        defaultThinkingOptionId: "missing",
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        models: [
+          {
+            ref: firstRef,
+            label: "first",
+            supportedThinkingOptionIds: ["off", "off"],
+          },
+        ],
+        thinkingOptions: [{ id: "off", label: "Off" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelSelectionStateSchema.safeParse({
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [{ id: "off", label: "Off" }],
       }).success,
     ).toBe(false);
   });
 
   it("keeps inspection and Thread selection params method-specific", () => {
     expect(
-      piHarnessInspectParamsSchema.parse({
+      harnessInspectParamsSchema.parse({
         harnessId: "pi",
         cwd: "/synthetic",
         refresh: true,
       }),
     ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true });
+    expect(harnessInspectParamsSchema.parse({ harnessId: "claude-code" })).toEqual({
+      harnessId: "claude-code",
+    });
     expect(threadModelSelectParamsSchema.parse({ threadId: "thread-1", model: firstRef })).toEqual({
       threadId: "thread-1",
       model: firstRef,
     });
+    expect(
+      threadThinkingSelectParamsSchema.parse({
+        threadId: "thread-1",
+        thinkingOptionId: "high",
+      }),
+    ).toEqual({ threadId: "thread-1", thinkingOptionId: "high" });
 
     expect(
-      piHarnessInspectParamsSchema.safeParse({
+      harnessInspectParamsSchema.safeParse({
+        harnessId: "pi",
+        model: firstRef,
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessInspectParamsSchema.safeParse({
         harnessId: "pi",
         method: "get_available_models",
       }).success,
@@ -134,6 +232,11 @@ describe("Harness Model runtime contracts", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: firstRef,
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
         locked: true,
       }),
     ).toMatchObject({ owner: "external", harnessId: "pi", locked: true });
@@ -148,6 +251,57 @@ describe("Harness Model runtime contracts", () => {
         transportModelId: "codexhost/pi-native",
         locked: true,
         nativeSessionRef: { nativeSessionId: "secret" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates strict bounded Thread ownership lists", () => {
+    const params = { threadIds: ["official-thread", "pi-thread", "claude-thread"] };
+    const result = {
+      threads: [
+        { threadId: "official-thread", owner: "codex" as const },
+        { threadId: "pi-thread", owner: "external" as const, harnessId: "pi" },
+        {
+          threadId: "claude-thread",
+          owner: "external" as const,
+          harnessId: "claude-code",
+        },
+      ],
+    };
+
+    expect(threadOwnershipListParamsSchema.parse(params)).toEqual(params);
+    expect(threadOwnershipListResultSchema.parse(result)).toEqual(result);
+    for (const invalid of [
+      { threadIds: [] },
+      { threadIds: ["thread-1", "thread-1"] },
+      {
+        threadIds: Array.from(
+          { length: THREAD_OWNERSHIP_LIST_MAX_LENGTH + 1 },
+          (_, index) => `thread-${index}`,
+        ),
+      },
+      { threadIds: ["thread-1"], nativeMethod: "get_entries" },
+    ]) {
+      expect(threadOwnershipListParamsSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(
+      threadOwnershipListResultSchema.safeParse({
+        threads: [
+          {
+            threadId: "pi-thread",
+            owner: "external",
+            harnessId: "pi",
+            nativeSessionRef: { nativeSessionId: "private" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      threadOwnershipListResultSchema.safeParse({
+        threads: [
+          { threadId: "thread-1", owner: "codex" },
+          { threadId: "thread-1", owner: "codex" },
+        ],
       }).success,
     ).toBe(false);
   });

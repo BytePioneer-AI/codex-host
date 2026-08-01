@@ -1,4 +1,4 @@
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -79,20 +79,24 @@ describe("versioned Renderer Agent adapter", () => {
     expect(modelSelectionForAgent(official, "high", "codex")).toBe(official);
   });
 
-  it("encodes a selected Pi Model in the internal carrier without displaying semantics", () => {
+  it("encodes selected Pi Model and Thinking in the internal carrier", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
-    const selected = piTransportModelId(model);
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selected = piTransportModelId(model, thinkingOptionId);
 
-    expect(selected).toBe(`${PI_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(selected).toBe(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`);
     expect(isPiTransportModelId(selected)).toBe(true);
     expect(isPiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@provider/model`)).toBe(false);
-    expect(modelSelectionForAgent(null, "high", "pi", model)).toEqual({
+    expect(modelSelectionForAgent(null, "high", "pi", model, thinkingOptionId)).toEqual({
       model: selected,
       reasoningEffort: "high",
     });
-    expect(decorateThreadStartParams({ model: "official/model" }, { ...lockedPi, model })).toEqual({
-      model: selected,
-    });
+    expect(
+      decorateThreadStartParams(
+        { model: "official/model" },
+        { ...lockedPi, model, thinkingOptionId },
+      ),
+    ).toEqual({ model: selected });
   });
 
   it("extracts only a validated conversation Thread identity", () => {

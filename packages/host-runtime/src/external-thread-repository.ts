@@ -7,6 +7,7 @@ import {
   MappingStore,
   type CommitReadyThreadInput,
   type CreateProvisionalThreadInput,
+  type ReplaceReadySessionInput,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "@codexhost/mapping-store";
@@ -25,6 +26,7 @@ export interface ExternalThreadStore {
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
+  replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
   upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -40,20 +42,12 @@ export interface AlignedExternalSnapshot {
   turns: JsonObject[];
 }
 
-function sameRef(left: NativeTurnRef, right: NativeTurnRef): boolean {
-  return (
-    left.harnessId === right.harnessId &&
-    left.nativeSessionId === right.nativeSessionId &&
-    left.nativeTurnKey === right.nativeTurnKey &&
-    left.formatVersion === right.formatVersion
-  );
+function nativeTurnKey(ref: NativeTurnRef): string {
+  return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
 }
 
-function mappingForNative(
-  mappings: StoredTurnMappingV1[],
-  nativeTurnRef: NativeTurnRef,
-): StoredTurnMappingV1 | undefined {
-  return mappings.find((mapping) => sameRef(mapping.nativeTurnRef, nativeTurnRef));
+function sameMapping(left: StoredTurnMappingV1, right: StoredTurnMappingV1): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function defaultMappingStoreDirectory(environment: NodeJS.ProcessEnv): string {
@@ -179,6 +173,88 @@ export class ExternalThreadRepository {
     };
   }
 
+  async commitForkRollback(
+    derived: StoredThreadRecordV1,
+    source: StoredThreadRecordV1,
+    nativeSessionRef: NativeSessionRef,
+    snapshot: HostThreadSnapshot,
+  ): Promise<AlignedExternalSnapshot> {
+    if (
+      derived.state !== "ready" ||
+      !derived.nativeSessionRef ||
+      source.state !== "ready" ||
+      !source.nativeSessionRef ||
+      !derived.forkSource ||
+      derived.forkSource.hostThreadId !== source.hostThreadId ||
+      derived.harnessId !== source.harnessId
+    ) {
+      throw new Error("External rollback lineage is not a ready source prefix");
+    }
+    const sourceBoundaryIndex = source.turnMappings.findIndex(
+      ({ hostTurnId }) => hostTurnId === derived.forkSource?.hostTurnId,
+    );
+    const retainedCount = snapshot.turns.length;
+    if (
+      sourceBoundaryIndex < 0 ||
+      derived.turnMappings.length !== sourceBoundaryIndex + 1 ||
+      retainedCount < 1 ||
+      retainedCount >= derived.turnMappings.length
+    ) {
+      throw new Error("External rollback does not retain an exact shorter source prefix");
+    }
+    const selectedSource = source.turnMappings[retainedCount - 1];
+    if (!selectedSource?.nativeCheckpointRef) {
+      throw new Error("External rollback source Checkpoint is unavailable");
+    }
+    if (
+      nativeSessionRef.harnessId !== derived.harnessId ||
+      nativeSessionRef.nativeSessionId === derived.nativeSessionRef.nativeSessionId ||
+      nativeSessionRef.nativeSessionId === source.nativeSessionRef.nativeSessionId
+    ) {
+      throw new Error("External rollback did not create a distinct Native Session");
+    }
+
+    const mappings = snapshot.turns.map((turn, index): StoredTurnMappingV1 => {
+      const previous = derived.turnMappings[index];
+      if (
+        !previous ||
+        turn.nativeTurnRef.harnessId !== derived.harnessId ||
+        turn.nativeTurnRef.nativeSessionId !== nativeSessionRef.nativeSessionId ||
+        (turn.checkpoint &&
+          (turn.checkpoint.harnessId !== derived.harnessId ||
+            turn.checkpoint.nativeSessionId !== nativeSessionRef.nativeSessionId))
+      ) {
+        throw new Error("External rollback Snapshot identity is invalid");
+      }
+      return {
+        hostTurnId: previous.hostTurnId,
+        nativeTurnRef: turn.nativeTurnRef,
+        ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+      };
+    });
+    const nextRecord = await this.store.replaceReadySession({
+      hostThreadId: derived.hostThreadId,
+      nativeSessionRef,
+      turnMappings: mappings,
+      forkSource: {
+        hostThreadId: source.hostThreadId,
+        hostTurnId: selectedSource.hostTurnId,
+      },
+    });
+    return {
+      record: nextRecord,
+      turns: snapshot.turns.map((turn, index) => {
+        const mapping = mappings[index];
+        if (!mapping) throw new Error("External rollback Snapshot mapping is incomplete");
+        return projectHistoricalTurn({
+          turnId: mapping.hostTurnId,
+          cwd: derived.cwd,
+          snapshot: turn,
+        });
+      }),
+    };
+  }
+
   async sessionTreeId(record: StoredThreadRecordV1): Promise<string> {
     let current = record;
     const visited = new Set<string>();
@@ -213,44 +289,44 @@ export class ExternalThreadRepository {
       }
     }
 
+    const mappingsByNative = new Map(
+      record.turnMappings.map(
+        (mapping) => [nativeTurnKey(mapping.nativeTurnRef), mapping] as const,
+      ),
+    );
     const aligned = snapshot.turns.map((turn) => {
-      const existing = mappingForNative(record.turnMappings, turn.nativeTurnRef);
+      const existing = mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef));
+      const mapping =
+        existing ??
+        ({
+          hostTurnId: hostTurnIdSchema.parse(randomUUID()),
+          nativeTurnRef: turn.nativeTurnRef,
+          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+        } satisfies StoredTurnMappingV1);
       return {
+        existing,
         snapshot: turn,
-        mapping:
-          existing ??
-          ({
-            hostTurnId: hostTurnIdSchema.parse(randomUUID()),
-            nativeTurnRef: turn.nativeTurnRef,
-            ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-          } satisfies StoredTurnMappingV1),
+        mapping: {
+          ...mapping,
+          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+        },
       };
     });
-    const alignedExistingIds = aligned
-      .filter(({ mapping }) =>
-        record.turnMappings.some((stored) => stored.hostTurnId === mapping.hostTurnId),
-      )
-      .map(({ mapping }) => mapping.hostTurnId);
-    if (
-      alignedExistingIds.length !== record.turnMappings.length ||
-      alignedExistingIds.some(
-        (hostTurnId, index) => hostTurnId !== record.turnMappings[index]?.hostTurnId,
-      )
-    ) {
+    let existingIndex = 0;
+    for (const { existing } of aligned) {
+      if (!existing) continue;
+      if (existing.hostTurnId !== record.turnMappings[existingIndex]?.hostTurnId) {
+        throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
+      }
+      existingIndex += 1;
+    }
+    if (existingIndex !== record.turnMappings.length) {
       throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
     }
 
-    const updates = aligned
-      .map(({ mapping, snapshot: turn }) => ({
-        ...mapping,
-        ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-      }))
-      .filter((mapping) => {
-        const current = record.turnMappings.find(
-          ({ hostTurnId }) => hostTurnId === mapping.hostTurnId,
-        );
-        return !current || JSON.stringify(current) !== JSON.stringify(mapping);
-      });
+    const updates = aligned.flatMap(({ existing, mapping }) =>
+      existing && sameMapping(existing, mapping) ? [] : [mapping],
+    );
     const nextRecord =
       updates.length > 0
         ? await this.store.upsertTurnMappings(record.hostThreadId, updates)

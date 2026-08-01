@@ -61,7 +61,7 @@
 - [x] 7.4 验证 Shim 强制终止和 Desktop 强制终止时外层监督能够在有界时间内清理本次 Probe 的 CLI 与后代
 - [x] 7.5 每个生命周期场景结束后按可执行路径、PID 关系和 process group 检查无 Probe 孤儿进程，不把用户原有无关 Codex 进程计入或清理
 - [x] 7.6 生成包含 macOS、架构、Desktop、CLI 和代码版本的本地 Gate 报告，根据完整证据标记 `PASS`、`FAIL` 或 `BLOCKED`
-- [x] 7.7 生成 `docs/macOSCodex透明代理验证记录.md` 和经过人工隐私复核的 macOS Fixture；报告非 `PASS` 时明确失败阶段、影响、解除条件或下一架构决策
+- [x] 7.7 生成经过人工隐私复核的 macOS Fixture；报告非 `PASS` 时明确失败阶段、影响、解除条件或下一架构决策
 
 ## 8. 质量、回归与范围验收
 

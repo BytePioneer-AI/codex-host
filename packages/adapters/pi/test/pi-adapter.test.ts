@@ -1,14 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
 import type {
   HarnessOutput,
   HarnessSession,
   HostQuestionInteraction,
+  HostUsage,
 } from "@codexhost/harness-adapter";
 import {
   PiAdapter,
@@ -33,6 +36,8 @@ class FakePiTransport implements PiTurnTransport {
     sessionFile: "/synthetic/pi-session.jsonl",
     provider: "synthetic-provider",
     modelId: "synthetic-model",
+    thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
+    contextUsage: { contextUsedTokens: 40, contextWindowTokens: 200 },
   };
   readonly abort = vi.fn(async () => undefined);
   readonly respondToInteraction = vi.fn(async (response: PiInteractionResponse) => {
@@ -44,10 +49,23 @@ class FakePiTransport implements PiTurnTransport {
   });
   readonly start = vi.fn(async () => undefined);
   readonly getAvailableModels = vi.fn(async () => [
-    { provider: "synthetic-provider", id: "synthetic-model" },
-    { provider: "synthetic-provider", id: "alternate-model" },
+    { provider: "synthetic-provider", id: "synthetic-model", reasoning: true },
+    { provider: "synthetic-provider", id: "alternate-model", reasoning: false },
   ]);
+  readonly getAvailableThinkingLevels = vi.fn<() => Promise<HarnessThinkingOptionId[] | null>>(
+    async () =>
+      this.state.modelId === "alternate-model"
+        ? [harnessThinkingOptionIdSchema.parse("off"), harnessThinkingOptionIdSchema.parse("low")]
+        : [
+            harnessThinkingOptionIdSchema.parse("off"),
+            harnessThinkingOptionIdSchema.parse("low"),
+            harnessThinkingOptionIdSchema.parse("high"),
+          ],
+  );
   readonly getEntries = vi.fn(async (): Promise<PiSessionHistory> => structuredClone(this.history));
+  readonly getSessionUsage = vi.fn(async (): Promise<HostUsage | null> =>
+    this.usage === null ? null : structuredClone(this.usage),
+  );
   readonly fork = vi.fn(async (entryId: string) => {
     const cutoff = this.history.entries.findIndex((entry) => entry.id === entryId);
     if (cutoff < 0) throw new Error("Unknown synthetic Fork Entry");
@@ -59,8 +77,26 @@ class FakePiTransport implements PiTurnTransport {
     return this.deriveState();
   });
   readonly clone = vi.fn(async () => this.deriveState());
+  readonly verifySessionCwd = vi.fn(async () => undefined);
   readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
-    this.state = { ...this.state, provider: model.provider, modelId: model.id };
+    this.state = {
+      ...this.state,
+      provider: model.provider,
+      modelId: model.id,
+      ...(model.id === "alternate-model"
+        ? { thinkingLevel: harnessThinkingOptionIdSchema.parse("low") }
+        : {}),
+    };
+    return this.state;
+  });
+  readonly selectThinkingOption = vi.fn(async (thinkingOptionId: HarnessThinkingOptionId) => {
+    const available = (await this.getAvailableThinkingLevels()) ?? [
+      harnessThinkingOptionIdSchema.parse("off"),
+    ];
+    const effective = available.includes(thinkingOptionId)
+      ? thinkingOptionId
+      : (available.at(-1) ?? harnessThinkingOptionIdSchema.parse("off"));
+    this.state = { ...this.state, thinkingLevel: effective };
     return this.state;
   });
   readonly close = vi.fn(async () => {
@@ -80,6 +116,13 @@ class FakePiTransport implements PiTurnTransport {
   rejectTurn: ((error: Error) => void) | null = null;
   resolveTurn: ((value: PiTurnResult) => void) | null = null;
   text: string | null = null;
+  usage: HostUsage | null = {
+    inputTokens: 20,
+    outputTokens: 10,
+    totalTokens: 30,
+    contextUsedTokens: 40,
+    contextWindowTokens: 200,
+  };
 
   event(event: PiTurnEvent): void {
     if (!this.onEvent) throw new Error("No active fake Pi Turn");
@@ -155,6 +198,17 @@ function fixture(options: PiAdapterOptions = {}) {
     createTransport: vi.fn((sessionOptions) => {
       const transport = new FakePiTransport();
       transport.options = sessionOptions;
+      if (sessionOptions.model) {
+        transport.state = {
+          ...transport.state,
+          provider: sessionOptions.model.provider,
+          modelId: sessionOptions.model.id,
+          thinkingLevel:
+            sessionOptions.model.id === "alternate-model"
+              ? harnessThinkingOptionIdSchema.parse("low")
+              : transport.state.thinkingLevel,
+        };
+      }
       transports.push(transport);
       return transport;
     }),
@@ -245,14 +299,91 @@ describe("Pi HarnessAdapter Session", () => {
           provider: "synthetic-provider",
           id: "synthetic-model",
         }),
+        thinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "minimal", label: "Minimal" },
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
+        ],
+        defaultThinkingOptionId: "high",
       },
       capabilities: {
-        configuration: { selectModel: true },
-        history: { fork: true },
+        configuration: { selectModel: true, selectThinkingOption: true },
+        history: { fork: true, forkAcrossCwd: true },
       },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
     expect(transports[0]?.getAvailableModels).toHaveBeenCalledOnce();
+    expect(transports[0]?.getAvailableThinkingLevels).toHaveBeenCalledOnce();
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("caches successful inspection by cwd, coalesces requests, and honors refresh", async () => {
+    const { adapter, dependencies } = fixture();
+
+    const first = adapter.inspect({ cwd: "/synthetic" });
+    const concurrent = adapter.inspect({ cwd: "/synthetic" });
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([
+      expect.objectContaining({ status: "ready" }),
+      expect.objectContaining({ status: "ready" }),
+    ]);
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(1);
+
+    await expect(adapter.inspect({ cwd: "/synthetic", refresh: true })).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toMatchObject({ status: "ready" });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
+  it("assigns unified Draft Thinking options from Model reasoning metadata", async () => {
+    const { adapter, dependencies, transports } = fixture();
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    if (inspection.status !== "ready") throw new Error(inspection.error.message);
+    expect(inspection.catalog.models).toEqual([
+      expect.objectContaining({
+        label: "synthetic-provider / alternate-model",
+        supportedThinkingOptionIds: ["off"],
+      }),
+      expect.objectContaining({
+        label: "synthetic-provider / synthetic-model",
+        supportedThinkingOptionIds: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      }),
+    ]);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.not.objectContaining({ model: expect.anything() }),
+    );
+    expect(transports[0]?.selectModel).not.toHaveBeenCalled();
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("keeps Model inspection ready when Thinking RPC discovery is unsupported", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.getAvailableThinkingLevels.mockResolvedValueOnce(null);
+      transports.push(transport);
+      return transport;
+    });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      catalog: { thinkingOptions: [] },
+      capabilities: {
+        configuration: { selectModel: true, selectThinkingOption: false },
+      },
+    });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
   });
@@ -272,6 +403,10 @@ describe("Pi HarnessAdapter Session", () => {
       error: { code: "unavailable", message: "synthetic catalog failure" },
     });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
 
@@ -301,8 +436,21 @@ describe("Pi HarnessAdapter Session", () => {
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
     );
+    expect(opened.value.initialUsage).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      totalTokens: 30,
+      contextUsedTokens: 40,
+      contextWindowTokens: 200,
+    });
     expect(opened.value.initialState).toMatchObject({
       nativeRef: { nativeSessionId: "source-session" },
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
@@ -317,7 +465,125 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("forks a middle Pi Turn before the next User Entry and verifies the cutoff", async () => {
+  it("forks a middle Pi Turn into a target cwd before the next User Entry", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "target-startup-session",
+        sessionFile: "/synthetic-worktree/target.jsonl",
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-1",
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic-worktree",
+      sourceRef,
+      checkpoint,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/synthetic-worktree",
+        forkSessionFile: "/synthetic/source.jsonl",
+      }),
+    );
+    expect(transports[0]?.options).not.toHaveProperty("sessionFile");
+    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
+    expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(transports[0]?.verifySessionCwd).toHaveBeenCalledWith("/synthetic-worktree");
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "target-startup-session-derived" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("uses the native target-cwd clone for a tail and fails closed for an unknown Checkpoint", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementation((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: `target-startup-session-${transports.length + 1}`,
+        sessionFile: `/synthetic-worktree/target-${transports.length + 1}.jsonl`,
+      };
+      transport.history = sourceHistory();
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+    const terminalCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-2",
+      formatVersion: 1,
+    });
+    const cloned = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic-worktree",
+      sourceRef,
+      checkpoint: terminalCheckpoint,
+    });
+    if (!cloned.ok) throw new Error(cloned.error.message);
+    expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(transports[0]?.fork).not.toHaveBeenCalled();
+    expect(transports[0]?.verifySessionCwd).toHaveBeenCalledWith("/synthetic-worktree");
+    expect(cloned.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "target-startup-session-1" },
+    });
+    await expect(cloned.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await cloned.value.close();
+
+    const missingCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      checkpointId: "missing",
+      formatVersion: 1,
+    });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic-worktree",
+        sourceRef,
+        checkpoint: missingCheckpoint,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(transports[1]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("closes a Pi Fork startup that does not create a distinct Native Session", async () => {
     const { adapter, dependencies, transports } = fixture();
     vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
       const transport = new FakePiTransport();
@@ -340,82 +606,19 @@ describe("Pi HarnessAdapter Session", () => {
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: "pi",
       nativeSessionId: "source-session",
-      checkpointId: "source-user-1",
-      formatVersion: 1,
-    });
-
-    const opened = await adapter.open({
-      kind: "fork",
-      cwd: "/synthetic",
-      sourceRef,
-      checkpoint,
-    });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
-    expect(transports[0]?.clone).not.toHaveBeenCalled();
-    expect(opened.value.initialState).toMatchObject({
-      nativeRef: { nativeSessionId: "source-session-derived" },
-    });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
-    });
-    await opened.value.close();
-    await adapter.close();
-  });
-
-  it("clones a terminal Pi Turn and fails closed for an unknown Checkpoint", async () => {
-    const { adapter, dependencies, transports } = fixture();
-    vi.mocked(dependencies.createTransport).mockImplementation((options) => {
-      const transport = new FakePiTransport();
-      transport.options = options;
-      transport.state = {
-        ...transport.state,
-        sessionId: "source-session",
-        sessionFile: "/synthetic/source.jsonl",
-      };
-      transport.history = sourceHistory();
-      transports.push(transport);
-      return transport;
-    });
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
-      locator: { sessionFile: "/synthetic/source.jsonl" },
-      formatVersion: 1,
-    });
-    const terminalCheckpoint = nativeCheckpointRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
       checkpointId: "source-user-2",
       formatVersion: 1,
     });
-    const cloned = await adapter.open({
-      kind: "fork",
-      cwd: "/synthetic",
-      sourceRef,
-      checkpoint: terminalCheckpoint,
-    });
-    if (!cloned.ok) throw new Error(cloned.error.message);
-    expect(transports[0]?.clone).toHaveBeenCalledOnce();
-    expect(transports[0]?.fork).not.toHaveBeenCalled();
-    await cloned.value.close();
 
-    const missingCheckpoint = nativeCheckpointRefSchema.parse({
-      harnessId: "pi",
-      nativeSessionId: "source-session",
-      checkpointId: "missing",
-      formatVersion: 1,
-    });
     await expect(
       adapter.open({
         kind: "fork",
-        cwd: "/synthetic",
+        cwd: "/synthetic-worktree",
         sourceRef,
-        checkpoint: missingCheckpoint,
+        checkpoint,
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
-    expect(transports[1]?.close).toHaveBeenCalledOnce();
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
   });
 
@@ -454,7 +657,89 @@ describe("Pi HarnessAdapter Session", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "turn-1",
+      usage: { totalTokens: 30, contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
 
+    await session.close();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("retains reliable Usage when a later refresh fails", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    expect(session.initialUsage).toBeNull();
+
+    await session.execute(textTurn("usage-1"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.succeed("first");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30 },
+    });
+
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    transport.getSessionUsage.mockRejectedValueOnce(new Error("synthetic Telemetry failure"));
+    await session.execute(textTurn("usage-2"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.succeed("second");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledTimes(2));
+    await session.close();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("drops an older Usage refresh after the effective Model changes", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("usage-generation"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    let resolveOld!: (usage: HostUsage) => void;
+    transport.getSessionUsage.mockImplementationOnce(
+      () => new Promise<HostUsage>((resolve) => (resolveOld = resolve)),
+    );
+    transport.succeed("done");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledOnce());
+
+    const alternate = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    transport.usage = {
+      totalTokens: 5,
+      contextUsedTokens: 8,
+      contextWindowTokens: 400,
+    };
+    const selecting = session.execute({ type: "model.select", model: alternate });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: alternate },
+    });
+    await expect(selecting).resolves.toMatchObject({ ok: true });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 5, contextWindowTokens: 400 },
+    });
+
+    resolveOld({ totalTokens: 999, contextUsedTokens: 199, contextWindowTokens: 200 });
+    await Promise.resolve();
     await session.close();
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
@@ -477,12 +762,60 @@ describe("Pi HarnessAdapter Session", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: model },
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     expect((await nextEvent(iterator)).type).toBe("item.started");
     transports[0]?.succeed("done");
     await session.close();
+  });
+
+  it("applies create Thinking and publishes Pi-corrected readback before the first Turn", async () => {
+    const { adapter, transports } = fixture();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    const model = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    const requestedThinking = harnessThinkingOptionIdSchema.parse("xhigh");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model,
+      thinkingOptionId: requestedThinking,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+
+    await expect(opened.value.execute(textTurn("selected-thinking"))).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledWith(requestedThinking);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.succeed("done");
+    await opened.value.close();
   });
 
   it("selects an idle Model with state-before-result ordering and rejects active races", async () => {
@@ -496,6 +829,7 @@ describe("Pi HarnessAdapter Session", () => {
     transports[0]?.succeed("first");
     await nextEvent(iterator);
     await nextEvent(iterator);
+    await nextEvent(iterator);
 
     const alternate = encodePiModelRef({
       provider: "synthetic-provider",
@@ -504,9 +838,21 @@ describe("Pi HarnessAdapter Session", () => {
     const selecting = session.execute({ type: "model.select", model: alternate });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: alternate },
+      state: {
+        effectiveModel: alternate,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(await nextEvent(iterator)).toEqual({ type: "session.usage.changed", usage: null });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30 },
+    });
 
     await session.execute(textTurn("active"));
     await nextEvent(iterator);
@@ -522,6 +868,55 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("selects Thinking with corrected state-before-result ordering and rejects active races", async () => {
+    const { adapter, transports } = fixture();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("start-thinking"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[1]?.succeed("start-thinking");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selecting = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: xhigh,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    await session.execute(textTurn("active-thinking"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledOnce();
+    transports[1]?.succeed("active-thinking");
+    await session.close();
+  });
+
   it("rejects Turn acceptance while native Model selection is pending", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -533,6 +928,7 @@ describe("Pi HarnessAdapter Session", () => {
     transports[0]?.succeed("start");
     await nextEvent(iterator);
     await nextEvent(iterator);
+    await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake transport was not created");
 
@@ -542,7 +938,12 @@ describe("Pi HarnessAdapter Session", () => {
     });
     transport.selectModel.mockImplementationOnce(async (model) => {
       await selectionGate;
-      transport.state = { ...transport.state, provider: model.provider, modelId: model.id };
+      transport.state = {
+        ...transport.state,
+        provider: model.provider,
+        modelId: model.id,
+        thinkingLevel: harnessThinkingOptionIdSchema.parse("low"),
+      };
       return transport.state;
     });
     const model = encodePiModelRef({ provider: "synthetic-provider", id: "alternate-model" });
@@ -570,6 +971,7 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     transports[0]?.succeed("start");
+    await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
     const transport = transports[0];

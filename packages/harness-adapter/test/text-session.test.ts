@@ -63,6 +63,49 @@ describe("minimal Harness text Session", () => {
     });
   });
 
+  it("publishes complete Session Usage replacements after a Turn terminal", async () => {
+    const initialUsage = {
+      totalTokens: 10,
+      contextUsedTokens: 6,
+      contextWindowTokens: 100,
+    };
+    const session = new FakeHarnessSession(
+      harnessIdSchema.parse("fake"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      initialUsage,
+    );
+    const collected = collect(session.outputs);
+
+    expect(session.initialUsage).toEqual(initialUsage);
+    expect(session.capabilities).not.toHaveProperty("usage");
+    await session.execute(textTurn("usage-turn"));
+    session.succeedTurn();
+    session.publishUsage({ totalTokens: 12 }, turnId("usage-turn"));
+    session.publishUsage(null);
+    session.failUsageTelemetry();
+    await session.close();
+
+    const usageEvents = events(await collected).filter(
+      (event) => event.type === "session.usage.changed",
+    );
+    expect(usageEvents).toEqual([
+      {
+        type: "session.usage.changed",
+        usage: { totalTokens: 12 },
+        observedForTurnId: "usage-turn",
+      },
+      { type: "session.usage.changed", usage: null },
+    ]);
+    expect(session.usageFailures).toBe(1);
+  });
+
   it("does not emit lifecycle outputs when a Turn is rejected before acceptance", async () => {
     const session = new FakeHarnessSession(harnessIdSchema.parse("fake"));
     const collected = collect(session.outputs);
@@ -471,8 +514,8 @@ describe("minimal Harness text Session", () => {
       status: "ready",
       catalog: adapter.catalog,
       capabilities: {
-        configuration: { selectModel: true },
-        history: { fork: true },
+        configuration: { selectModel: true, selectThinkingOption: true },
+        history: { fork: true, forkAcrossCwd: true },
       },
     });
     expect(adapter.inspectionCalls).toBe(1);
@@ -503,20 +546,74 @@ describe("minimal Harness text Session", () => {
     await session.close();
   });
 
-  it("rejects Model writes during a Turn and preserves the confirmed state on failure", async () => {
+  it("publishes Model-dependent Thinking correction and selected Thinking before completion", async () => {
+    const adapter = new FakeHarnessAdapter();
+    const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!result.ok) throw new Error(result.error.message);
+    const session = result.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const model = adapter.catalog.models[1]?.ref;
+    const low = adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
+    if (!model || !low) throw new Error("Fake catalog is incomplete");
+
+    const selectingModel = session.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: {
+            effectiveModel: model,
+            effectiveThinkingOptionId: "off",
+            availableThinkingOptions: [
+              { id: "off", label: "Off" },
+              { id: "low", label: "Low" },
+            ],
+          },
+        },
+      },
+    });
+    await expect(selectingModel).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+
+    const selectingThinking = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: low,
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: { effectiveModel: model, effectiveThinkingOptionId: "low" },
+        },
+      },
+    });
+    await expect(selectingThinking).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    await session.close();
+  });
+
+  it("rejects Model and Thinking writes during a Turn and preserves confirmed state", async () => {
     const adapter = new FakeHarnessAdapter();
     const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
     if (!result.ok) throw new Error(result.error.message);
     const session = result.value as FakeHarnessSession;
     const original = session.state.effectiveModel;
     const model = adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
+    const off = adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!model || !off) throw new Error("Fake catalog is incomplete");
 
     await session.execute(textTurn("active"));
     await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
       ok: false,
       error: { code: "sessionBusy" },
     });
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: off }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     expect(session.state.effectiveModel).toEqual(original);
     session.succeedTurn();
 
@@ -568,10 +665,11 @@ describe("minimal Harness text Session", () => {
       kind: "fork",
       sourceRef,
       checkpoint,
-      cwd: "/synthetic",
+      cwd: "/synthetic-worktree",
     });
     if (!forked.ok) throw new Error(forked.error.message);
     const derived = forked.value as FakeHarnessSession;
+    expect(derived.cwd).toBe("/synthetic-worktree");
     const derivedRead = await derived.readSnapshot();
     if (!derivedRead.ok) throw new Error(derivedRead.error.message);
 
@@ -595,6 +693,40 @@ describe("minimal Harness text Session", () => {
     const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: "/synthetic" });
     if (!resumed.ok) throw new Error(resumed.error.message);
     await expect(resumed.value.readSnapshot()).resolves.toEqual(sourceAfter);
+    await adapter.close();
+  });
+
+  it("rejects a caller-selected Fork cwd when only same-cwd Fork is supported", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("fake"), undefined, true, false);
+    const opened = await adapter.open({ kind: "create", cwd: "/source" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+    await source.execute(textTurn("source-only"));
+    source.succeedTurn();
+    const snapshot = await source.readSnapshot();
+    const sourceRef = source.state.nativeRef;
+    if (!snapshot.ok || !sourceRef || !snapshot.value.turns[0]?.checkpoint) {
+      throw new Error("Fake source has no Fork identity");
+    }
+
+    await expect(
+      adapter.open({
+        kind: "fork",
+        sourceRef,
+        checkpoint: snapshot.value.turns[0].checkpoint,
+        cwd: "/target",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(adapter.sessions).toHaveLength(1);
+
+    await expect(
+      adapter.open({
+        kind: "fork",
+        sourceRef,
+        checkpoint: snapshot.value.turns[0].checkpoint,
+        cwd: "/source",
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { cwd: "/source" } });
     await adapter.close();
   });
 

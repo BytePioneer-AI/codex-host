@@ -1,7 +1,7 @@
-import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import type { HarnessModelRef, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
-export const DEFAULT_RENDERER_AGENTS = ["codex", "pi"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ComposerAgentPhase = "draft" | "locked";
 
@@ -10,6 +10,7 @@ export interface DraftComposerState {
   phase: ComposerAgentPhase;
   composerId: string;
   piModel?: HarnessModelRef;
+  piThinkingOptionId?: HarnessThinkingOptionId;
 }
 
 type MutableComposerState = DraftComposerState;
@@ -22,6 +23,7 @@ interface ConversationState {
 export interface DraftAgentControllerOptions {
   idFactory?: (sequence: number) => string;
   enabledAgents?: readonly RendererAgent[];
+  defaultAgent?: RendererAgent;
 }
 
 export interface DraftAgentSwitchOperations {
@@ -31,6 +33,10 @@ export interface DraftAgentSwitchOperations {
 
 function defaultIdFactory(sequence: number): string {
   return `codexhost-composer-${Date.now().toString(36)}-${sequence.toString(36)}`;
+}
+
+function isDefaultTarget(target: readonly unknown[] | null): target is readonly unknown[] {
+  return target?.[0] === "default";
 }
 
 function isConversationTarget(target: readonly unknown[] | null): target is readonly unknown[] {
@@ -43,6 +49,7 @@ function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolea
 
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
+  readonly #defaultAgent: RendererAgent;
   readonly #enabledAgents: ReadonlySet<RendererAgent>;
   readonly #conversationStates: ConversationState[] = [];
   readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
@@ -50,6 +57,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
+  #lastSubmittedAgent: RendererAgent;
 
   constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
@@ -57,6 +65,11 @@ export class DraftAgentController<Composer extends object> {
     if (!this.#enabledAgents.has("codex")) {
       throw new Error("Renderer enabled Agents must include Codex");
     }
+    this.#defaultAgent = options.defaultAgent ?? "codex";
+    if (!this.#enabledAgents.has(this.#defaultAgent)) {
+      throw new Error("Renderer default Agent must be enabled");
+    }
+    this.#lastSubmittedAgent = this.#defaultAgent;
   }
 
   get(composer: Composer): Readonly<DraftComposerState> {
@@ -69,7 +82,10 @@ export class DraftAgentController<Composer extends object> {
       this.#states.set(composer, bound);
       return bound;
     }
-    const state = this.#state(composer);
+    const state = this.#state(
+      composer,
+      isDefaultTarget(target) ? this.#lastSubmittedAgent : "codex",
+    );
     if (isConversationTarget(target)) {
       this.#conversationStates.push({ target, state });
     }
@@ -110,6 +126,7 @@ export class DraftAgentController<Composer extends object> {
     composer: Composer,
     agent: RendererAgent,
     piModel?: HarnessModelRef,
+    piThinkingOptionId?: HarnessThinkingOptionId,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
@@ -117,6 +134,23 @@ export class DraftAgentController<Composer extends object> {
     state.phase = "locked";
     if (agent === "pi" && piModel) state.piModel = piModel;
     else if (agent !== "pi") delete state.piModel;
+    if (agent === "pi" && piThinkingOptionId) {
+      state.piThinkingOptionId = piThinkingOptionId;
+    } else {
+      delete state.piThinkingOptionId;
+    }
+    return state;
+  }
+
+  setPiConfiguration(
+    composer: Composer,
+    model: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piModel = model;
+    if (thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
+    else delete state.piThinkingOptionId;
     return state;
   }
 
@@ -126,9 +160,24 @@ export class DraftAgentController<Composer extends object> {
     return state;
   }
 
+  setPiThinkingOption(
+    composer: Composer,
+    thinkingOptionId: HarnessThinkingOptionId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piThinkingOptionId = thinkingOptionId;
+    return state;
+  }
+
   lock(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     state.phase = "locked";
+    return state;
+  }
+
+  recordSubmission(composer: Composer): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    this.#lastSubmittedAgent = state.agent;
     return state;
   }
 
@@ -189,11 +238,11 @@ export class DraftAgentController<Composer extends object> {
     );
   }
 
-  #state(composer: Composer): MutableComposerState {
+  #state(composer: Composer, initialAgent?: RendererAgent): MutableComposerState {
     const existing = this.#states.get(composer);
     if (existing) return existing;
     const created: MutableComposerState = {
-      agent: "codex",
+      agent: initialAgent ?? this.#defaultAgent,
       phase: "draft",
       composerId: this.#idFactory(++this.#composerSequence),
     };

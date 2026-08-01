@@ -3,6 +3,8 @@ import type {
   HarnessInspection,
   HarnessModelRef,
   HarnessSessionCapabilities,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
   HostInteractionId,
   HostItemId,
   HostTurnId,
@@ -12,12 +14,16 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import type { HostUsage } from "./usage.js";
+
 export type {
   HarnessInspection,
   HarnessModel,
   HarnessModelCatalog,
   HarnessModelRef,
   HarnessSessionCapabilities,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
 export type HarnessErrorCode =
@@ -53,6 +59,7 @@ export interface CreateSessionInput {
   kind: "create";
   cwd: string;
   model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
 }
 
 export interface ResumeSessionInput {
@@ -65,6 +72,7 @@ export interface ForkSessionInput {
   kind: "fork";
   sourceRef: NativeSessionRef;
   checkpoint: NativeCheckpointRef;
+  /** Execution cwd for the derived Native Session. */
   cwd: string;
 }
 
@@ -73,6 +81,8 @@ export type OpenSessionInput = CreateSessionInput | ResumeSessionInput | ForkSes
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;
   effectiveModel?: HarnessModelRef;
+  effectiveThinkingOptionId?: HarnessThinkingOptionId;
+  availableThinkingOptions?: HarnessThinkingOption[];
 }
 
 export interface HostTextInput {
@@ -149,8 +159,17 @@ export interface ModelSelectCommand {
   model: HarnessModelRef;
 }
 
+export interface ThinkingSelectCommand {
+  type: "thinking.select";
+  thinkingOptionId: HarnessThinkingOptionId;
+}
+
 export type HostCommand =
-  TurnStartCommand | TurnCancelCommand | InteractionRespondCommand | ModelSelectCommand;
+  | TurnStartCommand
+  | TurnCancelCommand
+  | InteractionRespondCommand
+  | ModelSelectCommand
+  | ThinkingSelectCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
@@ -165,6 +184,10 @@ export interface InteractionRespondAccepted {
 }
 
 export interface ModelSelectCompleted {
+  completed: true;
+}
+
+export interface ThinkingSelectCompleted {
   completed: true;
 }
 
@@ -262,6 +285,12 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+export interface SessionUsageChangedEvent {
+  type: "session.usage.changed";
+  usage: HostUsage | null;
+  observedForTurnId?: HostTurnId;
+}
+
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
@@ -307,6 +336,7 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionUsageChangedEvent
   | TurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
@@ -322,6 +352,7 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
 
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
@@ -329,6 +360,7 @@ export interface HarnessSession {
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
   close(): Promise<void>;
 }
 

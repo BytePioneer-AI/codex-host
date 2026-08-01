@@ -2,6 +2,7 @@ import type {
   HarnessAdapter,
   HarnessModelRef,
   HarnessSession,
+  HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -12,7 +13,12 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type { HostInteractionId, HostTurnId, NativeSessionRef } from "@codexhost/shared-contracts";
+import type {
+  HarnessThinkingOptionId,
+  HostInteractionId,
+  HostTurnId,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   externalThreadValue,
@@ -32,23 +38,36 @@ export interface ExternalThread {
   session: HarnessSession;
   outputTask: Promise<void>;
   requestedModel?: HarnessModelRef;
+  requestedThinkingOptionId?: HarnessThinkingOptionId;
   record: StoredThreadRecordV1;
   sessionId: string;
   stateObserver: SessionStateObserver;
   thread: JsonObject;
   transportModelId: string;
   turns: JsonObject[];
+  historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
+  latestUsage: HostUsage | null;
+  usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
 }
 
+export type ExternalThreadLocation =
+  | { kind: "official" }
+  | {
+      kind: "external";
+      record: StoredThreadRecordV1;
+      thread: ExternalThread | null;
+    }
+  | { kind: "error"; error: ExternalThreadRpcError };
+
 export type ExternalThreadResolution =
   | { kind: "official" }
-  | { kind: "external"; thread: ExternalThread }
+  | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
 class ExternalThreadOpenError extends Error {
@@ -106,12 +125,15 @@ export class ExternalThreadRuntime {
     thread: JsonObject;
     turns: JsonObject[];
     requestedModel?: HarnessModelRef;
+    requestedThinkingOptionId?: HarnessThinkingOptionId;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
       throw new Error(`External Harness '${input.record.harnessId}' is not registered`);
     }
     const effectiveModel = input.requestedModel ?? input.session.initialState.effectiveModel;
+    const effectiveThinkingOptionId =
+      input.requestedThinkingOptionId ?? input.session.initialState.effectiveThinkingOptionId;
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -119,14 +141,20 @@ export class ExternalThreadRuntime {
       session: input.session,
       outputTask: Promise.resolve(),
       ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
+      ...(effectiveThinkingOptionId
+        ? { requestedThinkingOptionId: effectiveThinkingOptionId }
+        : {}),
       record: input.record,
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(input.session.initialState),
       thread: input.thread,
       transportModelId: input.record.transportModelId,
       turns: input.turns,
+      historyHydrated: true,
       running: false,
       activeTurnId: null,
+      latestUsage: input.session.initialUsage,
+      usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),
       persistenceError: null,
@@ -137,9 +165,36 @@ export class ExternalThreadRuntime {
     return externalThread;
   }
 
-  async resolve(threadId: string): Promise<ExternalThreadResolution> {
+  async replace(
+    current: ExternalThread,
+    input: {
+      record: StoredThreadRecordV1;
+      session: HarnessSession;
+      sessionId: string;
+      thread: JsonObject;
+      turns: JsonObject[];
+    },
+  ): Promise<ExternalThread> {
+    if (
+      current.running ||
+      this.#threads.get(current.id) !== current ||
+      input.record.hostThreadId !== current.id
+    ) {
+      throw new Error("External Thread runtime cannot replace an active or stale Session");
+    }
+    try {
+      await current.session.close();
+      await current.outputTask;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+    this.#threads.delete(current.id);
+    return this.register(input);
+  }
+
+  async locate(threadId: string): Promise<ExternalThreadLocation> {
     const loaded = this.#threads.get(threadId);
-    if (loaded) return { kind: "external", thread: loaded };
+    if (loaded) return { kind: "external", record: loaded.record, thread: loaded };
     let record: StoredThreadRecordV1 | null;
     try {
       record = await this.#repository.find(threadId);
@@ -156,15 +211,27 @@ export class ExternalThreadRuntime {
         error: { code: -32079, message: "External Native Session is unavailable" },
       };
     }
+    return { kind: "external", record, thread: null };
+  }
+
+  async resolve(threadId: string): Promise<ExternalThreadResolution> {
+    const location = await this.locate(threadId);
+    if (location.kind !== "external") return location;
+    if (location.thread) {
+      return { kind: "external", thread: location.thread, historyFresh: false };
+    }
+    const { record } = location;
     let restoring = this.#restores.get(threadId);
     if (!restoring) {
+      const restored = this.#threads.get(threadId);
+      if (restored) return { kind: "external", thread: restored, historyFresh: false };
       restoring = this.#restore(record).finally(() => {
         this.#restores.delete(threadId);
       });
       this.#restores.set(threadId, restoring);
     }
     try {
-      return { kind: "external", thread: await restoring };
+      return { kind: "external", thread: await restoring, historyFresh: true };
     } catch (error) {
       return {
         kind: "error",
@@ -183,6 +250,7 @@ export class ExternalThreadRuntime {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       thread.record = aligned.record;
       thread.turns = aligned.turns;
+      thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
         turns: aligned.turns,

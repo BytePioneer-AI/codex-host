@@ -193,7 +193,7 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
   );
 
   it(
-    "runs text, cancels authoritatively, continues the Session, and closes",
+    "reads history, resumes, cancels authoritatively, and continues the Session",
     async () => {
       const workspace = path.resolve(".codexhost", "claude-adapter-real", "workspace");
       await fs.mkdir(workspace, { recursive: true });
@@ -201,6 +201,7 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
         first: "Reply with exactly CODEXHOST_CLAUDE_ADAPTER_OK.",
         cancel: "Write the integers from 1 through 10000, one integer per line.",
         continuation: "Reply with exactly CODEXHOST_CLAUDE_ADAPTER_CONTINUED.",
+        resumed: "Reply with exactly CODEXHOST_CLAUDE_ADAPTER_RESUMED.",
       };
       await fs.writeFile(
         path.join(workspace, "prompts.local.json"),
@@ -234,6 +235,25 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
               output.event.update.type === "text.append",
           ),
         ).toBe(true);
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              {
+                input: [{ type: "text", text: prompts.first }],
+                outcome: { status: "unknown" },
+              },
+            ],
+          },
+        });
+        const nativeRef = collector.outputs.flatMap((output) =>
+          output.kind === "event" &&
+          output.event.type === "session.state.changed" &&
+          output.event.state.nativeRef
+            ? [output.event.state.nativeRef]
+            : [],
+        )[0];
+        if (!nativeRef) throw new Error("Claude Session published no Native identity");
 
         const cancelledTurnId = turnId("2");
         await startTurn(session, cancelledTurnId, prompts.cancel);
@@ -264,6 +284,27 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
 
         await session.close();
         await collector.consuming;
+
+        const resumedOpen = await adapter.open({ kind: "resume", cwd: workspace, nativeRef });
+        if (!resumedOpen.ok) throw new Error(resumedOpen.error.message);
+        const resumedSession = resumedOpen.value;
+        const resumedCollector = new OutputCollector(resumedSession);
+        await expect(resumedSession.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ input: [{ type: "text", text: prompts.first }] }] },
+        });
+        const resumedTurnId = turnId("4");
+        await startTurn(resumedSession, resumedTurnId, prompts.resumed);
+        await expect(
+          resumedCollector.waitFor(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === resumedTurnId,
+          ),
+        ).resolves.toMatchObject({ event: { outcome: { status: "succeeded" } } });
+        await resumedSession.close();
+        await resumedCollector.consuming;
       } finally {
         await adapter.close();
       }

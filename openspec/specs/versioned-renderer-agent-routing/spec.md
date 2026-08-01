@@ -6,7 +6,7 @@ Define the supported Desktop build contract for Composer-scoped Codex/Pi routing
 ## Requirements
 ### Requirement: Composer Agent freezes at submission
 
-The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, and SHALL synchronously freeze the final Agent when that draft is submitted.
+The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, SHALL synchronously freeze the final Agent when that draft is submitted, and SHALL remember the Agent of the most recently submitted Composer for later new-Thread drafts in the same Renderer process.
 
 #### Scenario: User switches after editing
 
@@ -21,7 +21,7 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 #### Scenario: Submission freezes the final Agent
 
 - **WHEN** the user clicks Send, presses Enter without Shift or active IME composition, or submits the Composer form
-- **THEN** the Renderer synchronously reapplies the final Agent, locks the Composer, and records one deduplicated submission before Desktop creates or consumes the submitted Thread
+- **THEN** the Renderer synchronously reapplies the final Agent, locks the Composer, records that Agent as the most recently submitted Agent, and records one deduplicated submission before Desktop creates or consumes the submitted Thread
 
 #### Scenario: First creation replaces the Composer DOM
 
@@ -31,7 +31,13 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 #### Scenario: User opens a new Thread
 
 - **WHEN** a conversation Composer is replaced by a new default Composer
-- **THEN** the new Composer starts as Codex and draft rather than inheriting the previous Thread Agent
+- **THEN** the new Composer starts in draft phase with the Agent used by the most recently submitted Composer in the same Renderer process
+- **AND** it starts as Codex when no Composer has been submitted in that Renderer process
+
+#### Scenario: User only opens an existing Thread
+
+- **WHEN** the user opens or revisits a Thread without submitting a Turn
+- **THEN** that Thread's Agent does not replace the most recently submitted Agent used for later new-Thread drafts
 
 #### Scenario: User revisits a submitted Thread
 
@@ -228,7 +234,7 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 
 #### Scenario: New task resets Model
 - **WHEN** a conversation target transitions to a new default Composer
-- **THEN** the new Composer starts as Codex without the prior Pi Model Ref
+- **THEN** the new Composer uses the most recently submitted Agent without inheriting the prior Composer's Pi Model Ref
 
 #### Scenario: Existing Pi Thread selection
 - **WHEN** the supported conversation target yields one validated current-process Host Thread ID and the user selects a different Pi Model
@@ -237,3 +243,99 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 #### Scenario: Stale asynchronous result
 - **WHEN** an earlier inspection or selection resolves after the logical Composer, Agent, target, or request generation changed
 - **THEN** Renderer ignores that result and preserves the newer state
+
+### Requirement: Supported sidebar rows show immutable external Agent ownership
+For a supported Desktop build, Renderer Extension SHALL recover each mounted sidebar row's Host Thread ID only from a bounded React Fiber chain where one or more equal `conversationId` props have `dataAttributes` matching that exact DOM row's task-key, host, and row-marker attributes. It SHALL NOT treat the opaque sidebar task key as a Host Thread ID. Renderer SHALL batch validated Host Thread IDs through the fixed ownership-list client and render a compact title-prefix icon for a known external Agent. Codex rows SHALL remain unchanged, and sidebar decoration SHALL NOT alter Thread routing, selection, rename, status, pin, archive, hover, or action behavior.
+
+#### Scenario: Pi and Claude Code rows are mounted
+- **WHEN** mounted sidebar rows belong to Pi and development-gated Claude Code Threads
+- **THEN** Renderer SHALL display the reviewed Pi and Claude Code icons before their respective titles
+- **AND** each icon SHALL provide the Agent label without intercepting pointer input
+
+#### Scenario: Codex row is mounted
+- **WHEN** Host reports Codex ownership for a mounted sidebar row
+- **THEN** Renderer SHALL leave the row undecorated
+
+#### Scenario: Ownership lookup is unavailable or malformed
+- **WHEN** the row/Fiber association is missing or ambiguous, the fixed request manager is unavailable, Host rejects the request, the response does not exactly match requested IDs, or the Harness has no known icon
+- **THEN** Renderer SHALL leave affected rows undecorated and SHALL NOT infer ownership from title, Model Provider, Subagent fields, ordering, or timing
+
+### Requirement: Sidebar ownership decoration survives virtualized row lifecycle
+Renderer SHALL cache successful immutable ownership by Host Thread ID, coalesce DOM scans, and revalidate row connectivity plus its exact DOM/Fiber-derived Host Thread ID before applying asynchronous results. It SHALL remove or replace owned decoration when React replaces title content, recycles a row for another Thread, or the extension is disposed.
+
+#### Scenario: Row is reused before ownership resolves
+- **WHEN** a mounted row changes from one Thread ID to another before the earlier ownership request completes
+- **THEN** Renderer SHALL NOT apply the earlier Thread's Agent icon to the reused row
+
+#### Scenario: React replaces the row title DOM
+- **WHEN** an externally owned row remains mounted but its title subtree is replaced
+- **THEN** Renderer SHALL restore exactly one matching Agent icon from cached ownership
+
+#### Scenario: Renderer Extension is disposed
+- **WHEN** the Renderer Binding Probe is disposed
+- **THEN** it SHALL disconnect sidebar observation, remove owned Agent icons, and ignore pending ownership results
+
+### Requirement: Fork-created conversations recover immutable Agent ownership
+When the supported Renderer mounts a conversation target that did not come from the current draft replacement, it SHALL query a fixed Host Thread inspection operation. A mapped external Thread SHALL initialize as that Harness and locked; an official Thread SHALL initialize as Codex without exposing Native identity.
+
+#### Scenario: Forked Pi conversation mounts
+- **WHEN** Codex Desktop navigates to the new Thread returned by an external Pi Fork
+- **THEN** Renderer SHALL show Pi as selected and locked
+- **AND** later submission SHALL retain Pi ownership regardless of another draft's Agent state
+
+#### Scenario: Official Fork conversation mounts
+- **WHEN** Host inspection identifies no external ownership
+- **THEN** Renderer SHALL preserve Codex selection and official Model behavior
+
+### Requirement: Forked Pi Model uses Host-confirmed state
+Thread inspection SHALL return the bounded transport carrier and optional effective Harness Model for the exact Host Thread. Renderer SHALL apply only that confirmed state to the forked conversation and SHALL keep Agent and Model semantics separate.
+
+#### Scenario: Pi Fork inherited an earlier Model
+- **WHEN** the selected Checkpoint predates a later source Model change
+- **THEN** the forked Composer SHALL display and carry the Model reported by the derived Pi Session rather than the source page's latest Model
+
+### Requirement: Ownership restoration fails closed
+Renderer SHALL generation-scope Thread inspection by logical Composer and target. While an unknown conversation may be external, submission SHALL remain blocked until ownership is resolved; stale, malformed, unavailable, or mismatched results SHALL not overwrite a newer target or silently select Codex.
+
+#### Scenario: Inspection resolves after navigation
+- **WHEN** a prior conversation inspection returns after another target is mounted
+- **THEN** Renderer SHALL ignore that result
+
+#### Scenario: External ownership inspection fails
+- **WHEN** Host or the fixed request manager cannot safely resolve a forked external Thread
+- **THEN** Renderer SHALL show an unavailable locked state and block submission rather than apply an official Model
+
+### Requirement: Renderer does not replace the native Fork action
+The external Fork feature SHALL reuse Codex Desktop's existing message action and its native protocol sequence, including an unbounded `thread/fork` followed by `thread/rollback` when emitted by the supported build. Renderer Extension MUST NOT add another Fork button, copy visible Transcript content, intercept rollback, or correlate Fork by timing.
+
+#### Scenario: User clicks the native message Fork action
+- **WHEN** Desktop issues its Fork and optional rollback requests for an external source
+- **THEN** Renderer SHALL rely on the final returned conversation target and fixed ownership inspection without a DOM click hook
+
+### Requirement: 受支持 Desktop 必须为外部 Thread 使用原生上下文 Usage 界面
+
+对于受支持的 Codex Desktop build，Host MUST 通过已评审的原生 `thread/tokenUsage/updated` Notification 投影完整外部 Thread Usage，使现有上下文窗口界面反映所选 Harness 的真实 Native Session。Renderer Extension MUST NOT 增加第二个上下文表盘、轮询 Pi 专用 Request、检查 Model carrier 获取上下文大小，或暴露通用 Host Request bridge。
+
+#### Scenario: Pi 上下文 Usage 可用
+
+- **WHEN** 可见 Pi Thread 收到协议有效的 Usage Notification，其中包含实际上下文已用 Token 和最大窗口
+- **THEN** 现有 Desktop 上下文窗口界面 MUST 显示相应的有界百分比和 Token 数值关系
+- **AND** 该 Thread MUST 保持选中 Pi 且锁定
+
+#### Scenario: Usage 缺失或不完整
+
+- **WHEN** 所属 Harness 尚未报告完整且可投影的上下文快照
+- **THEN** 外部 Thread MUST 保持可用，且不得显示虚构百分比
+- **AND** Renderer MUST NOT 复用其他 Composer、Thread、Session、Model 或过期 Request generation 的 Usage
+
+#### Scenario: 恢复后的外部 Thread 变为可见
+
+- **WHEN** 受支持 conversation target 已恢复，且 Host 从其 Native Session 读取当前 Usage
+- **THEN** 原生上下文窗口界面 MUST 在归属解析之后为准确的 Host Thread 刷新
+- **AND** Renderer MUST NOT 解析 Prompt、Transcript、Native Ref 或 Model carrier
+
+#### Scenario: Desktop 协议结构改变
+
+- **WHEN** 当前生成的 app-server Schema 或受控视觉 Gate 不再接受已评审的 Usage Notification 结构
+- **THEN** 外部 Usage 投影 MUST fail closed 并保持隐藏
+- **AND** 系统 MUST NOT 安装启发式 DOM 表盘作为 fallback

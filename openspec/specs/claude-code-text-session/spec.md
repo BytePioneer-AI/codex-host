@@ -1,10 +1,10 @@
 # claude-code-text-session Specification
 
 ## Purpose
-TBD - created by archiving change implement-registered-harness-text-vertical-slice. Update Purpose after archive.
+Define the development-gated Claude Code Adapter contract for lazy create and resume, deterministic Native history Snapshot reads, text Turns, cancellation, faults, and bounded close without exposing Claude SDK details outside the Adapter package.
 ## Requirements
 ### Requirement: Claude Code implements the existing HarnessAdapter contract
-The system SHALL provide a concrete Claude Code Adapter that exposes only the existing UI-independent create, text Turn, cancel, fault, and close semantics. Claude SDK objects, message types, settings, process handles, and native protocol fields MUST remain inside the Adapter package.
+The system SHALL provide a concrete Claude Code Adapter that exposes the existing UI-independent create, resume, history Snapshot, text Turn, cancel, fault, and close semantics. Claude SDK objects, message types, settings, process handles, and native protocol fields MUST remain inside the Adapter package.
 
 #### Scenario: Host opens a Claude create Session
 - **WHEN** a caller opens a create-mode Session with a valid cwd
@@ -15,6 +15,19 @@ The system SHALL provide a concrete Claude Code Adapter that exposes only the ex
 - **WHEN** repository formatting, lint, typecheck, build, or normal tests run
 - **THEN** Fake Transport tests SHALL exercise the Adapter contract
 - **AND** no test SHALL launch Claude Code, read user authentication, create Native Sessions, or consume model quota
+
+### Requirement: Claude inspection separates installation from Model support
+The development-gated Claude Code Adapter SHALL inspect whether its configured user executable can be resolved without starting an SDK Query or creating a Native Session. Lack of Model catalog or Model-selection support MUST NOT by itself report an installed Harness as unavailable.
+
+#### Scenario: Claude executable is resolvable
+- **WHEN** Claude inspection resolves the configured executable
+- **THEN** the Adapter SHALL return a ready inspection with an empty Model catalog and `configuration.selectModel=false`
+- **AND** it SHALL NOT create a Query, child process, or Native Session
+
+#### Scenario: Claude executable is missing
+- **WHEN** Claude inspection cannot resolve the configured executable
+- **THEN** the Adapter SHALL return a normalized `notInstalled` inspection
+- **AND** it SHALL NOT defer that known failure to a created Host Thread
 
 ### Requirement: Claude startup is lazy and Native identity is confirmed
 The first accepted text Turn SHALL resolve the user-installed Claude Code executable, initialize one long-lived Agent SDK Query, and publish one Native Session Ref before that Turn lifecycle. Later sequential Turns SHALL reuse the same Query and Native Session.
@@ -32,6 +45,49 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **WHEN** one Session accepts and completes two text Turns
 - **THEN** one SDK Query and one Native Session SHALL serve both Turns
 - **AND** each caller-assigned User UUID SHALL be submitted once
+
+### Requirement: Claude Native history maps deterministically
+
+`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following Assistant text messages into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages SHALL remain within their owning Turn and SHALL NOT become synthetic human inputs. codexhost SHALL NOT persist a second Transcript.
+
+#### Scenario: Completed Claude history is read repeatedly
+- **WHEN** a Claude Session containing completed text Turns is read more than once
+- **THEN** every read SHALL return the same ordered Native Turn identities, inputs, Agent Message identities, text, and outcomes
+- **AND** the read SHALL NOT start a Claude Query or emit live Session outputs
+
+#### Scenario: Native Tool messages occur within a Turn
+- **WHEN** Assistant Tool use and User Tool-result messages occur between a human User message and the terminal Assistant message
+- **THEN** those messages SHALL remain within the same historical Turn
+- **AND** only currently supported Assistant text SHALL be projected as historical Items
+
+#### Scenario: Native history omits complete Result evidence
+- **WHEN** official history contains Assistant messages but not the complete Result fields required by Claude live terminal classification
+- **THEN** the historical Turn outcome SHALL remain `unknown`
+- **AND** the Adapter SHALL NOT infer success from Assistant `stop_reason` alone
+
+#### Scenario: Native history identity is inconsistent
+- **WHEN** history contains a mismatched Session identity, duplicate message identity, or malformed conversation message
+- **THEN** `readSnapshot()` SHALL fail with a normalized protocol error
+- **AND** no partial Snapshot SHALL be returned
+
+### Requirement: Claude resume preserves Native Session identity
+
+`open(resume)` SHALL bind the exact persisted Claude Native Session Ref without starting a Query. It SHALL expose that Ref in initial Session state, read current Native history before Host restoration completes, and start a Query with the official SDK `resume` option only when a later Turn is submitted. Claude Fork SHALL remain explicitly unsupported and both Fork capabilities SHALL remain false.
+
+#### Scenario: Host restores a persisted Claude Thread
+- **WHEN** Host opens a valid Claude Native Session Ref in resume mode and reads its Snapshot
+- **THEN** the Adapter SHALL return the current Native history without creating a replacement Session
+- **AND** the next accepted Turn SHALL continue that same Native Session
+
+#### Scenario: Resumed Native Session is missing
+- **WHEN** official history reading returns no messages for a resumed Native Session Ref
+- **THEN** the Adapter SHALL return `sessionNotFound`
+- **AND** it SHALL NOT start a Query or create a replacement Session
+
+#### Scenario: Caller requests Claude Fork
+- **WHEN** a caller invokes `open(fork)`
+- **THEN** the Adapter SHALL return `unsupported`
+- **AND** source history SHALL remain unchanged
 
 ### Requirement: Claude text streaming has one complete ordered lifecycle
 Every accepted Claude text Turn SHALL emit one Turn start, one Agent Message start, ordered non-duplicated text append updates, one Item terminal, and one Turn terminal. Unknown native message types and non-text content MUST NOT cross the HarnessAdapter seam.
@@ -89,3 +145,44 @@ Session and Adapter close SHALL be idempotent, reject new commands after closing
 - **WHEN** the SDK iterator or owned Claude process fails before an authoritative Result
 - **THEN** the Item and Turn SHALL fail exactly once before `session.faulted`
 - **AND** raw SDK errors, Prompt text, credentials, and native frames SHALL not enter Host outputs
+
+### Requirement: Claude package root exposes only production Adapter ownership
+The Claude Code Adapter package root SHALL directly export only the concrete Adapter, its production options, and package metadata. It SHALL NOT directly re-export Claude SDK transport interfaces, native message accumulators, executable helpers, or test dependency types.
+
+#### Scenario: Production Host imports Claude Adapter
+- **WHEN** Host composition imports the Claude package root
+- **THEN** it SHALL consume only ClaudeCodeAdapter and package metadata
+- **AND** no Claude SDK message or transport type SHALL enter Host production code
+
+#### Scenario: Adapter tests inject a fake transport
+- **WHEN** Claude Adapter tests need deterministic native behavior
+- **THEN** they SHALL use package-internal test seams
+- **AND** the production package root SHALL not expand for that test
+
+### Requirement: Claude Code publishes stable current context Usage
+
+The Claude Code Adapter MUST read current context Usage only from the active official SDK Query's stable structured context operation. It MUST map reliable current used Token and effective maximum Token values into one normalized `HostUsage` context pair after a Turn terminal, and MUST omit unavailable Session aggregate, cost, category, percentage, or Model fields rather than deriving them. It MUST NOT depend on the SDK experimental Session Usage operation or interpret per-Result Usage as a Native Session aggregate.
+
+#### Scenario: Successful Claude Turn exposes current context
+
+- **WHEN** an accepted Claude Turn reaches its authoritative terminal and the active Query returns valid current context used and maximum Token values
+- **THEN** the Adapter MUST publish one `session.usage.changed` snapshot containing the corresponding `contextUsedTokens` and `contextWindowTokens`
+- **AND** the snapshot MUST remain Session-level Telemetry associated with that observation boundary
+
+#### Scenario: Claude context response is unavailable or malformed
+
+- **WHEN** the stable context operation fails, returns no current context, or returns an invalid Token pair
+- **THEN** the Adapter MUST omit that observation and preserve the latest still-applicable Usage or `null`
+- **AND** the Turn outcome, Session health, and bounded close MUST remain unchanged
+
+#### Scenario: Claude Session has not started a Query
+
+- **WHEN** a create or resume Session has not accepted its first Turn
+- **THEN** `initialUsage` MUST remain `null`
+- **AND** the Adapter MUST NOT start Claude Code only to obtain Usage
+
+#### Scenario: An older context read completes after a newer boundary
+
+- **WHEN** a context read started for an earlier Turn completes after another Turn starts, Session close begins, or the Session faults
+- **THEN** the Adapter MUST discard that stale result
+- **AND** it MUST NOT replace Usage owned by the newer Session boundary

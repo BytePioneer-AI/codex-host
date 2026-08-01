@@ -140,3 +140,10 @@ export interface CommitReadyThreadInput {
   nativeSessionRef: NativeSessionRef;
   turnMappings?: StoredTurnMappingV1[];
 }
+
+export interface ReplaceReadySessionInput {
+  hostThreadId: HostThreadId;
+  nativeSessionRef: NativeSessionRef;
+  turnMappings: StoredTurnMappingV1[];
+  forkSource: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
+}

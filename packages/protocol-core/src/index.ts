@@ -6,6 +6,8 @@ export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/s
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 export { projectCodexQuestionRequest } from "./codex-question.js";
 export type { CodexQuestionRequestProjection } from "./codex-question.js";
+export { projectCodexThreadUsage } from "./codex-usage.js";
+export type { CodexThreadUsageProjectionInput } from "./codex-usage.js";
 export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
 export type {
   CodexQuestionProjection,
@@ -15,21 +17,35 @@ export type {
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,
+  decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   threadForkResult,
+  threadRollbackResult,
 } from "./thread-fork.js";
-export type { DecodedThreadForkRequest, ExternalThreadRpcError } from "./thread-fork.js";
+export type {
+  DecodedThreadForkRequest,
+  DecodedThreadRollbackRequest,
+  ExternalThreadRpcError,
+} from "./thread-fork.js";
 export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   EXTERNAL_HARNESS_IDS,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeCreateRoute,
+  decodeExternalTransportModel,
+  decodeExternalTransportSelection,
   decodePiTransportModel,
+  decodePiTransportSelection,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
-export type { CreateRoute, ExternalHarnessId, RoutedHarnessId } from "./model-routing.js";
+export type {
+  CreateRoute,
+  ExternalConfigurationSelection,
+  ExternalHarnessId,
+  RoutedHarnessId,
+} from "./model-routing.js";
 export {
   encodeJsonFrame,
   parseJsonFrame,

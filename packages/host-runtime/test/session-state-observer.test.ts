@@ -1,4 +1,8 @@
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+  harnessThinkingOptionSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import { SessionStateObserver } from "../src/session-state-observer.js";
@@ -10,11 +14,17 @@ describe("Host Session state observer", () => {
     const observer = new SessionStateObserver({});
     const waiting = observer.waitForChange(observer.revision);
 
-    observer.update({ effectiveModel: model });
+    const effectiveThinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const availableThinkingOptions = [
+      harnessThinkingOptionSchema.parse({ id: "off", label: "Off" }),
+      harnessThinkingOptionSchema.parse({ id: "high", label: "High" }),
+    ];
+    const state = { effectiveModel: model, effectiveThinkingOptionId, availableThinkingOptions };
+    observer.update(state);
 
-    await expect(waiting).resolves.toEqual({ effectiveModel: model });
+    await expect(waiting).resolves.toEqual(state);
     expect(observer.revision).toBe(1);
-    expect(observer.state).toEqual({ effectiveModel: model });
+    expect(observer.state).toEqual(state);
   });
 
   it("returns an already-observed revision without adding a waiter", async () => {

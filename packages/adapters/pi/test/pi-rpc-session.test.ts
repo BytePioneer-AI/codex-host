@@ -2,10 +2,12 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
+import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   PiRpcSession,
+  piRpcProcessCommand,
   type PiRpcProcessAdapter,
   type PiRpcProcessOptions,
   type PiTurnEvent,
@@ -23,7 +25,17 @@ type Scenario =
   | "interaction-timeout"
   | "interaction-cancel"
   | "malformed-interaction"
-  | "malformed-catalog";
+  | "malformed-catalog"
+  | "malformed-thinking"
+  | "unsupported-thinking"
+  | "stats-full"
+  | "stats-context-only"
+  | "stats-malformed"
+  | "stats-unsupported"
+  | "stats-unsupported-mismatch"
+  | "stats-error"
+  | "stats-timeout"
+  | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -36,8 +48,10 @@ class FakePiRpcProcess extends EventEmitter {
   #promptCount = 0;
   #sessionId = "synthetic-session";
   #sessionFile: string | null = "/synthetic/session.jsonl";
+  #stateRequestCount = 0;
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
+  #thinkingLevel = "high";
   readonly #scenario: Scenario;
 
   constructor(scenario: Scenario) {
@@ -82,11 +96,59 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "get_state") {
+      this.#stateRequestCount += 1;
       this.#respond(command, {
-        sessionId: this.#sessionId,
+        ...(this.#scenario === "missing-session-id" ? {} : { sessionId: this.#sessionId }),
         sessionFile: this.#sessionFile,
-        model: { provider: this.#provider, id: this.#modelId },
+        model: {
+          provider: this.#provider,
+          id:
+            this.#scenario === "stats-unsupported-mismatch" && this.#stateRequestCount > 1
+              ? "changed-model"
+              : this.#modelId,
+        },
+        thinkingLevel: this.#thinkingLevel,
+        contextUsage: { tokens: 45, contextWindow: 200 },
       });
+      return;
+    }
+    if (command.type === "get_session_stats") {
+      if (this.#scenario === "stats-timeout") return;
+      if (
+        this.#scenario === "stats-unsupported" ||
+        this.#scenario === "stats-unsupported-mismatch"
+      ) {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
+        return;
+      }
+      if (this.#scenario === "stats-error") {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: "Synthetic stats failure",
+        });
+        return;
+      }
+      this.#respond(
+        command,
+        this.#scenario === "stats-context-only"
+          ? { contextUsage: { tokens: 45, contextWindow: 200 } }
+          : this.#scenario === "stats-malformed"
+            ? { tokens: { total: -1 }, contextUsage: { tokens: 45 } }
+            : {
+                tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, total: 18 },
+                cost: 0.25,
+                contextUsage: { tokens: 45, contextWindow: 200 },
+              },
+      );
       return;
     }
     if (command.type === "get_entries") {
@@ -113,16 +175,36 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command, {
         models:
           this.#scenario === "malformed-catalog"
-            ? [{ id: "missing-provider" }]
+            ? [{ id: "missing-provider", reasoning: true }]
             : [
                 {
                   provider: "synthetic-provider",
                   id: "synthetic-model",
                   baseUrl: "https://private.invalid",
                   apiKey: "secret",
+                  reasoning: true,
                 },
-                { provider: "other/provider", id: "family/model" },
+                { provider: "other/provider", id: "family/model", reasoning: false },
               ],
+      });
+      return;
+    }
+    if (command.type === "get_available_thinking_levels") {
+      if (this.#scenario === "unsupported-thinking") {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
+        return;
+      }
+      this.#respond(command, {
+        levels:
+          this.#scenario === "malformed-thinking"
+            ? ["off", "invalid option"]
+            : ["off", "low", "high"],
       });
       return;
     }
@@ -130,7 +212,15 @@ class FakePiRpcProcess extends EventEmitter {
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
+        this.#thinkingLevel = command.modelId === "family/model" ? "low" : this.#thinkingLevel;
       }
+      this.#respond(command);
+      return;
+    }
+    if (command.type === "set_thinking_level") {
+      this.#thinkingLevel = ["off", "low", "high"].includes(String(command.level))
+        ? String(command.level)
+        : "high";
       this.#respond(command);
       return;
     }
@@ -332,7 +422,7 @@ class FakePiRpcProcess extends EventEmitter {
 function session(
   scenario: Scenario,
   onFault = vi.fn(),
-  options: { turnTimeoutMs?: number } = {},
+  options: { commandTimeoutMs?: number; turnTimeoutMs?: number } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
@@ -342,7 +432,7 @@ function session(
   return new PiRpcSession(
     {
       cwd: process.cwd(),
-      commandTimeoutMs: 2_000,
+      commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
       turnTimeoutMs: options.turnTimeoutMs ?? 2_000,
       closeTimeoutMs: 500,
       onFault,
@@ -381,20 +471,88 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("passes a Native Session file to the Pi process adapter", async () => {
+  it("rejects native state without stable Session identity", async () => {
+    const rpc = session("missing-session-id");
+
+    await expect(rpc.start()).rejects.toMatchObject({
+      kind: "protocolError",
+      message: "Pi RPC state has no stable Session identity",
+    });
+    await rpc.close();
+  });
+
+  it("builds mutually exclusive Native Session resume and Fork argv", async () => {
+    const options = {
+      cwd: process.cwd(),
+      environment: {},
+      command: "/synthetic/pi",
+    };
+    expect(
+      piRpcProcessCommand({ ...options, sessionFile: "/synthetic/source.jsonl" }),
+    ).toMatchObject({
+      command: "/synthetic/pi",
+      arguments: ["--mode", "rpc", "--session", "/synthetic/source.jsonl"],
+    });
+    expect(
+      piRpcProcessCommand({ ...options, forkSessionFile: "/synthetic/source.jsonl" }),
+    ).toMatchObject({
+      command: "/synthetic/pi",
+      arguments: ["--mode", "rpc", "--fork", "/synthetic/source.jsonl"],
+    });
+    expect(
+      piRpcProcessCommand({
+        ...options,
+        model: { provider: "synthetic-provider", id: "synthetic-model" },
+      }),
+    ).toMatchObject({
+      arguments: [
+        "--mode",
+        "rpc",
+        "--provider",
+        "synthetic-provider",
+        "--model",
+        "synthetic-model",
+      ],
+    });
+    expect(() =>
+      piRpcProcessCommand({
+        ...options,
+        sessionFile: "/synthetic/resume.jsonl",
+        forkSessionFile: "/synthetic/fork.jsonl",
+      }),
+    ).toThrow("cannot combine");
+    expect(() =>
+      piRpcProcessCommand({
+        ...options,
+        sessionFile: "/synthetic/resume.jsonl",
+        model: { provider: "synthetic-provider", id: "synthetic-model" },
+      }),
+    ).toThrow("cannot combine");
+  });
+
+  it("passes Native resume and Fork Session files to the Pi process adapter", async () => {
     const spawnProcess = vi.fn(
       () => new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams,
     );
-    const rpc = new PiRpcSession(
+    const resumed = new PiRpcSession(
       { cwd: process.cwd(), sessionFile: "/synthetic/source.jsonl" },
       { spawn: spawnProcess },
     );
-
-    await rpc.start();
-    expect(spawnProcess).toHaveBeenCalledWith(
+    await resumed.start();
+    expect(spawnProcess).toHaveBeenLastCalledWith(
       expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
     );
-    await rpc.close();
+    await resumed.close();
+
+    const forked = new PiRpcSession(
+      { cwd: process.cwd(), forkSessionFile: "/synthetic/source.jsonl" },
+      { spawn: spawnProcess },
+    );
+    await forked.start();
+    expect(spawnProcess).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forkSessionFile: "/synthetic/source.jsonl" }),
+    );
+    await forked.close();
   });
 
   it("reads typed Entries and confirms Fork and Clone state", async () => {
@@ -497,14 +655,97 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
 
     await expect(rpc.getAvailableModels()).resolves.toEqual([
-      { provider: "synthetic-provider", id: "synthetic-model" },
-      { provider: "other/provider", id: "family/model" },
+      { provider: "synthetic-provider", id: "synthetic-model", reasoning: true },
+      { provider: "other/provider", id: "family/model", reasoning: false },
     ]);
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
     expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
     await rpc.close();
+  });
+
+  it("reads strict Session Usage and degrades only an explicit unsupported command", async () => {
+    const complete = session("stats-full");
+    await complete.start();
+    await expect(complete.getSessionUsage()).resolves.toEqual({
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      cacheWriteInputTokens: 1,
+      outputTokens: 5,
+      totalTokens: 18,
+      totalCostUsd: 0.25,
+      contextUsedTokens: 45,
+      contextWindowTokens: 200,
+    });
+    await complete.close();
+
+    const contextOnly = session("stats-context-only");
+    await contextOnly.start();
+    await expect(contextOnly.getSessionUsage()).resolves.toEqual({
+      contextUsedTokens: 45,
+      contextWindowTokens: 200,
+    });
+    await contextOnly.close();
+
+    const unsupported = session("stats-unsupported");
+    await unsupported.start();
+    await expect(unsupported.getSessionUsage()).resolves.toEqual({
+      contextUsedTokens: 45,
+      contextWindowTokens: 200,
+    });
+    await unsupported.close();
+
+    const mismatch = session("stats-unsupported-mismatch");
+    await mismatch.start();
+    await expect(mismatch.getSessionUsage()).rejects.toThrow("confirmed Session state");
+    await mismatch.close();
+  });
+
+  it("keeps malformed, timeout, and non-unsupported stats failures local to Telemetry", async () => {
+    for (const scenario of ["stats-malformed", "stats-error"] as const) {
+      const onFault = vi.fn();
+      const rpc = session(scenario, onFault);
+      await rpc.start();
+      await expect(rpc.getSessionUsage()).rejects.toThrow();
+      expect(onFault).not.toHaveBeenCalled();
+      await expect(rpc.getAvailableModels()).resolves.toHaveLength(2);
+      await rpc.close();
+    }
+
+    const onFault = vi.fn();
+    const timedOut = session("stats-timeout", onFault, { commandTimeoutMs: 10 });
+    await timedOut.start();
+    await expect(timedOut.getSessionUsage()).rejects.toThrow("command timed out");
+    expect(onFault).not.toHaveBeenCalled();
+    await timedOut.close();
+  });
+
+  it("reads actual Thinking options and corrected state after selection", async () => {
+    const rpc = session("final-only");
+    await rpc.start();
+
+    await expect(rpc.getAvailableThinkingLevels()).resolves.toEqual(["off", "low", "high"]);
+    await expect(
+      rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("xhigh")),
+    ).resolves.toMatchObject({ thinkingLevel: "high" });
+    expect(rpc.state.thinkingLevel).toBe("high");
+    await rpc.close();
+  });
+
+  it("degrades only an explicit unknown Thinking command and faults malformed levels", async () => {
+    const unsupported = session("unsupported-thinking");
+    await unsupported.start();
+    await expect(unsupported.getAvailableThinkingLevels()).resolves.toBeNull();
+    await expect(unsupported.getAvailableModels()).resolves.toHaveLength(2);
+    await unsupported.close();
+
+    const onFault = vi.fn();
+    const malformed = session("malformed-thinking", onFault);
+    await malformed.start();
+    await expect(malformed.getAvailableThinkingLevels()).rejects.toThrow("invalid level");
+    expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    await malformed.close();
   });
 
   it("faults a malformed native Model catalog", async () => {

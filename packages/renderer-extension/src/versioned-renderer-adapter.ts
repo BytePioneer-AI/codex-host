@@ -1,11 +1,15 @@
 import {
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
+  type HarnessInspectParams,
   type HarnessModelRef,
+  type HarnessThinkingOptionId,
   type HostThreadId,
-  type PiHarnessInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
+  type ThreadThinkingSelectParams,
+  type ThreadOwnershipListParams,
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -22,6 +26,7 @@ export interface LockedComposerSelection {
   composerId: string;
   phase: "locked";
   model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
 }
 
 export interface RendererAdapterCandidateShape {
@@ -127,18 +132,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function piTransportModelId(model?: HarnessModelRef): string {
-  return model
-    ? `${PI_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}`
-    : PI_TRANSPORT_MODEL_ID;
+export function piTransportModelId(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("Pi transport Thinking requires a Model Ref");
+    return PI_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
 }
 
 export function isPiTransportModelId(value: unknown): value is string {
   if (value === PI_TRANSPORT_MODEL_ID) return true;
   if (typeof value !== "string" || !value.startsWith(PI_TRANSPORT_MODEL_PREFIX)) return false;
-  return harnessModelRefSchema.safeParse({
-    id: value.slice(PI_TRANSPORT_MODEL_PREFIX.length),
-  }).success;
+  const components = value.slice(PI_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return false;
+  const [modelId, thinkingOptionId] = components;
+  if (!harnessModelRefSchema.safeParse({ id: modelId }).success) return false;
+  return (
+    components.length === 1 ||
+    (thinkingOptionId !== undefined &&
+      harnessThinkingOptionIdSchema.safeParse(thinkingOptionId).success)
+  );
 }
 
 export function threadIdFromComposerModelTarget(
@@ -285,7 +305,7 @@ export function decorateThreadStartParams(
   if (!selection) return params as ThreadStartParams;
   const transportModelId =
     selection.agent === "pi"
-      ? piTransportModelId(selection.model)
+      ? piTransportModelId(selection.model, selection.thinkingOptionId)
       : transportModelIdForAgent(selection.agent);
   return transportModelId
     ? ({ ...params, model: transportModelId } as ThreadStartParams)
@@ -597,17 +617,22 @@ export function modelSelectionForAgent(
   reasoningEffort: unknown,
   agent: RendererAgent,
   model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
 ): ModelPowerSelection | null {
   const transportModelId =
-    agent === "pi" ? piTransportModelId(model) : transportModelIdForAgent(agent);
+    agent === "pi" ? piTransportModelId(model, thinkingOptionId) : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
 export function installCurrentRendererAdapter(): {
   status: RendererAdapterStatus;
   modelControl: RendererModelClient | null;
-  applyAgent(agent: RendererAgent, model?: HarnessModelRef): boolean;
-  applyPiModel(model: HarnessModelRef): boolean;
+  applyAgent(
+    agent: RendererAgent,
+    model?: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
+  ): boolean;
+  applyPiModel(model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId): boolean;
   dispose(): void;
 } {
   let disposed = false;
@@ -645,7 +670,7 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const modelControl: RendererModelClient = Object.freeze({
-    async inspectPi(input: PiHarnessInspectParams) {
+    async inspectPi(input: HarnessInspectParams) {
       const client = createRendererModelClient(findActivePrewarmTargets(document));
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.inspectPi(input);
@@ -655,10 +680,20 @@ export function installCurrentRendererAdapter(): {
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.inspectThread(input);
     },
+    async listThreadOwnership(input: ThreadOwnershipListParams) {
+      const client = createRendererModelClient(findActivePrewarmTargets(document));
+      if (!client) throw new Error("Renderer Model request manager is unavailable");
+      return client.listThreadOwnership(input);
+    },
     async selectPiThreadModel(input: ThreadModelSelectParams) {
       const client = createRendererModelClient(findActivePrewarmTargets(document));
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.selectPiThreadModel(input);
+    },
+    async selectPiThreadThinking(input: ThreadThinkingSelectParams) {
+      const client = createRendererModelClient(findActivePrewarmTargets(document));
+      if (!client) throw new Error("Renderer Model request manager is unavailable");
+      return client.selectPiThreadThinking(input);
     },
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
@@ -685,7 +720,11 @@ export function installCurrentRendererAdapter(): {
     updateStatus("ready", "ready", "model-state");
     return true;
   };
-  const applyAgent = (agent: RendererAgent, model?: HarnessModelRef): boolean => {
+  const applyAgent = (
+    agent: RendererAgent,
+    model?: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
+  ): boolean => {
     if (disposed) return false;
     if (agent === "codex" && !hasOfficialSelection) {
       selectedAgent = "codex";
@@ -698,7 +737,13 @@ export function installCurrentRendererAdapter(): {
     }
     modelController = controller;
     controller.apply(
-      modelSelectionForAgent(officialSelection, controller.reasoningEffort, agent, model),
+      modelSelectionForAgent(
+        officialSelection,
+        controller.reasoningEffort,
+        agent,
+        model,
+        thinkingOptionId,
+      ),
     );
     selectedAgent = agent;
     modelUpdates += 1;
@@ -717,9 +762,9 @@ export function installCurrentRendererAdapter(): {
     status: liveStatus,
     modelControl,
     applyAgent,
-    applyPiModel(model) {
+    applyPiModel(model, thinkingOptionId) {
       if (selectedAgent !== "pi") return false;
-      return applyAgent("pi", model);
+      return applyAgent("pi", model, thinkingOptionId);
     },
     dispose() {
       if (disposed) return;

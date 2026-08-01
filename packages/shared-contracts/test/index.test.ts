@@ -5,6 +5,7 @@ import {
   harnessIdSchema,
   harnessInspectionSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionSchema,
   hostThreadIdSchema,
   jsonRpcEnvelopeSchema,
   jsonValueSchema,
@@ -31,15 +32,30 @@ describe("shared-contracts public package", () => {
       harnessInspectionSchema.parse({
         status: "ready",
         catalog: {
-          models: [{ ref: { id: "pi-model-v1.synthetic" }, label: "Synthetic" }],
+          models: [
+            {
+              ref: { id: "pi-model-v1.synthetic" },
+              label: "Synthetic",
+              supportedThinkingOptionIds: ["off", "high"],
+            },
+          ],
           defaultModel: { id: "pi-model-v1.synthetic" },
+          thinkingOptions: [
+            { id: "off", label: "Off" },
+            { id: "high", label: "High" },
+          ],
+          defaultThinkingOptionId: "high",
         },
         capabilities: {
-          configuration: { selectModel: true },
-          history: { fork: true },
+          configuration: { selectModel: true, selectThinkingOption: true },
+          history: { fork: true, forkAcrossCwd: true },
         },
       }),
     ).toMatchObject({ status: "ready" });
+    expect(harnessThinkingOptionSchema.parse({ id: "high", label: "High" })).toEqual({
+      id: "high",
+      label: "High",
+    });
     expect(hostThreadIdSchema.parse("thread")).toBe("thread");
     expect(jsonRpcEnvelopeSchema.parse({ id: 1, result: null })).toEqual({ id: 1, result: null });
     expect(

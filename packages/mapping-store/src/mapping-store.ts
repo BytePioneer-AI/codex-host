@@ -19,6 +19,7 @@ import {
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
   type CreateProvisionalThreadInput,
+  type ReplaceReadySessionInput,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "./records.js";
@@ -238,6 +239,34 @@ export class MappingStore {
     }));
   }
 
+  async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        !current.forkSource ||
+        current.forkSource.hostThreadId !== input.forkSource.hostThreadId ||
+        current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
+        input.turnMappings.length < 1 ||
+        input.turnMappings.length >= current.turnMappings.length ||
+        input.turnMappings.some(
+          ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
+        )
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Ready Session replacement must retain an exact shorter derived prefix",
+        );
+      }
+      return {
+        ...current,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: input.turnMappings,
+        forkSource: input.forkSource,
+      };
+    });
+  }
+
   async upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -325,11 +354,11 @@ export class MappingStore {
     updates: StoredTurnMappingV1[],
   ): StoredTurnMappingV1[] {
     const merged = current.map((mapping) => ({ ...mapping }));
+    const byHost = new Map(merged.map((mapping) => [mapping.hostTurnId, mapping] as const));
+    const byNative = new Map(merged.map((mapping) => [nativeTurnKey(mapping), mapping] as const));
     for (const update of updates) {
-      const hostMatch = merged.find((mapping) => mapping.hostTurnId === update.hostTurnId);
-      const nativeMatch = merged.find(
-        (mapping) => nativeTurnKey(mapping) === nativeTurnKey(update),
-      );
+      const hostMatch = byHost.get(update.hostTurnId);
+      const nativeMatch = byNative.get(nativeTurnKey(update));
       if (hostMatch || nativeMatch) {
         if (!hostMatch || hostMatch !== nativeMatch) {
           throw new MappingStoreError("MAPPING_CONFLICT", "Turn identity mapping conflicts");
@@ -349,7 +378,10 @@ export class MappingStore {
         }
         continue;
       }
-      merged.push(update);
+      const added = { ...update };
+      merged.push(added);
+      byHost.set(added.hostTurnId, added);
+      byNative.set(nativeTurnKey(added), added);
     }
     return merged;
   }
@@ -470,10 +502,7 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      const currentHostTurn = record.turnMappings.find(
-        (candidate) => nativeTurnKey(candidate) === nativeTurnKey(mapping),
-      )?.hostTurnId;
-      if (duplicateNativeTurn && duplicateNativeTurn !== currentHostTurn) {
+      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }

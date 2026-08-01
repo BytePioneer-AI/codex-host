@@ -36,9 +36,15 @@ export type ClaudeTurnEvent =
       reason: "responded" | "cancelled" | "superseded";
     };
 
+export interface ClaudeTransportContextUsage {
+  usedTokens: number;
+  maxTokens: number;
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   start(): Promise<void>;
+  getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   runTurn(
     text: string,
     userMessageId: string,
@@ -52,10 +58,13 @@ export interface ClaudeTurnTransport {
 export interface ClaudeTransportFactoryInput {
   cwd: string;
   sessionId: string;
+  openMode: "create" | "resume";
   onFault(error: unknown): void;
 }
 
 export interface ClaudeAdapterDependencies {
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
+  inspectInstallation(): void;
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
   randomUUID(): string;
 }

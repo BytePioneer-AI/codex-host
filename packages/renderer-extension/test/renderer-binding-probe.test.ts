@@ -1,7 +1,13 @@
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelCatalogSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  draftThinkingOptionForModel,
+  isLateConversationTarget,
   isOwnershipSubmissionBlocked,
   restoredThreadOwnership,
   shouldTransferComposerState,
@@ -66,15 +72,21 @@ describe("Renderer Composer DOM behavior", () => {
 
   it("restores validated Host ownership and blocks unresolved submission", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.restored" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     expect(
       restoredThreadOwnership({
         owner: "external",
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: model,
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [
+          { id: harnessThinkingOptionIdSchema.parse("off"), label: "Off" },
+          { id: thinkingOptionId, label: "High" },
+        ],
         locked: true,
       }),
-    ).toEqual({ agent: "pi", piModel: model });
+    ).toEqual({ agent: "pi", piModel: model, piThinkingOptionId: thinkingOptionId });
     expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
       agent: "codex",
     });
@@ -90,6 +102,69 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isOwnershipSubmissionBlocked("error")).toBe(true);
     expect(isOwnershipSubmissionBlocked("ready")).toBe(false);
     expect(isOwnershipSubmissionBlocked("not-required")).toBe(false);
+  });
+
+  it("resolves Draft Thinking from the selected Model's in-memory Catalog entry", () => {
+    const reasoningModel = harnessModelRefSchema.parse({ id: "pi-model-v1.reasoning" });
+    const plainModel = harnessModelRefSchema.parse({ id: "pi-model-v1.plain" });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: reasoningModel,
+          label: "Reasoning",
+          supportedThinkingOptionIds: ["off", "high", "max"],
+        },
+        {
+          ref: plainModel,
+          label: "Plain",
+          supportedThinkingOptionIds: ["off"],
+        },
+      ],
+      defaultModel: reasoningModel,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ],
+      defaultThinkingOptionId: "high",
+    });
+
+    expect(
+      draftThinkingOptionForModel(
+        catalog,
+        reasoningModel,
+        harnessThinkingOptionIdSchema.parse("max"),
+      ),
+    ).toBe("max");
+    expect(
+      draftThinkingOptionForModel(catalog, plainModel, harnessThinkingOptionIdSchema.parse("max")),
+    ).toBe("off");
+    expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
+  });
+
+  it("does not bind readable Thinking when current options are unavailable", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.legacy" });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: `codexhost/pi-native@${model.id}`,
+        effectiveModel: model,
+        effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        locked: true,
+      }),
+    ).toEqual({ agent: "pi", piModel: model });
+  });
+
+  it("detects a conversation target that arrives after the Composer mounted", () => {
+    const defaultTarget = ["default"];
+    const conversationTarget = ["conversation", "opaque-1"];
+
+    expect(isLateConversationTarget(defaultTarget, conversationTarget)).toBe(true);
+    expect(isLateConversationTarget(defaultTarget, defaultTarget)).toBe(false);
+    expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
+    expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(false);
+    expect(isLateConversationTarget(null, conversationTarget)).toBe(false);
   });
 
   it("transfers only the same Model target or a first-create transition", () => {

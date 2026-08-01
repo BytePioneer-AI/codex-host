@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveClaudeCodeExecutable } from "../src/index.js";
+import { resolveClaudeCodeExecutable } from "../src/command.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -38,9 +38,39 @@ describe("Claude Code executable resolution", () => {
     ).toBe(executable);
   });
 
+  it("finds a user NVM installation when a Finder-style PATH omits it", () => {
+    const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
+    directories.push(homeDirectory);
+    const executable = path.join(
+      homeDirectory,
+      ".nvm",
+      "versions",
+      "node",
+      "v24.18.0",
+      "bin",
+      "claude",
+    );
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+
+    expect(
+      resolveClaudeCodeExecutable({
+        environment: { PATH: "" },
+        homeDirectory,
+        platform: "darwin",
+      }),
+    ).toBe(executable);
+  });
+
   it("fails without substituting the SDK bundled binary", () => {
+    const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
+    directories.push(homeDirectory);
     expect(() =>
-      resolveClaudeCodeExecutable({ environment: { PATH: "" }, platform: "linux" }),
+      resolveClaudeCodeExecutable({
+        environment: { PATH: "" },
+        homeDirectory,
+        platform: "linux",
+      }),
     ).toThrow("not installed");
   });
 });

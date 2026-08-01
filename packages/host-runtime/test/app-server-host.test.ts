@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
@@ -30,6 +31,12 @@ class FakeOfficialProcess extends EventEmitter {
       this.stdout.end();
       this.emit("exit", 0, null);
     });
+  }
+}
+
+class FailingOwnershipMappingStore extends MappingStore {
+  override getThread(): Promise<never> {
+    return Promise.reject(new Error("Synthetic ownership read failure"));
   }
 }
 
@@ -132,9 +139,8 @@ function createFixture(
     diagnosticOutput,
     mappingStore,
     ...(options.environment ? { environment: options.environment } : {}),
-    ...(options.externalAdapters
-      ? { externalAdapters: options.externalAdapters }
-      : { piAdapter: adapter }),
+    externalAdapters:
+      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
   });
   const running = host.run();
@@ -208,9 +214,13 @@ async function completePiTurn(
   return turnId;
 }
 
-async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
+async function closeFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
   fixture.desktopInput.end();
   await expect(fixture.running).resolves.toBe(0);
+}
+
+async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
+  await closeFixture(fixture);
   rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
 }
 
@@ -232,14 +242,48 @@ describe("AppServerHost HarnessAdapter projection", () => {
         status: "ready",
         catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
         capabilities: {
-          configuration: { selectModel: true },
-          history: { fork: true },
+          configuration: { selectModel: true, selectThinkingOption: true },
+          history: { fork: true, forkAcrossCwd: true },
         },
       },
     });
     expect(fixture.adapter.inspectionCalls).toBe(1);
     expect(fixture.adapter.sessions).toHaveLength(0);
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("dispatches inspection by registered Harness ID and rejects unknown Harnesses", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 31,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "claude-code", cwd: "/synthetic-claude" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(claude.inspectionCalls).toBe(1);
+    expect(pi.inspectionCalls).toBe(0);
+
+    writeRequest(fixture.desktopInput, {
+      id: 32,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "unregistered" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({
+      error: { code: -32077, message: "Harness 'unregistered' is unavailable" },
+    });
     await stopFixture(fixture);
   });
 
@@ -275,6 +319,88 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 41,
       result: { owner: "codex", locked: true },
     });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("lists persisted ownership without restoring external Sessions", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const first = createFixture({
+      externalAdapters: new Map([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    const piThreadId = await startExternalThread(first, "codexhost/pi-native", 1);
+    const claudeThreadId = await startExternalThread(
+      first,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      2,
+    );
+    const directory = first.mappingStoreDirectory;
+    await closeFixture(first);
+
+    const restartedPi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const restartedClaude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const restarted = createFixture({
+      externalAdapters: new Map([
+        ["pi", restartedPi],
+        ["claude-code", restartedClaude],
+      ]),
+      mappingStoreDirectory: directory,
+    });
+    const officialWrite = vi.fn();
+    restarted.official.stdin.on("data", officialWrite);
+
+    writeRequest(restarted.desktopInput, {
+      id: 42,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["official-thread", piThreadId, claudeThreadId] },
+    });
+    await expect(restarted.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual(
+      {
+        id: 42,
+        result: {
+          threads: [
+            { threadId: "official-thread", owner: "codex" },
+            { threadId: piThreadId, owner: "external", harnessId: "pi" },
+            { threadId: claudeThreadId, owner: "external", harnessId: "claude-code" },
+          ],
+        },
+      },
+    );
+    expect(restartedPi.sessions).toHaveLength(0);
+    expect(restartedClaude.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(restarted);
+  });
+
+  it("rejects invalid or unreadable ownership-list metadata locally", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+    const mappingStore = new FailingOwnershipMappingStore({ directory });
+    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 43,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["duplicate", "duplicate"] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 43)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 44,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["unreadable-thread"] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 44)),
+    ).resolves.toMatchObject({ error: { code: -32081 } });
+    expect(fixture.adapter.sessions).toHaveLength(0);
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -326,6 +452,104 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("pages external Turns and Items with paginated resume bootstrap", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/start",
+      params: {
+        model: "codexhost/pi-native",
+        cwd: "/synthetic",
+        historyMode: "paginated",
+      },
+    });
+    const started = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const threadId = ((started.result as JsonObject).thread as JsonObject).id;
+    if (typeof threadId !== "string") throw new Error("Paginated Thread has no ID");
+    await completePiTurn(fixture, threadId, 11);
+    const secondTurnId = await completePiTurn(fixture, threadId, 12);
+    const thirdTurnId = await completePiTurn(fixture, threadId, 13);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Paginated Session was not opened");
+
+    writeRequest(fixture.desktopInput, {
+      id: 14,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 14)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 15,
+      method: "thread/turns/list",
+      params: { threadId, limit: 2, itemsView: "summary" },
+    });
+    const turnsPage = await fixture.collector.waitFor((message) => requestId(message, 15));
+    expect(turnsPage).toMatchObject({
+      result: {
+        data: [
+          {
+            id: thirdTurnId,
+            itemsView: "summary",
+            items: [{ type: "userMessage" }, { type: "agentMessage" }],
+          },
+          {
+            id: secondTurnId,
+            itemsView: "summary",
+            items: [{ type: "userMessage" }, { type: "agentMessage" }],
+          },
+        ],
+        nextCursor: expect.any(String),
+        backwardsCursor: expect.any(String),
+      },
+    });
+    expect(session.snapshotReads).toBe(1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 16,
+      method: "thread/items/list",
+      params: { threadId, turnId: thirdTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 16)),
+    ).resolves.toMatchObject({
+      result: {
+        data: [
+          { turnId: thirdTurnId, item: { type: "userMessage" } },
+          { turnId: thirdTurnId, item: { type: "agentMessage" } },
+        ],
+      },
+    });
+    expect(session.snapshotReads).toBe(1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 17,
+      method: "thread/resume",
+      params: {
+        threadId,
+        excludeTurns: true,
+        initialTurnsPage: { limit: 1, itemsView: "summary" },
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 17)),
+    ).resolves.toMatchObject({
+      result: {
+        thread: { id: threadId, turns: [] },
+        initialTurnsPage: { data: [{ id: thirdTurnId }] },
+        turnsBackwardsCursor: expect.any(String),
+        itemsBackwardsCursor: expect.any(String),
+      },
+    });
+    expect(session.snapshotReads).toBe(2);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("selects an existing Pi Thread Model from ordered Session state", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -339,11 +563,80 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/thread/model/select",
       params: { threadId, model },
     });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 31))).resolves.toEqual({
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({
       id: 31,
-      result: { effectiveModel: model },
+      result: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "off",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     expect(fixture.adapter.sessions[0]?.state.effectiveModel).toEqual(model);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("selects a registered non-Pi Thread Model through its owning Session", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
+    const model = claude.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake Claude catalog has no secondary Model");
+
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({
+      id: 33,
+      result: { effectiveModel: model, effectiveThinkingOptionId: "off" },
+    });
+    expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
+    expect(pi.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("selects existing Thread Thinking from ordered complete Session state", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake catalog has no Off Thinking option");
+
+    writeRequest(fixture.desktopInput, {
+      id: 34,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 34)),
+    ).resolves.toMatchObject({
+      id: 34,
+      result: {
+        effectiveModel: fixture.adapter.catalog.defaultModel,
+        effectiveThinkingOptionId: "off",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+    expect(fixture.adapter.sessions[0]?.state.effectiveThinkingOptionId).toBe("off");
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -384,18 +677,35 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       error: { code: -32078, message: expect.stringContaining("active") },
     });
+    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake catalog has no Off Thinking option");
+    writeRequest(fixture.desktopInput, {
+      id: 36,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 36)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: expect.stringContaining("active") },
+    });
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
 
-  it("binds a selected Pi Model carrier to create and later Turn routing", async () => {
+  it("binds a selected Pi Model and Thinking carrier to create and later Turn routing", async () => {
     const fixture = createFixture();
     const model = fixture.adapter.catalog.models[1]?.ref;
     if (!model) throw new Error("Fake catalog has no secondary Model");
-    const carrier = encodePiTransportModel(model);
+    const low = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
+    if (!low) throw new Error("Fake catalog has no Low Thinking option");
+    const carrier = encodePiTransportModel(model, low);
     const threadId = await startPiThread(fixture, carrier);
 
-    expect(fixture.adapter.sessions[0]?.initialState.effectiveModel).toEqual(model);
+    expect(fixture.adapter.sessions[0]?.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: low,
+    });
     expect(
       (fixture.collector.messages.find((message) => requestId(message, 1))?.result as JsonObject)
         .model,
@@ -472,6 +782,148 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("orders early and terminal Usage updates and replays current Usage after thread/read", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.publishUsageOnNextTurn({
+      totalTokens: 30,
+      contextUsedTokens: 20,
+      contextWindowTokens: 100,
+    });
+
+    const turnId = await startPiTurn(fixture, threadId, 2);
+    const earlyUsage = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        messageParams(message).threadId === threadId,
+    );
+    expect(earlyUsage).toMatchObject({
+      params: {
+        threadId,
+        turnId,
+        tokenUsage: {
+          total: { totalTokens: 30 },
+          last: { totalTokens: 20, inputTokens: 20 },
+          modelContextWindow: 100,
+        },
+      },
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 2));
+    const earlyUsageIndex = fixture.collector.messages.indexOf(earlyUsage);
+    expect(earlyUsageIndex).toBeGreaterThan(responseIndex);
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+    session.publishUsage(
+      { totalTokens: 44, contextUsedTokens: 25, contextWindowTokens: 100 },
+      hostTurnIdSchema.parse(turnId),
+    );
+    await vi.waitFor(() => {
+      expect(
+        fixture.collector.messages.filter(
+          (message) =>
+            method(message, "thread/tokenUsage/updated") &&
+            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
+              44,
+        ),
+      ).toHaveLength(1);
+    });
+    const terminalIndex = fixture.collector.messages.findIndex((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    const idleIndex = fixture.collector.messages.findIndex((message) =>
+      threadStatus(message, threadId, "idle"),
+    );
+    const terminalUsageIndex = fixture.collector.messages.findIndex(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
+    );
+    expect(idleIndex).toBeGreaterThan(terminalIndex);
+    expect(terminalUsageIndex).toBeGreaterThan(idleIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 3));
+    await vi.waitFor(() => {
+      expect(
+        fixture.collector.messages.filter(
+          (message) =>
+            method(message, "thread/tokenUsage/updated") &&
+            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
+              44,
+        ),
+      ).toHaveLength(2);
+    });
+    const readResponseIndex = fixture.collector.messages.findIndex((message) =>
+      requestId(message, 3),
+    );
+    const replayIndex = fixture.collector.messages.findLastIndex(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
+    );
+    expect(replayIndex).toBeGreaterThan(readResponseIndex);
+
+    const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(JSON.stringify(stored)).not.toMatch(/usage|cost|context/i);
+    await stopFixture(fixture);
+  });
+
+  it("keeps Usage isolated across registered Harness Threads", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 10);
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      11,
+    );
+    const piTurnId = await completePiTurn(fixture, piThreadId, 12, 0);
+    const claudeTurnId = await completePiTurn(
+      { ...fixture, adapter: claudeAdapter },
+      claudeThreadId,
+      13,
+      0,
+    );
+    piAdapter.sessions[0]?.publishUsage(
+      { totalTokens: 10, contextUsedTokens: 2, contextWindowTokens: 100 },
+      hostTurnIdSchema.parse(piTurnId),
+    );
+    claudeAdapter.sessions[0]?.publishUsage(
+      { totalTokens: 90, contextUsedTokens: 70, contextWindowTokens: 200 },
+      hostTurnIdSchema.parse(claudeTurnId),
+    );
+
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/tokenUsage/updated") &&
+          messageParams(message).threadId === piThreadId,
+      ),
+    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 10 } } } });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/tokenUsage/updated") &&
+          messageParams(message).threadId === claudeThreadId,
+      ),
+    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 90 } } } });
+    await stopFixture(fixture);
+  });
+
   it("forks external inclusive, exclusive, and tail boundaries without reusing Host Turn IDs", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -494,7 +946,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       return result.thread as JsonObject;
     };
 
-    const inclusive = await forkRequest(10, { lastTurnId: sourceTurnIds[0] });
+    const inclusive = await forkRequest(10, {
+      lastTurnId: sourceTurnIds[0],
+      cwd: "/synthetic-worktree/inclusive",
+      runtimeWorkspaceRoots: ["/synthetic-worktree/inclusive", "/synthetic"],
+    });
     const exclusive = await forkRequest(11, { beforeTurnId: sourceTurnIds[1] });
     const tail = await forkRequest(12, {});
     const excluded = await forkRequest(13, { excludeTurns: true });
@@ -502,6 +958,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(inclusive).toMatchObject({
       forkedFromId: sourceThreadId,
       parentThreadId: null,
+      cwd: "/synthetic-worktree/inclusive",
       turns: [expect.objectContaining({ status: "completed" })],
     });
     expect(exclusive.turns).toHaveLength(1);
@@ -534,6 +991,129 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("realizes Desktop Worktree tail-Fork plus rollback as one exact derived prefix", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const sourceThreadId = await startPiThread(fixture);
+    const sourceTurnIds = [
+      await completePiTurn(fixture, sourceThreadId, 2),
+      await completePiTurn(fixture, sourceThreadId, 3),
+      await completePiTurn(fixture, sourceThreadId, 4),
+    ];
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: {
+        threadId: sourceThreadId,
+        cwd: "/synthetic-worktree",
+        runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
+      },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(forkResponse.result).toMatchObject({
+      cwd: "/synthetic-worktree",
+      runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
+    });
+    const forkedThread = (forkResponse.result as JsonObject).thread as JsonObject;
+    const derivedId = forkedThread.id;
+    const initialDerivedTurns = forkedThread.turns as JsonObject[];
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    expect(forkedThread.cwd).toBe("/synthetic-worktree");
+    expect(initialDerivedTurns).toHaveLength(3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 2 },
+    });
+    const rollbackResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
+    const rolledBack = (rollbackResponse.result as JsonObject).thread as JsonObject;
+    expect(rolledBack).toMatchObject({
+      id: derivedId,
+      forkedFromId: sourceThreadId,
+      turns: [{ id: initialDerivedTurns[0]?.id, status: "completed" }],
+    });
+    const derivedRecord = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
+    expect(derivedRecord).toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-3" },
+      cwd: "/synthetic-worktree",
+      forkSource: { hostThreadId: sourceThreadId, hostTurnId: sourceTurnIds[0] },
+      turnMappings: [
+        {
+          hostTurnId: initialDerivedTurns[0]?.id,
+          nativeTurnRef: { nativeSessionId: "fake-session-3" },
+          nativeCheckpointRef: { nativeSessionId: "fake-session-3" },
+        },
+      ],
+    });
+    expect(fixture.adapter.sessions[0]?.cwd).toBe("/synthetic");
+    expect(fixture.adapter.sessions[1]?.cwd).toBe("/synthetic-worktree");
+    expect(fixture.adapter.sessions[2]?.cwd).toBe("/synthetic-worktree");
+    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}] },
+    });
+
+    await completePiTurn(fixture, derivedId, 20, 2);
+    await completePiTurn(fixture, sourceThreadId, 21, 0);
+    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}, {}] },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects rollback when an external Thread is not an untouched derived prefix", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId: sourceThreadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    await completePiTurn(fixture, derivedId, 12, 1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 13,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 13)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    expect(fixture.adapter.sessions).toHaveLength(2);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("commits excluded Fork mappings before a later thread/read", async () => {
     const fixture = createFixture();
     const sourceThreadId = await startPiThread(fixture);
@@ -559,9 +1139,82 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reads and updates persisted external metadata without restoring history", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-metadata-test-"));
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const opened = await adapter.open({ kind: "create", cwd: "/persisted" });
+    if (!opened.ok || !opened.value.initialState.nativeRef) {
+      throw new Error("Fake persisted Session was not created");
+    }
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake persisted Session was not opened");
+    const threadId = hostThreadIdSchema.parse("metadata-thread");
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await store.createProvisional({
+      hostThreadId: threadId,
+      createRequestId: "metadata-create",
+      harnessId: adapter.harnessId,
+      cwd: "/persisted",
+      title: "Before",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    await store.commitReady({
+      hostThreadId: threadId,
+      nativeSessionRef: opened.value.initialState.nativeRef,
+    });
+    await store.close();
+
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      mappingStoreDirectory: directory,
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 51,
+      method: "thread/name/set",
+      params: { threadId, name: "After" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 51))).resolves.toEqual({
+      id: 51,
+      result: {},
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 52,
+      method: "thread/read",
+      params: { threadId, includeTurns: false },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 52)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, name: "After", turns: [] } } });
+    writeRequest(fixture.desktopInput, {
+      id: 53,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 53)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(source.snapshotReads).toBe(0);
+    expect(adapter.sessions).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("restores Store-owned external read, resume, and Fork on demand", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-restart-test-"));
-    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      undefined,
+      undefined,
+      { totalTokens: 77, contextUsedTokens: 33, contextWindowTokens: 200 },
+    );
     const opened = await adapter.open({ kind: "create", cwd: "/persisted" });
     if (!opened.ok) throw new Error(opened.error.message);
     const source = opened.value;
@@ -628,6 +1281,20 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    const restoredUsage = await fixture.collector.waitFor((message) =>
+      method(message, "thread/tokenUsage/updated"),
+    );
+    expect(restoredUsage).toMatchObject({
+      params: {
+        threadId,
+        turnId: persistedTurnId,
+        tokenUsage: { total: { totalTokens: 77 }, modelContextWindow: 200 },
+      },
+    });
+    expect(fixture.collector.messages.indexOf(restoredUsage)).toBeGreaterThan(
+      fixture.collector.messages.findIndex((message) => requestId(message, 60)),
+    );
+    expect(fakeSource.snapshotReads).toBe(2);
 
     writeRequest(fixture.desktopInput, {
       id: 61,
@@ -647,19 +1314,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 62,
       method: "thread/fork",
-      params: { threadId, lastTurnId: persistedTurnId },
+      params: {
+        threadId,
+        lastTurnId: persistedTurnId,
+        cwd: "/persisted-worktree",
+        runtimeWorkspaceRoots: ["/persisted-worktree", "/persisted"],
+      },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 62)),
-    ).resolves.toMatchObject({
+    const restartedFork = await fixture.collector.waitFor((message) => requestId(message, 62));
+    expect(restartedFork).toMatchObject({
       result: {
+        cwd: "/persisted-worktree",
         thread: {
           id: expect.not.stringMatching(/^persisted-thread$/u),
+          cwd: "/persisted-worktree",
           forkedFromId: threadId,
           turns: [{ status: "completed" }],
         },
       },
     });
+    const restartedDerivedId = ((restartedFork.result as JsonObject).thread as JsonObject).id;
+    if (typeof restartedDerivedId !== "string") throw new Error("Restarted Fork has no ID");
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(restartedDerivedId)),
+    ).resolves.toMatchObject({ cwd: "/persisted-worktree" });
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -673,6 +1351,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         threadId: "official-thread",
         lastTurnId: "one",
         beforeTurnId: "two",
+        cwd: "official-relative-worktree",
+        runtimeWorkspaceRoots: ["official-relative-worktree"],
         extraOfficialField: { keep: true },
       },
     };
@@ -688,6 +1368,35 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(forwarded).resolves.toEqual(request);
     await expect(fixture.collector.waitFor((message) => requestId(message, 90))).resolves.toEqual({
       id: 90,
+      result: {},
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards an unknown Codex thread/rollback frame unchanged", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 91,
+      method: "thread/rollback",
+      params: {
+        threadId: "official-thread",
+        numTurns: "official-shape-is-transparent",
+        extraOfficialField: { keep: true },
+      },
+    };
+    const forwarded = new Promise<JsonObject>((resolve) => {
+      fixture.official.stdin.once("data", (chunk: Buffer) => {
+        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
+        resolve(value);
+        fixture.official.stdout.write(`${JSON.stringify({ id: 91, result: {} })}\n`);
+      });
+    });
+    writeRequest(fixture.desktopInput, request);
+
+    await expect(forwarded).resolves.toEqual(request);
+    await expect(fixture.collector.waitFor((message) => requestId(message, 91))).resolves.toEqual({
+      id: 91,
       result: {},
     });
     expect(fixture.adapter.sessions).toHaveLength(0);
@@ -738,6 +1447,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
         params: { lastTurnId: firstTurnId, beforeTurnId: firstTurnId },
         code: -32602,
       },
+      { id: 14, params: { cwd: "relative-worktree" }, code: -32602 },
+      {
+        id: 15,
+        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["relative-root"] },
+        code: -32602,
+      },
+      {
+        id: 16,
+        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["/source-only"] },
+        code: -32602,
+      },
     ];
     for (const invalid of invalidForks) {
       writeRequest(fixture.desktopInput, {
@@ -750,6 +1470,31 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ).resolves.toMatchObject({ error: { code: invalid.code } });
     }
     expect(fixture.adapter.sessions).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects a changed Fork cwd when the Adapter supports only source-cwd Fork", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"), undefined, true, false);
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: {
+        threadId,
+        cwd: "/synthetic-worktree",
+        runtimeWorkspaceRoots: ["/synthetic-worktree"],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    expect(adapter.sessions).toHaveLength(1);
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -818,6 +1563,64 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: "invalidState" },
     });
     await expect(mappingStore.listThreads()).resolves.toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("keeps the temporary derived Session authoritative when rollback commit fails", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-failure-"));
+    let failRollbackCommit = false;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (failRollbackCommit && record.state === "ready" && record.turnMappings.length === 1) {
+          throw new Error("synthetic rollback commit failure");
+        }
+      },
+    });
+    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    await completePiTurn(fixture, sourceThreadId, 4);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    const before = await mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
+    failRollbackCommit = true;
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 2 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ error: { code: -32081 } });
+    await expect(mappingStore.getThread(hostThreadIdSchema.parse(derivedId))).resolves.toEqual(
+      before,
+    );
+    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}] },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "thread/read",
+      params: { threadId: derivedId, includeTurns: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 12)),
+    ).resolves.toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
     await stopFixture(fixture);
   });
 
@@ -1460,7 +2263,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects Pi Model selection for a Claude-owned Thread", async () => {
+  it("rejects Model selection when the owning Claude Session does not support it", async () => {
     const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
     const fixture = createFixture({
@@ -1472,6 +2275,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, 20);
     const model = piAdapter.catalog.defaultModel;
     if (!model) throw new Error("Fake Pi catalog has no default Model");
+    const claudeSession = claudeAdapter.sessions[0];
+    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
+    claudeSession.capabilities.configuration.selectModel = false;
 
     writeRequest(fixture.desktopInput, {
       id: 21,
@@ -1484,12 +2290,27 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       error: {
         code: -32078,
-        message: "Model selection requires a current-process Pi Thread",
+        message: "External Harness does not support Model selection",
       },
     });
-    expect(claudeAdapter.sessions[0]?.state.effectiveModel).toEqual(
-      claudeAdapter.catalog.defaultModel,
-    );
+    expect(claudeSession.state.effectiveModel).toEqual(claudeAdapter.catalog.defaultModel);
+
+    const off = claudeAdapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake Claude catalog has no Thinking option");
+    claudeSession.capabilities.configuration.selectThinkingOption = false;
+    writeRequest(fixture.desktopInput, {
+      id: 22,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 22)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: "External Harness does not support Thinking selection",
+      },
+    });
     await stopFixture(fixture);
   });
 
@@ -1551,6 +2372,75 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 8,
       result: {},
     });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards Codex-owned history pagination without opening a Pi Session", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 8,
+      method: "thread/turns/list",
+      params: {
+        threadId: "official-thread",
+        cursor: "official-cursor",
+        limit: 7,
+        sortDirection: "desc",
+        itemsView: "summary",
+        extraOfficialField: { keep: true },
+      },
+    };
+    const forwarded = new Promise<JsonObject>((resolve) => {
+      fixture.official.stdin.once("data", (chunk: Buffer) => {
+        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
+        resolve(value);
+        fixture.official.stdout.write(`${JSON.stringify({ id: 8, result: { data: [] } })}\n`);
+      });
+    });
+
+    writeRequest(fixture.desktopInput, request);
+    await expect(forwarded).resolves.toEqual(request);
+    await expect(fixture.collector.waitFor((message) => requestId(message, 8))).resolves.toEqual({
+      id: 8,
+      result: { data: [] },
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards official Codex Usage notifications without external projection", async () => {
+    const fixture = createFixture();
+    const notification = {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "official-thread",
+        turnId: "official-turn",
+        tokenUsage: {
+          total: {
+            totalTokens: 11,
+            inputTokens: 5,
+            cachedInputTokens: 1,
+            cacheWriteInputTokens: 0,
+            outputTokens: 5,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 4,
+            inputTokens: 4,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 100,
+        },
+      },
+    };
+    fixture.official.stdout.write(`${JSON.stringify(notification)}\n`);
+
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated")),
+    ).resolves.toEqual(notification);
     expect(fixture.adapter.sessions).toHaveLength(0);
     await stopFixture(fixture);
   });

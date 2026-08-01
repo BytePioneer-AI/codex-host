@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   harnessIdSchema,
+  harnessModelCatalogSchema,
   harnessModelRefSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
@@ -539,6 +540,37 @@ describe("minimal Harness text Session", () => {
         event: {
           type: "session.state.changed",
           state: { effectiveModel: model },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    await session.close();
+  });
+
+  it("keeps selectable aliases distinct from runtime-resolved Model display", async () => {
+    const defaultRef = harnessModelRefSchema.parse({ id: "fake-model-v1.default" });
+    const aliasRef = harnessModelRefSchema.parse({ id: "fake-model-v1.alias" });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        { ref: defaultRef, label: "Default", resolvedModelLabel: "runtime-custom" },
+        { ref: aliasRef, label: "Family alias", resolvedModelLabel: "runtime-custom" },
+      ],
+      defaultModel: defaultRef,
+      thinkingOptions: [],
+    });
+    const session = new FakeHarnessSession(harnessIdSchema.parse("fake"), catalog);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    expect(session.initialState).toMatchObject({
+      effectiveModel: defaultRef,
+      resolvedModelLabel: "runtime-custom",
+    });
+    const selecting = session.execute({ type: "model.select", model: aliasRef });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: { effectiveModel: aliasRef, resolvedModelLabel: "runtime-custom" },
         },
       },
     });

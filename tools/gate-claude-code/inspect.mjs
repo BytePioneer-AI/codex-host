@@ -18,8 +18,6 @@ export function runInspectScenario() {
     const checks = {
       versionParsed: /^\d+\.\d+\.\d+$/u.test(inspection.summary.cliVersion),
       sdkVersionParsed: /^\d+\.\d+\.\d+$/u.test(inspection.summary.sdkVersion),
-      sdkCliCompatibilityMatched:
-        inspection.summary.cliVersion === inspection.summary.claudeCodeVersion,
       authenticationAvailable: inspection.summary.auth.loggedIn,
     };
     const result = scenarioResult({
@@ -33,6 +31,8 @@ export function runInspectScenario() {
         cliVersion: inspection.summary.cliVersion,
         sdkVersion: inspection.summary.sdkVersion,
         sdkClaudeCodeVersion: inspection.summary.claudeCodeVersion,
+        sdkCliCompatibilityMatched:
+          inspection.summary.cliVersion === inspection.summary.claudeCodeVersion,
         authAvailable: inspection.summary.auth.loggedIn,
         authMethod: inspection.summary.auth.authMethod,
         apiProvider: inspection.summary.auth.apiProvider,

@@ -45,5 +45,10 @@ export function writeLocalJson(repositoryRoot, outputPath, value) {
 }
 
 export function removeSyntheticProject(workspace) {
-  fs.rmSync(workspace.cwd, { recursive: true, force: true });
+  fs.rmSync(workspace.cwd, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 20 : 0,
+    retryDelay: 100,
+  });
 }

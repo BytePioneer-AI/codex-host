@@ -115,6 +115,14 @@ describe("AppServerHost hermetic Claude projection", () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => `claude-hermetic-${++uuid}`,
       inspectInstallation: () => undefined,
+      createInspector: () => ({
+        inspect: async () => ({
+          models: [{ value: "default", displayName: "Default" }],
+          currentModel: "hermetic-model",
+          canSelectModel: true,
+        }),
+        close: async () => undefined,
+      }),
       readSessionMessages: async ({ sessionId }) => {
         if (sessionId !== nativeSessionId || !nativeTurnKey) return [];
         return [
@@ -141,7 +149,12 @@ describe("AppServerHost hermetic Claude projection", () => {
         return {
           sessionId: input.sessionId,
           start: async () => undefined,
-          getContextUsage: async () => ({ usedTokens: 30, maxTokens: 200 }),
+          getContextUsage: async () => ({
+            usedTokens: 30,
+            maxTokens: 200,
+            model: "hermetic-model",
+          }),
+          setModel: async () => undefined,
           runTurn: async (_text, userMessageId, onEvent) => {
             nativeTurnKey = userMessageId;
             onEvent({ type: "text.delta", delta: "hermetic response" });

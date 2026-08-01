@@ -35,12 +35,21 @@ function readyBinding() {
 
 describe("Renderer Control Session", () => {
   it("activates at least one live Electron window through the main Inspector", async () => {
-    const inspector = { evaluate: vi.fn(async () => 2) };
+    const evaluate = vi.fn<(expression: string) => Promise<number>>(async () => 2);
+    const inspector = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return (await evaluate(expression)) as unknown as T;
+      },
+    };
     await expect(activateElectronDesktop(inspector)).resolves.toBe(2);
-    expect(inspector.evaluate).toHaveBeenCalledWith(expect.stringContaining("window.focus()"));
-    await expect(activateElectronDesktop({ evaluate: vi.fn(async () => 0) })).rejects.toThrow(
-      "found no live window",
-    );
+    expect(evaluate).toHaveBeenCalledWith(expect.stringContaining("window.focus()"));
+    await expect(
+      activateElectronDesktop({
+        async evaluate<T>(): Promise<T> {
+          return 0 as unknown as T;
+        },
+      }),
+    ).rejects.toThrow("found no live window");
   });
 
   it("selects the populated primary window even when an overlay is larger", () => {

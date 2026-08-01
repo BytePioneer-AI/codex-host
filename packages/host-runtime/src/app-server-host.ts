@@ -828,6 +828,9 @@ export class AppServerHost {
             ...(resolution.thread.stateObserver.state.effectiveModel
               ? { effectiveModel: resolution.thread.stateObserver.state.effectiveModel }
               : {}),
+            ...(resolution.thread.stateObserver.state.resolvedModelLabel
+              ? { resolvedModelLabel: resolution.thread.stateObserver.state.resolvedModelLabel }
+              : {}),
             ...(resolution.thread.stateObserver.state.effectiveThinkingOptionId
               ? {
                   effectiveThinkingOptionId:
@@ -907,6 +910,7 @@ export class AppServerHost {
       const state = await thread.stateObserver.waitForChange(beforeRevision);
       const projected = harnessModelSelectionStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
         ...(state.effectiveThinkingOptionId
           ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
           : {}),
@@ -964,6 +968,7 @@ export class AppServerHost {
       const state = await thread.stateObserver.waitForChange(beforeRevision);
       const projected = harnessModelSelectionStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
         ...(state.effectiveThinkingOptionId
           ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
           : {}),
@@ -1438,6 +1443,12 @@ export class AppServerHost {
       requestedSelection = decodeExternalTransportSelection(thread.harnessId, params.model);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    if (typeof params.model === "string" && requestedSelection === null) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Turn Model carrier does not belong to the Thread Harness"),
+      );
       return;
     }
     const requestedModel = requestedSelection?.model;

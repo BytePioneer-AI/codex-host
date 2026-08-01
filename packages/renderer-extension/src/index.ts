@@ -36,12 +36,15 @@ export type {
 } from "./renderer-binding-probe.js";
 export {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
+  CLAUDE_CODE_TRANSPORT_MODEL_PREFIX,
+  claudeTransportModelId,
   decorateThreadStartParams,
   describePrewarmTargets,
   findActivePrewarmTargets,
   findComposerModelTarget,
   findPrewarmTargets,
   installCurrentRendererAdapter,
+  isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   isPiTransportModelId,
@@ -66,7 +69,7 @@ export type {
   RendererAdapterState,
   RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
-export type { PiModelControlView } from "./renderer-composer-dom.js";
+export type { ExternalModelControlView, PiModelControlView } from "./renderer-composer-dom.js";
 export {
   RendererSettingsNavigationState,
   RendererSettingsPageScope,

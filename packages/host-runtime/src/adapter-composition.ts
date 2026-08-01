@@ -6,6 +6,18 @@ import type { ExternalHarnessId } from "@codexhost/protocol-core";
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 
+type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
+
+export async function prefetchClaudeCodeModelCatalog(
+  adapters: ReadonlyMap<ExternalHarnessId, InspectableHarnessAdapter>,
+): Promise<void> {
+  try {
+    await adapters.get("claude-code")?.inspect();
+  } catch {
+    // Startup prefetch must not affect official Codex or another Harness.
+  }
+}
+
 export function createExternalHarnessAdapters(
   environment: NodeJS.ProcessEnv,
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {

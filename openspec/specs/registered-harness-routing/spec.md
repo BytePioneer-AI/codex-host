@@ -4,19 +4,23 @@
 TBD - created by archiving change implement-registered-harness-text-vertical-slice. Update Purpose after archive.
 ## Requirements
 ### Requirement: External Harness create routing uses a finite Protocol Core registry
-Protocol Core SHALL decode official Codex Models and the finite native transport tokens for Pi and Claude Code. Each external token SHALL identify one external Harness ID without exposing Adapter implementation or native Model configuration.
+Protocol Core SHALL decode official Codex Models and the finite native transport carriers for Pi and Claude Code. Each external carrier SHALL identify one external Harness ID and MAY carry only that Harness's bounded opaque Model Ref according to its registered format, without exposing Adapter implementation or native Model configuration.
 
 #### Scenario: Pi transport token is decoded
-- **WHEN** `thread/start.model` is `codexhost/pi-native`
-- **THEN** Protocol Core SHALL route the create to external Harness `pi`
+- **WHEN** `thread/start.model` is `codexhost/pi-native` or a valid selected Pi carrier
+- **THEN** Protocol Core routes the create to external Harness `pi` and preserves any opaque Pi Model/Thinking selection
 
 #### Scenario: Claude transport token is decoded
-- **WHEN** `thread/start.model` is `codexhost/claude-code-native`
-- **THEN** Protocol Core SHALL route the create to external Harness `claude-code`
+- **WHEN** `thread/start.model` is `codexhost/claude-code-native` or that token plus one valid opaque Claude Model Ref
+- **THEN** Protocol Core routes the create to external Harness `claude-code` and preserves only the optional opaque Model Ref
+
+#### Scenario: Malformed Claude carrier is received
+- **WHEN** a Claude-prefixed carrier has an empty, oversized, extra, or invalid Model component
+- **THEN** Protocol Core rejects the external create explicitly and does not classify it as official Codex traffic
 
 #### Scenario: Official Model is decoded
-- **WHEN** `thread/start.model` is not a registered external transport token
-- **THEN** Protocol Core SHALL classify it as official Codex Model traffic without altering the Model value
+- **WHEN** `thread/start.model` is not a registered external transport carrier
+- **THEN** Protocol Core classifies it as official Codex Model traffic without altering the Model value
 
 ### Requirement: Host owns external Threads through registered HarnessAdapters
 Host Runtime SHALL route all external create, turn, interrupt, read, rename, delete, output, fault, and close operations through one external Thread implementation keyed by Harness ID. It MUST NOT contain Pi RPC or Claude SDK event mapping.
@@ -112,17 +116,22 @@ Host Runtime SHALL dispatch Harness inspection through the requested registered 
 - **AND** it SHALL NOT execute a Model command or invoke another Adapter
 
 ### Requirement: Protocol Core owns finite transport Model decoding
-Protocol Core SHALL decode Desktop transport Model carriers for each finite external Harness and SHALL return only an opaque Harness Model Ref, no override, or a non-matching result to Host Runtime. Host Runtime MUST NOT parse Pi Model carrier prefixes.
+Protocol Core SHALL decode Desktop transport Model carriers for each finite external Harness and SHALL return only an opaque Harness Model Ref, optional supported configuration values, no override, or a non-matching result to Host Runtime. Host Runtime MUST NOT parse Pi or Claude Model carrier prefixes.
 
 #### Scenario: Pi selected carrier reaches a Pi Thread
 - **WHEN** an existing Pi Thread receives a valid selected Pi transport Model carrier
-- **THEN** Protocol Core SHALL return its opaque Harness Model Ref
-- **AND** generic Host routing SHALL apply or verify that Ref through the owning Session
+- **THEN** Protocol Core returns its opaque Harness Model Ref and optional Thinking selection
+- **AND** generic Host routing applies or verifies that configuration through the owning Session
+
+#### Scenario: Claude selected carrier reaches a Claude Thread
+- **WHEN** an existing Claude Thread receives a valid Claude transport carrier containing one Model Ref
+- **THEN** Protocol Core returns that opaque Ref without decoding the Claude SDK value
+- **AND** generic Host routing applies or verifies it through the owning Claude Session
 
 #### Scenario: Foreign carrier reaches an external Thread
 - **WHEN** an external Thread receives a transport Model carrier that does not belong to its Harness
-- **THEN** Protocol Core SHALL report that the carrier does not match
-- **AND** Host SHALL NOT reinterpret it as a Harness Model Ref
+- **THEN** Protocol Core reports that the carrier does not match
+- **AND** Host does not reinterpret it as a Harness Model Ref
 
 ### Requirement: Composition root exclusively constructs concrete Adapters
 The production composition root SHALL construct concrete Pi and development-gated Claude Adapters and SHALL inject the complete external Adapter registry into AppServerHost. AppServerHost SHALL depend on HarnessAdapter and MUST NOT import or construct PiAdapter or ClaudeCodeAdapter.
@@ -188,3 +197,16 @@ Host Runtime MUST 从所属且已注册的 `HarnessSession` 消费规范化 Usag
 - **WHEN** 已接受外部 Turn 的 Usage 在 `turn/start` Response 写出之前可用
 - **THEN** 通用 Host 路由 MUST 保持 response-before-notification 顺序
 - **AND** Host MUST NOT 要求 Harness 专用 Response gate
+
+### Requirement: Claude create configuration remains request-scoped
+Host Runtime SHALL pass a Claude Model Ref decoded from the exact `thread/start.model` carrier only to that create's `ClaudeCodeAdapter.open(create)` input. It MUST NOT retain a process-level next Model, parse the Ref, or use a failed Claude configuration as a reason to route the request to Codex or Pi.
+
+#### Scenario: Two Claude drafts select different Models
+- **WHEN** two Claude Composer creates carry different valid Model Refs
+- **THEN** Host opens each Claude Session with only its own Ref
+- **AND** neither create consumes or overwrites the other selection
+
+#### Scenario: Claude create Model becomes unavailable
+- **WHEN** Claude Code rejects the selected Model during lazy first-Turn initialization
+- **THEN** the owning Claude Turn fails explicitly
+- **AND** the Thread remains Claude-owned without fallback to another Harness

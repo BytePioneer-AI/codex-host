@@ -81,6 +81,7 @@ export type OpenSessionInput = CreateSessionInput | ResumeSessionInput | ForkSes
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;
   effectiveModel?: HarnessModelRef;
+  resolvedModelLabel?: string;
   effectiveThinkingOptionId?: HarnessThinkingOptionId;
   availableThinkingOptions?: HarnessThinkingOption[];
 }

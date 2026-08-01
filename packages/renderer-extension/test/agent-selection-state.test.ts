@@ -313,6 +313,29 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.get(newDefault).piThinkingOptionId).toBeUndefined();
   });
 
+  it("isolates Claude and Pi Model state across one logical Composer lifecycle", async () => {
+    const draft = {};
+    const conversation = {};
+    const revisit = {};
+    const newDefault = {};
+    const agents = controller();
+    const piModel = harnessModelRefSchema.parse({ id: "pi-model-v1.isolated" });
+    const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.isolated" });
+
+    agents.mount(draft, ["default"]);
+    agents.setExternalModel(draft, "pi", piModel);
+    agents.setExternalModel(draft, "claude-code", claudeModel);
+    expect(agents.modelForAgent(draft, "pi")).toEqual(piModel);
+    expect(agents.modelForAgent(draft, "claude-code")).toEqual(claudeModel);
+    expect(agents.transfer(draft, conversation, ["conversation", "claude-thread"])).toBe(true);
+    agents.mount(revisit, ["conversation", "claude-thread"]);
+    expect(agents.get(revisit)).toMatchObject({ piModel, claudeModel });
+
+    agents.mount(newDefault, ["default"]);
+    expect(agents.modelForAgent(newDefault, "pi")).toBeUndefined();
+    expect(agents.modelForAgent(newDefault, "claude-code")).toBeUndefined();
+  });
+
   it("applies the target Agent before clearing stale prewarm", async () => {
     const composer = {};
     const agents = controller();

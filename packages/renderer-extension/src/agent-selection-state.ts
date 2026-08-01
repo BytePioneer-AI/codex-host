@@ -11,6 +11,7 @@ export interface DraftComposerState {
   composerId: string;
   piModel?: HarnessModelRef;
   piThinkingOptionId?: HarnessThinkingOptionId;
+  claudeModel?: HarnessModelRef;
 }
 
 type MutableComposerState = DraftComposerState;
@@ -125,20 +126,36 @@ export class DraftAgentController<Composer extends object> {
   restore(
     composer: Composer,
     agent: RendererAgent,
-    piModel?: HarnessModelRef,
-    piThinkingOptionId?: HarnessThinkingOptionId,
+    model?: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
     state.agent = agent;
     state.phase = "locked";
-    if (agent === "pi" && piModel) state.piModel = piModel;
-    else if (agent !== "pi") delete state.piModel;
-    if (agent === "pi" && piThinkingOptionId) {
-      state.piThinkingOptionId = piThinkingOptionId;
-    } else {
+    if (agent === "pi" && model) state.piModel = model;
+    if (agent === "claude-code" && model) state.claudeModel = model;
+    if (agent === "pi" && thinkingOptionId) {
+      state.piThinkingOptionId = thinkingOptionId;
+    } else if (agent === "pi") {
       delete state.piThinkingOptionId;
     }
+    return state;
+  }
+
+  modelForAgent(composer: Composer, agent: RendererAgent): HarnessModelRef | undefined {
+    const state = this.#state(composer);
+    return agent === "pi" ? state.piModel : agent === "claude-code" ? state.claudeModel : undefined;
+  }
+
+  setExternalModel(
+    composer: Composer,
+    agent: Exclude<RendererAgent, "codex">,
+    model: HarnessModelRef,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    if (agent === "pi") state.piModel = model;
+    else state.claudeModel = model;
     return state;
   }
 
@@ -155,9 +172,7 @@ export class DraftAgentController<Composer extends object> {
   }
 
   setPiModel(composer: Composer, model: HarnessModelRef): Readonly<DraftComposerState> {
-    const state = this.#state(composer);
-    state.piModel = model;
-    return state;
+    return this.setExternalModel(composer, "pi", model);
   }
 
   setPiThinkingOption(

@@ -16,7 +16,8 @@ import {
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
 export { CONTROL_ATTRIBUTE };
-export type PiModelControlView = RendererModelControlView;
+export type ExternalModelControlView = RendererModelControlView;
+export type PiModelControlView = ExternalModelControlView;
 export const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
 export const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
 
@@ -235,19 +236,22 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  modelView: PiModelControlView = { status: "idle" },
+  modelView: ExternalModelControlView = { status: "idle" },
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
     (model) => model.ref.id === selectedModel?.id,
   );
-  const availableThinkingOptions = thinkingOptionsForModel(modelView.catalog, selectedModel);
+  const availableThinkingOptions =
+    modelView.thinkingSelectionSupported === false
+      ? []
+      : thinkingOptionsForModel(modelView.catalog, selectedModel);
   const thinkingReady =
     availableThinkingOptions.length === 0 ||
     availableThinkingOptions.some(({ id }) => id === modelView.selectedThinkingOptionId);
   const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
   const modelBlocked =
-    state.agent === "pi" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
+    state.agent !== "codex" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
   const submissionBlocked = switching || modelBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
@@ -259,7 +263,7 @@ export function renderComposerAgentControl(
   const pickerView = renderRendererAgentPicker(control.picker, state, adapterState, switching);
   refreshNativeModelControl(control);
   setNativeModelControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
-  renderRendererModelPicker(control.modelPicker, modelView, state.agent === "pi");
+  renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

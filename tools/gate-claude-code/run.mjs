@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 import { runInspectScenario } from "./inspect.mjs";
+import { runModelCatalogScenario } from "./models.mjs";
 import { runWarmScenario } from "./warm.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -36,6 +37,13 @@ function inspect() {
   return result;
 }
 
+async function models() {
+  const result = await runModelCatalogScenario({ repositoryRoot });
+  print(result);
+  if (result.status !== "PASS") process.exitCode = result.status === "FAIL" ? 1 : 2;
+  return result;
+}
+
 async function warm() {
   const result = await runWarmScenario({ repositoryRoot });
   print(result);
@@ -48,6 +56,8 @@ async function gate() {
   if (process.exitCode) return;
   const inspection = inspect();
   if (inspection.status !== "PASS") return;
+  const catalog = await models();
+  if (catalog.status !== "PASS") return;
   await warm();
 }
 
@@ -59,9 +69,19 @@ switch (command) {
   case "inspect":
     inspect();
     break;
+  case "models":
+    await models();
+    break;
   case "warm":
     await warm();
     break;
+  case "model-live": {
+    const { runModelSwitchScenario } = await import("./model-live.mjs");
+    const result = await runModelSwitchScenario({ repositoryRoot });
+    print(result);
+    if (result.status !== "PASS") process.exitCode = result.status === "FAIL" ? 1 : 2;
+    break;
+  }
   case "live": {
     const { runLiveProfile } = await import("./live.mjs");
     const result = await runLiveProfile({ repositoryRoot, scenario });

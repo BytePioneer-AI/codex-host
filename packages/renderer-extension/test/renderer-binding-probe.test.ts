@@ -86,9 +86,22 @@ describe("Renderer Composer DOM behavior", () => {
         ],
         locked: true,
       }),
-    ).toEqual({ agent: "pi", piModel: model, piThinkingOptionId: thinkingOptionId });
+    ).toEqual({ agent: "pi", model, thinkingOptionId });
     expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
       agent: "codex",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "claude-code",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0",
+        effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" }),
+        resolvedModelLabel: "runtime-custom",
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "claude-code",
+      model: { id: "claude-model-v1.c29ubmV0" },
     });
     expect(() =>
       restoredThreadOwnership({
@@ -153,7 +166,7 @@ describe("Renderer Composer DOM behavior", () => {
         effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
         locked: true,
       }),
-    ).toEqual({ agent: "pi", piModel: model });
+    ).toEqual({ agent: "pi", model });
   });
 
   it("detects a conversation target that arrives after the Composer mounted", () => {

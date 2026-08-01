@@ -30,10 +30,13 @@ interface RequestManagerCandidate {
 }
 
 export interface RendererModelClient {
+  inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectPi(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
+  selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
+  selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectPiThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
 }
 
@@ -47,12 +50,29 @@ export function createRendererModelClient(
   const manager = managers[0];
   if (managers.length !== 1 || !manager) return null;
 
+  const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
+    const params = harnessInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
+    return harnessInspectionSchema.parse(result);
+  };
+  const selectThreadModel = async (
+    input: ThreadModelSelectParams,
+  ): Promise<HarnessModelSelectionState> => {
+    const params = threadModelSelectParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_MODEL_SELECT_METHOD, params);
+    return harnessModelSelectionStateSchema.parse(result);
+  };
+  const selectThreadThinking = async (
+    input: ThreadThinkingSelectParams,
+  ): Promise<HarnessModelSelectionState> => {
+    const params = threadThinkingSelectParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_THINKING_SELECT_METHOD, params);
+    return harnessModelSelectionStateSchema.parse(result);
+  };
+
   return Object.freeze({
-    async inspectPi(input: HarnessInspectParams): Promise<HarnessInspection> {
-      const params = harnessInspectParamsSchema.parse(input);
-      const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
-      return harnessInspectionSchema.parse(result);
-    },
+    inspectHarness,
+    inspectPi: inspectHarness,
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
@@ -72,17 +92,9 @@ export function createRendererModelClient(
       }
       return result;
     },
-    async selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState> {
-      const params = threadModelSelectParamsSchema.parse(input);
-      const result = await manager.sendRequest(THREAD_MODEL_SELECT_METHOD, params);
-      return harnessModelSelectionStateSchema.parse(result);
-    },
-    async selectPiThreadThinking(
-      input: ThreadThinkingSelectParams,
-    ): Promise<HarnessModelSelectionState> {
-      const params = threadThinkingSelectParamsSchema.parse(input);
-      const result = await manager.sendRequest(THREAD_THINKING_SELECT_METHOD, params);
-      return harnessModelSelectionStateSchema.parse(result);
-    },
+    selectThreadModel,
+    selectPiThreadModel: selectThreadModel,
+    selectThreadThinking,
+    selectPiThreadThinking: selectThreadThinking,
   });
 }

@@ -67,6 +67,46 @@ const { outputFiles } = await build({
         document.body.append(control.root);
         renderRendererModelPicker(control, view, true);
       };
+
+      globalThis.setupClaudeRendererModelPicker = () => {
+        const alias = { id: "claude-model-v1.alias" };
+        const concrete = { id: "claude-model-v1.concrete" };
+        const catalog = {
+          models: [
+            {
+              ref: alias,
+              label: "Family alias",
+              resolvedModelLabel: "Runtime custom",
+              supportedThinkingOptionIds: ["low", "high"],
+            },
+            {
+              ref: concrete,
+              label: "Runtime custom",
+              resolvedModelLabel: "Runtime custom",
+            },
+          ],
+          defaultModel: alias,
+          thinkingOptions: [
+            { id: "low", label: "Low" },
+            { id: "high", label: "High" },
+          ],
+        };
+        const view = {
+          status: "ready",
+          catalog,
+          selected: alias,
+          resolvedModelLabel: "Runtime custom",
+          thinkingSelectionSupported: false,
+        };
+        const control = mountRendererModelPicker(
+          "claude-composer",
+          undefined,
+          () => {},
+          () => {},
+        );
+        document.body.append(control.root);
+        renderRendererModelPicker(control, view, true);
+      };
     `,
     resolveDir: repositoryRoot,
     sourcefile: "renderer-model-picker-e2e-entry.ts",
@@ -122,4 +162,28 @@ test("selecting a Model keeps the main menu open and refreshes Thinking options"
       ),
     )
     .toEqual(["off", "high", "xhigh"]);
+});
+
+test("Claude aliases show actual runtime Model without exposing Thinking", async ({ page }) => {
+  await page.setContent(
+    '<!doctype html><body style="display:flex;align-items:flex-end;min-height:100vh;margin:0"></body>',
+  );
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupClaudeRendererModelPicker");
+    if (typeof setup !== "function") throw new Error("Claude Model picker setup is unavailable");
+    setup();
+  });
+
+  const root = page.locator('[data-codexhost-model-control="claude-composer"]');
+  const trigger = root.locator(':scope > button[aria-haspopup="menu"]');
+  await expect(trigger).toContainText("Family alias");
+  await expect(trigger).toContainText("Runtime custom");
+  await expect(trigger).toHaveAttribute("aria-label", /Family alias, Runtime custom/u);
+
+  await trigger.click();
+  await expect(root.locator("button[data-thinking-option-id]")).toHaveCount(0);
+  await root.locator("button[data-open-model-menu]").click();
+  await expect(root.locator("button[data-model-id]")).toHaveCount(2);
+  await expect(root).not.toContainText("claude-model-v1");
 });

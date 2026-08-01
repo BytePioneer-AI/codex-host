@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
+  claudeTransportModelId,
   decorateThreadStartParams,
   findPrewarmTargets,
+  isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   isPiTransportModelId,
@@ -96,6 +98,22 @@ describe("versioned Renderer Agent adapter", () => {
         { model: "official/model" },
         { ...lockedPi, model, thinkingOptionId },
       ),
+    ).toEqual({ model: selected });
+  });
+
+  it("encodes a selected Claude Model without a Thinking component", () => {
+    const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const selected = claudeTransportModelId(model);
+
+    expect(selected).toBe(`${CLAUDE_CODE_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(isClaudeTransportModelId(selected)).toBe(true);
+    expect(isClaudeTransportModelId(`${selected}@extra`)).toBe(false);
+    expect(modelSelectionForAgent(null, "high", "claude-code", model)).toEqual({
+      model: selected,
+      reasoningEffort: "high",
+    });
+    expect(
+      decorateThreadStartParams({ model: "official/model" }, { ...lockedClaudeCode, model }),
     ).toEqual({ model: selected });
   });
 

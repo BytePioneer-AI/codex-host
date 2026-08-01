@@ -77,6 +77,40 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     expect(view.thinkingOptions.map(({ id }) => id)).not.toContain("max");
   });
 
+  it("shows Claude runtime-resolved Model display without exposing Thinking controls", () => {
+    const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const claudeCatalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: claudeModel,
+          label: "Family alias",
+          resolvedModelLabel: "runtime-custom",
+          supportedThinkingOptionIds: ["low", "high"],
+        },
+      ],
+      defaultModel: claudeModel,
+      thinkingOptions: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
+    });
+
+    expect(
+      rendererModelPickerPresentation({
+        status: "ready",
+        catalog: claudeCatalog,
+        selected: claudeModel,
+        thinkingSelectionSupported: false,
+      }),
+    ).toEqual({
+      modelLabel: "Family alias",
+      resolvedModelLabel: "runtime-custom",
+      thinkingOptions: [],
+      showThinkingSection: false,
+      thinkingSelectionEnabled: false,
+    });
+  });
+
   it("does not reuse global Thinking options for a Model without a declared list", () => {
     const uninspectedCatalog = harnessModelCatalogSchema.parse({
       models: [{ ref: model, label: "provider / model" }],

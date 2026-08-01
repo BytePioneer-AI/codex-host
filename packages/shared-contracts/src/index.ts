@@ -4,6 +4,7 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export { codexhostErrorSchema } from "./errors.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
   HARNESS_MODEL_REF_MAX_LENGTH,
   HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
@@ -14,6 +15,7 @@ export {
   harnessModelRefSchema,
   harnessModelSchema,
   harnessModelSelectionStateSchema,
+  harnessResolvedModelLabelSchema,
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,

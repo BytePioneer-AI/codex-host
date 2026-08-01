@@ -1,3 +1,5 @@
+import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
+
 export type ClaudeTransportFailureKind =
   "authentication" | "cancellationUnproven" | "native" | "textConflict";
 
@@ -39,12 +41,14 @@ export type ClaudeTurnEvent =
 export interface ClaudeTransportContextUsage {
   usedTokens: number;
   maxTokens: number;
+  model: string;
 }
 
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  setModel(model?: string): Promise<void>;
   runTurn(
     text: string,
     userMessageId: string,
@@ -59,10 +63,21 @@ export interface ClaudeTransportFactoryInput {
   cwd: string;
   sessionId: string;
   openMode: "create" | "resume";
+  model?: string;
   onFault(error: unknown): void;
 }
 
+export interface ClaudeModelInspector {
+  inspect(): Promise<ClaudeModelInspectionSnapshot>;
+  close(): Promise<void>;
+}
+
+export interface ClaudeModelInspectorFactoryInput {
+  cwd: string;
+}
+
 export interface ClaudeAdapterDependencies {
+  createInspector(input: ClaudeModelInspectorFactoryInput): ClaudeModelInspector;
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
   inspectInstallation(): void;
   readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;

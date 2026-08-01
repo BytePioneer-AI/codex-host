@@ -18,4 +18,7 @@ windows = { version = "0.62.2", features = [
   "ApplicationModel",
   "Management_Deployment",
   "Storage_Search",
+  "Win32_Foundation",
+  "Win32_UI_Controls",
+  "Win32_UI_WindowsAndMessaging",
 ] }

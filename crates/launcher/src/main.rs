@@ -7,6 +7,7 @@ mod runtime_instance;
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
+use std::fmt::{self, Display, Formatter};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
@@ -28,7 +29,10 @@ use codexhost_platform::{
     desktop_root_process_ids, discover_codex_desktop, node_entrypoint_path, spawn_supervised,
 };
 #[cfg(target_os = "windows")]
-use codexhost_platform::{hide_console_window, show_error_dialog};
+use codexhost_platform::{
+    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
+    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
     endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
@@ -44,6 +48,18 @@ const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const START_MENU_ARGUMENT: &str = "--start-menu";
+const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
+
+#[derive(Debug)]
+struct UnmanagedDesktopConflict;
+
+impl Display for UnmanagedDesktopConflict {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(UNMANAGED_DESKTOP_MESSAGE)
+    }
+}
+
+impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
@@ -330,6 +346,48 @@ fn start_desktop_controller(
     Ok(controller)
 }
 
+#[cfg(target_os = "windows")]
+fn wait_for_launched_desktop_ownership(
+    desktop: &mut Child,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let desktop_pid = desktop.id();
+    let started = Instant::now();
+    loop {
+        let roots = desktop_root_process_ids()?;
+        if roots.iter().any(|process_id| *process_id != desktop_pid) {
+            if desktop.try_wait()?.is_none() {
+                let _ = desktop.kill();
+                let _ = desktop.wait();
+            }
+            return Err(Box::new(UnmanagedDesktopConflict));
+        }
+        if roots.contains(&desktop_pid) {
+            return Ok(());
+        }
+        if let Some(status) = desktop.try_wait()? {
+            return Err(format!(
+                "Codex Desktop exited before launch ownership was established: {status}"
+            )
+            .into());
+        }
+        if started.elapsed() >= timeout {
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+            return Err("Codex Desktop root did not appear before timeout".into());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn wait_for_launched_desktop_ownership(
+    _desktop: &mut Child,
+    _timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    Ok(())
+}
+
 #[cfg(not(target_os = "macos"))]
 fn wait_for_desktop_exit(
     desktop: &mut Child,
@@ -418,6 +476,7 @@ fn supervise_desktop(
         environment,
     )?;
     let desktop_pid = desktop.id();
+    wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
     let mut controller = match start_desktop_controller(options, control) {
         Ok(controller) => controller,
         Err(error) => {
@@ -494,60 +553,127 @@ fn desktop_environment(options: &ResolvedLaunchOptions) -> Vec<(OsString, OsStri
     environment
 }
 
-fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
+#[cfg(target_os = "windows")]
+fn windows_executable_key(path: &Path) -> String {
+    node_entrypoint_path(path)
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn force_stop_external_desktop(
+    installation: &DesktopInstallation,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let expected = windows_executable_key(&installation.desktop_executable);
+    let started = Instant::now();
+    loop {
+        let process_ids = desktop_process_ids()?;
+        if process_ids.is_empty() {
+            return Ok(());
+        }
+        for process_id in &process_ids {
+            let executable = match process_executable_path(*process_id) {
+                Ok(executable) => executable,
+                Err(_) if !process_exists(*process_id) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if windows_executable_key(&executable) != expected {
+                return Err(format!(
+                    "refusing to terminate Codex PID {process_id} because its executable identity changed"
+                )
+                .into());
+            }
+        }
+        for process_id in process_ids {
+            if let Err(error) = terminate_process_by_id(process_id)
+                && process_exists(process_id)
+            {
+                return Err(format!("could not terminate Codex PID {process_id}: {error}").into());
+            }
+        }
+        if started.elapsed() >= timeout {
+            return Err("Codex Desktop did not exit after forced restart".into());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(), Box<dyn Error>> {
     let options = options.resolve()?;
     let _launcher_guard = match acquire_launcher_ownership(Duration::from_secs(120))? {
         LauncherOwnership::Acquired(guard) => guard,
         LauncherOwnership::Attached => return Ok(()),
     };
     let installation = discover_codex_desktop()?;
-    let roots = desktop_root_process_ids()?;
-    let descriptor_path = default_descriptor_path()?;
-    let descriptor = read_descriptor(&descriptor_path).ok().flatten();
-    let descriptor_present = descriptor_path.exists();
-    let control_endpoint_ready = descriptor.as_ref().is_some_and(|descriptor| {
-        endpoint_ready(descriptor.control_port, Duration::from_millis(300))
-    });
-    let state = classify_startup(StartupObservation {
-        desktop_running: !roots.is_empty(),
-        descriptor_present,
-        control_endpoint_ready,
-    });
 
-    match state {
-        StartupState::RecoverStale => {
-            if let Some(descriptor) = &descriptor {
-                stop_stale_launcher(descriptor)?;
-                let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
-            } else if descriptor_present {
-                std::fs::remove_file(&descriptor_path)?;
+    loop {
+        let roots = desktop_root_process_ids()?;
+        let descriptor_path = default_descriptor_path()?;
+        let descriptor = read_descriptor(&descriptor_path).ok().flatten();
+        let descriptor_present = descriptor_path.exists();
+        let control_endpoint_ready = descriptor.as_ref().is_some_and(|descriptor| {
+            endpoint_ready(descriptor.control_port, Duration::from_millis(300))
+        });
+        let state = classify_startup(StartupObservation {
+            desktop_running: !roots.is_empty(),
+            descriptor_present,
+            control_endpoint_ready,
+        });
+
+        match state {
+            StartupState::RecoverStale => {
+                if let Some(descriptor) = &descriptor {
+                    stop_stale_launcher(descriptor)?;
+                    let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                } else if descriptor_present {
+                    std::fs::remove_file(&descriptor_path)?;
+                }
+            }
+            StartupState::Attach => {
+                #[cfg(target_os = "windows")]
+                if interactive_running_desktop {
+                    match prompt_running_desktop() {
+                        RunningDesktopChoice::Restart => {
+                            force_stop_external_desktop(&installation, Duration::from_secs(10))?;
+                            continue;
+                        }
+                        RunningDesktopChoice::Retry => continue,
+                        RunningDesktopChoice::Cancel => return Ok(()),
+                    }
+                }
+                return Err(Box::new(UnmanagedDesktopConflict));
+            }
+            StartupState::CleanLaunch => {
+                if descriptor_present && control_endpoint_ready {
+                    return Err(
+                        "codexhost control endpoint is still active without a live Desktop; retry after it exits"
+                            .into(),
+                    );
+                }
             }
         }
-        StartupState::Attach => {
-            return Err(
-                "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost"
-                    .into(),
-            );
-        }
-        StartupState::CleanLaunch => {
-            if descriptor_present && control_endpoint_ready {
-                return Err(
-                    "codexhost control endpoint is still active without a live Desktop; retry after it exits"
-                        .into(),
-                );
+
+        let environment = desktop_environment(&options);
+        let control = allocate_runtime_control()?;
+        let result = supervise_desktop(
+            &installation,
+            &options,
+            std::slice::from_ref(&control.inspector_argument),
+            &environment,
+            &control,
+        );
+        match result {
+            Err(error)
+                if interactive_running_desktop
+                    && error.downcast_ref::<UnmanagedDesktopConflict>().is_some() =>
+            {
+                continue;
             }
+            result => return result,
         }
     }
-
-    let environment = desktop_environment(&options);
-    let control = allocate_runtime_control()?;
-    supervise_desktop(
-        &installation,
-        &options,
-        std::slice::from_ref(&control.inspector_argument),
-        &environment,
-        &control,
-    )
 }
 
 fn default_launch_options() -> LaunchOptions {
@@ -564,10 +690,10 @@ fn default_launch_options() -> LaunchOptions {
 
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
-        None => launch(default_launch_options()),
-        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options()),
+        None => launch(default_launch_options(), false),
+        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") if arguments.len() == 1 => inspect(),
-        Some("launch") => launch(parse_launch_options(&arguments[1..])?),
+        Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         _ => {
             usage();
             Err("invalid launcher arguments".into())

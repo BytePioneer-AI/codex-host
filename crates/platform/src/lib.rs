@@ -28,7 +28,9 @@ pub use process::{
 pub use process::{desktop_process_tree, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "windows")]
-pub use windows_ui::{hide_console_window, show_error_dialog};
+pub use windows_ui::{
+    RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
+};
 
 pub const CRATE_NAME: &str = "codexhost-platform";
 pub const CODEX_CLI_PATH_ENV: &str = "CODEX_CLI_PATH";

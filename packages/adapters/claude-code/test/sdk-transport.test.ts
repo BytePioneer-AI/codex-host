@@ -7,6 +7,7 @@ import type { ClaudeTurnEvent } from "../src/transport.js";
 class FakeQuery {
   readonly initializationResult = vi.fn(async () => ({}));
   readonly interrupt = vi.fn(async () => undefined);
+  readonly getContextUsage = vi.fn(async () => ({ totalTokens: 40, maxTokens: 200 }));
   #closed = false;
   #messages: SDKMessage[] = [];
   #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
@@ -96,6 +97,28 @@ function questionInput() {
     ],
   };
 }
+
+describe("ClaudeSdkTransport context Usage", () => {
+  it("reads the stable Query context operation and rejects invalid observations", async () => {
+    const value = fixture();
+
+    await expect(value.transport.getContextUsage()).resolves.toBeNull();
+    expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
+
+    await value.transport.start();
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+    });
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({ totalTokens: -1, maxTokens: 0 });
+    await expect(value.transport.getContextUsage()).rejects.toThrow("invalid Token values");
+
+    value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
+    await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
+    await value.transport.close();
+  });
+});
 
 describe("ClaudeSdkTransport Question callbacks", () => {
   it("uses caller identity for create and the same Native Session for resume", async () => {

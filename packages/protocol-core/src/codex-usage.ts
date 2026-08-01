@@ -11,26 +11,36 @@ export function projectCodexThreadUsage(input: CodexThreadUsageProjectionInput):
   const { usage } = input;
   if (
     input.turnId === undefined ||
-    usage.totalTokens === undefined ||
     usage.contextUsedTokens === undefined ||
     usage.contextWindowTokens === undefined
   ) {
     return null;
   }
-  return {
-    method: "thread/tokenUsage/updated",
-    params: {
-      threadId: input.threadId,
-      turnId: input.turnId,
-      tokenUsage: {
-        total: {
+  const total =
+    usage.totalTokens === undefined
+      ? {
+          totalTokens: 0,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        }
+      : {
           totalTokens: usage.totalTokens,
           inputTokens: usage.inputTokens ?? 0,
           cachedInputTokens: usage.cachedInputTokens ?? 0,
           cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
           outputTokens: usage.outputTokens ?? 0,
           reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
-        },
+        };
+  return {
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: input.threadId,
+      turnId: input.turnId,
+      tokenUsage: {
+        total,
         last: {
           totalTokens: usage.contextUsedTokens,
           inputTokens: usage.contextUsedTokens,

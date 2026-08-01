@@ -36,9 +36,15 @@ export type ClaudeTurnEvent =
       reason: "responded" | "cancelled" | "superseded";
     };
 
+export interface ClaudeTransportContextUsage {
+  usedTokens: number;
+  maxTokens: number;
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   start(): Promise<void>;
+  getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   runTurn(
     text: string,
     userMessageId: string,

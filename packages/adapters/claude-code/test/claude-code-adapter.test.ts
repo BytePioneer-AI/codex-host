@@ -14,6 +14,7 @@ import type {
   ClaudeAdapterDependencies,
   ClaudeInteractionResponse,
   ClaudeQuestionRequest,
+  ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
   ClaudeTurnTransport,
@@ -23,6 +24,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
+  contextUsage: ClaudeTransportContextUsage | null = null;
+  readonly getContextUsage = vi.fn(
+    async (): Promise<ClaudeTransportContextUsage | null> => this.contextUsage,
+  );
   readonly respondToInteraction = vi.fn(async (response: ClaudeInteractionResponse) => {
     this.event({
       type: "interaction.closed",
@@ -102,6 +107,14 @@ async function openSession(adapter: ClaudeCodeAdapter): Promise<HarnessSession> 
   const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
   if (!opened.ok) throw new Error(opened.error.message);
   return opened.value;
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
 
 function textTurn(id: string) {
@@ -308,6 +321,96 @@ describe("Claude Code HarnessAdapter", () => {
       outcome: { status: "succeeded" },
     });
     await session.close();
+  });
+
+  it("publishes stable context Usage after the Turn terminal", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    expect(session.initialUsage).toBeNull();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 80, maxTokens: 200 };
+    transport.finish({ status: "succeeded" });
+
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-turn",
+      usage: { contextUsedTokens: 80, contextWindowTokens: 200 },
+    });
+    await session.close();
+  });
+
+  it("isolates failed context reads and discards a read invalidated by the next Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-failed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const stale = deferred<ClaudeTransportContextUsage | null>();
+    transport.getContextUsage.mockImplementationOnce(() => stale.promise);
+    await session.execute(textTurn("usage-stale"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.contextUsage = { usedTokens: 95, maxTokens: 300 };
+    await session.execute(textTurn("usage-current"));
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    stale.resolve({ usedTokens: 10, maxTokens: 100 });
+    await Promise.resolve();
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-current",
+      usage: { contextUsedTokens: 95, contextWindowTokens: 300 },
+    });
+    await session.close();
+  });
+
+  it("discards a pending context read when close begins", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-close"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    const pending = deferred<ClaudeTransportContextUsage | null>();
+    transport.getContextUsage.mockImplementationOnce(() => pending.promise);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const closing = session.close();
+    pending.resolve({ usedTokens: 30, maxTokens: 100 });
+    await closing;
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
   it("reuses one Transport and Native Session for sequential Turns", async () => {
@@ -645,6 +748,7 @@ describe("Claude Code HarnessAdapter", () => {
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
+        getContextUsage: async () => null,
         runTurn: async () => ({ status: "succeeded" }),
         respondToInteraction: async () => undefined,
         abort: async () => undefined,

@@ -80,6 +80,44 @@ describe("Codex Thread Usage projection", () => {
     });
   });
 
+  it("uses an aggregate-free carrier when only reliable context Usage is available", () => {
+    const usage = { contextUsedTokens: 35, contextWindowTokens: 200 };
+
+    expect(
+      projectCodexThreadUsage({
+        threadId: "thread-context-only",
+        turnId: hostTurnIdSchema.parse("turn-context-only"),
+        usage,
+      }),
+    ).toEqual({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-context-only",
+        turnId: "turn-context-only",
+        tokenUsage: {
+          total: {
+            totalTokens: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 35,
+            inputTokens: 35,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 200,
+        },
+      },
+    });
+    expect(usage).not.toHaveProperty("totalTokens");
+  });
+
   it("omits Usage without a reliable Host Turn", () => {
     expect(
       projectCodexThreadUsage({
@@ -90,7 +128,7 @@ describe("Codex Thread Usage projection", () => {
   });
 
   it.each([
-    { contextUsedTokens: 10, contextWindowTokens: 100 },
+    { totalTokens: 10 },
     { totalTokens: 10, contextWindowTokens: 100 },
     { totalTokens: 10, contextUsedTokens: 5 },
   ])("omits snapshots that cannot drive the reviewed carrier %#", (usage) => {

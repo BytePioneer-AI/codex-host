@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import {
   HarnessOutputChannel,
+  parseHostUsage,
   validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessError,
@@ -169,6 +170,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #readingHistory = false;
   #statePublished = false;
   #transport: ClaudeTurnTransport | null = null;
+  #usageGeneration = 0;
 
   constructor(
     cwd: string,
@@ -319,6 +321,7 @@ class ClaudeHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
     this.#publishState();
+    this.#usageGeneration += 1;
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
@@ -437,6 +440,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   async #close(): Promise<void> {
     if (this.#phase === "closed") return;
+    this.#usageGeneration += 1;
     if (this.#phase !== "faulted") this.#phase = "closing";
     const active = this.#active;
     if (active) {
@@ -565,6 +569,8 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #finishResult(active: ActiveTurn, result: ClaudeTransportTurnResult): void {
+    if (this.#active !== active) return;
+    const transport = this.#transport;
     if (result.status === "succeeded") {
       this.#finish(active, { status: "succeeded" });
     } else if (result.status === "cancelled") {
@@ -572,6 +578,31 @@ class ClaudeHarnessSession implements HarnessSession {
     } else {
       this.#finishFailed(active, transportFailure(result.kind));
     }
+    if (transport && this.#phase === "open") {
+      this.#refreshUsage(transport, active.command.turnId);
+    }
+  }
+
+  #refreshUsage(transport: ClaudeTurnTransport, turnId: TurnStartCommand["turnId"]): void {
+    const generation = ++this.#usageGeneration;
+    void transport
+      .getContextUsage()
+      .then((context) => {
+        if (
+          context === null ||
+          this.#phase !== "open" ||
+          this.#transport !== transport ||
+          this.#usageGeneration !== generation
+        ) {
+          return;
+        }
+        const usage = parseHostUsage({
+          contextUsedTokens: context.usedTokens,
+          contextWindowTokens: context.maxTokens,
+        });
+        this.#event({ type: "session.usage.changed", observedForTurnId: turnId, usage });
+      })
+      .catch(() => undefined);
   }
 
   #finishFailed(active: ActiveTurn, error: HarnessError): void {
@@ -602,6 +633,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #fault(error: HarnessError): void {
     if (this.#phase === "closed" || this.#phase === "closing" || this.#phase === "faulted") return;
+    this.#usageGeneration += 1;
     const active = this.#active;
     if (active) this.#finishFailed(active, error);
     this.#phase = "faulted";

@@ -15,6 +15,7 @@ import type {
   ClaudeInteractionResponse,
   ClaudeQuestion,
   ClaudeQuestionRequest,
+  ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
   ClaudeTurnTransport,
@@ -89,6 +90,23 @@ function processExited(child: ChildProcessWithoutNullStreams): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
+  if (!isRecord(value)) throw new Error("Claude SDK context Usage is invalid");
+  const usedTokens = value.totalTokens;
+  const maxTokens = value.maxTokens;
+  if (
+    typeof usedTokens !== "number" ||
+    !Number.isSafeInteger(usedTokens) ||
+    usedTokens < 0 ||
+    typeof maxTokens !== "number" ||
+    !Number.isSafeInteger(maxTokens) ||
+    maxTokens <= 0
+  ) {
+    throw new Error("Claude SDK context Usage contains invalid Token values");
+  }
+  return { usedTokens, maxTokens };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -210,6 +228,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
     this.#started = true;
     this.#consumeTask = this.#consume(activeQuery);
+  }
+
+  async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) return null;
+    return parseContextUsage(await activeQuery.getContextUsage());
   }
 
   runTurn(

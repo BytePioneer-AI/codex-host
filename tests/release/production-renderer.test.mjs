@@ -39,6 +39,8 @@ describe("production Renderer release chain", () => {
     expect(rendererManifest).toContain("dist/production.js");
     expect(releaseBuilder).toContain('dist", "production.js');
     expect(releaseBuilder).toContain("desktop-controller.mjs");
+    expect(releaseBuilder).toContain('packageName: "lucide"');
+    expect(releaseBuilder).toContain("lucide-LICENSE.txt");
     expect(releaseBuilder).not.toContain('dist", "index.js"');
   });
 

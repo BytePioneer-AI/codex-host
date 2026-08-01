@@ -67,6 +67,49 @@ export type {
   RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 export type { PiModelControlView } from "./renderer-composer-dom.js";
+export {
+  RendererSettingsNavigationState,
+  RendererSettingsPageScope,
+  createRendererSettingsPageRegistry,
+} from "./settings/core.js";
+export type {
+  RendererSettingsAsyncHandlers,
+  RendererSettingsPageDefinition,
+  RendererSettingsPageMountContext,
+  RendererSettingsPageRegistry,
+} from "./settings/core.js";
+export {
+  DEFAULT_RENDERER_SETTINGS_PAGE_IDS,
+  createDefaultRendererSettingsPages,
+  createDefaultRendererSettingsRegistry,
+} from "./settings/pages.js";
+export type { DefaultRendererSettingsPageId } from "./settings/pages.js";
+export {
+  SETTINGS_SHELL_ATTRIBUTE,
+  installRendererSettingsShell,
+  isRendererSettingsDialogSupported,
+  mountRendererSettingsShell,
+} from "./settings/shell.js";
+export type { RendererSettingsShell } from "./settings/shell.js";
+export {
+  SETTINGS_HEADER_SURFACE_SELECTOR,
+  SETTINGS_TRIGGER_ATTRIBUTE,
+  installRendererSettingsHeaderTrigger,
+  mountRendererSettingsTrigger,
+  selectRendererSettingsHeaderSlot,
+} from "./settings/trigger.js";
+export type {
+  RendererSettingsBounds,
+  RendererSettingsHeaderSlotCandidate,
+  RendererSettingsHeaderTriggerControl,
+  RendererSettingsTriggerControl,
+} from "./settings/trigger.js";
+export {
+  RENDERER_SETTINGS_ICON_NAMES,
+  createRendererSettingsIcon,
+  isRendererSettingsIconName,
+} from "./settings/icons.js";
+export type { RendererSettingsIconName } from "./settings/icons.js";
 
 export const rendererBuildMetadata = {
   name: "@codexhost/renderer-extension",

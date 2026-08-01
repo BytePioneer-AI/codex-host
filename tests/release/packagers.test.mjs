@@ -49,6 +49,7 @@ describe("platform packagers", () => {
     expect(wix).toContain('Scope="perUser"');
     expect(wix).toContain('<UIRef Id="CodexhostInstallUI" />');
     expect(wix).toContain('Target="[BinFolder]codexhost-start.exe"');
+    expect(wix).toContain('<ComponentRef Id="LucideLicenseComponent" />');
     expect(installUi).toContain('<DialogRef Id="WelcomeDlg" />');
     expect(installUi).toContain('<DialogRef Id="ProgressDlg" />');
     expect(installUi).toContain('Dialog="MaintenanceTypeDlg"');
@@ -69,6 +70,7 @@ describe("platform packagers", () => {
       "licenses\\Claude-Agent-SDK-LICENSE.md",
       "licenses\\Anthropic-SDK-LICENSE.txt",
       "licenses\\MCP-SDK-LICENSE.txt",
+      "licenses\\lucide-LICENSE.txt",
     ]) {
       expect(wix).toContain(relative);
     }

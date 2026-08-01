@@ -79,6 +79,11 @@
                 Id="DiffLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\diff-LICENSE.txt" />
             </Component>
+            <Component Id="LucideLicenseComponent">
+              <File
+                Id="LucideLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\lucide-LICENSE.txt" />
+            </Component>
             <Component Id="ZodLicenseComponent">
               <File
                 Id="ZodLicenseFile"
@@ -124,6 +129,7 @@
       <ComponentRef Id="ClaudeAgentSdkLicenseComponent" />
       <ComponentRef Id="McpSdkLicenseComponent" />
       <ComponentRef Id="DiffLicenseComponent" />
+      <ComponentRef Id="LucideLicenseComponent" />
       <ComponentRef Id="ZodLicenseComponent" />
       <ComponentRef Id="ApplicationShortcutComponent" />
     </Feature>

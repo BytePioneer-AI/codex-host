@@ -4,6 +4,7 @@ import Box from "lucide/dist/esm/icons/box.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Gauge from "lucide/dist/esm/icons/gauge.mjs";
 import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
+import Languages from "lucide/dist/esm/icons/languages.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
@@ -16,6 +17,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
   "search",
   "close",
+  "language",
   "overview",
   "routes",
   "providers",
@@ -31,6 +33,7 @@ const iconNodes = {
   settings: Settings,
   search: Search,
   close: X,
+  language: Languages,
   overview: LayoutDashboard,
   routes: Route,
   providers: Server,

@@ -1,4 +1,8 @@
 import { createRendererSettingsIcon } from "./icons.js";
+import {
+  DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  type RendererSettingsMessages,
+} from "./localization.js";
 
 export const SETTINGS_TRIGGER_ATTRIBUTE = "data-codexhost-settings-trigger";
 export const SETTINGS_HEADER_SURFACE_SELECTOR =
@@ -123,6 +127,7 @@ export function mountRendererSettingsTrigger(
   available: boolean,
   onOpen: (opener: HTMLButtonElement) => void,
   ownerDocument: Document = document,
+  messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
 ): RendererSettingsTriggerControl {
   const root = ownerDocument.createElement("div");
   root.setAttribute(SETTINGS_TRIGGER_ATTRIBUTE, triggerId);
@@ -141,9 +146,9 @@ export function mountRendererSettingsTrigger(
   const button = ownerDocument.createElement("button");
   button.type = "button";
   button.disabled = !available;
-  button.setAttribute("aria-label", "Open codexhost settings");
+  button.setAttribute("aria-label", messages.openSettings);
   button.setAttribute("aria-haspopup", "dialog");
-  button.title = available ? "codexhost settings" : "codexhost settings unavailable";
+  button.title = available ? messages.settingsButtonTitle : messages.settingsUnavailableTitle;
   button.style.display = "inline-flex";
   button.style.alignItems = "center";
   button.style.justifyContent = "center";
@@ -190,6 +195,7 @@ export function mountRendererSettingsTrigger(
 export function installRendererSettingsHeaderTrigger(options: {
   available: boolean;
   onOpen(opener: HTMLButtonElement): void;
+  messages?: RendererSettingsMessages;
   ownerDocument?: Document;
 }): RendererSettingsHeaderTriggerControl {
   const ownerDocument = options.ownerDocument ?? document;
@@ -211,6 +217,7 @@ export function installRendererSettingsHeaderTrigger(options: {
       options.available,
       options.onOpen,
       ownerDocument,
+      options.messages,
     );
     insertionPoint.parent.insertBefore(trigger.root, insertionPoint.before);
     return true;

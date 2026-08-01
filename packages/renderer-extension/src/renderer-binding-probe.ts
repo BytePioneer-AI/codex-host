@@ -41,8 +41,7 @@ import {
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
-import { installRendererSettingsShell } from "./settings/shell.js";
-import { installRendererSettingsHeaderTrigger } from "./settings/trigger.js";
+import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 
 const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
@@ -251,11 +250,7 @@ export function installRendererBindingProbe(
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
   });
-  const settingsShell = installRendererSettingsShell();
-  const settingsHeaderTrigger = installRendererSettingsHeaderTrigger({
-    available: settingsShell.supported,
-    onOpen: (opener) => settingsShell.openSettings(opener),
-  });
+  const settingsLifecycle = installRendererSettingsLifecycle();
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",
@@ -798,7 +793,7 @@ export function installRendererBindingProbe(
     const refreshTargets = refreshTargetsOnNextScan;
     refreshTargetsOnNextScan = false;
     if (disposed) return;
-    settingsHeaderTrigger.refresh();
+    settingsLifecycle.refresh();
     for (const replacement of pendingReplacements.values()) {
       const sourceState = controller.get(replacement.source);
       const replacementTarget = findComposerModelTarget(replacement.target);
@@ -1068,8 +1063,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       sidebarAgentIcons.dispose();
-      settingsHeaderTrigger.dispose();
-      settingsShell.dispose();
+      settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);

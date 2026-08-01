@@ -4,6 +4,10 @@ import {
   type RendererSettingsPageMountContext,
   type RendererSettingsPageRegistry,
 } from "./core.js";
+import {
+  DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  type RendererSettingsMessages,
+} from "./localization.js";
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "overview",
@@ -16,37 +20,31 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
-const PAGE_LABELS: Record<DefaultRendererSettingsPageId, string> = {
-  overview: "Overview",
-  routes: "Routes",
-  providers: "Providers",
-  credentials: "Credentials",
-  "local-models": "Local Models",
-  gateway: "Gateway",
-};
-
-function appendUnavailableStatus(content: HTMLElement): void {
+function appendUnavailableStatus(content: HTMLElement, messages: RendererSettingsMessages): void {
   const heading = content.ownerDocument.createElement("div");
   heading.className = "settings-section-label";
-  heading.textContent = "Availability";
+  heading.textContent = messages.availability;
 
   const status = content.ownerDocument.createElement("div");
   status.className = "settings-empty";
 
   const copy = content.ownerDocument.createElement("div");
   const title = content.ownerDocument.createElement("strong");
-  title.textContent = "Not available";
+  title.textContent = messages.notAvailable;
   const detail = content.ownerDocument.createElement("span");
-  detail.textContent = "Runtime capability is not installed.";
+  detail.textContent = messages.runtimeCapabilityNotInstalled;
   copy.append(title, detail);
   status.append(copy);
   content.append(heading, status);
 }
 
-function mountOverview(context: RendererSettingsPageMountContext): undefined {
+function mountOverview(
+  context: RendererSettingsPageMountContext,
+  messages: RendererSettingsMessages,
+): undefined {
   const heading = context.content.ownerDocument.createElement("div");
   heading.className = "settings-section-label";
-  heading.textContent = "Runtime status";
+  heading.textContent = messages.runtimeStatus;
 
   const list = context.content.ownerDocument.createElement("div");
   list.className = "settings-status-list";
@@ -59,12 +57,12 @@ function mountOverview(context: RendererSettingsPageMountContext): undefined {
     const identity = context.content.ownerDocument.createElement("span");
     identity.className = "settings-status-row__identity";
     const label = context.content.ownerDocument.createElement("span");
-    label.textContent = PAGE_LABELS[pageId];
+    label.textContent = messages.pageLabels[pageId];
     identity.append(label);
 
     const status = context.content.ownerDocument.createElement("span");
     status.className = "settings-status-badge";
-    status.textContent = "Unavailable";
+    status.textContent = messages.unavailable;
     row.append(identity, status);
     list.append(row);
   }
@@ -74,34 +72,41 @@ function mountOverview(context: RendererSettingsPageMountContext): undefined {
 
 function unavailablePage(
   id: Exclude<DefaultRendererSettingsPageId, "overview">,
+  messages: RendererSettingsMessages,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id,
-    label: PAGE_LABELS[id],
+    label: messages.pageLabels[id],
     icon: id,
     mount(context: RendererSettingsPageMountContext) {
-      appendUnavailableStatus(context.content);
+      appendUnavailableStatus(context.content, messages);
       return undefined;
     },
   });
 }
 
-export function createDefaultRendererSettingsPages(): readonly RendererSettingsPageDefinition[] {
+export function createDefaultRendererSettingsPages(
+  messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
+): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     Object.freeze({
       id: "overview",
-      label: PAGE_LABELS.overview,
+      label: messages.pageLabels.overview,
       icon: "overview",
-      mount: mountOverview,
+      mount(context: RendererSettingsPageMountContext) {
+        return mountOverview(context, messages);
+      },
     }),
-    unavailablePage("routes"),
-    unavailablePage("providers"),
-    unavailablePage("credentials"),
-    unavailablePage("local-models"),
-    unavailablePage("gateway"),
+    unavailablePage("routes", messages),
+    unavailablePage("providers", messages),
+    unavailablePage("credentials", messages),
+    unavailablePage("local-models", messages),
+    unavailablePage("gateway", messages),
   ] satisfies RendererSettingsPageDefinition[]);
 }
 
-export function createDefaultRendererSettingsRegistry(): RendererSettingsPageRegistry {
-  return createRendererSettingsPageRegistry(createDefaultRendererSettingsPages());
+export function createDefaultRendererSettingsRegistry(
+  messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
+): RendererSettingsPageRegistry {
+  return createRendererSettingsPageRegistry(createDefaultRendererSettingsPages(messages));
 }

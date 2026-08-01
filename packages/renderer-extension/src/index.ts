@@ -1,5 +1,17 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts/version";
 
+export { readCodexLocaleSettings, setCodexLocaleOverride } from "./codex-locale-adapter.js";
+export type {
+  CodexLocaleMode,
+  CodexLocaleOverride,
+  CodexLocaleReadStatus,
+  CodexLocaleRequestOptions,
+  CodexLocaleSettings,
+  CodexLocaleSource,
+  ReadCodexLocaleSettingsOptions,
+  SetCodexLocaleOverrideOptions,
+} from "./codex-locale-adapter.js";
+
 export {
   DEFAULT_RENDERER_AGENTS,
   DraftAgentController,
@@ -87,6 +99,22 @@ export {
   createDefaultRendererSettingsRegistry,
 } from "./settings/pages.js";
 export type { DefaultRendererSettingsPageId } from "./settings/pages.js";
+export {
+  DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  RENDERER_SETTINGS_LANGUAGE_SELECTIONS,
+  RENDERER_SETTINGS_LOCALES,
+  codexLocaleOverrideForSettingsSelection,
+  rendererSettingsLanguageSelection,
+  rendererSettingsMessages,
+  resolveRendererSettingsLocale,
+} from "./settings/localization.js";
+export type {
+  RendererSettingsLanguageControl,
+  RendererSettingsLanguageSelection,
+  RendererSettingsLocale,
+  RendererSettingsMessages,
+  RendererSettingsWritableLanguageSelection,
+} from "./settings/localization.js";
 export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,

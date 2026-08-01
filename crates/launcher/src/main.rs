@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod installation_layout;
+
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -10,6 +12,7 @@ use codexhost_platform::{
     DesktopIdentity, DesktopInstallation, DesktopLaunchMode, canonical_existing_file,
     desktop_process_ids, discover_codex_desktop, launch_desktop,
 };
+use installation_layout::InstalledResources;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
@@ -18,7 +21,7 @@ const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost inspect\n  codexhost launch --agent <codex|pi> --shim <absolute-file> --node <absolute-file> --host-runtime <absolute-file> [--pi <absolute-file>]"
+        "usage:\n  codexhost inspect\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--pi <absolute-file>]"
     );
 }
 
@@ -92,6 +95,15 @@ impl Agent {
 #[derive(Debug)]
 struct LaunchOptions {
     agent: Agent,
+    shim: Option<PathBuf>,
+    node: Option<PathBuf>,
+    host_runtime: Option<PathBuf>,
+    pi: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ResolvedLaunchOptions {
+    agent: Agent,
     shim: PathBuf,
     node: PathBuf,
     host_runtime: PathBuf,
@@ -144,21 +156,61 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     }
     Ok(LaunchOptions {
         agent: agent.ok_or("--agent is required")?,
-        shim: shim.ok_or("--shim is required")?,
-        node: node.ok_or("--node is required")?,
-        host_runtime: host_runtime.ok_or("--host-runtime is required")?,
+        shim,
+        node,
+        host_runtime,
         pi,
     })
 }
 
-fn absolute_file(path: &Path, option: &str) -> Result<PathBuf, Box<dyn Error>> {
+fn absolute_file(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
     if !path.is_absolute() {
-        return Err(format!("{option} must be an absolute path").into());
+        return Err(format!("{label} must be an absolute path").into());
     }
-    canonical_existing_file(path).map_err(Into::into)
+    canonical_existing_file(path)
+        .map_err(|error| format!("{label} '{}': {error}", path.display()).into())
+}
+
+fn resolve_resource_path(
+    explicit: Option<PathBuf>,
+    bundled: &Path,
+    option: &str,
+    bundled_label: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    match explicit {
+        Some(path) => absolute_file(&path, option),
+        None => absolute_file(bundled, bundled_label),
+    }
+}
+
+impl LaunchOptions {
+    fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
+        let installed = InstalledResources::from_current_executable()?;
+        Ok(ResolvedLaunchOptions {
+            agent: self.agent,
+            shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
+            node: resolve_resource_path(
+                self.node,
+                &installed.node,
+                "--node",
+                "bundled Node.js runtime",
+            )?,
+            host_runtime: resolve_resource_path(
+                self.host_runtime,
+                &installed.host_runtime,
+                "--host-runtime",
+                "bundled Host Runtime",
+            )?,
+            pi: self
+                .pi
+                .map(|path| absolute_file(&path, "--pi"))
+                .transpose()?,
+        })
+    }
 }
 
 fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
+    let options = options.resolve()?;
     let installation = discover_codex_desktop()?;
     let running = desktop_process_ids()?;
     if !running.is_empty() {
@@ -172,17 +224,14 @@ fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    let shim = absolute_file(&options.shim, "--shim")?;
-    let node = absolute_file(&options.node, "--node")?;
-    let host_runtime = absolute_file(&options.host_runtime, "--host-runtime")?;
     let mut environment = vec![
         (
             OsString::from(HOST_NODE_PATH_ENV),
-            node.as_os_str().to_owned(),
+            options.node.as_os_str().to_owned(),
         ),
         (
             OsString::from(HOST_RUNTIME_PATH_ENV),
-            host_runtime.as_os_str().to_owned(),
+            options.host_runtime.as_os_str().to_owned(),
         ),
         (
             OsString::from(DEFAULT_AGENT_ENV),
@@ -190,7 +239,6 @@ fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
         ),
     ];
     if let Some(pi) = options.pi {
-        let pi = absolute_file(&pi, "--pi")?;
         environment.push((OsString::from(PI_COMMAND_ENV), pi.as_os_str().to_owned()));
     }
     let launch_mode = if cfg!(target_os = "macos") {
@@ -198,7 +246,7 @@ fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
     } else {
         DesktopLaunchMode::DirectExecutable
     };
-    let mut child = launch_desktop(&installation, &shim, launch_mode, &environment)?;
+    let mut child = launch_desktop(&installation, &options.shim, launch_mode, &environment)?;
     let status = child.wait()?;
     if !status.success() {
         return Err(format!("Codex Desktop launch exited unsuccessfully: {status}").into());
@@ -225,5 +273,40 @@ fn main() -> ExitCode {
             eprintln!("codexhost launcher: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_launch_options;
+
+    #[test]
+    fn bundled_runtime_paths_are_optional_launch_arguments() {
+        let options =
+            parse_launch_options(&["--agent".into(), "pi".into()]).expect("bundled launch options");
+
+        assert_eq!(options.agent.as_str(), "pi");
+        assert!(options.shim.is_none());
+        assert!(options.node.is_none());
+        assert!(options.host_runtime.is_none());
+    }
+
+    #[test]
+    fn explicit_development_paths_remain_supported() {
+        let options = parse_launch_options(&[
+            "--agent".into(),
+            "codex".into(),
+            "--shim".into(),
+            "/opt/codexhost-shim".into(),
+            "--node".into(),
+            "/opt/node".into(),
+            "--host-runtime".into(),
+            "/opt/host-runtime.mjs".into(),
+        ])
+        .expect("explicit development paths");
+
+        assert!(options.shim.is_some());
+        assert!(options.node.is_some());
+        assert!(options.host_runtime.is_some());
     }
 }

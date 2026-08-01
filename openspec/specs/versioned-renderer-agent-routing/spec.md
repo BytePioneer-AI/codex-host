@@ -6,7 +6,7 @@ Define the supported Desktop build contract for Composer-scoped Codex/Pi routing
 ## Requirements
 ### Requirement: Composer Agent freezes at submission
 
-The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, and SHALL synchronously freeze the final Agent when that draft is submitted.
+The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, SHALL synchronously freeze the final Agent when that draft is submitted, and SHALL remember the Agent of the most recently submitted Composer for later new-Thread drafts in the same Renderer process.
 
 #### Scenario: User switches after editing
 
@@ -21,7 +21,7 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 #### Scenario: Submission freezes the final Agent
 
 - **WHEN** the user clicks Send, presses Enter without Shift or active IME composition, or submits the Composer form
-- **THEN** the Renderer synchronously reapplies the final Agent, locks the Composer, and records one deduplicated submission before Desktop creates or consumes the submitted Thread
+- **THEN** the Renderer synchronously reapplies the final Agent, locks the Composer, records that Agent as the most recently submitted Agent, and records one deduplicated submission before Desktop creates or consumes the submitted Thread
 
 #### Scenario: First creation replaces the Composer DOM
 
@@ -31,7 +31,13 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 #### Scenario: User opens a new Thread
 
 - **WHEN** a conversation Composer is replaced by a new default Composer
-- **THEN** the new Composer starts as Codex and draft rather than inheriting the previous Thread Agent
+- **THEN** the new Composer starts in draft phase with the Agent used by the most recently submitted Composer in the same Renderer process
+- **AND** it starts as Codex when no Composer has been submitted in that Renderer process
+
+#### Scenario: User only opens an existing Thread
+
+- **WHEN** the user opens or revisits a Thread without submitting a Turn
+- **THEN** that Thread's Agent does not replace the most recently submitted Agent used for later new-Thread drafts
 
 #### Scenario: User revisits a submitted Thread
 
@@ -228,7 +234,7 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 
 #### Scenario: New task resets Model
 - **WHEN** a conversation target transitions to a new default Composer
-- **THEN** the new Composer starts as Codex without the prior Pi Model Ref
+- **THEN** the new Composer uses the most recently submitted Agent without inheriting the prior Composer's Pi Model Ref
 
 #### Scenario: Existing Pi Thread selection
 - **WHEN** the supported conversation target yields one validated current-process Host Thread ID and the user selects a different Pi Model

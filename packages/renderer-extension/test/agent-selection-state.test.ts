@@ -32,6 +32,53 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("uses only the most recently submitted Agent for new default Composers", async () => {
+    const submittedPi = {};
+    const unsubmittedDraft = {};
+    const openedCodex = {};
+    const afterPassiveWork = {};
+    const afterCodexSubmission = {};
+    const agents = controller();
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.submitted" });
+    const operations = {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    };
+
+    agents.mount(submittedPi, ["default"]);
+    await agents.switchAgent(submittedPi, "pi", operations);
+    agents.setPiModel(submittedPi, model);
+    agents.lock(submittedPi);
+    agents.recordSubmission(submittedPi);
+
+    agents.mount(unsubmittedDraft, ["default"]);
+    expect(agents.get(unsubmittedDraft)).toEqual({
+      composerId: "composer-2",
+      agent: "pi",
+      phase: "draft",
+    });
+    await agents.switchAgent(unsubmittedDraft, "codex", operations);
+
+    agents.mount(openedCodex, ["conversation", "official-thread"]);
+    expect(agents.get(openedCodex)).toMatchObject({ agent: "codex", phase: "draft" });
+    agents.restore(openedCodex, "codex");
+
+    agents.mount(afterPassiveWork, ["default"]);
+    expect(agents.get(afterPassiveWork)).toEqual({
+      composerId: "composer-4",
+      agent: "pi",
+      phase: "draft",
+    });
+    expect(agents.get(afterPassiveWork).piModel).toBeUndefined();
+
+    agents.recordSubmission(openedCodex);
+    agents.mount(afterCodexSubmission, ["default"]);
+    expect(agents.get(afterCodexSubmission)).toMatchObject({
+      agent: "codex",
+      phase: "draft",
+    });
+  });
+
   it("rejects Claude Code unless it is explicitly enabled", async () => {
     const composer = {};
     const agents = controller();

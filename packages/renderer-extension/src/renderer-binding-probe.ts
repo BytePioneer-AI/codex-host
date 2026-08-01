@@ -181,7 +181,7 @@ export function installRendererBindingProbe(
   };
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
-    const state = controller.get(composer);
+    const state = controller.recordSubmission(composer);
     window.dispatchEvent(
       new CustomEvent("codexhost:renderer-submission", {
         detail: {

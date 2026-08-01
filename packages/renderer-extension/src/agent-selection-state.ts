@@ -33,6 +33,10 @@ function defaultIdFactory(sequence: number): string {
   return `codexhost-composer-${Date.now().toString(36)}-${sequence.toString(36)}`;
 }
 
+function isDefaultTarget(target: readonly unknown[] | null): target is readonly unknown[] {
+  return target?.[0] === "default";
+}
+
 function isConversationTarget(target: readonly unknown[] | null): target is readonly unknown[] {
   return target?.[0] === "conversation";
 }
@@ -50,6 +54,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
+  #lastSubmittedAgent: RendererAgent = "codex";
 
   constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
@@ -69,7 +74,10 @@ export class DraftAgentController<Composer extends object> {
       this.#states.set(composer, bound);
       return bound;
     }
-    const state = this.#state(composer);
+    const state = this.#state(
+      composer,
+      isDefaultTarget(target) ? this.#lastSubmittedAgent : "codex",
+    );
     if (isConversationTarget(target)) {
       this.#conversationStates.push({ target, state });
     }
@@ -132,6 +140,12 @@ export class DraftAgentController<Composer extends object> {
     return state;
   }
 
+  recordSubmission(composer: Composer): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    this.#lastSubmittedAgent = state.agent;
+    return state;
+  }
+
   transfer(
     source: Composer,
     replacement: Composer,
@@ -189,11 +203,11 @@ export class DraftAgentController<Composer extends object> {
     );
   }
 
-  #state(composer: Composer): MutableComposerState {
+  #state(composer: Composer, initialAgent: RendererAgent = "codex"): MutableComposerState {
     const existing = this.#states.get(composer);
     if (existing) return existing;
     const created: MutableComposerState = {
-      agent: "codex",
+      agent: initialAgent,
       phase: "draft",
       composerId: this.#idFactory(++this.#composerSequence),
     };

@@ -27,6 +27,7 @@ describe("main-process title policy", () => {
       },
       { result: [{ name: "0", value: { objectId: "local-scope" } }] },
       { result: [{ name: "f", value: { objectId: "get-context" } }] },
+      { result: { objectId: "install-promise" } },
       {
         result: {
           value: {
@@ -53,10 +54,16 @@ describe("main-process title policy", () => {
       "Runtime.getProperties",
       "Runtime.getProperties",
       "Runtime.callFunctionOn",
+      "Runtime.awaitPromise",
     ]);
-    expect(inspector.command.mock.calls.at(-1)?.[1]).toMatchObject({
+    expect(inspector.command.mock.calls.at(-2)?.[1]).toMatchObject({
       objectId: "get-context",
-      awaitPromise: true,
+    });
+    expect(inspector.command.mock.calls.at(-2)?.[1]?.functionDeclaration).toContain(
+      "ownService(sampleService, selected)",
+    );
+    expect(inspector.command.mock.calls.at(-1)?.[1]).toEqual({
+      promiseObjectId: "install-promise",
       returnByValue: true,
     });
   });

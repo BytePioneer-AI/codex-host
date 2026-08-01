@@ -21,6 +21,7 @@ fn desktop_launch_command(
     installation: &DesktopInstallation,
     shim_path: &Path,
     mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<Command, PlatformError> {
     let shim_path = canonical_existing_file(shim_path)?;
@@ -53,11 +54,17 @@ fn desktop_launch_command(
                 command.arg("--env").arg(format!("{key}={value}"));
             }
             command.arg(&installation.install_root);
+            if !additional_arguments.is_empty() {
+                command.arg("--args").args(additional_arguments);
+            }
             command
         }
         DesktopLaunchMode::DirectExecutable => {
             let mut command = Command::new(&installation.desktop_executable);
-            command.envs(environment).process_group(0);
+            command
+                .args(additional_arguments)
+                .envs(environment)
+                .process_group(0);
             command
         }
     };
@@ -70,7 +77,7 @@ fn desktop_launch_command(
             ));
         }
         let mut command = Command::new(&installation.desktop_executable);
-        command.envs(environment);
+        command.args(additional_arguments).envs(environment);
         command
     };
 
@@ -85,11 +92,18 @@ pub fn launch_desktop(
     installation: &DesktopInstallation,
     shim_path: &Path,
     mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<Child, PlatformError> {
-    desktop_launch_command(installation, shim_path, mode, additional_environment)?
-        .spawn()
-        .map_err(PlatformError::Io)
+    desktop_launch_command(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+    )?
+    .spawn()
+    .map_err(PlatformError::Io)
 }
 
 #[cfg(target_os = "macos")]
@@ -234,6 +248,7 @@ pub fn launch_desktop_session(
     installation: &DesktopInstallation,
     shim_path: &Path,
     mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
     start_timeout: Duration,
 ) -> Result<DesktopSession, PlatformError> {
@@ -242,8 +257,14 @@ pub fn launch_desktop_session(
             "Codex Desktop is already running; refusing to reuse or terminate it".into(),
         ));
     }
-    let mut launch_process =
-        desktop_launch_command(installation, shim_path, mode, additional_environment)?.spawn()?;
+    let mut launch_process = desktop_launch_command(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+    )?
+    .spawn()?;
     let started = Instant::now();
     loop {
         let roots = process_snapshots()?
@@ -299,14 +320,59 @@ pub fn launch_desktop_session(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::ffi::OsString;
+    use std::fs;
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    use super::DesktopSession;
+    use super::{DesktopSession, desktop_launch_command};
     use crate::process::{ObservedProcessTree, macos_process_snapshot};
-    use crate::process_exists;
+    use crate::{
+        DesktopIdentity, DesktopInstallation, DesktopLaunchMode, process_exists,
+        temporary_directory,
+    };
+
+    #[test]
+    fn launch_services_forwards_only_the_ephemeral_inspector_argument() {
+        let directory = temporary_directory("codexhost-desktop-launch-args");
+        let shim = directory.join("codexhost-shim");
+        fs::write(&shim, b"shim").expect("write fake Shim");
+        let installation = DesktopInstallation {
+            identity: DesktopIdentity::MacOsBundle {
+                bundle_identifier: "com.openai.codex".into(),
+            },
+            version: "1.0.0".into(),
+            install_root: "/Applications/ChatGPT.app".into(),
+            desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
+            packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
+            executable_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
+        };
+        let command = desktop_launch_command(
+            &installation,
+            &shim,
+            DesktopLaunchMode::LaunchServices,
+            &[OsString::from("--inspect=127.0.0.1:43123")],
+            &[],
+        )
+        .expect("LaunchServices command");
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--args", "--inspect=127.0.0.1:43123"])
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("remote-debugging"))
+        );
+        fs::remove_dir_all(directory).expect("remove launch fixture");
+    }
 
     #[test]
     fn outer_session_cleans_a_cli_after_the_fake_shim_is_killed() {

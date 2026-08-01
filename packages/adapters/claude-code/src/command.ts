@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export class ClaudeCodeExecutableError extends Error {
@@ -40,19 +41,61 @@ function isExecutable(candidate: string, platform: NodeJS.Platform): boolean {
   }
 }
 
+function nvmCandidates(homeDirectory: string): string[] {
+  const versionsDirectory = path.join(homeDirectory, ".nvm", "versions", "node");
+  try {
+    return fs
+      .readdirSync(versionsDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
+      .map((version) => path.join(versionsDirectory, version, "bin", "claude"));
+  } catch {
+    return [];
+  }
+}
+
+function userInstallCandidates(
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  homeDirectory: string,
+): string[] {
+  if (platform === "win32") {
+    const appData = environment.APPDATA ?? path.join(homeDirectory, "AppData", "Roaming");
+    return [
+      path.join(appData, "npm", "claude.cmd"),
+      path.join(homeDirectory, ".local", "bin", "claude.exe"),
+      path.join(homeDirectory, ".local", "bin", "claude.cmd"),
+    ];
+  }
+  return [
+    path.join(homeDirectory, ".local", "bin", "claude"),
+    path.join(homeDirectory, ".claude", "local", "claude"),
+    ...nvmCandidates(homeDirectory),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ];
+}
+
 export function resolveClaudeCodeExecutable(
   input: {
     command?: string;
     environment?: NodeJS.ProcessEnv;
+    homeDirectory?: string;
     platform?: NodeJS.Platform;
   } = {},
 ): string {
   const environment = input.environment ?? process.env;
   const platform = input.platform ?? process.platform;
-  const command = input.command ?? environment.CODEXHOST_CLAUDE_COMMAND ?? "claude";
-  const executable = candidates(command, platform, environment).find((candidate) =>
-    isExecutable(candidate, platform),
-  );
+  const configuredCommand = input.command ?? environment.CODEXHOST_CLAUDE_COMMAND;
+  const command = configuredCommand ?? "claude";
+  const homeDirectory =
+    input.homeDirectory ?? environment.HOME ?? environment.USERPROFILE ?? os.homedir();
+  const resolutionCandidates = [
+    ...candidates(command, platform, environment),
+    ...(configuredCommand ? [] : userInstallCandidates(platform, environment, homeDirectory)),
+  ];
+  const executable = resolutionCandidates.find((candidate) => isExecutable(candidate, platform));
   if (!executable) throw new ClaudeCodeExecutableError("Claude Code is not installed");
   return path.resolve(executable);
 }

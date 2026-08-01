@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="codexhost"
+    Manufacturer="codexhost"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="8A7B4E80-A650-4D47-9D05-8D4D7F13E67E"
+    Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of codexhost is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDirectory" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="codexhost">
+          <Component Id="ThirdPartyNoticesComponent">
+            <File
+              Id="ThirdPartyNoticesFile"
+              Source="$(var.PayloadRoot)\THIRD_PARTY_NOTICES.txt" />
+          </Component>
+          <Directory Id="BinFolder" Name="bin">
+            <Component Id="LauncherComponent">
+              <File Id="LauncherFile" Source="$(var.PayloadRoot)\bin\codexhost.exe" />
+            </Component>
+          </Directory>
+          <Directory Id="LibexecFolder" Name="libexec">
+            <Component Id="ShimComponent">
+              <File Id="ShimFile" Source="$(var.PayloadRoot)\libexec\codexhost-shim.exe" />
+            </Component>
+          </Directory>
+          <Directory Id="RuntimeFolder" Name="runtime">
+            <Component Id="NodeComponent">
+              <File Id="NodeFile" Source="$(var.PayloadRoot)\runtime\node.exe" />
+            </Component>
+          </Directory>
+          <Directory Id="AppFolder" Name="app">
+            <Component Id="ApplicationBundleComponent">
+              <File
+                Id="DesktopControllerFile"
+                Source="$(var.PayloadRoot)\app\desktop-controller.mjs" />
+              <File Id="HostRuntimeFile" Source="$(var.PayloadRoot)\app\host-runtime.mjs" />
+              <File
+                Id="RendererExtensionFile"
+                Source="$(var.PayloadRoot)\app\renderer-extension.js" />
+            </Component>
+          </Directory>
+          <Directory Id="LicensesFolder" Name="licenses">
+            <Component Id="LicensesComponent">
+              <File
+                Id="NodeLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\Node.js-LICENSE.txt" />
+              <File
+                Id="AnthropicSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\Anthropic-SDK-LICENSE.txt" />
+              <File
+                Id="ClaudeAgentSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\Claude-Agent-SDK-LICENSE.md" />
+              <File
+                Id="McpSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\MCP-SDK-LICENSE.txt" />
+              <File
+                Id="DiffLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\diff-LICENSE.txt" />
+              <File
+                Id="ZodLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\zod-LICENSE.txt" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="codexhost">
+        <Component Id="ApplicationShortcutComponent">
+          <Shortcut
+            Id="ApplicationStartMenuShortcut"
+            Name="codexhost"
+            Description="Launch Codex Desktop with codexhost"
+            Target="[BinFolder]codexhost.exe"
+            WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue
+            Root="HKCU"
+            Key="Software\codexhost"
+            Name="Installed"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="ProductFeature" Title="codexhost" Level="1">
+      <ComponentRef Id="ThirdPartyNoticesComponent" />
+      <ComponentRef Id="LauncherComponent" />
+      <ComponentRef Id="ShimComponent" />
+      <ComponentRef Id="NodeComponent" />
+      <ComponentRef Id="ApplicationBundleComponent" />
+      <ComponentRef Id="LicensesComponent" />
+      <ComponentRef Id="ApplicationShortcutComponent" />
+    </Feature>
+  </Package>
+</Wix>

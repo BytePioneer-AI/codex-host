@@ -1,7 +1,7 @@
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
 
 export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
-export const DEFAULT_RENDERER_AGENTS = ["codex", "pi"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ComposerAgentPhase = "draft" | "locked";
 
@@ -22,6 +22,7 @@ interface ConversationState {
 export interface DraftAgentControllerOptions {
   idFactory?: (sequence: number) => string;
   enabledAgents?: readonly RendererAgent[];
+  defaultAgent?: RendererAgent;
 }
 
 export interface DraftAgentSwitchOperations {
@@ -47,6 +48,7 @@ function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolea
 
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
+  readonly #defaultAgent: RendererAgent;
   readonly #enabledAgents: ReadonlySet<RendererAgent>;
   readonly #conversationStates: ConversationState[] = [];
   readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
@@ -54,7 +56,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
-  #lastSubmittedAgent: RendererAgent = "codex";
+  #lastSubmittedAgent: RendererAgent;
 
   constructor(options: DraftAgentControllerOptions = {}) {
     this.#idFactory = options.idFactory ?? defaultIdFactory;
@@ -62,6 +64,11 @@ export class DraftAgentController<Composer extends object> {
     if (!this.#enabledAgents.has("codex")) {
       throw new Error("Renderer enabled Agents must include Codex");
     }
+    this.#defaultAgent = options.defaultAgent ?? "codex";
+    if (!this.#enabledAgents.has(this.#defaultAgent)) {
+      throw new Error("Renderer default Agent must be enabled");
+    }
+    this.#lastSubmittedAgent = this.#defaultAgent;
   }
 
   get(composer: Composer): Readonly<DraftComposerState> {
@@ -203,11 +210,11 @@ export class DraftAgentController<Composer extends object> {
     );
   }
 
-  #state(composer: Composer, initialAgent: RendererAgent = "codex"): MutableComposerState {
+  #state(composer: Composer, initialAgent?: RendererAgent): MutableComposerState {
     const existing = this.#states.get(composer);
     if (existing) return existing;
     const created: MutableComposerState = {
-      agent: initialAgent,
+      agent: initialAgent ?? this.#defaultAgent,
       phase: "draft",
       composerId: this.#idFactory(++this.#composerSequence),
     };

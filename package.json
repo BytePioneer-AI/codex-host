@@ -27,6 +27,7 @@
     "build:typescript": "tsc -b",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim",
+    "release:package": "node scripts/release/prepare-payload.mjs",
     "typecheck": "tsc -b --pretty false && tsc -p tests/tsconfig.json --noEmit --pretty false",
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",

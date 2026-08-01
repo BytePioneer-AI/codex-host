@@ -54,6 +54,7 @@ export interface RendererBindingProbeStatus {
 
 export interface RendererBindingProbeOptions {
   enabledAgents?: readonly RendererAgent[];
+  defaultAgent?: RendererAgent;
 }
 
 export interface RendererBindingProbeApi {
@@ -157,7 +158,10 @@ export function installRendererBindingProbe(
   if (existing) return existing;
 
   const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
-  const controller = new DraftAgentController<Element>({ enabledAgents });
+  const controller = new DraftAgentController<Element>({
+    enabledAgents,
+    ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
+  });
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;

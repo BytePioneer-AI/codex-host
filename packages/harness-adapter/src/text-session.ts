@@ -14,6 +14,8 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import type { HostUsage } from "./usage.js";
+
 export type {
   HarnessInspection,
   HarnessModel,
@@ -283,6 +285,12 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+export interface SessionUsageChangedEvent {
+  type: "session.usage.changed";
+  usage: HostUsage | null;
+  observedForTurnId?: HostTurnId;
+}
+
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
@@ -328,6 +336,7 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionUsageChangedEvent
   | TurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
@@ -343,6 +352,7 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
 
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;

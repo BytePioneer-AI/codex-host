@@ -31,6 +31,7 @@ import {
   type ModelSelectCompleted,
   type OpenSessionInput,
   type HostThreadSnapshot,
+  type HostUsage,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
@@ -49,6 +50,7 @@ import {
   type HarnessId,
   type HostInteractionId,
   type HostItemId,
+  type HostTurnId,
   type JsonValue,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -92,6 +94,7 @@ export interface PiTurnTransport {
   getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
   getEntries(): Promise<PiSessionHistory>;
+  getSessionUsage(): Promise<HostUsage | null>;
   fork(entryId: string): Promise<PiSessionState>;
   clone(): Promise<PiSessionState>;
   verifySessionCwd(expectedCwd: string): Promise<void>;
@@ -321,6 +324,7 @@ class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;
@@ -338,6 +342,8 @@ class PiHarnessSession implements HarnessSession {
   #starting: Promise<PiTurnTransport> | null = null;
   #state: HarnessSessionState = {};
   #transport: PiTurnTransport | null = null;
+  #usage: HostUsage | null;
+  #usageGeneration = 0;
 
   constructor(
     cwd: string,
@@ -351,6 +357,7 @@ class PiHarnessSession implements HarnessSession {
       supportsThinkingSelection: boolean;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
+      initialUsage?: HostUsage | null;
     },
   ) {
     this.#cwd = cwd;
@@ -371,6 +378,8 @@ class PiHarnessSession implements HarnessSession {
     this.initialState = options.startedTransport
       ? harnessStateFromPi(options.startedTransport.state, options.startedThinkingLevels ?? null)
       : {};
+    this.initialUsage = options.initialUsage ?? null;
+    this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
   }
@@ -629,6 +638,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: false, error: normalizedError(error, "invalidRequest") };
     }
 
+    const previousModel = this.#state.effectiveModel;
     this.#configuring = true;
     try {
       let state: PiSessionState;
@@ -642,6 +652,11 @@ class PiHarnessSession implements HarnessSession {
         return { ok: false, error: normalizedError(error, "nativeFailure") };
       }
       const actual = nativeModelFromState(state);
+      const nextModel = effectiveModelFromState(state);
+      if (previousModel?.id !== nextModel?.id) {
+        this.#invalidateUsage();
+        void this.#refreshUsage();
+      }
       if (!samePiModel(actual, requested)) {
         return {
           ok: false,
@@ -814,6 +829,44 @@ class PiHarnessSession implements HarnessSession {
   ): void {
     this.#state = harnessStateFromPi(state, thinkingLevels);
     this.#event({ type: "session.state.changed", state: this.#state });
+  }
+
+  #invalidateUsage(): void {
+    this.#usageGeneration += 1;
+    if (this.#usage === null) return;
+    this.#usage = null;
+    this.#event({ type: "session.usage.changed", usage: null });
+  }
+
+  async #refreshUsage(observedForTurnId?: HostTurnId): Promise<void> {
+    const transport = this.#transport;
+    if (!transport || this.#phase !== "open") return;
+    const generation = this.#usageGeneration;
+    const sessionId = transport.state.sessionId;
+    const model = `${transport.state.provider ?? ""}\u0000${transport.state.modelId ?? ""}`;
+    let usage: HostUsage | null;
+    try {
+      usage = await transport.getSessionUsage();
+    } catch {
+      return;
+    }
+    if (
+      usage === null ||
+      this.#phase !== "open" ||
+      this.#transport !== transport ||
+      this.#usageGeneration !== generation ||
+      transport.state.sessionId !== sessionId ||
+      `${transport.state.provider ?? ""}\u0000${transport.state.modelId ?? ""}` !== model
+    ) {
+      return;
+    }
+    if (JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
+    this.#usage = usage;
+    this.#event({
+      type: "session.usage.changed",
+      usage,
+      ...(observedForTurnId ? { observedForTurnId } : {}),
+    });
   }
 
   #handleTurnEvent(active: ActiveTurn, event: PiTurnEvent): void {
@@ -1100,6 +1153,9 @@ class PiHarnessSession implements HarnessSession {
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
     active.resolveCompletion();
+    queueMicrotask(() => {
+      if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
+    });
   }
 
   #fault(error: unknown): void {
@@ -1376,9 +1432,11 @@ export class PiAdapter implements HarnessAdapter {
 
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
+      const initialUsage = await transport.getSessionUsage().catch(() => null);
       session = this.#trackSession(input.cwd, {
         startedTransport: transport,
         startedThinkingLevels,
+        initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
       });
       return { ok: true, value: session };
@@ -1396,6 +1454,7 @@ export class PiAdapter implements HarnessAdapter {
       supportsThinkingSelection: boolean;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
+      initialUsage?: HostUsage | null;
     },
   ): PiHarnessSession {
     const session = new PiHarnessSession(
@@ -1414,6 +1473,7 @@ export class PiAdapter implements HarnessAdapter {
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
+        ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
       },
     );
     this.#sessions.add(session);

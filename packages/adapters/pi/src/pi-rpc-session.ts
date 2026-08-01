@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import type { HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
   jsonValueSchema,
@@ -10,6 +11,11 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { PiSessionHistory } from "./pi-history.js";
+import {
+  optionalPiStateContextUsage,
+  parsePiSessionUsage,
+  parsePiStateContextUsage,
+} from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
 
@@ -19,6 +25,7 @@ export interface PiSessionState {
   provider: string | null;
   modelId: string | null;
   thinkingLevel: HarnessThinkingOptionId | null;
+  contextUsage: Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null;
 }
 
 export type PiInteractionRequest =
@@ -190,6 +197,7 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
     thinkingLevel: thinkingLevel?.data ?? null,
+    contextUsage: optionalPiStateContextUsage(data.contextUsage),
   };
 }
 
@@ -449,6 +457,25 @@ export class PiRpcSession {
     } catch (error) {
       if (error instanceof PiRpcFaultError) this.#fail(error);
       throw error;
+    }
+  }
+
+  async getSessionUsage(): Promise<HostUsage | null> {
+    try {
+      return parsePiSessionUsage(await this.#send("get_session_stats", {}));
+    } catch (error) {
+      if (!(error instanceof PiRpcUnsupportedCommandError)) throw error;
+      const response = await this.#send("get_state", {});
+      const observedState = parseSessionState(response);
+      if (
+        !this.#state ||
+        observedState.sessionId !== this.#state.sessionId ||
+        observedState.provider !== this.#state.provider ||
+        observedState.modelId !== this.#state.modelId
+      ) {
+        throw new Error("Pi RPC Usage fallback does not match the confirmed Session state");
+      }
+      return parsePiStateContextUsage(response);
     }
   }
 

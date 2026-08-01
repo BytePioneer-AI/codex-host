@@ -13,6 +13,7 @@ import type {
   HarnessThinkingOptionId,
   HostInteractionId,
   HostItemId,
+  HostTurnId,
   JsonValue,
   NativeCheckpointRef,
   NativeSessionRef,
@@ -21,6 +22,7 @@ import type {
 
 import { HarnessOutputChannel } from "./output-channel.js";
 import { validateHostQuestionResponse } from "./question.js";
+import { parseHostUsage, type HostUsage } from "./usage.js";
 import type {
   HarnessAdapter,
   HarnessError,
@@ -128,9 +130,11 @@ export class FakeHarnessSession implements HarnessSession {
   readonly capabilities: HarnessSessionCapabilities;
   readonly cwd: string;
   readonly initialState: HarnessSessionState;
+  readonly initialUsage: HostUsage | null;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
+  usageFailures = 0;
   readonly #catalog: HarnessModelCatalog;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #active: ActiveFakeTurn | null = null;
@@ -140,6 +144,7 @@ export class FakeHarnessSession implements HarnessSession {
   #itemOrdinal = 0;
   #nextModelRejection: HarnessError | null = null;
   #nextThinkingRejection: HarnessError | null = null;
+  #nextTurnUsage: HostUsage | null | undefined;
   #nextQuestion: {
     question: HostQuestion;
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
@@ -163,6 +168,7 @@ export class FakeHarnessSession implements HarnessSession {
     cwd = "/synthetic",
     supportsForkAcrossCwd = supportsFork,
     initialThinkingOptionId: HarnessThinkingOptionId | undefined = catalog.defaultThinkingOptionId,
+    initialUsage: HostUsage | null = null,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -187,6 +193,7 @@ export class FakeHarnessSession implements HarnessSession {
       ...(availableThinkingOptions.length > 0 ? { availableThinkingOptions } : {}),
     };
     this.#state = this.initialState;
+    this.initialUsage = initialUsage === null ? null : parseHostUsage(initialUsage);
     this.#snapshot = cloneJson(snapshot);
     this.#turnOrdinal = snapshot.turns.length;
     this.outputs = this.#channel.outputs;
@@ -194,6 +201,24 @@ export class FakeHarnessSession implements HarnessSession {
 
   get state(): HarnessSessionState {
     return this.#state;
+  }
+
+  publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.#event({
+      type: "session.usage.changed",
+      usage: usage === null ? null : parseHostUsage(usage),
+      ...(observedForTurnId ? { observedForTurnId } : {}),
+    });
+  }
+
+  failUsageTelemetry(): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.usageFailures += 1;
+  }
+
+  publishUsageOnNextTurn(usage: HostUsage | null): void {
+    this.#nextTurnUsage = usage === null ? null : parseHostUsage(usage);
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -296,6 +321,11 @@ export class FakeHarnessSession implements HarnessSession {
     };
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
+    if (this.#nextTurnUsage !== undefined) {
+      const usage = this.#nextTurnUsage;
+      this.#nextTurnUsage = undefined;
+      this.publishUsage(usage, command.turnId);
+    }
     if (this.#nextQuestion) {
       const pending = this.#nextQuestion;
       this.#nextQuestion = null;
@@ -687,6 +717,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly catalog: HarnessModelCatalog;
   readonly sessions: FakeHarnessSession[] = [];
+  readonly initialUsage: HostUsage | null;
   readonly supportsFork: boolean;
   readonly supportsForkAcrossCwd: boolean;
   inspectionCalls = 0;
@@ -699,9 +730,11 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     catalog: HarnessModelCatalog = defaultFakeCatalog,
     supportsFork = true,
     supportsForkAcrossCwd = supportsFork,
+    initialUsage: HostUsage | null = null,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
+    this.initialUsage = initialUsage === null ? null : parseHostUsage(initialUsage);
     this.supportsFork = supportsFork;
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
   }
@@ -896,6 +929,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       cwd,
       this.supportsForkAcrossCwd,
       thinkingOptionId,
+      this.initialUsage,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

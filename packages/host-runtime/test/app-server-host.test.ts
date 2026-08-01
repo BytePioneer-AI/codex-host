@@ -782,6 +782,148 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("orders early and terminal Usage updates and replays current Usage after thread/read", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.publishUsageOnNextTurn({
+      totalTokens: 30,
+      contextUsedTokens: 20,
+      contextWindowTokens: 100,
+    });
+
+    const turnId = await startPiTurn(fixture, threadId, 2);
+    const earlyUsage = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        messageParams(message).threadId === threadId,
+    );
+    expect(earlyUsage).toMatchObject({
+      params: {
+        threadId,
+        turnId,
+        tokenUsage: {
+          total: { totalTokens: 30 },
+          last: { totalTokens: 20, inputTokens: 20 },
+          modelContextWindow: 100,
+        },
+      },
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 2));
+    const earlyUsageIndex = fixture.collector.messages.indexOf(earlyUsage);
+    expect(earlyUsageIndex).toBeGreaterThan(responseIndex);
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+    session.publishUsage(
+      { totalTokens: 44, contextUsedTokens: 25, contextWindowTokens: 100 },
+      hostTurnIdSchema.parse(turnId),
+    );
+    await vi.waitFor(() => {
+      expect(
+        fixture.collector.messages.filter(
+          (message) =>
+            method(message, "thread/tokenUsage/updated") &&
+            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
+              44,
+        ),
+      ).toHaveLength(1);
+    });
+    const terminalIndex = fixture.collector.messages.findIndex((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    const idleIndex = fixture.collector.messages.findIndex((message) =>
+      threadStatus(message, threadId, "idle"),
+    );
+    const terminalUsageIndex = fixture.collector.messages.findIndex(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
+    );
+    expect(idleIndex).toBeGreaterThan(terminalIndex);
+    expect(terminalUsageIndex).toBeGreaterThan(idleIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 3));
+    await vi.waitFor(() => {
+      expect(
+        fixture.collector.messages.filter(
+          (message) =>
+            method(message, "thread/tokenUsage/updated") &&
+            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
+              44,
+        ),
+      ).toHaveLength(2);
+    });
+    const readResponseIndex = fixture.collector.messages.findIndex((message) =>
+      requestId(message, 3),
+    );
+    const replayIndex = fixture.collector.messages.findLastIndex(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
+    );
+    expect(replayIndex).toBeGreaterThan(readResponseIndex);
+
+    const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(JSON.stringify(stored)).not.toMatch(/usage|cost|context/i);
+    await stopFixture(fixture);
+  });
+
+  it("keeps Usage isolated across registered Harness Threads", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 10);
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      11,
+    );
+    const piTurnId = await completePiTurn(fixture, piThreadId, 12, 0);
+    const claudeTurnId = await completePiTurn(
+      { ...fixture, adapter: claudeAdapter },
+      claudeThreadId,
+      13,
+      0,
+    );
+    piAdapter.sessions[0]?.publishUsage(
+      { totalTokens: 10, contextUsedTokens: 2, contextWindowTokens: 100 },
+      hostTurnIdSchema.parse(piTurnId),
+    );
+    claudeAdapter.sessions[0]?.publishUsage(
+      { totalTokens: 90, contextUsedTokens: 70, contextWindowTokens: 200 },
+      hostTurnIdSchema.parse(claudeTurnId),
+    );
+
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/tokenUsage/updated") &&
+          messageParams(message).threadId === piThreadId,
+      ),
+    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 10 } } } });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/tokenUsage/updated") &&
+          messageParams(message).threadId === claudeThreadId,
+      ),
+    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 90 } } } });
+    await stopFixture(fixture);
+  });
+
   it("forks external inclusive, exclusive, and tail boundaries without reusing Host Turn IDs", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -1066,7 +1208,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it("restores Store-owned external read, resume, and Fork on demand", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-restart-test-"));
-    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      undefined,
+      undefined,
+      { totalTokens: 77, contextUsedTokens: 33, contextWindowTokens: 200 },
+    );
     const opened = await adapter.open({ kind: "create", cwd: "/persisted" });
     if (!opened.ok) throw new Error(opened.error.message);
     const source = opened.value;
@@ -1133,6 +1281,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    const restoredUsage = await fixture.collector.waitFor((message) =>
+      method(message, "thread/tokenUsage/updated"),
+    );
+    expect(restoredUsage).toMatchObject({
+      params: {
+        threadId,
+        turnId: persistedTurnId,
+        tokenUsage: { total: { totalTokens: 77 }, modelContextWindow: 200 },
+      },
+    });
+    expect(fixture.collector.messages.indexOf(restoredUsage)).toBeGreaterThan(
+      fixture.collector.messages.findIndex((message) => requestId(message, 60)),
+    );
     expect(fakeSource.snapshotReads).toBe(2);
 
     writeRequest(fixture.desktopInput, {
@@ -2243,6 +2404,43 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 8,
       result: { data: [] },
     });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards official Codex Usage notifications without external projection", async () => {
+    const fixture = createFixture();
+    const notification = {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "official-thread",
+        turnId: "official-turn",
+        tokenUsage: {
+          total: {
+            totalTokens: 11,
+            inputTokens: 5,
+            cachedInputTokens: 1,
+            cacheWriteInputTokens: 0,
+            outputTokens: 5,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 4,
+            inputTokens: 4,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 100,
+        },
+      },
+    };
+    fixture.official.stdout.write(`${JSON.stringify(notification)}\n`);
+
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated")),
+    ).resolves.toEqual(notification);
     expect(fixture.adapter.sessions).toHaveLength(0);
     await stopFixture(fixture);
   });

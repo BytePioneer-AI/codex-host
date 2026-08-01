@@ -150,6 +150,7 @@ class ClaudeHarnessSession implements HarnessSession {
     history: { fork: false, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState;
+  readonly initialUsage = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;

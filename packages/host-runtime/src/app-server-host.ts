@@ -61,6 +61,7 @@ import {
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   parseJsonFrame,
+  projectCodexThreadUsage,
   readLfFrames,
   writeFrame,
   writeJsonFrame,
@@ -1075,6 +1076,7 @@ export class AppServerHost {
             sessionId: await this.#repository.sessionTreeId(location.record),
           });
       await this.#writer.json(rpcEnvelope(request, { result: { thread } }));
+      if (location.thread) await this.#replayExternalUsage(location.thread);
     } catch {
       await this.#writer.json(
         rpcError(request, -32081, "External Thread metadata could not be read"),
@@ -1111,6 +1113,7 @@ export class AppServerHost {
         },
       }),
     );
+    await this.#replayExternalUsage(thread);
   }
 
   async #listExternalHistory(
@@ -1425,6 +1428,22 @@ export class AppServerHost {
       }
       return;
     }
+    if (event.type === "session.usage.changed") {
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      thread.latestUsage = event.usage;
+      if (event.usage === null) {
+        thread.usageTurnId = null;
+        return;
+      }
+      const turnId = event.observedForTurnId
+        ? this.#isKnownExternalTurn(thread, event.observedForTurnId)
+          ? event.observedForTurnId
+          : null
+        : (thread.activeTurnId ?? this.#latestCompletedTurnId(thread));
+      thread.usageTurnId = turnId;
+      if (turnId) await this.#writeExternalUsage(thread, turnId);
+      return;
+    }
     if (event.type === "session.faulted") {
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
@@ -1627,6 +1646,38 @@ export class AppServerHost {
 
   async #waitForTurnResponse(thread: ExternalThread, turnId: HostTurnId): Promise<void> {
     await thread.responseGates.get(turnId)?.promise;
+  }
+
+  #latestCompletedTurnId(thread: ExternalThread): HostTurnId | null {
+    const parsed = hostTurnIdSchema.safeParse(thread.turns.at(-1)?.id);
+    return parsed.success ? parsed.data : null;
+  }
+
+  #isKnownExternalTurn(thread: ExternalThread, turnId: HostTurnId): boolean {
+    return thread.projectedTurns.has(turnId) || thread.turns.some((turn) => turn.id === turnId);
+  }
+
+  async #replayExternalUsage(thread: ExternalThread): Promise<void> {
+    const latestTurnId = this.#latestCompletedTurnId(thread);
+    if (!latestTurnId || !thread.latestUsage) return;
+    thread.usageTurnId = latestTurnId;
+    await this.#writeExternalUsage(thread, latestTurnId);
+  }
+
+  async #writeExternalUsage(thread: ExternalThread, turnId: HostTurnId): Promise<void> {
+    const usage = thread.latestUsage;
+    if (!usage || this.#externalRuntime.get(thread.id) !== thread) return;
+    const projection = projectCodexThreadUsage({ threadId: thread.id, turnId, usage });
+    if (!projection) return;
+    await this.#waitForTurnResponse(thread, turnId);
+    if (
+      this.#externalRuntime.get(thread.id) !== thread ||
+      thread.latestUsage !== usage ||
+      thread.usageTurnId !== turnId
+    ) {
+      return;
+    }
+    await this.#writer.json(projection);
   }
 
   #diagnose(error: unknown): void {

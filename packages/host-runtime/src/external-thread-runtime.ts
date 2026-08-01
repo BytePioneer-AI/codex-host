@@ -2,6 +2,7 @@ import type {
   HarnessAdapter,
   HarnessModelRef,
   HarnessSession,
+  HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -47,6 +48,8 @@ export interface ExternalThread {
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
+  latestUsage: HostUsage | null;
+  usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   persistenceError: Error | null;
@@ -150,6 +153,8 @@ export class ExternalThreadRuntime {
       historyHydrated: true,
       running: false,
       activeTurnId: null,
+      latestUsage: input.session.initialUsage,
+      usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),
       persistenceError: null,

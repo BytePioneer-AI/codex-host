@@ -63,6 +63,49 @@ describe("minimal Harness text Session", () => {
     });
   });
 
+  it("publishes complete Session Usage replacements after a Turn terminal", async () => {
+    const initialUsage = {
+      totalTokens: 10,
+      contextUsedTokens: 6,
+      contextWindowTokens: 100,
+    };
+    const session = new FakeHarnessSession(
+      harnessIdSchema.parse("fake"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      initialUsage,
+    );
+    const collected = collect(session.outputs);
+
+    expect(session.initialUsage).toEqual(initialUsage);
+    expect(session.capabilities).not.toHaveProperty("usage");
+    await session.execute(textTurn("usage-turn"));
+    session.succeedTurn();
+    session.publishUsage({ totalTokens: 12 }, turnId("usage-turn"));
+    session.publishUsage(null);
+    session.failUsageTelemetry();
+    await session.close();
+
+    const usageEvents = events(await collected).filter(
+      (event) => event.type === "session.usage.changed",
+    );
+    expect(usageEvents).toEqual([
+      {
+        type: "session.usage.changed",
+        usage: { totalTokens: 12 },
+        observedForTurnId: "usage-turn",
+      },
+      { type: "session.usage.changed", usage: null },
+    ]);
+    expect(session.usageFailures).toBe(1);
+  });
+
   it("does not emit lifecycle outputs when a Turn is rejected before acceptance", async () => {
     const session = new FakeHarnessSession(harnessIdSchema.parse("fake"));
     const collected = collect(session.outputs);

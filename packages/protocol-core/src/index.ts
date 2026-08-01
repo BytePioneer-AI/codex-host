@@ -6,6 +6,8 @@ export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/s
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
 export { projectCodexQuestionRequest } from "./codex-question.js";
 export type { CodexQuestionRequestProjection } from "./codex-question.js";
+export { projectCodexThreadUsage } from "./codex-usage.js";
+export type { CodexThreadUsageProjectionInput } from "./codex-usage.js";
 export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
 export type {
   CodexQuestionProjection,

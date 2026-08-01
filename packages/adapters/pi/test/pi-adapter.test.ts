@@ -11,6 +11,7 @@ import type {
   HarnessOutput,
   HarnessSession,
   HostQuestionInteraction,
+  HostUsage,
 } from "@codexhost/harness-adapter";
 import {
   PiAdapter,
@@ -36,6 +37,7 @@ class FakePiTransport implements PiTurnTransport {
     provider: "synthetic-provider",
     modelId: "synthetic-model",
     thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
+    contextUsage: { contextUsedTokens: 40, contextWindowTokens: 200 },
   };
   readonly abort = vi.fn(async () => undefined);
   readonly respondToInteraction = vi.fn(async (response: PiInteractionResponse) => {
@@ -61,6 +63,9 @@ class FakePiTransport implements PiTurnTransport {
           ],
   );
   readonly getEntries = vi.fn(async (): Promise<PiSessionHistory> => structuredClone(this.history));
+  readonly getSessionUsage = vi.fn(async (): Promise<HostUsage | null> =>
+    this.usage === null ? null : structuredClone(this.usage),
+  );
   readonly fork = vi.fn(async (entryId: string) => {
     const cutoff = this.history.entries.findIndex((entry) => entry.id === entryId);
     if (cutoff < 0) throw new Error("Unknown synthetic Fork Entry");
@@ -111,6 +116,13 @@ class FakePiTransport implements PiTurnTransport {
   rejectTurn: ((error: Error) => void) | null = null;
   resolveTurn: ((value: PiTurnResult) => void) | null = null;
   text: string | null = null;
+  usage: HostUsage | null = {
+    inputTokens: 20,
+    outputTokens: 10,
+    totalTokens: 30,
+    contextUsedTokens: 40,
+    contextWindowTokens: 200,
+  };
 
   event(event: PiTurnEvent): void {
     if (!this.onEvent) throw new Error("No active fake Pi Turn");
@@ -424,6 +436,13 @@ describe("Pi HarnessAdapter Session", () => {
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({ sessionFile: "/synthetic/source.jsonl" }),
     );
+    expect(opened.value.initialUsage).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      totalTokens: 30,
+      contextUsedTokens: 40,
+      contextWindowTokens: 200,
+    });
     expect(opened.value.initialState).toMatchObject({
       nativeRef: { nativeSessionId: "source-session" },
       effectiveThinkingOptionId: "high",
@@ -638,7 +657,89 @@ describe("Pi HarnessAdapter Session", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "turn-1",
+      usage: { totalTokens: 30, contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
 
+    await session.close();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("retains reliable Usage when a later refresh fails", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    expect(session.initialUsage).toBeNull();
+
+    await session.execute(textTurn("usage-1"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.succeed("first");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30 },
+    });
+
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    transport.getSessionUsage.mockRejectedValueOnce(new Error("synthetic Telemetry failure"));
+    await session.execute(textTurn("usage-2"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.succeed("second");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledTimes(2));
+    await session.close();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("drops an older Usage refresh after the effective Model changes", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("usage-generation"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    let resolveOld!: (usage: HostUsage) => void;
+    transport.getSessionUsage.mockImplementationOnce(
+      () => new Promise<HostUsage>((resolve) => (resolveOld = resolve)),
+    );
+    transport.succeed("done");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledOnce());
+
+    const alternate = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    transport.usage = {
+      totalTokens: 5,
+      contextUsedTokens: 8,
+      contextWindowTokens: 400,
+    };
+    const selecting = session.execute({ type: "model.select", model: alternate });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: alternate },
+    });
+    await expect(selecting).resolves.toMatchObject({ ok: true });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 5, contextWindowTokens: 400 },
+    });
+
+    resolveOld({ totalTokens: 999, contextUsedTokens: 199, contextWindowTokens: 200 });
+    await Promise.resolve();
     await session.close();
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
@@ -728,6 +829,7 @@ describe("Pi HarnessAdapter Session", () => {
     transports[0]?.succeed("first");
     await nextEvent(iterator);
     await nextEvent(iterator);
+    await nextEvent(iterator);
 
     const alternate = encodePiModelRef({
       provider: "synthetic-provider",
@@ -746,6 +848,11 @@ describe("Pi HarnessAdapter Session", () => {
       },
     });
     await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(await nextEvent(iterator)).toEqual({ type: "session.usage.changed", usage: null });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30 },
+    });
 
     await session.execute(textTurn("active"));
     await nextEvent(iterator);
@@ -774,6 +881,7 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     transports[1]?.succeed("start-thinking");
+    await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
 
@@ -820,6 +928,7 @@ describe("Pi HarnessAdapter Session", () => {
     transports[0]?.succeed("start");
     await nextEvent(iterator);
     await nextEvent(iterator);
+    await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake transport was not created");
 
@@ -862,6 +971,7 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     transports[0]?.succeed("start");
+    await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
     const transport = transports[0];

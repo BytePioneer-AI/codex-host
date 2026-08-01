@@ -8,6 +8,7 @@
     Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="A newer version of codexhost is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <UIRef Id="CodexhostInstallUI" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsDirectory" Name="Programs">
@@ -21,6 +22,11 @@
             <Component Id="LauncherComponent">
               <File Id="LauncherFile" Source="$(var.PayloadRoot)\bin\codexhost.exe" />
             </Component>
+            <Component Id="StartMenuLauncherComponent">
+              <File
+                Id="StartMenuLauncherFile"
+                Source="$(var.PayloadRoot)\bin\codexhost-start.exe" />
+            </Component>
           </Directory>
           <Directory Id="LibexecFolder" Name="libexec">
             <Component Id="ShimComponent">
@@ -33,33 +39,47 @@
             </Component>
           </Directory>
           <Directory Id="AppFolder" Name="app">
-            <Component Id="ApplicationBundleComponent">
+            <Component Id="DesktopControllerComponent">
               <File
                 Id="DesktopControllerFile"
                 Source="$(var.PayloadRoot)\app\desktop-controller.mjs" />
+            </Component>
+            <Component Id="HostRuntimeComponent">
               <File Id="HostRuntimeFile" Source="$(var.PayloadRoot)\app\host-runtime.mjs" />
+            </Component>
+            <Component Id="RendererExtensionComponent">
               <File
                 Id="RendererExtensionFile"
                 Source="$(var.PayloadRoot)\app\renderer-extension.js" />
             </Component>
           </Directory>
           <Directory Id="LicensesFolder" Name="licenses">
-            <Component Id="LicensesComponent">
+            <Component Id="NodeLicenseComponent">
               <File
                 Id="NodeLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\Node.js-LICENSE.txt" />
+            </Component>
+            <Component Id="AnthropicSdkLicenseComponent">
               <File
                 Id="AnthropicSdkLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\Anthropic-SDK-LICENSE.txt" />
+            </Component>
+            <Component Id="ClaudeAgentSdkLicenseComponent">
               <File
                 Id="ClaudeAgentSdkLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\Claude-Agent-SDK-LICENSE.md" />
+            </Component>
+            <Component Id="McpSdkLicenseComponent">
               <File
                 Id="McpSdkLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\MCP-SDK-LICENSE.txt" />
+            </Component>
+            <Component Id="DiffLicenseComponent">
               <File
                 Id="DiffLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\diff-LICENSE.txt" />
+            </Component>
+            <Component Id="ZodLicenseComponent">
               <File
                 Id="ZodLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\zod-LICENSE.txt" />
@@ -76,7 +96,7 @@
             Id="ApplicationStartMenuShortcut"
             Name="codexhost"
             Description="Launch Codex Desktop with codexhost"
-            Target="[BinFolder]codexhost.exe"
+            Target="[BinFolder]codexhost-start.exe"
             WorkingDirectory="INSTALLFOLDER" />
           <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
           <RegistryValue
@@ -93,10 +113,18 @@
     <Feature Id="ProductFeature" Title="codexhost" Level="1">
       <ComponentRef Id="ThirdPartyNoticesComponent" />
       <ComponentRef Id="LauncherComponent" />
+      <ComponentRef Id="StartMenuLauncherComponent" />
       <ComponentRef Id="ShimComponent" />
       <ComponentRef Id="NodeComponent" />
-      <ComponentRef Id="ApplicationBundleComponent" />
-      <ComponentRef Id="LicensesComponent" />
+      <ComponentRef Id="DesktopControllerComponent" />
+      <ComponentRef Id="HostRuntimeComponent" />
+      <ComponentRef Id="RendererExtensionComponent" />
+      <ComponentRef Id="NodeLicenseComponent" />
+      <ComponentRef Id="AnthropicSdkLicenseComponent" />
+      <ComponentRef Id="ClaudeAgentSdkLicenseComponent" />
+      <ComponentRef Id="McpSdkLicenseComponent" />
+      <ComponentRef Id="DiffLicenseComponent" />
+      <ComponentRef Id="ZodLicenseComponent" />
       <ComponentRef Id="ApplicationShortcutComponent" />
     </Feature>
   </Package>

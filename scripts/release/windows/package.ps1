@@ -7,7 +7,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $WixSource = Join-Path $PSScriptRoot "Product.wxs"
+$WixUiSource = Join-Path $PSScriptRoot "InstallUI.wxs"
 $ExpectedWixVersion = "4.0.6"
+$WixUiExtension = "WixToolset.UI.wixext/$ExpectedWixVersion"
 $ResolvedPayload = (Resolve-Path $PayloadRoot).Path
 $OutputDirectory = Split-Path -Parent $OutputPath
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
@@ -18,13 +20,18 @@ try {
   & dotnet tool restore
   if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore failed with status $LASTEXITCODE" }
 
-  $ActualWixVersion = (& dotnet tool run wix --version).Trim()
+  $ActualWixVersion = (& dotnet tool run wix -- --version).Trim()
   if ($LASTEXITCODE -ne 0) { throw "wix --version failed with status $LASTEXITCODE" }
   if (-not $ActualWixVersion.StartsWith($ExpectedWixVersion)) {
     throw "WiX version mismatch: expected $ExpectedWixVersion, got $ActualWixVersion"
   }
 
-  & dotnet tool run wix build $WixSource `
+  & dotnet tool run wix -- extension add --global $WixUiExtension
+  if ($LASTEXITCODE -ne 0) { throw "WixUI extension restore failed with status $LASTEXITCODE" }
+
+  & dotnet tool run wix -- build $WixSource $WixUiSource `
+    -ext WixToolset.UI.wixext `
+    -culture en-US `
     -arch $Architecture `
     -d "PayloadRoot=$ResolvedPayload" `
     -d "ProductVersion=$Version" `

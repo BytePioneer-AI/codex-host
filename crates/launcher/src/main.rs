@@ -19,14 +19,18 @@ use codexhost_platform::launch_desktop;
 use codexhost_platform::launch_desktop_session;
 use codexhost_platform::{
     DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
-    canonical_existing_file, desktop_process_ids, discover_codex_desktop, spawn_supervised,
+    canonical_existing_file, configure_background_command, desktop_process_ids,
+    discover_codex_desktop, node_entrypoint_path, spawn_supervised,
 };
+#[cfg(target_os = "windows")]
+use codexhost_platform::{hide_console_window, show_error_dialog};
 use installation_layout::InstalledResources;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
+const START_MENU_ARGUMENT: &str = "--start-menu";
 
 fn usage() {
     eprintln!(
@@ -261,7 +265,7 @@ fn allocate_inspector_endpoint() -> Result<(String, OsString), Box<dyn Error>> {
 fn desktop_controller_command(options: &ResolvedLaunchOptions, endpoint: &str) -> Command {
     let mut command = Command::new(&options.node);
     command
-        .arg(&options.desktop_controller)
+        .arg(node_entrypoint_path(&options.desktop_controller))
         .arg("--inspector-endpoint")
         .arg(endpoint)
         .arg("--renderer")
@@ -271,6 +275,7 @@ fn desktop_controller_command(options: &ResolvedLaunchOptions, endpoint: &str) -
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    configure_background_command(&mut command);
     command
 }
 
@@ -465,6 +470,7 @@ fn default_launch_options() -> LaunchOptions {
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
         None => launch(default_launch_options()),
+        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options()),
         Some("inspect") if arguments.len() == 1 => inspect(),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?),
         _ => {
@@ -476,10 +482,21 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
 fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    #[cfg(target_os = "windows")]
+    let start_menu_launch = arguments.as_slice() == [START_MENU_ARGUMENT];
+    #[cfg(target_os = "windows")]
+    if start_menu_launch {
+        hide_console_window();
+    }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("codexhost launcher: {error}");
+            let message = format!("codexhost launcher: {error}");
+            eprintln!("{message}");
+            #[cfg(target_os = "windows")]
+            if start_menu_launch {
+                show_error_dialog(&message);
+            }
             ExitCode::FAILURE
         }
     }
@@ -487,7 +504,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::path::PathBuf;
     #[cfg(target_os = "macos")]
     use std::process::{Command, Stdio};
@@ -548,9 +565,8 @@ mod tests {
         assert!(options.renderer_extension.is_some());
     }
 
-    #[test]
-    fn production_controller_uses_private_node_and_loopback_inspector() {
-        let options = ResolvedLaunchOptions {
+    fn resolved_options() -> ResolvedLaunchOptions {
+        ResolvedLaunchOptions {
             agent: Agent::Pi,
             shim: PathBuf::from("/opt/codexhost-shim"),
             node: PathBuf::from("/opt/node"),
@@ -558,7 +574,12 @@ mod tests {
             desktop_controller: PathBuf::from("/opt/desktop-controller.mjs"),
             renderer_extension: PathBuf::from("/opt/renderer-extension.js"),
             pi: None,
-        };
+        }
+    }
+
+    #[test]
+    fn production_controller_uses_private_node_and_loopback_inspector() {
+        let options = resolved_options();
         let command = desktop_controller_command(&options, "http://127.0.0.1:43123");
         assert_eq!(command.get_program(), "/opt/node");
         assert_eq!(
@@ -589,6 +610,21 @@ mod tests {
                 .find(|(name, _)| name == DEFAULT_AGENT_ENV)
                 .map(|(_, value)| value),
             Some(&OsString::from("codex")),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn production_controller_normalizes_a_verbatim_node_entrypoint() {
+        let options = ResolvedLaunchOptions {
+            desktop_controller: PathBuf::from(r"\\?\C:\Program Files\codexhost\controller.mjs"),
+            ..resolved_options()
+        };
+        let command = desktop_controller_command(&options, "http://127.0.0.1:43123");
+
+        assert_eq!(
+            command.get_args().next(),
+            Some(OsStr::new(r"C:\Program Files\codexhost\controller.mjs")),
         );
     }
 

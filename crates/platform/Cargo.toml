@@ -12,3 +12,10 @@ path = "src/lib.rs"
 libproc = "0.14.11"
 nix = { version = "0.31.3", features = ["process", "signal"] }
 plist = { version = "1.10.0", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+  "ApplicationModel",
+  "Management_Deployment",
+  "Storage_Search",
+] }

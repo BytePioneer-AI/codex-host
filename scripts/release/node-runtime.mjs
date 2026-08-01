@@ -130,6 +130,11 @@ export async function extractNodeRuntime({
     await copyFile(sourceLicense, path.join(payloadRoot, "licenses", "Node.js-LICENSE.txt"));
     return destinationNode;
   } finally {
-    await rm(extractionDirectory, { recursive: true, force: true });
+    await rm(extractionDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === "win32" ? 5 : 0,
+      retryDelay: 100,
+    });
   }
 }

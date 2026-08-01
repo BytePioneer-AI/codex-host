@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -9,18 +11,19 @@ import type { RendererControlSession } from "../src/renderer-control-session.js"
 
 describe("production Desktop Controller", () => {
   it("accepts only a loopback Inspector and absolute Renderer path", () => {
+    const rendererPath = path.resolve("fixtures/renderer-extension.js");
     expect(
       parseDesktopControllerArguments([
         "--inspector-endpoint",
         "http://127.0.0.1:43123",
         "--renderer",
-        "/Applications/codexhost.app/Contents/Resources/app/renderer-extension.js",
+        rendererPath,
         "--default-agent",
         "pi",
       ]),
     ).toEqual({
       inspectorEndpoint: "http://127.0.0.1:43123",
-      rendererPath: "/Applications/codexhost.app/Contents/Resources/app/renderer-extension.js",
+      rendererPath,
       defaultAgent: "pi",
     });
     expect(() =>

@@ -21,16 +21,34 @@ describe("platform packagers", () => {
   });
 
   it("pins WiX 4 and maps both Windows installer architectures", async () => {
-    const [manifest, script, wix] = await Promise.all([
+    const [manifest, script, wix, installUi] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/.config/dotnet-tools.json"), "utf8"),
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),
       readFile(path.join(root, "scripts/release/windows/Product.wxs"), "utf8"),
+      readFile(path.join(root, "scripts/release/windows/InstallUI.wxs"), "utf8"),
     ]);
     expect(JSON.parse(manifest).tools.wix.version).toMatch(/^4\./u);
     expect(script).toContain('ValidateSet("x64", "arm64")');
+    expect(script).toContain("dotnet tool run wix -- --version");
+    expect(script).toContain("dotnet tool run wix -- build");
+    expect(script).toContain("WixToolset.UI.wixext/$ExpectedWixVersion");
+    expect(script).toContain("extension add --global $WixUiExtension");
+    expect(script).toContain("-ext WixToolset.UI.wixext");
     expect(wix).toContain('Scope="perUser"');
+    expect(wix).toContain('<UIRef Id="CodexhostInstallUI" />');
+    expect(wix).toContain('Target="[BinFolder]codexhost-start.exe"');
+    expect(installUi).toContain('<DialogRef Id="WelcomeDlg" />');
+    expect(installUi).toContain('<DialogRef Id="ProgressDlg" />');
+    expect(installUi).toContain('Dialog="MaintenanceTypeDlg"');
+    expect(installUi).not.toContain("LicenseAgreementDlg");
+    const componentBodies = [...wix.matchAll(/<Component\b[^>]*>([\s\S]*?)<\/Component>/gu)].map(
+      (match) => match[1],
+    );
+    expect(componentBodies.length).toBeGreaterThan(0);
+    expect(componentBodies.every((body) => (body.match(/<File\b/gu) ?? []).length <= 1)).toBe(true);
     for (const relative of [
       "bin\\codexhost.exe",
+      "bin\\codexhost-start.exe",
       "libexec\\codexhost-shim.exe",
       "runtime\\node.exe",
       "app\\desktop-controller.mjs",

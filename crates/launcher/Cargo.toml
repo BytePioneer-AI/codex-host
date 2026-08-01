@@ -9,5 +9,9 @@ publish.workspace = true
 name = "codexhost"
 path = "src/main.rs"
 
+[[bin]]
+name = "codexhost-start"
+path = "src/start_menu.rs"
+
 [dependencies]
 codexhost-platform = { path = "../platform" }

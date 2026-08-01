@@ -15,6 +15,7 @@
 node_modules/
 .npm/
 .cache/
+.wix/
 .vite/
 .vitest/
 .eslintcache

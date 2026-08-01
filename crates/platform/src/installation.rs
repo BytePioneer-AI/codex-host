@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use plist::Value;
+#[cfg(target_os = "windows")]
+use windows::Management::Deployment::PackageManager;
+#[cfg(target_os = "windows")]
+use windows::core::HSTRING;
 
 use super::{DesktopIdentity, DesktopInstallation, PlatformError};
 #[cfg(target_os = "windows")]
@@ -48,13 +52,23 @@ fn files_equal(left: &Path, right: &Path) -> Result<bool, PlatformError> {
 }
 
 #[cfg(target_os = "windows")]
-fn find_executable_codex_cli(packaged_cli: &Path) -> Result<PathBuf, PlatformError> {
-    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
-        PlatformError::NotFound(
-            "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
-        )
-    })?;
-    let cache_root = PathBuf::from(local_app_data).join("OpenAI/Codex/bin");
+const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsPackageDetails {
+    package_name: String,
+    package_family_name: String,
+    version: String,
+    install_root: PathBuf,
+}
+
+#[cfg(target_os = "windows")]
+fn find_executable_codex_cli(
+    packaged_cli: &Path,
+    local_app_data: &Path,
+) -> Result<PathBuf, PlatformError> {
+    let cache_root = local_app_data.join("OpenAI/Codex/bin");
     let mut candidates = vec![cache_root.join("codex.exe")];
 
     if let Ok(entries) = cache_root.read_dir() {
@@ -72,51 +86,258 @@ fn find_executable_codex_cli(packaged_cli: &Path) -> Result<PathBuf, PlatformErr
     }
 
     Err(PlatformError::NotFound(format!(
-        "no executable Desktop-managed Codex CLI cache matches '{}'; run the official Desktop once before probing",
+        "no executable Desktop-managed Codex CLI cache matches '{}'; run the official Desktop once before launching codexhost",
         packaged_cli.display()
     )))
 }
 
 #[cfg(target_os = "windows")]
-pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let required = |name: &'static str| {
-        env::var_os(name)
-            .filter(|value| !value.is_empty())
-            .ok_or(PlatformError::NotFound(
-                "Gate A installation environment is unavailable; run through tools/gate-a".into(),
-            ))
+fn probe_package_details(
+    value: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Result<Option<WindowsPackageDetails>, PlatformError> {
+    let values = [
+        (PROBE_PACKAGE_NAME_ENV, value(PROBE_PACKAGE_NAME_ENV)),
+        (PROBE_PACKAGE_FAMILY_ENV, value(PROBE_PACKAGE_FAMILY_ENV)),
+        (PROBE_DESKTOP_VERSION_ENV, value(PROBE_DESKTOP_VERSION_ENV)),
+        (PROBE_INSTALL_ROOT_ENV, value(PROBE_INSTALL_ROOT_ENV)),
+    ];
+    let present = values
+        .iter()
+        .filter(|(_, value)| value.as_ref().is_some_and(|value| !value.is_empty()))
+        .count();
+    if present == 0 {
+        return Ok(None);
+    }
+    if present != values.len() {
+        return Err(PlatformError::Invalid(
+            "Gate A installation override must set all package identity, version, and root variables"
+                .into(),
+        ));
+    }
+    let text = |index: usize| {
+        values[index]
+            .1
+            .as_ref()
+            .expect("complete Gate A override")
+            .to_string_lossy()
+            .into_owned()
     };
-    let package_name = required(PROBE_PACKAGE_NAME_ENV)?
-        .to_string_lossy()
-        .into_owned();
-    let package_family_name = required(PROBE_PACKAGE_FAMILY_ENV)?
-        .to_string_lossy()
-        .into_owned();
-    let version = required(PROBE_DESKTOP_VERSION_ENV)?
-        .to_string_lossy()
-        .into_owned();
-    let install_root = PathBuf::from(required(PROBE_INSTALL_ROOT_ENV)?);
+    Ok(Some(WindowsPackageDetails {
+        package_name: text(0),
+        package_family_name: text(1),
+        version: text(2),
+        install_root: PathBuf::from(values[3].1.as_ref().expect("complete Gate A override")),
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_api_error(context: &str, error: windows::core::Error) -> PlatformError {
+    PlatformError::Invalid(format!("{context}: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn discover_installed_windows_package() -> Result<WindowsPackageDetails, PlatformError> {
+    let manager = PackageManager::new()
+        .map_err(|error| windows_api_error("cannot initialize Windows PackageManager", error))?;
+    let packages = manager
+        .FindPackagesByUserSecurityId(&HSTRING::new())
+        .map_err(|error| windows_api_error("cannot enumerate current-user AppX packages", error))?;
+    let mut candidates = Vec::new();
+    for package in packages {
+        let id = package
+            .Id()
+            .map_err(|error| windows_api_error("cannot read AppX package identity", error))?;
+        let package_name = id
+            .Name()
+            .map_err(|error| windows_api_error("cannot read AppX package name", error))?
+            .to_string_lossy();
+        if package_name != WINDOWS_CODEX_PACKAGE_NAME {
+            continue;
+        }
+        let package_version = id
+            .Version()
+            .map_err(|error| windows_api_error("cannot read Codex package version", error))?;
+        let version_key = [
+            package_version.Major,
+            package_version.Minor,
+            package_version.Build,
+            package_version.Revision,
+        ];
+        let package_family_name = id
+            .FamilyName()
+            .map_err(|error| windows_api_error("cannot read Codex package family", error))?
+            .to_string_lossy();
+        let install_root = package
+            .InstalledLocation()
+            .and_then(|folder| folder.Path())
+            .map_err(|error| windows_api_error("cannot read Codex install location", error))?;
+        candidates.push((
+            version_key,
+            WindowsPackageDetails {
+                package_name,
+                package_family_name,
+                version: format!(
+                    "{}.{}.{}.{}",
+                    version_key[0], version_key[1], version_key[2], version_key[3]
+                ),
+                install_root: PathBuf::from(install_root.to_string_lossy()),
+            },
+        ));
+    }
+    candidates
+        .into_iter()
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, details)| details)
+        .ok_or_else(|| {
+            PlatformError::NotFound(
+                "official OpenAI.Codex AppX package is not installed for the current user".into(),
+            )
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installation(
+    details: WindowsPackageDetails,
+    local_app_data: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    let install_root = details.install_root.canonicalize().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop package '{}' is unavailable: {error}",
+            details.install_root.display()
+        ))
+    })?;
     let desktop_executable = install_root.join("app/ChatGPT.exe");
     let packaged_codex_cli = install_root.join("app/resources/codex.exe");
     if !desktop_executable.is_file() || !packaged_codex_cli.is_file() {
         return Err(PlatformError::NotFound(format!(
-            "Codex Desktop package '{}' does not contain the observed app/ChatGPT.exe and app/resources/codex.exe layout",
+            "Codex Desktop package '{}' does not contain app/ChatGPT.exe and app/resources/codex.exe",
             install_root.display()
         )));
     }
-    let executable_codex_cli = find_executable_codex_cli(&packaged_codex_cli)?;
+    let executable_codex_cli = find_executable_codex_cli(&packaged_codex_cli, local_app_data)?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
-            package_name,
-            package_family_name,
+            package_name: details.package_name,
+            package_family_name: details.package_family_name,
         },
-        version,
+        version: details.version,
         install_root,
         desktop_executable,
         packaged_codex_cli,
         executable_codex_cli,
     })
+}
+
+#[cfg(target_os = "windows")]
+pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    let details =
+        probe_package_details(env::var_os)?.map_or_else(discover_installed_windows_package, Ok)?;
+    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
+        PlatformError::NotFound(
+            "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
+        )
+    })?;
+    windows_installation(details, &PathBuf::from(local_app_data))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{WindowsPackageDetails, probe_package_details, windows_installation};
+    use crate::{DesktopIdentity, PlatformError, temporary_directory};
+    use crate::{
+        PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
+        PROBE_PACKAGE_NAME_ENV,
+    };
+
+    #[test]
+    fn gate_override_is_optional_but_must_be_complete() {
+        assert_eq!(
+            probe_package_details(|_| None).expect("no Gate override"),
+            None
+        );
+
+        let partial = HashMap::from([(PROBE_PACKAGE_NAME_ENV, OsString::from("OpenAI.Codex"))]);
+        let error = probe_package_details(|name| partial.get(name).cloned())
+            .expect_err("partial Gate override must fail");
+        assert!(
+            matches!(error, PlatformError::Invalid(message) if message.contains("must set all"))
+        );
+
+        let complete = HashMap::from([
+            (PROBE_PACKAGE_NAME_ENV, OsString::from("OpenAI.Codex")),
+            (
+                PROBE_PACKAGE_FAMILY_ENV,
+                OsString::from("OpenAI.Codex_family"),
+            ),
+            (PROBE_DESKTOP_VERSION_ENV, OsString::from("1.2.3.4")),
+            (PROBE_INSTALL_ROOT_ENV, OsString::from("C:\\Codex")),
+        ]);
+        assert_eq!(
+            probe_package_details(|name| complete.get(name).cloned())
+                .expect("complete Gate override"),
+            Some(WindowsPackageDetails {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+                version: "1.2.3.4".into(),
+                install_root: PathBuf::from("C:\\Codex"),
+            })
+        );
+    }
+
+    #[test]
+    fn validates_package_layout_and_matches_the_desktop_cli_cache() {
+        let root = temporary_directory("codexhost-windows-installation");
+        let install_root = root.join("WindowsApps/OpenAI.Codex_1.2.3.4_x64");
+        let desktop = install_root.join("app/ChatGPT.exe");
+        let packaged_cli = install_root.join("app/resources/codex.exe");
+        fs::create_dir_all(desktop.parent().expect("Desktop parent"))
+            .expect("create Desktop directory");
+        fs::create_dir_all(packaged_cli.parent().expect("CLI parent"))
+            .expect("create CLI directory");
+        fs::write(&desktop, b"desktop").expect("write Desktop executable");
+        fs::write(&packaged_cli, b"matching codex cli").expect("write packaged CLI");
+
+        let local_app_data = root.join("LocalAppData");
+        let cached_cli = local_app_data.join("OpenAI/Codex/bin/version/codex.exe");
+        fs::create_dir_all(cached_cli.parent().expect("cache parent")).expect("create CLI cache");
+        fs::write(&cached_cli, b"matching codex cli").expect("write cached CLI");
+
+        let installation = windows_installation(
+            WindowsPackageDetails {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+                version: "1.2.3.4".into(),
+                install_root: install_root.clone(),
+            },
+            &local_app_data,
+        )
+        .expect("valid Windows installation");
+
+        assert_eq!(
+            installation.identity,
+            DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+            }
+        );
+        assert_eq!(installation.version, "1.2.3.4");
+        assert_eq!(
+            installation.install_root,
+            install_root.canonicalize().expect("canonical install root")
+        );
+        assert_eq!(
+            installation.executable_codex_cli,
+            cached_cli.canonicalize().expect("canonical cached CLI")
+        );
+
+        fs::remove_dir_all(root).expect("remove Windows installation fixture");
+    }
 }
 
 #[cfg(target_os = "macos")]

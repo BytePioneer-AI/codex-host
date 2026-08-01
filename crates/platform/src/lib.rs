@@ -12,6 +12,9 @@ mod process_supervision;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_process;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows_ui;
 
 pub use desktop_launch::launch_desktop;
 #[cfg(target_os = "macos")]
@@ -21,6 +24,8 @@ pub use process::{ProcessSnapshot, desktop_process_ids, parent_process_id, proce
 #[cfg(target_os = "macos")]
 pub use process::{desktop_process_tree, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
+#[cfg(target_os = "windows")]
+pub use windows_ui::{hide_console_window, show_error_dialog};
 
 pub const CRATE_NAME: &str = "codexhost-platform";
 pub const CODEX_CLI_PATH_ENV: &str = "CODEX_CLI_PATH";
@@ -94,6 +99,17 @@ impl From<io::Error> for PlatformError {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn configure_background_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn configure_background_command(_command: &mut std::process::Command) {}
+
 pub fn canonical_existing_file(path: &Path) -> Result<PathBuf, PlatformError> {
     if !path.is_file() {
         return Err(PlatformError::NotFound(format!(
@@ -102,6 +118,36 @@ pub fn canonical_existing_file(path: &Path) -> Result<PathBuf, PlatformError> {
         )));
     }
     path.canonicalize().map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "windows")]
+pub fn node_entrypoint_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const SEPARATOR: u16 = b'\\' as u16;
+    let value = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let verbatim = [SEPARATOR, SEPARATOR, b'?' as u16, SEPARATOR];
+    if !value.starts_with(&verbatim) {
+        return path.to_path_buf();
+    }
+    let unc = [b'U' as u16, b'N' as u16, b'C' as u16, SEPARATOR];
+    if value.get(4..8) == Some(unc.as_slice()) {
+        let normalized = [SEPARATOR, SEPARATOR]
+            .into_iter()
+            .chain(value[8..].iter().copied())
+            .collect::<Vec<_>>();
+        return PathBuf::from(OsString::from_wide(&normalized));
+    }
+    if value.get(5) == Some(&(b':' as u16)) {
+        return PathBuf::from(OsString::from_wide(&value[4..]));
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn node_entrypoint_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 fn comparable_path(path: &Path) -> Result<String, PlatformError> {
@@ -149,7 +195,9 @@ fn temporary_directory(prefix: &str) -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::{CRATE_NAME, PlatformError, temporary_directory, validate_proxy_target};
+    use super::{
+        CRATE_NAME, PlatformError, node_entrypoint_path, temporary_directory, validate_proxy_target,
+    };
 
     fn temporary_file(name: &str) -> std::path::PathBuf {
         let path = temporary_directory("codexhost-platform").join(name);
@@ -188,5 +236,24 @@ mod tests {
             validate_proxy_target(&shim, &target),
             Err(PlatformError::NotFound(_))
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalizes_verbatim_node_entrypoint_paths() {
+        use std::path::Path;
+
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"\\?\D:\workspace\host-runtime.js")),
+            Path::new(r"D:\workspace\host-runtime.js"),
+        );
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"\\?\UNC\server\share\host-runtime.js")),
+            Path::new(r"\\server\share\host-runtime.js"),
+        );
+        assert_eq!(
+            node_entrypoint_path(Path::new(r"D:\workspace\host-runtime.js")),
+            Path::new(r"D:\workspace\host-runtime.js"),
+        );
     }
 }

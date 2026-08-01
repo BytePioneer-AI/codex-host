@@ -30,14 +30,35 @@ const runtimeLicenses = [
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
 
-function npmCommand(platform = process.platform) {
-  return platform === "win32" ? "npm.cmd" : "npm";
+export function npmReleaseCommand(
+  args,
+  platform = process.platform,
+  environment = process.env,
+  nodePath = process.execPath,
+) {
+  if (platform !== "win32") return { command: "npm", args };
+  const npmExecPath = environment.npm_execpath;
+  if (!npmExecPath) {
+    throw new Error("Windows release builds must be started through npm so npm_execpath is set");
+  }
+  return { command: nodePath, args: [npmExecPath, ...args] };
 }
 
-export function releaseBuildCommands(target, platform = process.platform) {
+export function releaseBuildCommands(
+  target,
+  platform = process.platform,
+  environment = process.env,
+  nodePath = process.execPath,
+) {
   return [
-    { label: "TypeScript build", command: npmCommand(platform), args: ["run", "build:typescript"] },
-    { label: "Renderer build", command: npmCommand(platform), args: ["run", "build:renderer"] },
+    {
+      label: "TypeScript build",
+      ...npmReleaseCommand(["run", "build:typescript"], platform, environment, nodePath),
+    },
+    {
+      label: "Renderer build",
+      ...npmReleaseCommand(["run", "build:renderer"], platform, environment, nodePath),
+    },
     {
       label: "Rust release build",
       command: "cargo",
@@ -156,7 +177,7 @@ async function writeThirdPartyNotices(root, payloadRoot) {
 }
 
 export function expectedPayloadPaths(target) {
-  return [
+  const paths = [
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
@@ -170,7 +191,11 @@ export function expectedPayloadPaths(target) {
     "licenses/diff-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
-  ].sort();
+  ];
+  if (target.hostPlatform === "win32") {
+    paths.push(`bin/codexhost-start${target.executableSuffix}`);
+  }
+  return paths.sort();
 }
 
 async function walkFiles(root, current = root) {
@@ -237,6 +262,14 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Launcher",
     true,
   );
+  if (target.hostPlatform === "win32") {
+    await copyReleaseFile(
+      path.join(rustOutput, `codexhost-start${target.executableSuffix}`),
+      path.join(payloadRoot, "bin", `codexhost-start${target.executableSuffix}`),
+      "release Start Menu Launcher",
+      true,
+    );
+  }
   await copyReleaseFile(
     path.join(rustOutput, `codexhost-shim${target.executableSuffix}`),
     path.join(payloadRoot, "libexec", `codexhost-shim${target.executableSuffix}`),

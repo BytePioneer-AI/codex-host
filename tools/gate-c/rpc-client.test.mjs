@@ -49,6 +49,7 @@ describe("Gate C Pi RPC client", () => {
     ]);
     expect(first.data.echoed).toBe(1);
     expect(second.data.echoed).toBe(2);
+    expect(await waitUntil(() => rpc.events.length === 6)).toBe(true);
     expect(rpc.events.map(({ type }) => type)).toEqual([
       "unknown_future_event",
       "agent_start",

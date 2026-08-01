@@ -92,13 +92,16 @@ describe("Renderer tooling observer", () => {
         codex.disabled = false;
         pi.disabled = false;
       }, 5);
-      await new Promise((resolve) => setTimeout(resolve, 40));
-
-      expect(window_.__codexhostRendererBindingObserverV1.status().switchCounters).toEqual({
-        attempts: 1,
-        committed: 1,
-        rejected: 0,
-      });
+      await vi.waitFor(
+        () => {
+          expect(window_.__codexhostRendererBindingObserverV1.status().switchCounters).toEqual({
+            attempts: 1,
+            committed: 1,
+            rejected: 0,
+          });
+        },
+        { timeout: 1_000, interval: 10 },
+      );
     } finally {
       vi.unstubAllGlobals();
     }

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   expectedPayloadPaths,
+  npmReleaseCommand,
   numericPackageVersion,
   prepareReleasePayload,
   releaseBuildCommands,
@@ -26,12 +28,34 @@ async function createPayload(root, target) {
 }
 
 describe("release Payload", () => {
-  it("builds shared outputs before the selected Rust target", () => {
-    const commands = releaseBuildCommands(releaseTarget("windows-arm64"), "win32");
-    expect(commands.map((command) => command.command)).toEqual(["npm.cmd", "npm.cmd", "cargo"]);
+  it("runs nested npm builds through Node on Windows", () => {
+    const commands = releaseBuildCommands(
+      releaseTarget("windows-arm64"),
+      "win32",
+      { npm_execpath: "C:\\node\\npm-cli.js" },
+      "C:\\node\\node.exe",
+    );
+    expect(commands.map((command) => command.command)).toEqual([
+      "C:\\node\\node.exe",
+      "C:\\node\\node.exe",
+      "cargo",
+    ]);
+    expect(commands[0].args).toEqual(["C:\\node\\npm-cli.js", "run", "build:typescript"]);
     expect(commands.at(-1).args).toContain("aarch64-pc-windows-msvc");
     expect(commands.at(-1).args).toContain("codexhost-launcher");
     expect(commands.at(-1).args).toContain("codexhost-shim");
+    expect(() => npmReleaseCommand(["--version"], "win32", {})).toThrow("npm_execpath");
+  });
+
+  it.runIf(process.platform === "win32")("starts the current npm CLI without a batch file", () => {
+    const command = npmReleaseCommand(["--version"]);
+    const result = spawnSync(command.command, command.args, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/u);
   });
 
   it("defensively rejects direct cross-operating-system calls", async () => {
@@ -40,7 +64,7 @@ describe("release Payload", () => {
     await expect(prepareReleasePayload({ target })).rejects.toThrow("requires host platform");
   });
 
-  it("validates exactly thirteen allowlisted files without internal manifests", async () => {
+  it("validates the platform allowlists without internal manifests", async () => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");
     try {
@@ -48,6 +72,10 @@ describe("release Payload", () => {
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
       expect(paths).toHaveLength(13);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(14);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "bin/codexhost-start.exe",
+      );
       expect(paths).not.toContain("release-manifest.json");
       expect(paths).not.toContain("SHA256SUMS.txt");
       await writeFile(path.join(root, "app/host-runtime.js.map"), "unexpected");

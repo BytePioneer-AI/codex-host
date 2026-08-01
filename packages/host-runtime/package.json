@@ -13,7 +13,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "build:release": "node scripts/build-release.mjs"
   },
   "dependencies": {
     "@codexhost/adapter-claude-code": "0.0.0",

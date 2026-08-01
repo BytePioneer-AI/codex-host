@@ -1,0 +1,90 @@
+name: Release packages
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-14
+            rustTarget: aarch64-apple-darwin
+          - target: macos-x64
+            runner: macos-15-intel
+            rustTarget: x86_64-apple-darwin
+          - target: windows-x64
+            runner: windows-latest
+            rustTarget: x86_64-pc-windows-msvc
+          - target: windows-arm64
+            runner: windows-latest
+            rustTarget: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Setup .NET for WiX
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Verify GitHub Release version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          node --input-type=module -e "import manifest from './package.json' with { type: 'json' };
+          const expected = 'v' + manifest.version;
+          if (process.env.RELEASE_TAG !== expected) throw new Error('release tag must be ' + expected);"
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run release:package -- --target ${{ matrix.target }}
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexhost-${{ matrix.target }}
+          path: |
+            build/release/*/${{ matrix.target }}/codexhost-*.dmg
+            build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/release/*/${{ matrix.target }}/codexhost-*.sha256
+          if-no-files-found: error
+
+      - name: Upload GitHub Release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            build/release/*/${{ matrix.target }}/codexhost-*.dmg
+            build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/release/*/${{ matrix.target }}/codexhost-*.sha256

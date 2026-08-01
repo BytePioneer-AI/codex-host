@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,16 +35,23 @@ impl InstalledResources {
                 executable.display()
             )
         })?;
+        let resource_root = if executable_directory.file_name() == Some(OsStr::new("MacOS"))
+            && installation_root.file_name() == Some(OsStr::new("Contents"))
+        {
+            installation_root.join("Resources")
+        } else {
+            installation_root.to_path_buf()
+        };
         let executable_suffix = env::consts::EXE_SUFFIX;
 
         Ok(Self {
-            shim: installation_root
+            shim: resource_root
                 .join("libexec")
                 .join(format!("codexhost-shim{executable_suffix}")),
-            node: installation_root
+            node: resource_root
                 .join("runtime")
                 .join(format!("node{executable_suffix}")),
-            host_runtime: installation_root.join("app/host-runtime.mjs"),
+            host_runtime: resource_root.join("app/host-runtime.mjs"),
         })
     }
 }
@@ -87,7 +95,7 @@ mod tests {
             InstalledResources::from_executable(&executable)
                 .expect("macOS application layout")
                 .host_runtime,
-            contents.join("app/host-runtime.mjs")
+            contents.join("Resources/app/host-runtime.mjs")
         );
     }
 

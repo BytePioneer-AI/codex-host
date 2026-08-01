@@ -21,7 +21,7 @@ const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost inspect\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--pi <absolute-file>]"
+        "usage:\n  codexhost\n  codexhost inspect\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--pi <absolute-file>]"
     );
 }
 
@@ -254,9 +254,19 @@ fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
+fn default_launch_options() -> LaunchOptions {
+    LaunchOptions {
+        agent: Agent::Pi,
+        shim: None,
+        node: None,
+        host_runtime: None,
+        pi: None,
+    }
+}
+
+fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
+        None => launch(default_launch_options()),
         Some("inspect") if arguments.len() == 1 => inspect(),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?),
         _ => {
@@ -267,7 +277,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("codexhost launcher: {error}");
@@ -278,7 +289,12 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_launch_options;
+    use super::{default_launch_options, parse_launch_options};
+
+    #[test]
+    fn no_argument_launch_defaults_to_pi() {
+        assert_eq!(default_launch_options().agent.as_str(), "pi");
+    }
 
     #[test]
     fn bundled_runtime_paths_are_optional_launch_arguments() {

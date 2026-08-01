@@ -1,4 +1,5 @@
 **/*.md
+**/*.wxs
 .pi/
 reference/
 node_modules/

@@ -25,6 +25,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { executeExternalThreadRollback } from "./external-thread-rollback.js";
 import {
   createExternalThreadRecordInput,
   createProductionExternalThreadStore,
@@ -48,6 +49,7 @@ import {
   decodeCreateRoute,
   decodePiTransportModel,
   decodeThreadForkRequest,
+  decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   parseJsonFrame,
   readLfFrames,
@@ -55,9 +57,11 @@ import {
   writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
+  threadRollbackResult,
   transportModelIdForHarness,
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
+  type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
   type CodexQuestionRequestProjection,
   type ExternalHarnessId,
@@ -403,6 +407,32 @@ export class AppServerHost {
             continue;
           }
           await this.#forkExternalThread(request, resolution.thread, fork);
+          continue;
+        }
+      }
+      if (request.method === "thread/rollback") {
+        const params = isRecord(request.params) ? request.params : {};
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (resolution.kind === "error") {
+          await this.#writer.json(
+            rpcError(request, resolution.error.code, resolution.error.message),
+          );
+          continue;
+        }
+        if (resolution.kind === "external") {
+          let rollback: DecodedThreadRollbackRequest;
+          try {
+            const decoded = decodeThreadRollbackRequest(request);
+            if (!decoded) throw new Error("Expected thread/rollback request");
+            rollback = decoded;
+          } catch (error) {
+            await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+            continue;
+          }
+          await this.#rollbackExternalThread(request, resolution.thread, rollback);
           continue;
         }
       }
@@ -779,6 +809,25 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { thread: { ...result.thread, turns: [] } },
     });
+  }
+
+  async #rollbackExternalThread(
+    request: JsonRpcRequest,
+    derived: ExternalThread,
+    rollback: DecodedThreadRollbackRequest,
+  ): Promise<void> {
+    const result = await executeExternalThreadRollback({
+      derived,
+      rollback,
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, result.error.code, result.error.message));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: threadRollbackResult(result.thread) }));
   }
 
   async #setExternalThreadName(

@@ -27,6 +27,7 @@
 - [x] 4.5 Route external `thread/fork`, resolve inclusive/exclusive/tail boundaries, commit derived mappings, and return current `ThreadForkResponse`
 - [x] 4.6 Preserve official Codex Fork passthrough and add Host tests for ownership, ordering, errors, source isolation, restart, and derived continuation
 - [x] 4.7 Keep development-gated Claude explicit by implementing the expanded interface with honest unsupported history/Fork results
+- [x] 4.8 Decode and ownership-route the supported Desktop post-Fork `thread/rollback`, atomically replace the untouched derived prefix with an exact Fork Session, and test passthrough, truncation, identity stability, and failure recovery
 
 ## 5. Renderer ownership restoration
 
@@ -37,7 +38,7 @@
 
 ## 6. Validation and baselines
 
-- [ ] 6.1 Generate and inspect current Codex protocol bindings for Fork request/response and capture the supported Desktop message-action request shape
-- [ ] 6.2 Run focused package tests, `npm run check`, and `npm run build`; resolve all affected failures
+- [x] 6.1 Generate and inspect current Codex protocol bindings for Fork and rollback request/response, capture the supported Desktop message-action request shape, and record only sanitized protocol facts
+- [x] 6.2 Run focused package tests, `npm run check`, and `npm run build`; resolve all affected failures
 - [ ] 6.3 Run a controlled real Codex Desktop/Pi non-tail and tail Fork Gate, verify source/derived independent continuation and `Pi / locked`, and save only sanitized evidence
 - [ ] 6.4 Run official Codex Fork regression, update affected architecture/development status documents, and record the final validation conclusion

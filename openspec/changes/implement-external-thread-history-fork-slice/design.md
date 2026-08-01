@@ -2,7 +2,7 @@
 
 The current Host keeps external Threads and projected Turns only in process memory. `thread/fork` is not in the explicit ownership route, HarnessAdapter only opens create Sessions, Mapping Store is a package placeholder, and Pi production transport does not expose Entries, Snapshot, resume, Fork, or Clone. The Renderer restores Agent state only for a conversation created through the same draft Composer, so a conversation returned by native `thread/fork` would otherwise mount as Codex.
 
-The installed `codex-cli 0.145.0` generated protocol defines `thread/fork` with inclusive `lastTurnId`, exclusive `beforeTurnId`, optional tail Fork, and a normal `ThreadForkResponse`. Pi Gate C proves stable User Message Entry IDs, active-branch history, exact non-tail `fork(nextUserEntry)`, exact tail `clone`, inherited Model/Thinking state, source isolation, and continuation in the derived Session. Claude's official SDK also proves exact `forkSession(upToMessageId)`, but Claude remains development-gated and its production history mapper is not part of the public Pi slice.
+The installed `codex-cli 0.145.0` generated protocol defines `thread/fork` with inclusive `lastTurnId`, exclusive `beforeTurnId`, optional tail Fork, and a normal `ThreadForkResponse`. Static inspection of supported Codex Desktop `26.721.41059` additionally proves that its message action does not put the selected non-tail boundary in that request: it first sends an unbounded `thread/fork`, then sends deprecated `thread/rollback { threadId: derivedId, numTurns }` and consumes the returned full Thread. Pi Gate C proves stable User Message Entry IDs, active-branch history, exact non-tail `fork(nextUserEntry)`, exact tail `clone`, inherited Model/Thinking state, source isolation, and continuation in the derived Session. Claude's official SDK also proves exact `forkSession(upToMessageId)`, but Claude remains development-gated and its production history mapper is not part of the public Pi slice.
 
 The formal persistence design omitted `ephemeral` and `historyMode`, while current Desktop evidence proved those fields select the visible timeline path. This change adds them as required Host presentation metadata. It does not persist any conversation content.
 
@@ -10,7 +10,7 @@ The formal persistence design omitted `ephemeral` and `historyMode`, while curre
 
 **Goals:**
 
-- Make the existing Codex message Fork action create an exact Pi-owned derived Thread through the current app-server protocol.
+- Make the existing Codex message Fork action create an exact Pi-owned derived Thread through both the direct-boundary `thread/fork` protocol and the supported Desktop's unbounded Fork plus bounded rollback composition.
 - Establish executable cross-Harness Snapshot, stable Turn identity, Checkpoint, resume, and Fork semantics.
 - Persist the minimum ownership and identity metadata needed to route and recover a Fork source without storing a second Transcript.
 - Rebuild source and derived Codex Turn projections from Native Session history with stable Host identity mapping.
@@ -84,6 +84,8 @@ Host creates a provisional record before opening a native Session. Native identi
 
 A fixed injected Store interface keeps Host tests hermetic. Production uses `CODEXHOST_DATA_DIR` when set and otherwise a user-local `.codexhost` directory.
 
+The supported Desktop's post-Fork rollback keeps the already allocated derived Host Thread ID. Host first creates the final exact Native Session, then atomically replaces that ready record's `nativeSessionRef`, retained Turn mappings, and `forkSource.hostTurnId` in one file update. Retained derived Host Turn IDs remain stable while their Native refs are rebuilt from the final Session Snapshot. A failed replacement leaves the temporary tail-Fork record and runtime authoritative.
+
 ### 6. Protocol Facade owns current Codex Fork semantics
 
 Protocol Core adds a bounded decoder for the current `ThreadForkParams` fields needed by external routing. Host behavior is:
@@ -107,7 +109,22 @@ Fork before the first mapped Turn is not claimed in this slice because the PRD r
 
 Host creates a provisional derived Thread, calls `adapter.open(fork)`, begins consuming outputs, reads its Snapshot, allocates derived Host Turn IDs, commits the mapping, then returns a normal `ThreadForkResponse`. `thread.id` is new, `forkedFromId` is the source Host Thread, `parentThreadId` remains null, `sessionId` follows current Codex Thread-tree semantics, and `model` is the derived Harness transport carrier. `excludeTurns=true` returns an empty `thread.turns` only after all mappings are still committed.
 
-Codex response-before-notification ordering is retained. A controlled differential Gate confirms whether the supported Desktop expects `thread/started` for Fork and whether the UI uses `excludeTurns`; unsupported follow-up `thread/turns/list` is added only if observed.
+For the observed two-stage message action, Host also owns `thread/rollback` when its target is a mapped external Thread. This compatibility path is deliberately narrower than generic history editing:
+
+```text
+derived has forkSource
+and derived Turn count == source prefix count through forkSource.hostTurnId
+and derived and source are idle
+and 0 < derived Turn count - numTurns < derived Turn count
+-> select that retained ordinal in the source mappings
+-> adapter.open(fork) from the source Checkpoint
+-> verify the final Snapshot has exactly the retained count
+-> atomically replace the derived ready record and runtime Session
+```
+
+The exact persisted lineage check, rather than request timing, proves that the derived Thread has not independently continued. Requests for an original external Thread, a diverged derived Thread, a zero-Turn result, an unknown source boundary, or a missing Checkpoint fail explicitly and never fall through to Codex. Codex-owned rollback frames remain unchanged. This reuses the existing HarnessAdapter Fork open mode; it does not add a generic rollback command or permit Native Session file rewriting.
+
+Codex response-before-notification ordering is retained. Fork still emits the already established response and `thread/started` ordering. Rollback returns the current full `ThreadRollbackResponse.thread` for the same derived Host Thread and emits no replacement `thread/started` notification.
 
 ### 7. Persisted external read/resume is restored on demand
 
@@ -129,7 +146,7 @@ The shared interface is implemented by ClaudeCodeAdapter, but `open(resume|fork)
 
 ### 10. Verification is layered
 
-Hermetic tests cover public contract, Mapping Store recovery/failure, Host ownership routing, exact boundary resolution, derived identity allocation, Codex passthrough, Pi tree mapping, Pi Fork/Clone decisions, source isolation, and Renderer stale-state behavior.
+Hermetic tests cover public contract, Mapping Store recovery/failure and ready-Session replacement, Host ownership routing, exact boundary resolution, two-stage Fork/rollback truncation, derived identity allocation, Codex passthrough, Pi tree mapping, Pi Fork/Clone decisions, source isolation, and Renderer stale-state behavior.
 
 The controlled real Gate uses temporary cwd and ignored evidence. It creates a Pi Thread with at least three completed Turns, Forks a non-tail Turn through the real Codex Desktop request, checks a new Pi Native Session and exact context cutoff, continues source and derived Threads independently, confirms `Pi / locked`, and confirms project files were not reverted. A separate tail Fork and official Codex regression are required before completion.
 
@@ -139,7 +156,8 @@ The controlled real Gate uses temporary cwd and ignored evidence. It creates a P
 - [Tail versus non-tail operation changes after append] -> Store a stable logical boundary and resolve current active-tree operation at execution time.
 - [Store failure after native Fork leaves an unindexed native Session] -> Close runtime, remove provisional Host state, return failure, retain native history as required, and log only opaque diagnostics.
 - [Host Runtime is already over 1,000 lines] -> Move Store integration, historical projection, and Fork parameter logic into focused modules rather than extending one switch-heavy file.
-- [Current Desktop may use `excludeTurns` plus paginated follow-up] -> Capture the actual message action before claiming UI completion and implement the observed fixed follow-up surface.
+- [Supported Desktop encodes non-tail selection in deprecated `thread/rollback`] -> Handle only the exact persisted post-Fork prefix case, preserve official passthrough, and retain direct `lastTurnId`/`beforeTurnId` support for protocol callers that already send a boundary.
+- [Two-stage non-tail Fork leaves the temporary tail Clone unindexed] -> Close its runtime after atomic replacement and retain its native history; do not add Harness-specific deletion semantics.
 - [Renderer ownership query uses private request-manager discovery] -> Reuse the existing validated fixed-method client and fail closed when it is unavailable; do not expose generic sendRequest.
 - [Claude implements the common interface but not Fork] -> Return explicit unsupported and retain the development gate.
 
@@ -147,13 +165,13 @@ The controlled real Gate uses temporary cwd and ignored evidence. It creates a P
 
 1. Add contracts, delta specs, Fake Adapter history/Fork tests, and Mapping Store implementation without changing Host routing.
 2. Add Pi history/resume/Fork private modules and hermetic tests.
-3. Integrate Store, Snapshot alignment, external read/resume, and Fork into Host Runtime behind existing external ownership.
+3. Integrate Store, Snapshot alignment, external read/resume, direct Fork, and bounded post-Fork rollback into Host Runtime behind existing external ownership.
 4. Add Renderer ownership inspection and forked-conversation restoration.
 5. Run narrow tests, `npm run check`, `npm run build`, current protocol generation checks, then the controlled real Codex/Pi Gate.
 6. Rollback removes the new Host methods and Fork route. Existing V1 records remain content-free; unsupported records can be left unread or moved aside without touching Native Sessions.
 
 ## Open Questions
 
-- Does the supported Desktop message action emit `lastTurnId`, `beforeTurnId`, or both in different UI paths, and does it request `excludeTurns`?
+- Does the target Windows Desktop build emit the same unbounded `thread/fork` followed by `thread/rollback` sequence observed in supported macOS Desktop `26.721.41059`, including the same `numTurns` calculation?
 - Does current official `thread/fork` emit `thread/started` before or after the response on a completed Thread?
 - Which Pi historical Tool result shapes are sufficiently stable for deterministic full Tool Snapshot projection beyond Agent Message text?

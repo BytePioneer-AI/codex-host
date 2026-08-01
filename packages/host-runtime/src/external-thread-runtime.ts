@@ -137,6 +137,33 @@ export class ExternalThreadRuntime {
     return externalThread;
   }
 
+  async replace(
+    current: ExternalThread,
+    input: {
+      record: StoredThreadRecordV1;
+      session: HarnessSession;
+      sessionId: string;
+      thread: JsonObject;
+      turns: JsonObject[];
+    },
+  ): Promise<ExternalThread> {
+    if (
+      current.running ||
+      this.#threads.get(current.id) !== current ||
+      input.record.hostThreadId !== current.id
+    ) {
+      throw new Error("External Thread runtime cannot replace an active or stale Session");
+    }
+    try {
+      await current.session.close();
+      await current.outputTask;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+    this.#threads.delete(current.id);
+    return this.register(input);
+  }
+
   async resolve(threadId: string): Promise<ExternalThreadResolution> {
     const loaded = this.#threads.get(threadId);
     if (loaded) return { kind: "external", thread: loaded };

@@ -31,8 +31,8 @@ Renderer SHALL generation-scope Thread inspection by logical Composer and target
 - **THEN** Renderer SHALL show an unavailable locked state and block submission rather than apply an official Model
 
 ### Requirement: Renderer does not replace the native Fork action
-The external Fork feature SHALL reuse Codex Desktop's existing message action and standard `thread/fork` request. Renderer Extension MUST NOT add another Fork button, copy visible Transcript content, or correlate Fork by timing.
+The external Fork feature SHALL reuse Codex Desktop's existing message action and its native protocol sequence, including an unbounded `thread/fork` followed by `thread/rollback` when emitted by the supported build. Renderer Extension MUST NOT add another Fork button, copy visible Transcript content, intercept rollback, or correlate Fork by timing.
 
 #### Scenario: User clicks the native message Fork action
-- **WHEN** Desktop issues `thread/fork` for an external source
-- **THEN** Renderer SHALL rely on the returned conversation target and fixed ownership inspection without a DOM click hook
+- **WHEN** Desktop issues its Fork and optional rollback requests for an external source
+- **THEN** Renderer SHALL rely on the final returned conversation target and fixed ownership inspection without a DOM click hook

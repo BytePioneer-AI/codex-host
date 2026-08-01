@@ -6,6 +6,7 @@ export { storedThreadRecordV1Schema, storedTurnMappingV1Schema } from "./records
 export type {
   CommitReadyThreadInput,
   CreateProvisionalThreadInput,
+  ReplaceReadySessionInput,
   StoredThreadRecordV1,
   StoredTurnMappingV1,
 } from "./records.js";

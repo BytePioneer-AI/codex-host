@@ -19,6 +19,7 @@ import {
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
   type CreateProvisionalThreadInput,
+  type ReplaceReadySessionInput,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "./records.js";
@@ -236,6 +237,34 @@ export class MappingStore {
       nativeSessionRef: input.nativeSessionRef,
       turnMappings: this.#mergeMappings(current.turnMappings, input.turnMappings ?? []),
     }));
+  }
+
+  async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        !current.forkSource ||
+        current.forkSource.hostThreadId !== input.forkSource.hostThreadId ||
+        current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
+        input.turnMappings.length < 1 ||
+        input.turnMappings.length >= current.turnMappings.length ||
+        input.turnMappings.some(
+          ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
+        )
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Ready Session replacement must retain an exact shorter derived prefix",
+        );
+      }
+      return {
+        ...current,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: input.turnMappings,
+        forkSource: input.forkSource,
+      };
+    });
   }
 
   async upsertTurnMappings(

@@ -27,6 +27,29 @@ For an external source, Host SHALL support inclusive `lastTurnId`, exclusive `be
 - **WHEN** neither boundary is present
 - **THEN** Host SHALL use the latest completed mapped Turn's Checkpoint
 
+### Requirement: Supported Desktop post-Fork rollback resolves exactly
+When the supported Desktop sends an unbounded `thread/fork` followed by `thread/rollback` for the resulting mapped external Thread, Host SHALL interpret `numTurns` against the derived Thread's ordered persisted Turn mappings. Host SHALL support this composition only while the derived history is still exactly the source prefix through its persisted `forkSource` boundary. It SHALL create a final distinct Native Session from the retained source Checkpoint, keep the derived Host Thread ID and retained derived Host Turn IDs, atomically replace their Native refs and Fork source boundary, and leave the source Thread unchanged.
+
+#### Scenario: Earlier message action rolls back a tail Fork
+- **WHEN** a three-Turn external source was tail-Forked and Desktop requests `thread/rollback { numTurns: 2 }` for that untouched derived Thread
+- **THEN** the same derived Host Thread SHALL be rebound to a distinct Native Session containing exactly the first Turn
+- **AND** its `forkSource.hostTurnId` SHALL identify the source first Turn
+- **AND** the temporary tail-Fork Session SHALL be closed without changing the source Session
+
+#### Scenario: Retained derived Turn identity stays stable
+- **WHEN** post-Fork rollback retains a prefix of an already returned derived Thread
+- **THEN** each retained Host Turn ID SHALL remain unchanged
+- **AND** each retained Native Turn and Checkpoint Ref SHALL be rebuilt from the final Native Session Snapshot
+
+#### Scenario: Rollback target is not an untouched derived prefix
+- **WHEN** `thread/rollback` references an original external Thread, a derived Thread that independently continued, all existing Turns, an unknown source boundary, or a Turn without a real Checkpoint
+- **THEN** Host SHALL reject the request explicitly without changing Store, runtime, source, or project files
+- **AND** it SHALL NOT forward the request to Codex
+
+#### Scenario: Codex-owned Thread rollback is requested
+- **WHEN** `thread/rollback.threadId` does not identify a mapped external Thread
+- **THEN** the original request frame SHALL be forwarded unchanged to the official app-server
+
 ### Requirement: External Fork parameters fail closed
 External Fork SHALL reject a non-empty source path, mismatched cwd, an incompatible Harness transport carrier, an active source Turn, unsupported Adapter capability, missing NativeSessionRef, or malformed boundary without creating an official shadow Thread.
 
@@ -53,8 +76,8 @@ After native Fork, Host SHALL read the derived Native Session Snapshot, allocate
 - **WHEN** `excludeTurns=true`
 - **THEN** the response MAY omit Turn values but Host SHALL still commit the complete derived identity mappings before success
 
-### Requirement: Fork response matches current Desktop Thread semantics
-A successful external Fork SHALL return a new Host Thread ID, source `forkedFromId`, null subagent parent, required cwd and timeline metadata, source Harness transport carrier, and actual derived effective Model. The source Thread and its Native Session SHALL remain unchanged.
+### Requirement: Fork and rollback responses match current Desktop Thread semantics
+A successful external Fork SHALL return a new Host Thread ID, source `forkedFromId`, null subagent parent, required cwd and timeline metadata, source Harness transport carrier, and actual derived effective Model. A successful post-Fork rollback SHALL return the updated full Thread under the current `ThreadRollbackResponse` shape using the same derived Host Thread ID. The source Thread and its Native Session SHALL remain unchanged.
 
 #### Scenario: Pi Fork succeeds
 - **WHEN** Pi creates a distinct derived Native Session

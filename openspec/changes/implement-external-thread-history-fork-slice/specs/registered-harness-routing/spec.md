@@ -15,6 +15,14 @@ Host Runtime SHALL use only HarnessAdapter Snapshot, Native Ref, capability, res
 - **WHEN** Pi reports exact Fork and development-gated Claude reports unsupported
 - **THEN** the same Host route SHALL execute Pi Fork and return an explicit Claude unsupported error without Harness-specific event mapping
 
+### Requirement: Generic external routing owns bounded post-Fork rollback
+Host Runtime SHALL use persisted ownership and the same HarnessAdapter Snapshot and Fork interfaces to handle the supported Desktop's post-Fork `thread/rollback` for an untouched derived external prefix. It MUST NOT add Pi Entry, Session file, or native rollback logic to Host, and an unsupported external rollback MUST NOT fall through to Codex.
+
+#### Scenario: Registered Adapter realizes post-Fork rollback
+- **WHEN** a mapped derived Thread still equals its persisted source prefix and its Adapter supports exact Fork
+- **THEN** the generic Host route SHALL open the final exact Session through `HarnessAdapter.open(fork)` and replace the derived runtime
+- **AND** no Harness-specific rollback command SHALL be required
+
 ### Requirement: Persisted completion precedes Desktop terminal projection
 For every external Harness, Host SHALL persist a live Turn's NativeTurnRef and optional Checkpoint before projecting the corresponding successful terminal to Desktop. Store failure SHALL become an explicit failed lifecycle and MUST NOT expose an unpersisted Fork Anchor.
 

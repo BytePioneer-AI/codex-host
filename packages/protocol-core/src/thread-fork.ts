@@ -22,6 +22,11 @@ export interface DecodedThreadForkRequest {
   serviceTier?: string;
 }
 
+export interface DecodedThreadRollbackRequest {
+  threadId: string;
+  numTurns: number;
+}
+
 export interface ExternalThreadRpcError {
   code: number;
   message: string;
@@ -92,6 +97,21 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   };
 }
 
+export function decodeThreadRollbackRequest(
+  request: JsonRpcRequest,
+): DecodedThreadRollbackRequest | null {
+  if (request.method !== "thread/rollback") return null;
+  if (!isRecord(request.params)) throw new Error("thread/rollback params must be an object");
+  const { threadId, numTurns } = request.params;
+  if (typeof threadId !== "string" || threadId.length === 0) {
+    throw new Error("thread/rollback params.threadId must be non-empty text");
+  }
+  if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0) {
+    throw new Error("thread/rollback params.numTurns must be a positive safe integer");
+  }
+  return { threadId, numTurns: numTurns as number };
+}
+
 function optionalField<Name extends string>(
   params: Record<string, unknown>,
   name: Name,
@@ -126,6 +146,10 @@ export function mapExternalThreadHarnessError(
     case "invalidState":
       return { code: -32076, message: `External Thread ${operation} failed` };
   }
+}
+
+export function threadRollbackResult(thread: JsonObject): JsonObject {
+  return { thread };
 }
 
 export function threadForkResult(

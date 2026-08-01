@@ -534,6 +534,116 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("realizes the Desktop tail-Fork plus rollback sequence as one exact derived prefix", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const sourceThreadId = await startPiThread(fixture);
+    const sourceTurnIds = [
+      await completePiTurn(fixture, sourceThreadId, 2),
+      await completePiTurn(fixture, sourceThreadId, 3),
+      await completePiTurn(fixture, sourceThreadId, 4),
+    ];
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const forkedThread = (forkResponse.result as JsonObject).thread as JsonObject;
+    const derivedId = forkedThread.id;
+    const initialDerivedTurns = forkedThread.turns as JsonObject[];
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    expect(initialDerivedTurns).toHaveLength(3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 2 },
+    });
+    const rollbackResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
+    const rolledBack = (rollbackResponse.result as JsonObject).thread as JsonObject;
+    expect(rolledBack).toMatchObject({
+      id: derivedId,
+      forkedFromId: sourceThreadId,
+      turns: [{ id: initialDerivedTurns[0]?.id, status: "completed" }],
+    });
+    const derivedRecord = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
+    expect(derivedRecord).toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-3" },
+      forkSource: { hostThreadId: sourceThreadId, hostTurnId: sourceTurnIds[0] },
+      turnMappings: [
+        {
+          hostTurnId: initialDerivedTurns[0]?.id,
+          nativeTurnRef: { nativeSessionId: "fake-session-3" },
+          nativeCheckpointRef: { nativeSessionId: "fake-session-3" },
+        },
+      ],
+    });
+    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}] },
+    });
+
+    await completePiTurn(fixture, derivedId, 20, 2);
+    await completePiTurn(fixture, sourceThreadId, 21, 0);
+    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}, {}] },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects rollback when an external Thread is not an untouched derived prefix", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId: sourceThreadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    await completePiTurn(fixture, derivedId, 12, 1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 13,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 13)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    expect(fixture.adapter.sessions).toHaveLength(2);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("commits excluded Fork mappings before a later thread/read", async () => {
     const fixture = createFixture();
     const sourceThreadId = await startPiThread(fixture);
@@ -694,6 +804,35 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("forwards an unknown Codex thread/rollback frame unchanged", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 91,
+      method: "thread/rollback",
+      params: {
+        threadId: "official-thread",
+        numTurns: "official-shape-is-transparent",
+        extraOfficialField: { keep: true },
+      },
+    };
+    const forwarded = new Promise<JsonObject>((resolve) => {
+      fixture.official.stdin.once("data", (chunk: Buffer) => {
+        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
+        resolve(value);
+        fixture.official.stdout.write(`${JSON.stringify({ id: 91, result: {} })}\n`);
+      });
+    });
+    writeRequest(fixture.desktopInput, request);
+
+    await expect(forwarded).resolves.toEqual(request);
+    await expect(fixture.collector.waitFor((message) => requestId(message, 91))).resolves.toEqual({
+      id: 91,
+      result: {},
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
   it("rejects Fork while the external source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -818,6 +957,64 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: "invalidState" },
     });
     await expect(mappingStore.listThreads()).resolves.toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("keeps the temporary derived Session authoritative when rollback commit fails", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-failure-"));
+    let failRollbackCommit = false;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (failRollbackCommit && record.state === "ready" && record.turnMappings.length === 1) {
+          throw new Error("synthetic rollback commit failure");
+        }
+      },
+    });
+    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    await completePiTurn(fixture, sourceThreadId, 4);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    const before = await mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
+    failRollbackCommit = true;
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 2 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ error: { code: -32081 } });
+    await expect(mappingStore.getThread(hostThreadIdSchema.parse(derivedId))).resolves.toEqual(
+      before,
+    );
+    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}] },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "thread/read",
+      params: { threadId: derivedId, includeTurns: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 12)),
+    ).resolves.toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
     await stopFixture(fixture);
   });
 

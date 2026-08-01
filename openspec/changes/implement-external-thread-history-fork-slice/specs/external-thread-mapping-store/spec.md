@@ -33,6 +33,18 @@ Mapping Store SHALL acquire one exclusive process lock, serialize writes per Thr
 - **WHEN** temp write, sync, backup, or atomic replacement fails
 - **THEN** the prior valid record and indexes SHALL remain authoritative
 
+### Requirement: Ready Session replacement is one atomic identity update
+Mapping Store SHALL support replacing a ready derived Thread's NativeSessionRef, complete retained Turn mapping set, and Fork source boundary in one validated atomic write. The replacement SHALL preserve the Host Thread ID and supplied retained Host Turn IDs, release the old Native indexes only after durable replacement, and leave the prior record and indexes authoritative on failure.
+
+#### Scenario: Post-Fork rollback replacement succeeds
+- **WHEN** Host commits an exact shorter derived Snapshot for an existing ready Thread
+- **THEN** restart SHALL recover only the final Native Session identity, retained Turn mappings, and selected Fork source boundary
+- **AND** no retained mapping SHALL refer to the temporary Native Session
+
+#### Scenario: Post-Fork rollback replacement fails
+- **WHEN** temp write, sync, backup, or atomic replacement fails during ready Session replacement
+- **THEN** the prior ready Native Session, full mapping set, Fork source, and indexes SHALL remain authoritative
+
 ### Requirement: Startup recovers bounded incomplete state
 Initialization SHALL remove abandoned temp files, recover a bad primary from its valid backup, isolate unrecoverable records, remove creating records without Native identity, and rebuild all indexes before serving Host operations.
 

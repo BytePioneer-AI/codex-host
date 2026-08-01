@@ -18,6 +18,7 @@ import {
   packageMetadata,
   storedThreadRecordV1Schema,
   type MappingStoreError,
+  type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "../src/index.js";
 
@@ -38,25 +39,32 @@ const nativeRef = nativeSessionRefSchema.parse({
   formatVersion: 1,
 }) as NativeSessionRef;
 
-function mapping(ordinal: number): StoredTurnMappingV1 {
+function mappingForSession(sessionRef: NativeSessionRef, ordinal: number): StoredTurnMappingV1 {
   return {
     hostTurnId: hostTurnIdSchema.parse(`turn-${ordinal}`),
     nativeTurnRef: nativeTurnRefSchema.parse({
       harnessId,
-      nativeSessionId: nativeRef.nativeSessionId,
+      nativeSessionId: sessionRef.nativeSessionId,
       nativeTurnKey: `native-turn-${ordinal}`,
       formatVersion: 1,
     }),
     nativeCheckpointRef: nativeCheckpointRefSchema.parse({
       harnessId,
-      nativeSessionId: nativeRef.nativeSessionId,
+      nativeSessionId: sessionRef.nativeSessionId,
       checkpointId: `checkpoint-${ordinal}`,
       formatVersion: 1,
     }),
   };
 }
 
-async function createReady(store: MappingStore): Promise<void> {
+function mapping(ordinal: number): StoredTurnMappingV1 {
+  return mappingForSession(nativeRef, ordinal);
+}
+
+async function createReady(
+  store: MappingStore,
+  forkSource?: NonNullable<StoredThreadRecordV1["forkSource"]>,
+): Promise<void> {
   await store.createProvisional({
     hostThreadId: threadId,
     createRequestId: "create-1",
@@ -66,6 +74,7 @@ async function createReady(store: MappingStore): Promise<void> {
     transportModelId: "codexhost/pi-native",
     ephemeral: false,
     historyMode: "legacy",
+    ...(forkSource ? { forkSource } : {}),
   });
   await store.commitReady({
     hostThreadId: threadId,
@@ -187,6 +196,71 @@ describe("mapping-store package", () => {
       await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8"),
     ) as { title: string };
     expect(persisted.title).toBe("External Thread");
+    await store.close();
+  });
+
+  it("atomically replaces a ready derived Session and keeps the prior record on failure", async () => {
+    const directory = await temporaryStoreDirectory();
+    let fail = false;
+    const store = new MappingStore({
+      directory,
+      beforeReplace() {
+        if (fail) throw new Error("synthetic replacement failure");
+      },
+    });
+    await store.initialize();
+    const sourceThreadId = hostThreadIdSchema.parse("source-thread");
+    await createReady(store, {
+      hostThreadId: sourceThreadId,
+      hostTurnId: hostTurnIdSchema.parse("source-turn-3"),
+    });
+    await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-2",
+      locator: { sessionFile: "/synthetic/replacement.jsonl" },
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    const replacementMappings = [
+      mappingForSession(replacementRef, 1),
+      mappingForSession(replacementRef, 2),
+    ];
+    const replaced = await store.replaceReadySession({
+      hostThreadId: threadId,
+      nativeSessionRef: replacementRef,
+      turnMappings: replacementMappings,
+      forkSource: {
+        hostThreadId: sourceThreadId,
+        hostTurnId: hostTurnIdSchema.parse("source-turn-2"),
+      },
+    });
+    expect(replaced).toMatchObject({
+      nativeSessionRef: replacementRef,
+      turnMappings: replacementMappings,
+      forkSource: {
+        hostThreadId: sourceThreadId,
+        hostTurnId: hostTurnIdSchema.parse("source-turn-2"),
+      },
+    });
+
+    fail = true;
+    const failedRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-3",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    await expect(
+      store.replaceReadySession({
+        hostThreadId: threadId,
+        nativeSessionRef: failedRef,
+        turnMappings: [mappingForSession(failedRef, 1)],
+        forkSource: { hostThreadId: sourceThreadId, hostTurnId: mapping(1).hostTurnId },
+      }),
+    ).rejects.toMatchObject({ code: "IO_ERROR" });
+    await expect(store.getThread(threadId)).resolves.toMatchObject({
+      nativeSessionRef: replacementRef,
+      turnMappings: replacementMappings,
+    });
     await store.close();
   });
 

@@ -15,10 +15,16 @@ export type {
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,
+  decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   threadForkResult,
+  threadRollbackResult,
 } from "./thread-fork.js";
-export type { DecodedThreadForkRequest, ExternalThreadRpcError } from "./thread-fork.js";
+export type {
+  DecodedThreadForkRequest,
+  DecodedThreadRollbackRequest,
+  ExternalThreadRpcError,
+} from "./thread-fork.js";
 export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   EXTERNAL_HARNESS_IDS,

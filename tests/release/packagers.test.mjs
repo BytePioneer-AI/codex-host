@@ -33,6 +33,7 @@ describe("platform packagers", () => {
       "bin\\codexhost.exe",
       "libexec\\codexhost-shim.exe",
       "runtime\\node.exe",
+      "app\\desktop-controller.mjs",
       "app\\host-runtime.mjs",
       "app\\renderer-extension.js",
     ]) {

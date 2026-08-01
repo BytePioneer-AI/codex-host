@@ -22,6 +22,7 @@ interface ConversationState {
 export interface DraftAgentControllerOptions {
   idFactory?: (sequence: number) => string;
   enabledAgents?: readonly RendererAgent[];
+  defaultAgent?: RendererAgent;
 }
 
 export interface DraftAgentSwitchOperations {
@@ -43,6 +44,7 @@ function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolea
 
 export class DraftAgentController<Composer extends object> {
   readonly #idFactory: (sequence: number) => string;
+  readonly #defaultAgent: RendererAgent;
   readonly #enabledAgents: ReadonlySet<RendererAgent>;
   readonly #conversationStates: ConversationState[] = [];
   readonly #modelRequestGenerations = new WeakMap<MutableComposerState, number>();
@@ -56,6 +58,10 @@ export class DraftAgentController<Composer extends object> {
     this.#enabledAgents = new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS);
     if (!this.#enabledAgents.has("codex")) {
       throw new Error("Renderer enabled Agents must include Codex");
+    }
+    this.#defaultAgent = options.defaultAgent ?? "codex";
+    if (!this.#enabledAgents.has(this.#defaultAgent)) {
+      throw new Error("Renderer default Agent must be enabled");
     }
   }
 
@@ -193,7 +199,7 @@ export class DraftAgentController<Composer extends object> {
     const existing = this.#states.get(composer);
     if (existing) return existing;
     const created: MutableComposerState = {
-      agent: "codex",
+      agent: this.#defaultAgent,
       phase: "draft",
       composerId: this.#idFactory(++this.#composerSequence),
     };

@@ -184,6 +184,7 @@ fn probe(options: ProbeOptions) -> Result<(), Box<dyn Error>> {
             &installation,
             &options.shim_path,
             options.launch_mode,
+            &[],
             &environment,
         )?;
         eprintln!(
@@ -224,6 +225,7 @@ fn probe_macos(
         installation,
         &options.shim_path,
         options.launch_mode,
+        &[],
         environment,
         options.wait_timeout,
     )?;

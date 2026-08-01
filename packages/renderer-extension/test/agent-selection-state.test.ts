@@ -32,6 +32,27 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("uses an enabled production launch default without changing the library default", () => {
+    const composer = {};
+    const agents = new DraftAgentController<object>({
+      idFactory: (sequence) => `composer-${sequence}`,
+      defaultAgent: "pi",
+    });
+
+    expect(agents.get(composer)).toEqual({
+      composerId: "composer-1",
+      agent: "pi",
+      phase: "draft",
+    });
+    expect(
+      () =>
+        new DraftAgentController<object>({
+          enabledAgents: ["codex", "pi"],
+          defaultAgent: "claude-code",
+        }),
+    ).toThrow("default Agent must be enabled");
+  });
+
   it("rejects Claude Code unless it is explicitly enabled", async () => {
     const composer = {};
     const agents = controller();

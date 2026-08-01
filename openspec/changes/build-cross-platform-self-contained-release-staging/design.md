@@ -74,13 +74,13 @@ macOS脚本将Launcher放入`codexhost.app/Contents/MacOS/codexhost`，将其余
 
 ### 6. Windows使用WiX Toolset 4 MSI
 
-WiX源码显式声明九个Payload文件、per-user安装目录、开始菜单快捷方式、卸载注册和固定UpgradeCode。PowerShell脚本把目标映射到WiX `x64`或`arm64`，直接调用固定版本WiX 4 CLI生成`codexhost-<version>-<target>.msi`。
+WiX源码显式声明十个Payload文件（含生产Desktop Controller）、per-user安装目录、开始菜单快捷方式、卸载注册和固定UpgradeCode。PowerShell脚本把目标映射到WiX `x64`或`arm64`，直接调用固定版本WiX 4 CLI生成`codexhost-<version>-<target>.msi`。
 
 MSI不内置官方Codex Desktop、Pi或构建工具，也不要求管理员权限。后续Authenticode可作为artifact生成后的独立步骤增加，不改变Payload或WXS所有权。
 
 ### 7. 点击启动默认选择Pi，显式CLI保持兼容
 
-安装快捷方式和Finder启动都不携带参数。Launcher无参数时等价于`codexhost launch --agent pi`，使安装后的主入口可用。`inspect`、显式`launch --agent codex|pi`和开发路径覆盖保持不变。
+安装快捷方式和Finder启动都不携带参数。Launcher无参数时等价于`codexhost launch --agent pi`，使安装后的生产Renderer把新Composer初始显示为Pi。Host对未携带外部transport carrier的请求固定使用Codex fallback；Pi由既有carrier显式路由，因此用户切换Codex后不会继续进入Pi。`inspect`、显式`launch --agent codex|pi`和开发路径覆盖保持可用。
 
 ### 8. Release Workflow使用真实操作系统Runner
 
@@ -97,7 +97,7 @@ GitHub Release和手动触发均运行四目标矩阵。macOS arm64与x64使用�
 - [官方Node归档不可用或被替换] → 固定版本和SHA-256，缓存也重新校验，不回退本机Node。
 - [脚本失败覆盖上次中间目录] → 中间目录全部Git忽略且不作为交付物；最终上传只消费本次命令成功返回的artifact。
 - [无证书macOS首次启动被Gatekeeper拦截] → 发布说明明确首次放行步骤；不伪称已公证。
-- [无参数默认Pi改变CLI行为] → 只改变过去无效的无参数调用；全部显式命令保持兼容并增加测试。
+- [无参数初始Pi与Host fallback混淆] → Agent参数只决定生产Renderer初始选择；Host未标记fallback固定Codex，Pi只由transport carrier显式路由，并增加Codex/Pi双向真实验收。
 
 ## Migration Plan
 

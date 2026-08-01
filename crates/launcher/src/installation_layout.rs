@@ -7,6 +7,8 @@ pub struct InstalledResources {
     pub shim: PathBuf,
     pub node: PathBuf,
     pub host_runtime: PathBuf,
+    pub desktop_controller: PathBuf,
+    pub renderer_extension: PathBuf,
 }
 
 impl InstalledResources {
@@ -52,6 +54,8 @@ impl InstalledResources {
                 .join("runtime")
                 .join(format!("node{executable_suffix}")),
             host_runtime: resource_root.join("app/host-runtime.mjs"),
+            desktop_controller: resource_root.join("app/desktop-controller.mjs"),
+            renderer_extension: resource_root.join("app/renderer-extension.js"),
         })
     }
 }
@@ -80,6 +84,8 @@ mod tests {
                     .join("runtime")
                     .join(format!("node{}", env::consts::EXE_SUFFIX)),
                 host_runtime: root.join("app/host-runtime.mjs"),
+                desktop_controller: root.join("app/desktop-controller.mjs"),
+                renderer_extension: root.join("app/renderer-extension.js"),
             }
         );
     }

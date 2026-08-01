@@ -137,13 +137,21 @@ const INSTALL_POLICY_FUNCTION = `async function () {
     ambiguousTitleSkips: 0,
   };
   const ownedWebContentsIds = new Set();
+  const ownService = (service, contents) => {
+    const existingOwner = service[ownerSymbol];
+    if (existingOwner != null && existingOwner !== contents) {
+      throw new Error('Thread metadata service ownership mismatch');
+    }
+    if (existingOwner == null) {
+      Object.defineProperty(service, ownerSymbol, { value: contents });
+    }
+    ownedWebContentsIds.add(contents.id);
+  };
+  ownService(sampleService, selected);
   const wrappedCreateAppHost = function (contents) {
     const host = originalCreateAppHost.call(this, contents);
     const service = host?.services?.threadMetadataGeneration;
-    if (service != null) {
-      Object.defineProperty(service, ownerSymbol, { value: contents });
-      ownedWebContentsIds.add(contents.id);
-    }
+    if (service != null) ownService(service, contents);
     return host;
   };
   const wrappedGenerateTitle = async function (params) {
@@ -252,14 +260,23 @@ export async function installMainProcessTitlePolicy(
   );
   const getContextId = remoteObjectId(getContext?.value, "getContextForWebContents");
 
-  const installResponse = resultRecord(
+  const installPromise = resultRecord(
     await inspector.command("Runtime.callFunctionOn", {
       objectId: getContextId,
       functionDeclaration: INSTALL_POLICY_FUNCTION,
-      awaitPromise: true,
-      returnByValue: true,
     }),
     "Runtime.callFunctionOn",
+  );
+  const promiseObjectId = remoteObjectId(
+    installPromise.result,
+    "Main-process title policy installation promise",
+  );
+  const installResponse = resultRecord(
+    await inspector.command("Runtime.awaitPromise", {
+      promiseObjectId,
+      returnByValue: true,
+    }),
+    "Runtime.awaitPromise",
   );
   const remoteResult = installResponse.result;
   const value = isRecord(remoteResult) ? remoteResult.value : null;

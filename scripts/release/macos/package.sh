@@ -24,6 +24,7 @@ for relative in \
   bin/codexhost \
   libexec/codexhost-shim \
   runtime/node \
+  app/desktop-controller.mjs \
   app/host-runtime.mjs \
   app/renderer-extension.js \
   licenses/Node.js-LICENSE.txt \

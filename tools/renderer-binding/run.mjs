@@ -6,18 +6,10 @@ import {
   CdpClient,
   getCdpBrowserVersion,
   inspectRendererDom,
-  installMainProcessTitlePolicy,
-  installRendererDraftPrewarmPolicy,
-  listCdpTargets,
-  markRendererTitlePolicyReady,
-  readMainProcessTitlePolicyCounters,
+  installRendererControlSession,
   waitForRendererTarget,
 } from "../../packages/desktop-control/dist/index.js";
 import { installRendererObserver, readRendererObserver } from "./renderer-observer.mjs";
-import {
-  selectRendererWebContents,
-  waitForRendererTitlePolicyReady,
-} from "./renderer-selection.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultOutputDirectory = path.join(repositoryRoot, ".codexhost", "renderer-binding");
@@ -192,25 +184,6 @@ function safeTargetUrl(value) {
   }
 }
 
-async function waitForInspectorTarget(endpoint, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    try {
-      const target = (await listCdpTargets(endpoint)).find(
-        (candidate) => candidate.type === "node",
-      );
-      if (target) return target;
-      lastError = new Error("Inspector has no Node target");
-    } catch (error) {
-      lastError = error;
-    }
-    await sleep(250);
-  }
-  const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
-  throw new Error(`Electron main-process Inspector did not become ready${detail}`);
-}
-
 async function inspectBrowserTargets(endpoint) {
   const version = await getCdpBrowserVersion(endpoint);
   const browserClient = await CdpClient.connect(version.webSocketDebuggerUrl);
@@ -291,100 +264,6 @@ async function inspectBrowserTargets(endpoint) {
   }
 }
 
-const electronModuleExpression = `(() => {
-  const mainModule = process.mainModule;
-  if (mainModule != null && typeof mainModule.require === 'function') {
-    return mainModule.require('electron');
-  }
-  const { createRequire } = process.getBuiltinModule('module');
-  return createRequire(process.execPath)('electron');
-})()`;
-
-const webContentsRuntimeExpression = `(() => ({
-  elementCount: document.querySelectorAll('*').length,
-  editorCandidates: document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]').length,
-  sendButtonCandidates: [...document.querySelectorAll('button')].filter((button) => button.type === 'submit').length
-}))()`;
-
-async function inspectElectronWebContents(inspector) {
-  const expression = `(async () => {
-    const { webContents } = ${electronModuleExpression};
-    const result = [];
-    for (const contents of webContents.getAllWebContents()) {
-      let runtime = { available: false, elementCount: null, editorCandidates: null, sendButtonCandidates: null };
-      try {
-        const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
-        const timeout = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
-        });
-        runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
-      } catch {}
-      result.push({
-        id: contents.id,
-        type: contents.getType(),
-        surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
-        url: contents.getURL(),
-        runtime,
-      });
-    }
-    return result;
-  })()`;
-  const value = await inspector.evaluate(expression);
-  if (!Array.isArray(value)) throw new Error("Electron webContents inspection returned an array");
-  return value.map((item) => {
-    if (
-      !isRecord(item) ||
-      !Number.isInteger(item.id) ||
-      typeof item.type !== "string" ||
-      !["primary", "overlay"].includes(item.surface) ||
-      !isRecord(item.runtime)
-    ) {
-      throw new Error("Electron webContents inspection returned an invalid item");
-    }
-    return {
-      id: item.id,
-      type: item.type,
-      surface: item.surface,
-      url: safeTargetUrl(item.url),
-      runtime: {
-        available: item.runtime.available === true,
-        elementCount: Number.isInteger(item.runtime.elementCount)
-          ? item.runtime.elementCount
-          : null,
-        editorCandidates: Number.isInteger(item.runtime.editorCandidates)
-          ? item.runtime.editorCandidates
-          : null,
-        sendButtonCandidates: Number.isInteger(item.runtime.sendButtonCandidates)
-          ? item.runtime.sendButtonCandidates
-          : null,
-      },
-    };
-  });
-}
-
-async function waitForElectronRenderer(inspector, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastContents = [];
-  while (Date.now() < deadline) {
-    lastContents = await inspectElectronWebContents(inspector);
-    const selected = selectRendererWebContents(lastContents);
-    if (selected) return { contents: lastContents, selected };
-    await sleep(250);
-  }
-  console.log(JSON.stringify({ type: "renderer-inventory", webContents: lastContents }));
-  throw new Error("Inspector did not find a populated Electron Renderer webContents");
-}
-
-async function executeInWebContents(inspector, webContentsId, source) {
-  return inspector.evaluate(`(async () => {
-    const { webContents } = ${electronModuleExpression};
-    const contents = webContents.fromId(${webContentsId});
-    if (contents == null || contents.isDestroyed()) throw new Error('Renderer webContents is unavailable');
-    const result = await contents.executeJavaScript(${JSON.stringify(source)}, true);
-    return result === undefined ? null : result;
-  })()`);
-}
-
 async function run() {
   const options = parseArguments(process.argv.slice(2));
   const probeBundlePath = path.join(
@@ -401,7 +280,7 @@ async function run() {
 
   let desktop = null;
   let pageClient = null;
-  let inspectorClient = null;
+  let rendererControl = null;
   let interrupted = false;
   const interrupt = () => {
     interrupted = true;
@@ -416,54 +295,40 @@ async function run() {
       desktop = launchDesktop(options.desktop, cdpPort, inspectorPort, options.enableClaudeCode);
     }
 
-    const [target, inspectorTarget] = await Promise.all([
-      waitForRendererTarget(options.endpoint, { timeoutMs: 30_000 }),
-      waitForInspectorTarget(options.inspectorEndpoint),
-    ]);
+    const target = await waitForRendererTarget(options.endpoint, { timeoutMs: 30_000 });
     const browserTargets = await inspectBrowserTargets(options.endpoint);
     pageClient = await CdpClient.connect(target.webSocketDebuggerUrl);
-    inspectorClient = await CdpClient.connect(inspectorTarget.webSocketDebuggerUrl);
     await pageClient.command("Runtime.enable");
     const cdpDom = await inspectRendererDom(pageClient);
-    const rendererResult = await waitForElectronRenderer(inspectorClient);
-    const electronWebContents = rendererResult.contents;
-    let selectedRenderer = rendererResult.selected;
-    console.log(JSON.stringify({ type: "renderer-inventory", webContents: electronWebContents }));
-    const titlePolicy = await installMainProcessTitlePolicy(inspectorClient);
-    console.log(JSON.stringify({ type: "main-process-title-policy", ...titlePolicy }));
-    await inspectorClient.evaluate(`(() => {
-      const { webContents } = ${electronModuleExpression};
-      const contents = webContents.fromId(${selectedRenderer.id});
-      if (contents == null || contents.isDestroyed()) throw new Error('Renderer webContents is unavailable');
-      contents.reload();
-      return null;
-    })()`);
-    await sleep(750);
-    selectedRenderer = (await waitForElectronRenderer(inspectorClient)).selected;
-    const titlePolicyReadiness = await waitForRendererTitlePolicyReady(() =>
-      markRendererTitlePolicyReady(inspectorClient),
-    );
-    console.log(JSON.stringify({ type: "renderer-title-policy", ...titlePolicyReadiness }));
-    const draftPrewarmPolicy = await installRendererDraftPrewarmPolicy(
-      inspectorClient,
-      selectedRenderer.id,
-    );
-    console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
     const source = fs.readFileSync(probeBundlePath, "utf8");
-    await executeInWebContents(
-      inspectorClient,
-      selectedRenderer.id,
-      `(() => {
-        Object.defineProperty(window, "__codexhostRendererConfigurationV1", {
-          configurable: true,
-          value: { enableClaudeCode: ${JSON.stringify(options.enableClaudeCode)} },
-        });
-        return null;
-      })()`,
-    );
-    await executeInWebContents(inspectorClient, selectedRenderer.id, source);
-    const executeInRenderer = (expression) =>
-      executeInWebContents(inspectorClient, selectedRenderer.id, expression);
+    const configuredSource = `(() => {
+      Object.defineProperty(window, "__codexhostRendererConfigurationV1", {
+        configurable: true,
+        value: { enableClaudeCode: ${JSON.stringify(options.enableClaudeCode)} },
+      });
+      return null;
+    })();\n${source}`;
+    const enabledAgents = options.enableClaudeCode
+      ? ["codex", "pi", "claude-code"]
+      : ["codex", "pi"];
+    rendererControl = await installRendererControlSession({
+      inspectorEndpoint: options.inspectorEndpoint,
+      rendererSource: configuredSource,
+      enabledAgents,
+      timeoutMs: 60_000,
+    });
+    const {
+      inventory: electronWebContents,
+      renderer: selectedRenderer,
+      titlePolicy,
+      titlePolicyReadiness,
+      draftPrewarmPolicy,
+    } = rendererControl.snapshot;
+    console.log(JSON.stringify({ type: "renderer-inventory", webContents: electronWebContents }));
+    console.log(JSON.stringify({ type: "main-process-title-policy", ...titlePolicy }));
+    console.log(JSON.stringify({ type: "renderer-title-policy", ...titlePolicyReadiness }));
+    console.log(JSON.stringify({ type: "renderer-draft-prewarm-policy", ...draftPrewarmPolicy }));
+    const executeInRenderer = (expression) => rendererControl.executeRenderer(expression);
     await installRendererObserver(executeInRenderer);
 
     const report = {
@@ -517,7 +382,7 @@ async function run() {
       await sleep(250);
     }
 
-    report.titlePolicyCounters = await readMainProcessTitlePolicyCounters(inspectorClient);
+    report.titlePolicyCounters = await rendererControl.readTitlePolicyCounters();
     const reportPath = path.join(options.outputDirectory, "renderer-binding.local.json");
     fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(
@@ -533,7 +398,7 @@ async function run() {
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
-    inspectorClient?.close();
+    rendererControl?.close();
     pageClient?.close();
     if (desktop && !options.keepDesktop) stopDesktop(desktop);
     else desktop?.unref();

@@ -142,6 +142,7 @@ export function expectedPayloadPaths(target) {
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
+    "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
     "licenses/Node.js-LICENSE.txt",
@@ -236,10 +237,22 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Desktop Controller Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/desktop-control/scripts/build-release.mjs",
+        "--output",
+        path.join(payloadRoot, "app", "desktop-controller.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
-    path.join(root, "packages", "renderer-extension", "dist", "index.js"),
+    path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(payloadRoot, "app", "renderer-extension.js"),
-    "Renderer Bundle",
+    "production Renderer Bundle",
   );
 
   const archivePath = await ensureNodeArchive({

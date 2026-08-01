@@ -18,13 +18,13 @@
 
 ### Requirement: 固定自包含Payload
 
-发布系统 SHALL生成固定allowlist Payload，包含Launcher、Shim、私有Node.js Runtime、Pi-only Host Runtime、Renderer Bundle和第三方许可证。Payload MUST NOT依赖源码仓库、用户全局Node.js、npm或Rust。
+发布系统 SHALL生成固定allowlist Payload，包含Launcher、Shim、私有Node.js Runtime、Pi-only Host Runtime、Desktop Controller、生产Renderer Bundle和第三方许可证。Payload MUST NOT依赖源码仓库、用户全局Node.js、npm或Rust。
 
 #### Scenario: 生成完整Payload
 
 - **WHEN**目标构建、Node校验和Bundle审计成功
 - **THEN**Payload MUST位于`build/release/<version>/<target>/payload`
-- **AND** MUST只包含规格规定的九个文件
+- **AND** MUST只包含规格规定的十个文件
 
 #### Scenario: 发布Payload被移动
 
@@ -66,15 +66,16 @@ macOS发布系统 MUST生成标准`codexhost.app`，将Runtime资源放入`Conte
 
 - **WHEN**macOS目标Payload完整
 - **THEN**Launcher MUST位于`Contents/MacOS/codexhost`
-- **AND**Shim、Node、Host Runtime、Renderer和许可证 MUST位于`Contents/Resources`对应子目录
+- **AND**Shim、Node、Host Runtime、Desktop Controller、Renderer和许可证 MUST位于`Contents/Resources`对应子目录
 - **AND**DMG根目录 MUST包含`codexhost.app`和指向`/Applications`的符号链接
 - **AND**最终artifact MUST命名为`codexhost-<version>-<target>.dmg`
 
 #### Scenario: 点击安装后的App
 
 - **WHEN**用户不带CLI参数启动`codexhost.app`
-- **THEN**Launcher MUST使用随包资源并默认选择Pi组合
-- **AND**显式`launch --agent codex|pi` MUST保持可用
+- **THEN**Launcher MUST使用随包资源并让生产Renderer初始选择Pi
+- **AND**Host未标记创建 MUST使用Codex fallback，Pi创建 MUST使用既有transport carrier
+- **AND**显式`launch --agent codex|pi` MUST保持可用并决定生产Renderer初始选择
 
 ### Requirement: Windows WiX 4 MSI
 

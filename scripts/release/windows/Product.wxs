@@ -34,6 +34,9 @@
           </Directory>
           <Directory Id="AppFolder" Name="app">
             <Component Id="ApplicationBundleComponent">
+              <File
+                Id="DesktopControllerFile"
+                Source="$(var.PayloadRoot)\app\desktop-controller.mjs" />
               <File Id="HostRuntimeFile" Source="$(var.PayloadRoot)\app\host-runtime.mjs" />
               <File
                 Id="RendererExtensionFile"

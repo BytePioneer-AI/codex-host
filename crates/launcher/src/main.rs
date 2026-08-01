@@ -424,7 +424,10 @@ fn desktop_environment(options: &ResolvedLaunchOptions) -> Vec<(OsString, OsStri
         ),
     ];
     if let Some(pi) = &options.pi {
-        environment.push((OsString::from(PI_COMMAND_ENV), pi.as_os_str().to_owned()));
+        environment.push((
+            OsString::from(PI_COMMAND_ENV),
+            node_entrypoint_path(pi).into_os_string(),
+        ));
     }
     environment
 }
@@ -514,6 +517,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use codexhost_platform::spawn_supervised;
 
+    #[cfg(target_os = "windows")]
+    use super::PI_COMMAND_ENV;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
     use super::{
@@ -625,6 +630,23 @@ mod tests {
         assert_eq!(
             command.get_args().next(),
             Some(OsStr::new(r"C:\Program Files\codexhost\controller.mjs")),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pi_environment_normalizes_a_verbatim_command_script() {
+        let options = ResolvedLaunchOptions {
+            pi: Some(PathBuf::from(r"\\?\C:\nvm4w\nodejs\pi.cmd")),
+            ..resolved_options()
+        };
+
+        assert_eq!(
+            desktop_environment(&options)
+                .into_iter()
+                .find(|(name, _)| name == PI_COMMAND_ENV)
+                .map(|(_, value)| value),
+            Some(OsString::from(r"C:\nvm4w\nodejs\pi.cmd")),
         );
     }
 

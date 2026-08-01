@@ -1,7 +1,7 @@
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
 
 export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
-export const DEFAULT_RENDERER_AGENTS = ["codex", "pi"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ComposerAgentPhase = "draft" | "locked";
 

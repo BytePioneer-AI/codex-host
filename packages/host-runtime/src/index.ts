@@ -8,7 +8,6 @@ import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts"
 
 export {
   CLAUDE_CODE_COMMAND_ENV,
-  CLAUDE_CODE_ENABLE_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
 } from "./adapter-composition.js";

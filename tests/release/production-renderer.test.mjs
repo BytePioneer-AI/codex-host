@@ -10,18 +10,22 @@ async function source(relative) {
 }
 
 describe("production Renderer release chain", () => {
-  it("separates the fixed public entry from Probe development configuration", async () => {
-    const [productionEntry, probeEntry, installer] = await Promise.all([
+  it("uses the fixed three-Agent list without a development enable switch", async () => {
+    const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
       source("packages/renderer-extension/src/production-entry.ts"),
       source("packages/renderer-extension/src/probe-entry.ts"),
       source("packages/renderer-extension/src/install-renderer-binding.ts"),
+      source("packages/renderer-extension/src/agent-selection-state.ts"),
     ]);
 
+    expect(agentState).toContain(
+      'DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const',
+    );
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");
     expect(productionEntry).not.toContain("RendererConfiguration");
-    expect(probeEntry).toContain("__codexhostRendererConfigurationV1");
-    expect(probeEntry).toContain("installRendererBinding(enabledAgents)");
+    expect(probeEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
+    expect(probeEntry).not.toContain("enableClaudeCode");
     expect(installer).toContain("installCurrentRendererAdapter");
   });
 

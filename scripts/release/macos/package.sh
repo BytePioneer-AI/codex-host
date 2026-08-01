@@ -28,6 +28,9 @@ for relative in \
   app/host-runtime.mjs \
   app/renderer-extension.js \
   licenses/Node.js-LICENSE.txt \
+  licenses/Anthropic-SDK-LICENSE.txt \
+  licenses/Claude-Agent-SDK-LICENSE.md \
+  licenses/MCP-SDK-LICENSE.txt \
   licenses/diff-LICENSE.txt \
   licenses/zod-LICENSE.txt \
   THIRD_PARTY_NOTICES.txt; do

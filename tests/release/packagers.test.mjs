@@ -36,6 +36,9 @@ describe("platform packagers", () => {
       "app\\desktop-controller.mjs",
       "app\\host-runtime.mjs",
       "app\\renderer-extension.js",
+      "licenses\\Claude-Agent-SDK-LICENSE.md",
+      "licenses\\Anthropic-SDK-LICENSE.txt",
+      "licenses\\MCP-SDK-LICENSE.txt",
     ]) {
       expect(wix).toContain(relative);
     }

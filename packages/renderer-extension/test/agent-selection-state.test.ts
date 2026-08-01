@@ -53,7 +53,7 @@ describe("Renderer draft Agent controller", () => {
     ).toThrow("default Agent must be enabled");
   });
 
-  it("rejects Claude Code unless it is explicitly enabled", async () => {
+  it("enables Claude Code in the default production Agent list", async () => {
     const composer = {};
     const agents = controller();
     const applyAgent = vi.fn(() => true);
@@ -63,9 +63,9 @@ describe("Renderer draft Agent controller", () => {
         applyAgent,
         clearPrewarm: vi.fn(async () => undefined),
       }),
-    ).resolves.toBe(false);
-    expect(applyAgent).not.toHaveBeenCalled();
-    expect(agents.get(composer).agent).toBe("codex");
+    ).resolves.toBe(true);
+    expect(applyAgent).toHaveBeenCalledWith("claude-code");
+    expect(agents.get(composer).agent).toBe("claude-code");
   });
 
   it("uses the same draft lifecycle for explicitly enabled Claude Code", async () => {
@@ -221,7 +221,10 @@ describe("Renderer draft Agent controller", () => {
       phase: "locked",
       piModel: model,
     });
-    expect(agents.restore(replacement, "claude-code")).toBeNull();
+    expect(agents.restore(replacement, "claude-code")).toMatchObject({
+      agent: "claude-code",
+      phase: "locked",
+    });
   });
 
   it("transfers Pi Model state and request generations with logical Composer identity", () => {

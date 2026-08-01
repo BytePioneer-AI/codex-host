@@ -18,13 +18,13 @@
 
 ### Requirement: 固定自包含Payload
 
-发布系统 SHALL生成固定allowlist Payload，包含Launcher、Shim、私有Node.js Runtime、Pi-only Host Runtime、Desktop Controller、生产Renderer Bundle和第三方许可证。Payload MUST NOT依赖源码仓库、用户全局Node.js、npm或Rust。
+发布系统 SHALL生成固定allowlist Payload，包含Launcher、Shim、私有Node.js Runtime、注册Pi/Claude Code的Host Runtime、Desktop Controller、三Agent生产Renderer Bundle和第三方许可证。Payload MUST NOT依赖源码仓库、用户全局Node.js、npm或Rust。
 
 #### Scenario: 生成完整Payload
 
 - **WHEN**目标构建、Node校验和Bundle审计成功
 - **THEN**Payload MUST位于`build/release/<version>/<target>/payload`
-- **AND** MUST只包含规格规定的十个文件
+- **AND** MUST只包含规格规定的十三个文件
 
 #### Scenario: 发布Payload被移动
 
@@ -48,15 +48,16 @@
 - **THEN**发布系统 MUST拒绝使用该缓存
 - **AND** MUST清理本次下载或解包临时文件
 
-### Requirement: Pi-only Host Runtime
+### Requirement: 注册式生产Host Runtime
 
-公开Payload中的Host Runtime MUST从只注册Pi的正式入口构建，MUST NOT包含Claude Code Adapter、Anthropic SDK、Claude平台二进制或其他未启用Harness运行依赖。
+公开Payload中的Host Runtime MUST从默认注册Pi与Claude Code的正式入口构建。它 MUST包含已审查Claude Agent SDK运行闭包和许可证，MUST NOT包含SDK可选平台Claude Code包、Claude Code可执行文件或其他未启用Harness运行依赖。
 
 #### Scenario: 构建Host Runtime Bundle
 
 - **WHEN**发布系统构建Host Runtime
 - **THEN** MUST产生单个Node.js 24 ESM Bundle
-- **AND** metafile MUST确认PiAdapter和AppServerHost存在且Claude Code相关输入不存在
+- **AND** metafile MUST确认AppServerHost、PiAdapter、ClaudeCodeAdapter和Claude Agent SDK存在
+- **AND** MUST确认SDK可选平台包、Gate和测试输入不存在
 
 ### Requirement: macOS DMG
 

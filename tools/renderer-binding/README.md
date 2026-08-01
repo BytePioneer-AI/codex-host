@@ -66,12 +66,11 @@ npm run probe:renderer-binding -- --endpoint http://127.0.0.1:9222 --inspector-e
 
 To start a controlled Desktop instance, also pass an absolute `--desktop` executable path. Use `--until-submissions <count>` for a run that completes after a fixed number of sanitized observations.
 
-For the internal Claude Code vertical Gate, configure the Host runtime with `CODEXHOST_ENABLE_CLAUDE_CODE=1` and pass `--enable-claude-code` to the runner. The runner then injects a three-Agent enabled list before loading the Renderer bundle. Neither switch is enabled by default, and the Claude option must fail closed if the Host has no registered Claude Adapter.
+Claude Code is part of the default three-Agent list and the Host composition registers its Adapter without a development switch. The Adapter still requires a user-installed and authenticated Claude Code executable; missing installation or authentication fails closed without routing to another Harness.
 
 ```text
-CODEXHOST_ENABLE_CLAUDE_CODE=1 npm run probe:renderer-binding -- \
-  --desktop <absolute-desktop-executable> \
-  --enable-claude-code
+npm run probe:renderer-binding -- \
+  --desktop <absolute-desktop-executable>
 ```
 
 The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer binding and its tooling-only observer. The schema v2 local report stores production state under `status` and Gate-only observations, switch counters, and structural diagnostics under `observer`.

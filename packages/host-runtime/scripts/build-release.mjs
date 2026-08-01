@@ -5,19 +5,13 @@ import { pathToFileURL } from "node:url";
 import { build as esbuildBuild } from "esbuild";
 
 const forbiddenInputFragments = [
-  "/packages/adapters/claude-code/",
-  "/node_modules/@anthropic-ai/",
-  "/node_modules/@modelcontextprotocol/",
+  "/node_modules/@anthropic-ai/claude-agent-sdk-",
   "/test/",
   "/tests/",
   "/tools/",
 ];
-const forbiddenBundleReferences = [
-  "@anthropic-ai/",
-  "@codexhost/adapter-claude-code",
-  "claude-agent-sdk",
-];
-const allowedRuntimePackages = new Set(["diff", "zod"]);
+const forbiddenBundleReferences = ["sourceMappingURL="];
+const allowedRuntimePackages = new Set(["@anthropic-ai/claude-agent-sdk", "diff", "zod"]);
 
 function normalizedInputPath(value) {
   return `/${value.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "")}/`;
@@ -44,7 +38,10 @@ export function auditHostBundleMetafile(metafile) {
   for (const required of [
     "/packages/host-runtime/src/release-main.ts/",
     "/packages/host-runtime/src/app-server-host.ts/",
+    "/packages/host-runtime/src/adapter-composition.ts/",
     "/packages/adapters/pi/",
+    "/packages/adapters/claude-code/",
+    "/node_modules/@anthropic-ai/claude-agent-sdk/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {
       throw new Error(`release Host Bundle is missing required input: ${required}`);

@@ -8,8 +8,26 @@ import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
-  { packageName: "diff", license: "BSD-3-Clause", output: "diff-LICENSE.txt" },
-  { packageName: "zod", license: "MIT", output: "zod-LICENSE.txt" },
+  {
+    packageName: "@anthropic-ai/claude-agent-sdk",
+    license: "SEE LICENSE IN README.md",
+    source: "LICENSE.md",
+    output: "Claude-Agent-SDK-LICENSE.md",
+  },
+  {
+    packageName: "@anthropic-ai/sdk",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Anthropic-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@modelcontextprotocol/sdk",
+    license: "MIT",
+    source: "LICENSE",
+    output: "MCP-SDK-LICENSE.txt",
+  },
+  { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
+  { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
 
 function npmCommand(platform = process.platform) {
@@ -119,7 +137,7 @@ async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      path.join(dependencyRoot, "LICENSE"),
+      path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
       `${dependency.packageName} license`,
     );
@@ -146,6 +164,9 @@ export function expectedPayloadPaths(target) {
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
     "licenses/Node.js-LICENSE.txt",
+    "licenses/Anthropic-SDK-LICENSE.txt",
+    "licenses/Claude-Agent-SDK-LICENSE.md",
+    "licenses/MCP-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
@@ -181,14 +202,12 @@ export async function validatePayload({ payloadRoot, target, root }) {
     throw new Error(`release Payload contains non-allowlist files: ${extra.join(", ")}`);
   }
 
-  const forbiddenReferences = [
-    root,
-    "@anthropic-ai/",
-    "@codexhost/adapter-claude-code",
-    "claude-agent-sdk",
-  ];
-  for (const file of files.filter((entry) => /\.(?:js|mjs|txt)$/u.test(entry.relative))) {
+  for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
+    const forbiddenReferences = [root];
+    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+      forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
+    }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
       throw new Error(`release Payload file contains a forbidden reference: ${file.relative}`);
     }
@@ -227,7 +246,7 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
 
   await runCommand(
     {
-      label: "Pi-only Host Bundle build",
+      label: "production Host Bundle build",
       command: process.execPath,
       args: [
         "packages/host-runtime/scripts/build-release.mjs",

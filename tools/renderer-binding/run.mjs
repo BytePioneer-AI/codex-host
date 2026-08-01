@@ -19,7 +19,7 @@ function usage() {
   node tools/renderer-binding/run.mjs [--endpoint <loopback-url>]
     [--inspector-endpoint <loopback-url>] [--desktop <absolute-file>]
     [--observe-seconds <seconds>] [--until-submissions <count>]
-    [--output <directory>] [--keep-desktop] [--enable-claude-code]
+    [--output <directory>] [--keep-desktop]
 
 When --desktop is provided, the probe starts that executable with CDP and main-process Inspector
 ports, then closes only the process tree it started. Without --desktop, it attaches to both existing
@@ -43,7 +43,6 @@ function parseArguments(arguments_) {
     untilSubmissions: null,
     outputDirectory: defaultOutputDirectory,
     keepDesktop: false,
-    enableClaudeCode: false,
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -75,7 +74,6 @@ function parseArguments(arguments_) {
         options.keepDesktop = true;
         break;
       case "--enable-claude-code":
-        options.enableClaudeCode = true;
         break;
       case "--help":
       case "-h":
@@ -133,7 +131,7 @@ function endpointPort(endpoint, option) {
   return url.port ? parseInteger(url.port, `${option} port`, 1, 65_535) : 80;
 }
 
-function launchDesktop(executable, cdpPort, inspectorPort, enableClaudeCode) {
+function launchDesktop(executable, cdpPort, inspectorPort) {
   if (!fs.statSync(executable).isFile()) {
     throw new Error(`Desktop executable is not a file: ${executable}`);
   }
@@ -144,10 +142,7 @@ function launchDesktop(executable, cdpPort, inspectorPort, enableClaudeCode) {
       detached: process.platform !== "win32",
       stdio: "ignore",
       windowsHide: false,
-      env: {
-        ...process.env,
-        ...(enableClaudeCode ? { CODEXHOST_ENABLE_CLAUDE_CODE: "1" } : {}),
-      },
+      env: process.env,
     },
   );
   child.unref();
@@ -292,7 +287,7 @@ async function run() {
     const inspectorPort = endpointPort(options.inspectorEndpoint, "--inspector-endpoint");
     if (cdpPort === inspectorPort) throw new Error("CDP and Inspector ports must differ");
     if (options.desktop) {
-      desktop = launchDesktop(options.desktop, cdpPort, inspectorPort, options.enableClaudeCode);
+      desktop = launchDesktop(options.desktop, cdpPort, inspectorPort);
     }
 
     const target = await waitForRendererTarget(options.endpoint, { timeoutMs: 30_000 });
@@ -301,19 +296,10 @@ async function run() {
     await pageClient.command("Runtime.enable");
     const cdpDom = await inspectRendererDom(pageClient);
     const source = fs.readFileSync(probeBundlePath, "utf8");
-    const configuredSource = `(() => {
-      Object.defineProperty(window, "__codexhostRendererConfigurationV1", {
-        configurable: true,
-        value: { enableClaudeCode: ${JSON.stringify(options.enableClaudeCode)} },
-      });
-      return null;
-    })();\n${source}`;
-    const enabledAgents = options.enableClaudeCode
-      ? ["codex", "pi", "claude-code"]
-      : ["codex", "pi"];
+    const enabledAgents = ["codex", "pi", "claude-code"];
     rendererControl = await installRendererControlSession({
       inspectorEndpoint: options.inspectorEndpoint,
-      rendererSource: configuredSource,
+      rendererSource: source,
       enabledAgents,
       timeoutMs: 60_000,
     });
@@ -334,7 +320,7 @@ async function run() {
     const report = {
       schemaVersion: 2,
       recordedAt: new Date().toISOString(),
-      enabledDevelopmentHarnesses: options.enableClaudeCode ? ["claude-code"] : [],
+      enabledDevelopmentHarnesses: [],
       target: {
         id: target.id,
         type: target.type,

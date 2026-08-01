@@ -1,8 +1,8 @@
 ## Context
 
-当前实现已验证四目标注册表、Node.js 24.13.1官方归档与SHA-256、Pi-only esbuild Bundle，以及macOS arm64/x64自包含目录。实现位于`packages/release-staging`，包含通用原子目录替换、内部Manifest和逐文件SHA清单，但没有生成可安装产物。
+当前实现已验证四目标注册表、Node.js 24.13.1官方归档与SHA-256、esbuild Host Bundle，以及macOS arm64/x64自包含目录。实现位于`packages/release-staging`，包含通用原子目录替换、内部Manifest和逐文件SHA清单，但没有生成可安装产物。
 
-codexhost不拥有第二套主UI，不打包或修改官方Codex Desktop，也不自动安装Pi。首版公开组合只包含Pi。macOS不购买Developer ID、不公证；Windows目标安装器为WiX 4 MSI。四个目标保持独立产物，不生成Universal Binary。
+codexhost不拥有第二套主UI，不打包或修改官方Codex Desktop，也不自动安装Pi或Claude Code可执行文件。公开组合包含Pi与Claude Code Adapter，Claude继续使用用户安装的可执行文件。macOS不购买Developer ID、不公证；Windows目标安装器为WiX 4 MSI。四个目标保持独立产物，不生成Universal Binary。
 
 ## Goals / Non-Goals
 
@@ -10,7 +10,7 @@ codexhost不拥有第二套主UI，不打包或修改官方Codex Desktop，也�
 
 - 用窄幅构建脚本生成四目标固定Payload，并直接生成macOS DMG或Windows MSI。
 - 固定Rust target、Node归档、SHA-256、可执行文件名和允许的构建宿主。
-- 生成不含Claude Code实验依赖的Pi-only Host Runtime单文件Bundle。
+- 生成默认注册Pi与Claude Code、但不包含Claude Code可执行文件的Host Runtime单文件Bundle。
 - 使用标准macOS App资源布局和Windows per-user安装布局。
 - 只校验固定Payload allowlist和最终分发artifact，减少发布基础设施状态。
 - 将构建结果、安装包验证和真实Desktop运行支持表达为不同证据。
@@ -62,7 +62,7 @@ build/release/<version>/<target>/payload/
 
 ### 4. Host Runtime与Node Runtime保持现有供应链约束
 
-Host Bundle从`packages/host-runtime/src/release-main.ts`构建为Node 24 ESM单文件。esbuild metafile必须包含AppServerHost和PiAdapter，拒绝Claude Code、Anthropic、Gate、测试和未经审查的运行依赖。
+Host Bundle从`packages/host-runtime/src/release-main.ts`构建为Node 24 ESM单文件。esbuild metafile必须包含AppServerHost、PiAdapter、ClaudeCodeAdapter和官方Claude Agent SDK，拒绝SDK可选平台Claude Code包、Gate、测试和未经审查的运行依赖。
 
 Node Runtime只来自目标固定的Node.js 24.13.1官方归档。缓存和下载都重新计算SHA-256，使用宿主`tar`解包，只复制Node可执行文件和LICENSE，不回退到PATH、nvm或当前Node。
 
@@ -74,7 +74,7 @@ macOS脚本将Launcher放入`codexhost.app/Contents/MacOS/codexhost`，将其余
 
 ### 6. Windows使用WiX Toolset 4 MSI
 
-WiX源码显式声明十个Payload文件（含生产Desktop Controller）、per-user安装目录、开始菜单快捷方式、卸载注册和固定UpgradeCode。PowerShell脚本把目标映射到WiX `x64`或`arm64`，直接调用固定版本WiX 4 CLI生成`codexhost-<version>-<target>.msi`。
+WiX源码显式声明十三个Payload文件（含生产Desktop Controller与三份Claude SDK许可证）、per-user安装目录、开始菜单快捷方式、卸载注册和固定UpgradeCode。PowerShell脚本把目标映射到WiX `x64`或`arm64`，直接调用固定版本WiX 4 CLI生成`codexhost-<version>-<target>.msi`。
 
 MSI不内置官方Codex Desktop、Pi或构建工具，也不要求管理员权限。后续Authenticode可作为artifact生成后的独立步骤增加，不改变Payload或WXS所有权。
 

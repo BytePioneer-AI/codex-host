@@ -15,7 +15,10 @@ function validMetafile(extraInputs = {}) {
     inputs: {
       "packages/host-runtime/src/release-main.ts": {},
       "packages/host-runtime/src/app-server-host.ts": {},
+      "packages/host-runtime/src/adapter-composition.ts": {},
       "packages/adapters/pi/dist/index.js": {},
+      "packages/adapters/claude-code/dist/index.js": {},
+      "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
       "node_modules/diff/lib/index.mjs": {},
       "node_modules/zod/index.js": {},
       ...extraInputs,
@@ -24,33 +27,43 @@ function validMetafile(extraInputs = {}) {
 }
 
 describe("release Host Bundle", () => {
-  it("accepts the reviewed Pi-only input closure", () => {
+  it("accepts the reviewed Pi and Claude Code production closure", () => {
     expect(auditHostBundleMetafile(validMetafile())).toMatchObject({
-      runtimePackages: ["diff", "zod"],
+      runtimePackages: ["@anthropic-ai/claude-agent-sdk", "diff", "zod"],
     });
   });
 
-  it("rejects Claude and unreviewed runtime inputs", () => {
+  it("rejects bundled Claude Code platform packages and unreviewed runtime inputs", () => {
     expect(() =>
-      auditHostBundleMetafile(validMetafile({ "packages/adapters/claude-code/dist/index.js": {} })),
+      auditHostBundleMetafile(
+        validMetafile({
+          "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/sdk.mjs": {},
+        }),
+      ),
     ).toThrow("forbidden inputs");
     expect(() =>
       auditHostBundleMetafile(validMetafile({ "node_modules/unreviewed/index.js": {} })),
     ).toThrow("unreviewed runtime packages: unreviewed");
-    expect(() => auditHostBundleSource('import "@anthropic-ai/claude-agent-sdk"')).toThrow(
+    expect(() => auditHostBundleSource('//# sourceMappingURL="host-runtime.mjs.map"')).toThrow(
       "forbidden references",
     );
   });
 
-  it("rejects a closure missing the Pi Adapter", () => {
-    const inputs = { ...validMetafile().inputs };
-    delete inputs["packages/adapters/pi/dist/index.js"];
-    expect(() => auditHostBundleMetafile({ inputs })).toThrow(
+  it("rejects a closure missing either production Adapter", () => {
+    const withoutPi = { ...validMetafile().inputs };
+    delete withoutPi["packages/adapters/pi/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutPi })).toThrow(
       "missing required input: /packages/adapters/pi/",
+    );
+
+    const withoutClaude = { ...validMetafile().inputs };
+    delete withoutClaude["packages/adapters/claude-code/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutClaude })).toThrow(
+      "missing required input: /packages/adapters/claude-code/",
     );
   });
 
-  it("builds the real Pi-only entry without Claude dependencies", async () => {
+  it("builds the real production entry with Claude Adapter and Agent SDK", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-host-bundle-"));
     const outputPath = path.join(directory, "host-runtime.mjs");
     try {
@@ -58,11 +71,11 @@ describe("release Host Bundle", () => {
         repositoryRoot: path.resolve(import.meta.dirname, "../.."),
         outputPath,
       });
-      expect(audit.runtimePackages).toEqual(["diff", "zod"]);
+      expect(audit.runtimePackages).toContain("@anthropic-ai/claude-agent-sdk");
       const source = await readFile(outputPath, "utf8");
       expect(source).toContain("CODEXHOST_STOCK_CODEX_PATH");
-      expect(source).not.toContain("@anthropic-ai/");
-      expect(source).not.toContain("@codexhost/adapter-claude-code");
+      expect(source).toContain("Claude Code is not installed");
+      expect(source).not.toContain("claude-agent-sdk-darwin-arm64");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

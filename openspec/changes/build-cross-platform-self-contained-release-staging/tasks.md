@@ -9,7 +9,7 @@
 - [x] 2.1 保留四目标注册表、宿主限制、Node.js 24.13.1官方归档和固定SHA-256
 - [x] 2.2 保留只注册Pi的正式Host入口和拒绝Claude依赖的esbuild审计
 - [x] 2.3 将必要构建逻辑迁移到`scripts/release/`，测试迁入`tests/release/`，删除`packages/release-staging`
-- [x] 2.4 生成固定十文件Payload（含生产Desktop Controller）和第三方许可证，删除内部Manifest、Payload SHA及目录备份事务
+- [x] 2.4 生成固定十三文件Payload（含生产Desktop Controller和Claude SDK许可证）并删除内部Manifest、Payload SHA及目录备份事务
 - [x] 2.5 在根`package.json`暴露单一`release:package -- --target <target>`命令
 
 ## 3. macOS DMG

@@ -80,7 +80,7 @@ describe("production Desktop Controller", () => {
       inspectorEndpoint: "http://127.0.0.1:43123",
       rendererSource:
         'Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
-      enabledAgents: ["codex", "pi"],
+      enabledAgents: ["codex", "pi", "claude-code"],
       timeoutMs: 90_000,
     });
     expect(ready).toHaveBeenCalledOnce();

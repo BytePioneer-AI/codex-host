@@ -49,6 +49,15 @@
                 Id="NodeLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\Node.js-LICENSE.txt" />
               <File
+                Id="AnthropicSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\Anthropic-SDK-LICENSE.txt" />
+              <File
+                Id="ClaudeAgentSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\Claude-Agent-SDK-LICENSE.md" />
+              <File
+                Id="McpSdkLicenseFile"
+                Source="$(var.PayloadRoot)\licenses\MCP-SDK-LICENSE.txt" />
+              <File
                 Id="DiffLicenseFile"
                 Source="$(var.PayloadRoot)\licenses\diff-LICENSE.txt" />
               <File

@@ -40,14 +40,14 @@ describe("release Payload", () => {
     await expect(prepareReleasePayload({ target })).rejects.toThrow("requires host platform");
   });
 
-  it("validates exactly ten allowlisted files without internal manifests", async () => {
+  it("validates exactly thirteen allowlisted files without internal manifests", async () => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");
     try {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(10);
+      expect(paths).toHaveLength(13);
       expect(paths).not.toContain("release-manifest.json");
       expect(paths).not.toContain("SHA256SUMS.txt");
       await writeFile(path.join(root, "app/host-runtime.js.map"), "unexpected");

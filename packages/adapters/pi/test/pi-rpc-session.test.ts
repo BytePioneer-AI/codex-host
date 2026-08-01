@@ -24,7 +24,8 @@ type Scenario =
   | "interaction-timeout"
   | "interaction-cancel"
   | "malformed-interaction"
-  | "malformed-catalog";
+  | "malformed-catalog"
+  | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -84,7 +85,7 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_state") {
       this.#respond(command, {
-        sessionId: this.#sessionId,
+        ...(this.#scenario === "missing-session-id" ? {} : { sessionId: this.#sessionId }),
         sessionFile: this.#sessionFile,
         model: { provider: this.#provider, id: this.#modelId },
       });
@@ -379,6 +380,16 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(spawnProcess.mock.calls[0]?.[0]).not.toHaveProperty("extensionPath");
+    await rpc.close();
+  });
+
+  it("rejects native state without stable Session identity", async () => {
+    const rpc = session("missing-session-id");
+
+    await expect(rpc.start()).rejects.toMatchObject({
+      kind: "protocolError",
+      message: "Pi RPC state has no stable Session identity",
+    });
     await rpc.close();
   });
 

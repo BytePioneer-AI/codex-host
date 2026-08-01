@@ -1,9 +1,9 @@
 import {
   harnessModelRefSchema,
   hostThreadIdSchema,
+  type HarnessInspectParams,
   type HarnessModelRef,
   type HostThreadId,
-  type PiHarnessInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
 } from "@codexhost/shared-contracts";
@@ -645,7 +645,7 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const modelControl: RendererModelClient = Object.freeze({
-    async inspectPi(input: PiHarnessInspectParams) {
+    async inspectPi(input: HarnessInspectParams) {
       const client = createRendererModelClient(findActivePrewarmTargets(document));
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.inspectPi(input);

@@ -1,4 +1,8 @@
-import { harnessModelRefSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessModelRefSchema,
+  hostThreadIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +12,7 @@ import {
   createRendererModelClient,
 } from "../src/renderer-model-client.js";
 
+const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
 const inspection = {
   status: "ready" as const,
@@ -37,7 +42,9 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
 
-    await expect(client.inspectPi({ harnessId: "pi", refresh: true })).resolves.toEqual(inspection);
+    await expect(client.inspectPi({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
+      inspection,
+    );
     await expect(
       client.inspectThread({ threadId: hostThreadIdSchema.parse("thread-1") }),
     ).resolves.toMatchObject({ owner: "external", harnessId: "pi", locked: true });
@@ -101,6 +108,6 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
 
-    await expect(client.inspectPi({ harnessId: "pi" })).rejects.toThrow();
+    await expect(client.inspectPi({ harnessId: piHarnessId })).rejects.toThrow();
   });
 });

@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
@@ -132,9 +133,8 @@ function createFixture(
     diagnosticOutput,
     mappingStore,
     ...(options.environment ? { environment: options.environment } : {}),
-    ...(options.externalAdapters
-      ? { externalAdapters: options.externalAdapters }
-      : { piAdapter: adapter }),
+    externalAdapters:
+      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
   });
   const running = host.run();
@@ -243,6 +243,40 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("dispatches inspection by registered Harness ID and rejects unknown Harnesses", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 31,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "claude-code", cwd: "/synthetic-claude" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(claude.inspectionCalls).toBe(1);
+    expect(pi.inspectionCalls).toBe(0);
+
+    writeRequest(fixture.desktopInput, {
+      id: 32,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "unregistered" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({
+      error: { code: -32077, message: "Harness 'unregistered' is unavailable" },
+    });
+    await stopFixture(fixture);
+  });
+
   it("inspects authoritative external and Codex Thread ownership locally", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -345,6 +379,33 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     expect(fixture.adapter.sessions[0]?.state.effectiveModel).toEqual(model);
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("selects a registered non-Pi Thread Model through its owning Session", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
+    const model = claude.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake Claude catalog has no secondary Model");
+
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 33))).resolves.toEqual({
+      id: 33,
+      result: { effectiveModel: model },
+    });
+    expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
+    expect(pi.sessions).toHaveLength(0);
     await stopFixture(fixture);
   });
 
@@ -1724,7 +1785,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects Pi Model selection for a Claude-owned Thread", async () => {
+  it("rejects Model selection when the owning Claude Session does not support it", async () => {
     const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
     const fixture = createFixture({
@@ -1736,6 +1797,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, 20);
     const model = piAdapter.catalog.defaultModel;
     if (!model) throw new Error("Fake Pi catalog has no default Model");
+    const claudeSession = claudeAdapter.sessions[0];
+    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
+    claudeSession.capabilities.configuration.selectModel = false;
 
     writeRequest(fixture.desktopInput, {
       id: 21,
@@ -1748,12 +1812,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       error: {
         code: -32078,
-        message: "Model selection requires a current-process Pi Thread",
+        message: "External Harness does not support Model selection",
       },
     });
-    expect(claudeAdapter.sessions[0]?.state.effectiveModel).toEqual(
-      claudeAdapter.catalog.defaultModel,
-    );
+    expect(claudeSession.state.effectiveModel).toEqual(claudeAdapter.catalog.defaultModel);
     await stopFixture(fixture);
   });
 

@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import type { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter, type ClaudeAdapterDependencies } from "@codexhost/adapter-claude-code";
+import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { MappingStore } from "@codexhost/mapping-store";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import {
@@ -16,6 +16,8 @@ import {
 } from "@codexhost/protocol-core";
 
 import { AppServerHost } from "../src/index.js";
+
+type ClaudeAdapterDependencies = NonNullable<ConstructorParameters<typeof ClaudeCodeAdapter>[1]>;
 
 const RUN_REAL = process.env.CODEXHOST_RUN_CLAUDE_HOST_REAL === "1";
 const REAL_TIMEOUT_MS = 180_000;
@@ -112,6 +114,7 @@ describe("AppServerHost hermetic Claude projection", () => {
     let nativeTurnKey: string | undefined;
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => `claude-hermetic-${++uuid}`,
+      inspectInstallation: () => undefined,
       createTransport: (input) => {
         nativeSessionId = input.sessionId;
         return {

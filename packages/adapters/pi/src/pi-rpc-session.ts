@@ -157,8 +157,11 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
   const data = isRecord(response.data) ? response.data : null;
   if (!data) throw new PiRpcFaultError("protocolError", "Pi RPC state response has no data");
   const model = parseNativeModel(data.model, "state");
+  if (!nonBlankString(data.sessionId)) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
+  }
   return {
-    sessionId: nonBlankString(data.sessionId) ? data.sessionId : randomUUID(),
+    sessionId: data.sessionId,
     sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,

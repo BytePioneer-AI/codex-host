@@ -39,7 +39,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { ClaudeCodeExecutableError } from "./command.js";
+import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
@@ -559,6 +559,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#dependencies = dependencies ?? {
       randomUUID,
+      inspectInstallation: () => {
+        resolveClaudeCodeExecutable({
+          ...(options.command ? { command: options.command } : {}),
+          environment: options.environment ?? process.env,
+        });
+      },
       createTransport: (input) =>
         new ClaudeSdkTransport({
           ...input,
@@ -571,14 +577,29 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     void input;
-    return {
-      status: "unavailable",
-      error: {
-        code: "unsupported",
-        message: "Claude Code Model inspection is not supported",
-        retryable: false,
-      },
-    };
+    if (this.#closePromise) {
+      return {
+        status: "unavailable",
+        error: invalidState("Claude Code Adapter is closing"),
+      };
+    }
+    try {
+      this.#dependencies.inspectInstallation();
+      return {
+        status: "ready",
+        catalog: { models: [] },
+        capabilities: {
+          configuration: { selectModel: false },
+          history: { fork: false, forkAcrossCwd: false },
+        },
+      };
+    } catch (error) {
+      const normalized = startupFailure(error);
+      return {
+        status: normalized.code === "notInstalled" ? "notInstalled" : "error",
+        error: normalized,
+      };
+    }
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -588,12 +609,22 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: invalidState("Claude Code Adapter is closing"),
       };
     }
-    if (input.kind !== "create" || input.cwd.length === 0) {
+    if (input.cwd.length === 0) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Claude Code Adapter requires a create input with cwd",
+          message: "Claude Code Adapter requires cwd",
+          retryable: false,
+        },
+      };
+    }
+    if (input.kind !== "create") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `Claude Code ${input.kind} is not implemented`,
           retryable: false,
         },
       };

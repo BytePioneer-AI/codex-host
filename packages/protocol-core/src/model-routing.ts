@@ -57,6 +57,18 @@ export function decodePiTransportModel(value: unknown): HarnessModelRef | null |
   return parsed.data;
 }
 
+export function decodeExternalTransportModel(
+  harnessId: ExternalHarnessId,
+  value: unknown,
+): HarnessModelRef | null | undefined {
+  switch (harnessId) {
+    case "pi":
+      return decodePiTransportModel(value);
+    case "claude-code":
+      return value === CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID ? undefined : null;
+  }
+}
+
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
   if (!isJsonObject(request.params) || typeof request.params.model !== "string") {

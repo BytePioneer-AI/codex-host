@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
+  harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
-  piHarnessInspectParamsSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
@@ -116,19 +116,22 @@ describe("Harness Model runtime contracts", () => {
 
   it("keeps inspection and Thread selection params method-specific", () => {
     expect(
-      piHarnessInspectParamsSchema.parse({
+      harnessInspectParamsSchema.parse({
         harnessId: "pi",
         cwd: "/synthetic",
         refresh: true,
       }),
     ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true });
+    expect(harnessInspectParamsSchema.parse({ harnessId: "claude-code" })).toEqual({
+      harnessId: "claude-code",
+    });
     expect(threadModelSelectParamsSchema.parse({ threadId: "thread-1", model: firstRef })).toEqual({
       threadId: "thread-1",
       model: firstRef,
     });
 
     expect(
-      piHarnessInspectParamsSchema.safeParse({
+      harnessInspectParamsSchema.safeParse({
         harnessId: "pi",
         method: "get_available_models",
       }).success,

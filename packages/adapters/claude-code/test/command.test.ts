@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveClaudeCodeExecutable } from "../src/index.js";
+import { resolveClaudeCodeExecutable } from "../src/command.js";
 
 const directories: string[] = [];
 afterEach(() => {

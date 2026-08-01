@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { codexhostErrorSchema } from "./errors.js";
-import { hostThreadIdSchema } from "./ids.js";
+import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
 
@@ -112,15 +112,15 @@ export const harnessInspectionSchema = z.discriminatedUnion("status", [
 
 export type HarnessInspection = z.infer<typeof harnessInspectionSchema>;
 
-export const piHarnessInspectParamsSchema = z
+export const harnessInspectParamsSchema = z
   .object({
-    harnessId: z.literal("pi"),
+    harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
     refresh: z.boolean().optional(),
   })
   .strict();
 
-export type PiHarnessInspectParams = z.infer<typeof piHarnessInspectParamsSchema>;
+export type HarnessInspectParams = z.infer<typeof harnessInspectParamsSchema>;
 
 export const threadModelSelectParamsSchema = z
   .object({

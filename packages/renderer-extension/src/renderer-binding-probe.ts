@@ -1,4 +1,8 @@
-import type { HarnessModelRef, ThreadInspection } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  type HarnessModelRef,
+  type ThreadInspection,
+} from "@codexhost/shared-contracts";
 
 import {
   DEFAULT_RENDERER_AGENTS,
@@ -32,6 +36,8 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+
+const piHarnessId = harnessIdSchema.parse("pi");
 
 export interface RendererBindingProbeStatus {
   version: 2;
@@ -267,7 +273,7 @@ export function installRendererBindingProbe(
     renderMounted(mounted);
     try {
       if (!modelControl) throw new Error("Pi Model control is unavailable");
-      const inspection = await modelControl.inspectPi({ harnessId: "pi" });
+      const inspection = await modelControl.inspectPi({ harnessId: piHarnessId });
       if (
         !controller.isCurrentModelRequest(mounted.composer, generation) ||
         controller.get(mounted.composer).agent !== "pi"

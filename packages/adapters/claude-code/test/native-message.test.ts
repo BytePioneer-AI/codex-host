@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ClaudeNativeTurnAccumulator } from "../src/index.js";
+import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 
 function partial(text: string) {
   return {

@@ -31,6 +31,7 @@ export {
   PI_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeCreateRoute,
+  decodeExternalTransportModel,
   decodePiTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,

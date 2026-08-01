@@ -5,6 +5,7 @@ export { codexhostErrorSchema } from "./errors.js";
 export type { CodexhostError } from "./errors.js";
 export {
   HARNESS_MODEL_REF_MAX_LENGTH,
+  harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
   harnessModelRefIdSchema,
@@ -12,19 +13,18 @@ export {
   harnessModelSchema,
   harnessModelSelectionStateSchema,
   harnessSessionCapabilitiesSchema,
-  piHarnessInspectParamsSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
 } from "./harness-models.js";
 export type {
+  HarnessInspectParams,
   HarnessInspection,
   HarnessModel,
   HarnessModelCatalog,
   HarnessModelRef,
   HarnessModelSelectionState,
   HarnessSessionCapabilities,
-  PiHarnessInspectParams,
   ThreadInspection,
   ThreadInspectionParams,
   ThreadModelSelectParams,

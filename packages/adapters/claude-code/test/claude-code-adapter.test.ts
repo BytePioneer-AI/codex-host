@@ -1,17 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelRefSchema,
+  hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
-import {
-  ClaudeCodeAdapter,
-  ClaudeCodeExecutableError,
-  type ClaudeAdapterDependencies,
-  type ClaudeInteractionResponse,
-  type ClaudeQuestionRequest,
-  type ClaudeTransportTurnResult,
-  type ClaudeTurnEvent,
-  type ClaudeTurnTransport,
-} from "../src/index.js";
+import { ClaudeCodeAdapter } from "../src/index.js";
+import { ClaudeCodeExecutableError } from "../src/command.js";
+import type {
+  ClaudeAdapterDependencies,
+  ClaudeInteractionResponse,
+  ClaudeQuestionRequest,
+  ClaudeTransportTurnResult,
+  ClaudeTurnEvent,
+  ClaudeTurnTransport,
+} from "../src/transport.js";
 
 class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
@@ -75,9 +80,11 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
 
 function fixture() {
   const transports: FakeClaudeTransport[] = [];
+  const inspectInstallation = vi.fn();
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
+    inspectInstallation,
     createTransport: vi.fn((input) => {
       const transport = new FakeClaudeTransport(input.sessionId);
       transports.push(transport);
@@ -85,7 +92,7 @@ function fixture() {
     }),
   };
   const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 50 }, dependencies);
-  return { adapter, dependencies, transports };
+  return { adapter, dependencies, inspectInstallation, transports };
 }
 
 async function openSession(adapter: ClaudeCodeAdapter): Promise<HarnessSession> {
@@ -126,14 +133,19 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("reports Model configuration as unsupported without starting a Transport", async () => {
+  it("reports installation ready without claiming Model support or starting a Transport", async () => {
     const { adapter, dependencies } = fixture();
     const model = harnessModelRefSchema.parse({ id: "claude-model-v1.synthetic" });
 
-    await expect(adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "unsupported", retryable: false },
+    await expect(adapter.inspect()).resolves.toEqual({
+      status: "ready",
+      catalog: { models: [] },
+      capabilities: {
+        configuration: { selectModel: false },
+        history: { fork: false, forkAcrossCwd: false },
+      },
     });
+    expect(dependencies.inspectInstallation).toHaveBeenCalledOnce();
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
       configuration: { selectModel: false },
@@ -148,6 +160,42 @@ describe("Claude Code HarnessAdapter", () => {
     );
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("reports a missing installation without starting a Transport", async () => {
+    const { adapter, dependencies, inspectInstallation } = fixture();
+    inspectInstallation.mockImplementationOnce(() => {
+      throw new ClaudeCodeExecutableError("Claude Code is not installed");
+    });
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled", retryable: false },
+    });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+  });
+
+  it("returns unsupported for history open modes without starting a Transport", async () => {
+    const { adapter, dependencies } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      checkpointId: "source-checkpoint",
+      formatVersion: 1,
+    });
+
+    await expect(
+      adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
   it("starts lazily and emits a complete text lifecycle", async () => {
@@ -514,6 +562,7 @@ describe("Claude Code HarnessAdapter", () => {
   it("rejects missing installation before acceptance without outputs", async () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => "claude-id",
+      inspectInstallation: () => undefined,
       createTransport: () => ({
         sessionId: "claude-id",
         start: async () => {

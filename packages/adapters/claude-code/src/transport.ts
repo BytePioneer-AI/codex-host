@@ -57,5 +57,6 @@ export interface ClaudeTransportFactoryInput {
 
 export interface ClaudeAdapterDependencies {
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
+  inspectInstallation(): void;
   randomUUID(): string;
 }

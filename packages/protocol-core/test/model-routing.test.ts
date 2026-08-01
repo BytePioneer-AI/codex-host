@@ -5,6 +5,7 @@ import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeCreateRoute,
+  decodeExternalTransportModel,
   decodePiTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,
@@ -55,6 +56,19 @@ describe("external Harness transport model routing", () => {
     });
   });
 
+  it("decodes existing Thread carriers only for their owning Harness", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
+    const selectedPi = encodePiTransportModel(model);
+
+    expect(decodeExternalTransportModel("pi", PI_NATIVE_TRANSPORT_MODEL_ID)).toBeUndefined();
+    expect(decodeExternalTransportModel("pi", selectedPi)).toEqual(model);
+    expect(
+      decodeExternalTransportModel("claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID),
+    ).toBeUndefined();
+    expect(decodeExternalTransportModel("claude-code", selectedPi)).toBeNull();
+    expect(decodeExternalTransportModel("pi", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID)).toBeNull();
+  });
+
   it("rejects malformed selected Pi carriers instead of forwarding them as official Models", () => {
     for (const model of [
       `${PI_NATIVE_TRANSPORT_MODEL_ID}@`,
@@ -66,5 +80,8 @@ describe("external Harness transport model routing", () => {
       );
     }
     expect(decodePiTransportModel("official/model")).toBeNull();
+    expect(() =>
+      decodeExternalTransportModel("pi", `${PI_NATIVE_TRANSPORT_MODEL_ID}@provider/model`),
+    ).toThrow("invalid Model Ref");
   });
 });

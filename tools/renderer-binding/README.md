@@ -2,10 +2,10 @@
 
 This controlled probe validates the version-locked `Codex / Pi` Agent binding in a real Codex Desktop Renderer. It can also expose `Claude Code` as an internal development-only third Agent when both the Host and Renderer gates are explicitly enabled.
 
-The current full result is recorded in:
-
-- `docs/CodexRendererAgent绑定验证记录.md`
-- `docs/RendererAgent路由阶段验证记录-2026-07-28.md`
+The durable routing result and contract are recorded in
+`openspec/specs/versioned-renderer-agent-routing/spec.md`, with the originating design and
+completed tasks under
+`openspec/changes/archive/2026-07-28-implement-versioned-renderer-agent-routing/`.
 
 ## Scope
 

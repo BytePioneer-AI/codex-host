@@ -109,7 +109,6 @@ Shim 必须处理 Desktop 可能发送的 `SIGTERM`、`SIGINT`、`SIGHUP` 等受
 ```text
 .codexhost/gate-a/macos/                 # 本地原始证据，忽略
  tests/fixtures/gate-a/macos/             # 可提交脱敏摘要
- docs/macOSCodex透明代理验证记录.md       # Gate 完成时
 ```
 
 Probe/Gate Schema 提取共享字段，并使用平台判别联合承载 `windowsVersion`、`macosVersion`、bundle/package 身份等差异。现有 Windows Fixture 必须继续通过原 Schema 或经过明确迁移后通过，不允许自动覆盖 Golden。

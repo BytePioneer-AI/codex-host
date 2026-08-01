@@ -4,17 +4,17 @@ use std::mem::{size_of, transmute};
 use std::ptr::null_mut;
 
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_WARNING_ICON, TDCBF_CANCEL_BUTTON,
-    TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT, TDF_USE_COMMAND_LINKS,
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON,
+    TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
 };
 use windows::core::PCWSTR;
 
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const SW_HIDE: i32 = 0;
 const MB_OK: u32 = 0;
-const MB_YESNOCANCEL: u32 = 3;
+const MB_YESNO: u32 = 4;
 const MB_ICONERROR: u32 = 0x0000_0010;
-const MB_ICONWARNING: u32 = 0x0000_0030;
+const MB_ICONINFORMATION: u32 = 0x0000_0040;
 const IDCANCEL: i32 = 2;
 const IDYES: i32 = 6;
 const IDNO: i32 = 7;
@@ -38,19 +38,19 @@ struct RunningDesktopText {
 }
 
 const ENGLISH_RUNNING_DESKTOP_TEXT: RunningDesktopText = RunningDesktopText {
-    instruction: "Codex is already open",
-    content: "codexhost cannot take control of a Codex instance that was started independently.",
-    restart: "Restart with codexhost\nForce close the current Codex and start a controlled instance.",
-    retry: "Try again\nCheck again after you completely quit Codex yourself.",
-    fallback: "Codex is already open.\n\nYes: force restart it with codexhost.\nNo: check again after you completely quit Codex yourself.\nCancel: leave Codex running.",
+    instruction: "Codex is already running",
+    content: "The current Codex was not started by codexhost. To use codexhost, Codex must be restarted.",
+    restart: "Exit and restart automatically (Recommended)",
+    retry: "I've quit Codex, try again",
+    fallback: "The current Codex was not started by codexhost. To use codexhost, Codex must be restarted.\n\nYes: exit and restart automatically.\nNo: try again after you quit Codex.",
 };
 
 const CHINESE_RUNNING_DESKTOP_TEXT: RunningDesktopText = RunningDesktopText {
     instruction: "Codex 已在运行",
-    content: "codexhost 无法接管由其他方式独立启动的 Codex。",
-    restart: "使用 codexhost 重启\n强制关闭当前 Codex，然后启动受控实例。",
-    retry: "重新检测\n请手动完全退出 Codex 后再次检查。",
-    fallback: "Codex 已在运行。\n\n是：强制关闭并使用 codexhost 重启。\n否：手动完全退出 Codex 后重新检测。\n取消：保留当前 Codex。",
+    content: "当前 Codex 不是由 codexhost 启动的。要使用 codexhost，需要重新启动 Codex。",
+    restart: "自动退出并重新启动（推荐）",
+    retry: "我已退出，重试",
+    fallback: "当前 Codex 不是由 codexhost 启动的。要使用 codexhost，需要重新启动 Codex。\n\n是：自动退出并重新启动。\n否：退出后重试。",
 };
 
 #[link(name = "kernel32")]
@@ -139,7 +139,7 @@ fn task_dialog_indirect(config: &TASKDIALOGCONFIG, selected: &mut i32) -> io::Re
     Ok(())
 }
 
-fn command_link_dialog(
+fn choice_dialog(
     instruction: &str,
     content: &str,
     buttons: &[(i32, &str)],
@@ -162,11 +162,11 @@ fn command_link_dialog(
         .collect::<Vec<_>>();
     let config = TASKDIALOGCONFIG {
         cbSize: u32::try_from(size_of::<TASKDIALOGCONFIG>()).expect("Task Dialog size fits u32"),
-        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_USE_COMMAND_LINKS | TDF_SIZE_TO_CONTENT,
-        dwCommonButtons: TDCBF_CANCEL_BUTTON,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT,
+        dwCommonButtons: Default::default(),
         pszWindowTitle: PCWSTR(title.as_ptr()),
         Anonymous1: TASKDIALOGCONFIG_0 {
-            pszMainIcon: TD_WARNING_ICON,
+            pszMainIcon: TD_INFORMATION_ICON,
         },
         pszMainInstruction: PCWSTR(instruction.as_ptr()),
         pszContent: PCWSTR(content.as_ptr()),
@@ -182,7 +182,7 @@ fn command_link_dialog(
 
 pub fn prompt_running_desktop() -> RunningDesktopChoice {
     let text = running_desktop_text_for_locale(&user_locale_name());
-    let result = command_link_dialog(
+    let result = choice_dialog(
         text.instruction,
         text.content,
         &[
@@ -195,7 +195,7 @@ pub fn prompt_running_desktop() -> RunningDesktopChoice {
         Ok(RESTART_BUTTON_ID) => RunningDesktopChoice::Restart,
         Ok(RETRY_BUTTON_ID) => RunningDesktopChoice::Retry,
         Ok(_) => RunningDesktopChoice::Cancel,
-        Err(_) => match message_box(text.fallback, MB_YESNOCANCEL | MB_ICONWARNING) {
+        Err(_) => match message_box(text.fallback, MB_YESNO | MB_ICONINFORMATION) {
             IDYES => RunningDesktopChoice::Restart,
             IDNO => RunningDesktopChoice::Retry,
             _ => RunningDesktopChoice::Cancel,
@@ -239,11 +239,11 @@ mod tests {
         );
         assert_eq!(
             running_desktop_text_for_locale("en-US").instruction,
-            "Codex is already open"
+            "Codex is already running"
         );
         assert_eq!(
             running_desktop_text_for_locale("zh-TW").instruction,
-            "Codex is already open"
+            "Codex is already running"
         );
     }
 }

@@ -27,11 +27,11 @@ import {
   renderComposerAgentControl,
   sendButtonWithin,
   type ComposerAgentControl,
-  type PiModelControlView,
+  type ExternalModelControlView,
 } from "./renderer-composer-dom.js";
 import {
-  CLAUDE_CODE_TRANSPORT_MODEL_ID,
   findComposerModelTarget,
+  isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
@@ -42,7 +42,10 @@ import type { RendererModelClient } from "./renderer-model-client.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 
-const piHarnessId = harnessIdSchema.parse("pi");
+const externalHarnessIds = {
+  pi: harnessIdSchema.parse("pi"),
+  "claude-code": harnessIdSchema.parse("claude-code"),
+} as const;
 
 export interface RendererBindingProbeStatus {
   version: 2;
@@ -88,8 +91,8 @@ export type ComposerOwnershipStatus = "not-required" | "loading" | "ready" | "er
 
 export interface RestoredThreadOwnership {
   agent: RendererAgent;
-  piModel?: HarnessModelRef;
-  piThinkingOptionId?: HarnessThinkingOptionId;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
 }
 
 function selectableThinkingOptionId(
@@ -123,15 +126,18 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const piThinkingOptionId = selectableThinkingOptionId(inspection);
     return {
       agent: "pi",
-      ...(inspection.effectiveModel ? { piModel: inspection.effectiveModel } : {}),
-      ...(piThinkingOptionId ? { piThinkingOptionId } : {}),
+      ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
+      ...(piThinkingOptionId ? { thinkingOptionId: piThinkingOptionId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {
-    if (inspection.transportModelId !== CLAUDE_CODE_TRANSPORT_MODEL_ID) {
+    if (!isClaudeTransportModelId(inspection.transportModelId)) {
       throw new Error("Claude Code Thread reported an incompatible transport Model");
     }
-    return { agent: "claude-code" };
+    return {
+      agent: "claude-code",
+      ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
+    };
   }
   throw new Error("Thread owner is not a Renderer Agent");
 }
@@ -145,7 +151,7 @@ interface MountedComposer {
   composerId: string;
   control: ComposerAgentControl;
   modelTarget: readonly unknown[] | null;
-  modelView: PiModelControlView;
+  modelView: ExternalModelControlView;
   ownershipStatus: ComposerOwnershipStatus;
   threadConfiguration: HarnessModelSelectionState | undefined;
 }
@@ -295,6 +301,15 @@ export function installRendererBindingProbe(
     await policy.clear();
   };
 
+  const applyExternalConfiguration = (
+    agent: Exclude<RendererAgent, "codex">,
+    model: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
+  ): boolean =>
+    agent === "pi"
+      ? (applyAdapterPiModel?.(model, thinkingOptionId) ?? false)
+      : (applyAdapterAgent?.(agent, model) ?? false);
+
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
@@ -314,21 +329,24 @@ export function installRendererBindingProbe(
       ) {
         return;
       }
-      const { agent, piModel, piThinkingOptionId } = restoredThreadOwnership(inspection);
-      const restored = controller.restore(mounted.composer, agent, piModel, piThinkingOptionId);
+      const { agent, model, thinkingOptionId } = restoredThreadOwnership(inspection);
+      const restored = controller.restore(mounted.composer, agent, model, thinkingOptionId);
       if (
         !restored ||
-        !(applyAdapterAgent?.(agent, piModel, piThinkingOptionId) ?? agent === "codex")
+        !(applyAdapterAgent?.(agent, model, thinkingOptionId) ?? agent === "codex")
       ) {
         throw new Error("Thread owner could not be applied to the Composer");
       }
       mounted.ownershipStatus = "ready";
-      if (agent === "pi") {
+      if (agent !== "codex") {
         if (inspection.owner !== "external") {
-          throw new Error("Pi Thread inspection did not include external configuration");
+          throw new Error("External Thread inspection did not include configuration");
         }
         mounted.threadConfiguration = {
           ...(inspection.effectiveModel ? { effectiveModel: inspection.effectiveModel } : {}),
+          ...(inspection.resolvedModelLabel
+            ? { resolvedModelLabel: inspection.resolvedModelLabel }
+            : {}),
           ...(inspection.effectiveThinkingOptionId
             ? { effectiveThinkingOptionId: inspection.effectiveThinkingOptionId }
             : {}),
@@ -337,7 +355,7 @@ export function installRendererBindingProbe(
             : {}),
         };
         mounted.modelView = { status: "loading" };
-        void loadPiCatalog(mounted);
+        void loadExternalCatalog(mounted);
       } else {
         mounted.threadConfiguration = undefined;
         mounted.modelView = { status: "idle" };
@@ -368,77 +386,108 @@ export function installRendererBindingProbe(
     return true;
   };
 
-  const loadPiCatalog = async (mounted: MountedComposer): Promise<void> => {
+  const loadExternalCatalog = async (mounted: MountedComposer): Promise<void> => {
     const state = controller.get(mounted.composer);
-    if (state.agent !== "pi") return;
+    if (state.agent === "codex") return;
+    const agent = state.agent;
     const generation = controller.beginModelRequest(mounted.composer);
-    mounted.modelView = { status: "loading" };
+    mounted.modelView = { status: "loading", thinkingSelectionSupported: agent === "pi" };
     renderMounted(mounted);
     try {
-      if (!modelControl) throw new Error("Pi configuration control is unavailable");
-      const inspection = await modelControl.inspectPi({ harnessId: piHarnessId });
+      if (!modelControl) throw new Error("External Model control is unavailable");
+      const inspection = await modelControl.inspectHarness({
+        harnessId: externalHarnessIds[agent],
+      });
       if (
         !isCurrentModelRequest(mounted, generation) ||
-        controller.get(mounted.composer).agent !== "pi"
+        controller.get(mounted.composer).agent !== agent
       ) {
         return;
       }
       if (inspection.status !== "ready") throw new Error(inspection.error.message);
+      if (!inspection.capabilities.configuration.selectModel) {
+        mounted.modelView = {
+          status: "empty",
+          catalog: inspection.catalog,
+          thinkingSelectionSupported: false,
+        };
+        return;
+      }
       if (inspection.catalog.models.length === 0) {
-        mounted.modelView = { status: "empty", catalog: inspection.catalog };
+        mounted.modelView = {
+          status: "empty",
+          catalog: inspection.catalog,
+          thinkingSelectionSupported: agent === "pi",
+        };
         return;
       }
       const current = controller.get(mounted.composer);
-      const selected =
-        current.piModel &&
-        inspection.catalog.models.some((model) => model.ref.id === current.piModel?.id)
-          ? current.piModel
-          : inspection.catalog.defaultModel;
-      if (!selected) throw new Error("Pi did not report its current Model");
+      const previousModel = controller.modelForAgent(mounted.composer, agent);
+      const previousModelAvailable =
+        previousModel !== undefined &&
+        inspection.catalog.models.some((model) => model.ref.id === previousModel.id);
+      if (current.phase === "locked" && previousModel && !previousModelAvailable) {
+        throw new Error("Existing Thread Model is absent from the current Catalog");
+      }
+      const selected = previousModelAvailable ? previousModel : inspection.catalog.defaultModel;
+      if (!selected) throw new Error("External Harness did not report its default Model");
       const effectiveCatalog =
-        current.phase === "locked" && mounted.threadConfiguration
+        agent === "pi" && current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
           : inspection.catalog;
-      const selectedThinkingOptionId = draftThinkingOptionForModel(
-        effectiveCatalog,
-        selected,
-        current.piThinkingOptionId,
-      );
+      const selectedThinkingOptionId =
+        agent === "pi" && inspection.capabilities.configuration.selectThinkingOption
+          ? draftThinkingOptionForModel(effectiveCatalog, selected, current.piThinkingOptionId)
+          : undefined;
       if (
         current.phase === "draft" &&
-        (current.piModel?.id !== selected.id ||
-          current.piThinkingOptionId !== selectedThinkingOptionId)
+        (previousModel?.id !== selected.id ||
+          (agent === "pi" && current.piThinkingOptionId !== selectedThinkingOptionId))
       ) {
-        if (!(applyAdapterPiModel?.(selected, selectedThinkingOptionId) ?? false)) {
-          throw new Error("Pi configuration could not be applied to the Composer");
+        if (!applyExternalConfiguration(agent, selected, selectedThinkingOptionId)) {
+          throw new Error("External Model configuration could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
-            applyAdapterAgent?.("pi", current.piModel, current.piThinkingOptionId);
+            applyAdapterAgent?.(
+              agent,
+              previousModel,
+              agent === "pi" ? current.piThinkingOptionId : undefined,
+            );
           }
           throw error;
         }
         if (!isCurrentModelRequest(mounted, generation)) return;
       }
-      controller.setPiConfiguration(mounted.composer, selected, selectedThinkingOptionId);
+      controller.setExternalModel(mounted.composer, agent, selected);
+      if (agent === "pi" && selectedThinkingOptionId) {
+        controller.setPiThinkingOption(mounted.composer, selectedThinkingOptionId);
+      }
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
         selected,
         ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
+        ...(mounted.threadConfiguration?.resolvedModelLabel
+          ? { resolvedModelLabel: mounted.threadConfiguration.resolvedModelLabel }
+          : {}),
+        thinkingSelectionSupported:
+          agent === "pi" && inspection.capabilities.configuration.selectThinkingOption,
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
       const current = controller.get(mounted.composer);
+      const selected = controller.modelForAgent(mounted.composer, agent);
       mounted.modelView = {
         status: "error",
         ...(mounted.modelView.catalog ? { catalog: mounted.modelView.catalog } : {}),
-        ...(current.piModel ? { selected: current.piModel } : {}),
-        ...(current.piThinkingOptionId
+        ...(selected ? { selected } : {}),
+        ...(agent === "pi" && current.piThinkingOptionId
           ? { selectedThinkingOptionId: current.piThinkingOptionId }
           : {}),
+        thinkingSelectionSupported: agent === "pi",
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
@@ -446,41 +495,44 @@ export function installRendererBindingProbe(
     }
   };
 
-  const selectPiModel = async (mounted: MountedComposer, modelId: string): Promise<void> => {
+  const selectExternalModel = async (mounted: MountedComposer, modelId: string): Promise<void> => {
     const current = controller.get(mounted.composer);
+    if (current.agent === "codex") return;
+    const agent = current.agent;
     const catalog = mounted.modelView.catalog;
     const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
-    if (current.agent !== "pi" || !catalog || !selected || !modelControl) return;
-    const previousModel = current.piModel;
-    const previousThinking = current.piThinkingOptionId;
+    if (!catalog || !selected || !modelControl) return;
+    const previousModel = controller.modelForAgent(mounted.composer, agent);
+    const previousThinking = agent === "pi" ? current.piThinkingOptionId : undefined;
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = {
       status: "selecting",
       catalog,
       selected: previousModel ?? selected,
       ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
+      thinkingSelectionSupported: agent === "pi",
     };
     renderMounted(mounted);
     try {
       let effectiveModel: HarnessModelRef;
       let effectiveThinkingOptionId: HarnessThinkingOptionId | undefined;
       let effectiveCatalog: HarnessModelCatalog;
+      let resolvedModelLabel: string | undefined;
       if (current.phase === "draft") {
         effectiveModel = selected;
-        effectiveThinkingOptionId = draftThinkingOptionForModel(
-          catalog,
-          selected,
-          previousThinking,
-        );
+        effectiveThinkingOptionId =
+          agent === "pi"
+            ? draftThinkingOptionForModel(catalog, selected, previousThinking)
+            : undefined;
         effectiveCatalog = catalog;
-        if (!(applyAdapterPiModel?.(effectiveModel, effectiveThinkingOptionId) ?? false)) {
-          throw new Error("Pi configuration could not be applied to the Composer");
+        if (!applyExternalConfiguration(agent, effectiveModel, effectiveThinkingOptionId)) {
+          throw new Error("External Model configuration could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (previousModel && isCurrentModelRequest(mounted, generation)) {
-            applyAdapterPiModel?.(previousModel, previousThinking);
+            applyExternalConfiguration(agent, previousModel, previousThinking);
           }
           throw error;
         }
@@ -488,29 +540,36 @@ export function installRendererBindingProbe(
       } else {
         const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
         if (!threadId) {
-          throw new Error("Pi Thread identity is unavailable for Model selection");
+          throw new Error("External Thread identity is unavailable for Model selection");
         }
-        const state = await modelControl.selectPiThreadModel({ threadId, model: selected });
+        const state = await modelControl.selectThreadModel({ threadId, model: selected });
         if (
           !isCurrentModelRequest(mounted, generation) ||
-          controller.get(mounted.composer).agent !== "pi"
+          controller.get(mounted.composer).agent !== agent
         ) {
           return;
         }
-        if (!state.effectiveModel) throw new Error("Pi did not confirm an effective Model");
+        if (!state.effectiveModel) {
+          throw new Error("External Harness did not confirm an effective Model");
+        }
         effectiveModel = state.effectiveModel;
         if (!catalog.models.some((model) => model.ref.id === effectiveModel.id)) {
-          throw new Error("Pi activated a Model outside the current catalog");
+          throw new Error("External Harness activated a Model outside the current catalog");
         }
-        effectiveThinkingOptionId = selectableThinkingOptionId(state);
-        effectiveCatalog = catalogWithConfigurationState(catalog, effectiveModel, state);
-        if (!(applyAdapterPiModel?.(effectiveModel, effectiveThinkingOptionId) ?? false)) {
-          throw new Error("Confirmed Pi configuration could not be applied to the Composer");
+        effectiveThinkingOptionId = agent === "pi" ? selectableThinkingOptionId(state) : undefined;
+        effectiveCatalog =
+          agent === "pi" ? catalogWithConfigurationState(catalog, effectiveModel, state) : catalog;
+        resolvedModelLabel = state.resolvedModelLabel;
+        if (!applyExternalConfiguration(agent, effectiveModel, effectiveThinkingOptionId)) {
+          throw new Error("Confirmed external Model could not be applied to the Composer");
         }
         mounted.threadConfiguration = state;
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
-      controller.setPiConfiguration(mounted.composer, effectiveModel, effectiveThinkingOptionId);
+      controller.setExternalModel(mounted.composer, agent, effectiveModel);
+      if (agent === "pi" && effectiveThinkingOptionId) {
+        controller.setPiThinkingOption(mounted.composer, effectiveThinkingOptionId);
+      }
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
@@ -518,15 +577,18 @@ export function installRendererBindingProbe(
         ...(effectiveThinkingOptionId
           ? { selectedThinkingOptionId: effectiveThinkingOptionId }
           : {}),
+        ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
+        thinkingSelectionSupported: agent === "pi",
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      if (previousModel) applyAdapterPiModel?.(previousModel, previousThinking);
+      if (previousModel) applyExternalConfiguration(agent, previousModel, previousThinking);
       mounted.modelView = {
         status: "error",
         catalog,
         ...(previousModel ? { selected: previousModel } : {}),
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
+        thinkingSelectionSupported: agent === "pi",
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
@@ -584,7 +646,7 @@ export function installRendererBindingProbe(
         if (!threadId || !modelControl) {
           throw new Error("Pi Thread identity is unavailable for Thinking selection");
         }
-        const state = await modelControl.selectPiThreadThinking({
+        const state = await modelControl.selectThreadThinking({
           threadId,
           thinkingOptionId: selectedThinkingOptionId,
         });
@@ -638,11 +700,12 @@ export function installRendererBindingProbe(
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
       applyAgent(nextAgent) {
+        const nextState = controller.get(mounted.composer);
         return (
           applyAdapterAgent?.(
             nextAgent,
-            controller.get(mounted.composer).piModel,
-            controller.get(mounted.composer).piThinkingOptionId,
+            controller.modelForAgent(mounted.composer, nextAgent),
+            nextAgent === "pi" ? nextState.piThinkingOptionId : undefined,
           ) ?? nextAgent === "codex"
         );
       },
@@ -651,9 +714,9 @@ export function installRendererBindingProbe(
     renderMounted(mounted);
     try {
       const switched = await switching;
-      if (switched && controller.get(mounted.composer).agent === "pi") {
-        void loadPiCatalog(mounted);
-      } else if (controller.get(mounted.composer).agent !== "pi") {
+      if (switched && controller.get(mounted.composer).agent !== "codex") {
+        void loadExternalCatalog(mounted);
+      } else if (controller.get(mounted.composer).agent === "codex") {
         mounted.modelView = { status: "idle" };
       }
       return switched;
@@ -692,7 +755,7 @@ export function installRendererBindingProbe(
       (modelId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
-        void selectPiModel(mounted, modelId);
+        void selectExternalModel(mounted, modelId);
       },
       (thinkingOptionId) => {
         const mounted = mountedByComposer.get(composer);
@@ -710,12 +773,16 @@ export function installRendererBindingProbe(
       threadConfiguration: undefined,
     };
     mountedByComposer.set(composer, mounted);
-    applyAdapterAgent?.(state.agent, state.piModel, state.piThinkingOptionId);
+    applyAdapterAgent?.(
+      state.agent,
+      controller.modelForAgent(composer, state.agent),
+      state.agent === "pi" ? state.piThinkingOptionId : undefined,
+    );
     renderMounted(mounted);
     if (threadIdFromComposerModelTarget(modelTarget)) {
       void loadThreadOwnership(mounted);
-    } else if (state.agent === "pi") {
-      void loadPiCatalog(mounted);
+    } else if (state.agent !== "codex") {
+      void loadExternalCatalog(mounted);
     }
   };
 
@@ -809,8 +876,11 @@ export function installRendererBindingProbe(
   const applyComposerAgent = (composer: Element): boolean => {
     const state = controller.get(composer);
     return (
-      applyAdapterAgent?.(state.agent, state.piModel, state.piThinkingOptionId) ??
-      state.agent === "codex"
+      applyAdapterAgent?.(
+        state.agent,
+        controller.modelForAgent(composer, state.agent),
+        state.agent === "pi" ? state.piThinkingOptionId : undefined,
+      ) ?? state.agent === "codex"
     );
   };
   const blockEvent = (event: Event): void => {
@@ -826,7 +896,7 @@ export function installRendererBindingProbe(
       return false;
     }
     const modelReady =
-      current.agent !== "pi" ||
+      current.agent === "codex" ||
       (mounted.modelView.status !== "selecting" &&
         mounted.modelView.catalog?.models.some(
           (model) => model.ref.id === mounted.modelView.selected?.id,
@@ -934,16 +1004,20 @@ export function installRendererBindingProbe(
     },
     lockedSelection() {
       const locked = connectedComposers()
-        .map((mounted) => controller.get(mounted.composer))
-        .filter((state) => state.phase === "locked");
-      const selection = locked[0];
-      if (locked.length !== 1 || !selection) return null;
+        .map((mounted) => ({ mounted, state: controller.get(mounted.composer) }))
+        .filter(({ state }) => state.phase === "locked");
+      const entry = locked[0];
+      if (locked.length !== 1 || !entry) return null;
+      const { mounted, state: selection } = entry;
+      const model = controller.modelForAgent(mounted.composer, selection.agent);
       return {
         composerId: selection.composerId,
         agent: selection.agent,
         phase: "locked",
-        ...(selection.piModel ? { model: selection.piModel } : {}),
-        ...(selection.piThinkingOptionId ? { thinkingOptionId: selection.piThinkingOptionId } : {}),
+        ...(model ? { model } : {}),
+        ...(selection.agent === "pi" && selection.piThinkingOptionId
+          ? { thinkingOptionId: selection.piThinkingOptionId }
+          : {}),
       };
     },
     setAdapter(status, dispose, applyAgent, applyPiModel, nextModelControl) {
@@ -959,14 +1033,18 @@ export function installRendererBindingProbe(
         const mounted = connected[0];
         if (mounted) {
           const state = controller.get(mounted.composer);
-          applyAdapterAgent?.(state.agent, state.piModel, state.piThinkingOptionId);
+          applyAdapterAgent?.(
+            state.agent,
+            controller.modelForAgent(mounted.composer, state.agent),
+            state.agent === "pi" ? state.piThinkingOptionId : undefined,
+          );
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&
             mounted.ownershipStatus !== "ready"
           ) {
             void loadThreadOwnership(mounted);
-          } else if (state.agent === "pi") {
-            void loadPiCatalog(mounted);
+          } else if (state.agent !== "codex") {
+            void loadExternalCatalog(mounted);
           }
         }
       }

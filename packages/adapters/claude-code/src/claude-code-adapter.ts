@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -8,6 +9,7 @@ import {
   type HarnessAdapter,
   type HarnessError,
   type HarnessInspection,
+  type HarnessModelRef,
   type HarnessOutput,
   type HarnessResult,
   type HarnessSession,
@@ -35,6 +37,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  harnessResolvedModelLabelSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   nativeSessionRefSchema,
@@ -47,10 +50,16 @@ import {
 
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { mapClaudeSnapshot } from "./claude-history.js";
-import { ClaudeSdkTransport } from "./sdk-transport.js";
+import {
+  CLAUDE_DEFAULT_MODEL_REF,
+  decodeClaudeModelRef,
+  normalizeClaudeModelCatalog,
+} from "./model-catalog.js";
+import { ClaudeSdkModelInspector, ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeInteractionResponse,
+  ClaudeModelInspector,
   ClaudeQuestionRequest,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
@@ -147,7 +156,7 @@ function delay(milliseconds: number): Promise<void> {
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
-    configuration: { selectModel: false, selectThinkingOption: false },
+    configuration: { selectModel: true, selectThinkingOption: false },
     history: { fork: false, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState;
@@ -161,13 +170,16 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #onClosed: () => void;
   readonly #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
+  #requestedModel: HarnessModelRef | undefined;
   readonly #readSessionMessages: ClaudeAdapterDependencies["readSessionMessages"];
   readonly #sessionId: string;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
+  #configurationTask: Promise<void> | null = null;
   #phase: SessionPhase = "open";
   #readingHistory = false;
+  #state: HarnessSessionState;
   #statePublished = false;
   #transport: ClaudeTurnTransport | null = null;
   #usageGeneration = 0;
@@ -177,7 +189,11 @@ class ClaudeHarnessSession implements HarnessSession {
     dependencies: ClaudeAdapterDependencies,
     closeTimeoutMs: number,
     onClosed: () => void,
-    options: { openMode: "create" | "resume"; sessionId: string },
+    options: {
+      openMode: "create" | "resume";
+      sessionId: string;
+      requestedModel?: HarnessModelRef;
+    },
   ) {
     this.#cwd = cwd;
     this.#createTransport = dependencies.createTransport;
@@ -186,6 +202,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
     this.#openMode = options.openMode;
+    this.#requestedModel = options.requestedModel;
     this.#sessionId = options.sessionId;
     this.#nativeRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
@@ -193,6 +210,7 @@ class ClaudeHarnessSession implements HarnessSession {
       formatVersion: 1,
     });
     this.initialState = this.#openMode === "resume" ? { nativeRef: this.#nativeRef } : {};
+    this.#state = this.initialState;
     this.#statePublished = this.#openMode === "resume";
     this.outputs = this.#channel.outputs;
   }
@@ -201,7 +219,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
-    if (this.#active || this.#acceptingTurn || this.#readingHistory) {
+    if (this.#active || this.#acceptingTurn || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
         error: {
@@ -276,17 +294,18 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
-    if (command.type === "model.select" || command.type === "thinking.select") {
+    if (command.type === "model.select") return this.#selectModel(command);
+    if (command.type === "thinking.select") {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: `Claude Code ${command.type === "model.select" ? "Model" : "Thinking"} selection is not supported`,
+          message: "Claude Code Thinking selection is not supported",
           retryable: false,
         },
       };
     }
-    if (this.#acceptingTurn || this.#active || this.#readingHistory) {
+    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
         error: {
@@ -309,6 +328,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
 
     this.#acceptingTurn = true;
+    const startingTransport = this.#transport === null;
     let transport: ClaudeTurnTransport;
     try {
       transport = await this.#ensureTransport();
@@ -320,7 +340,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
-    this.#publishState();
+    if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
@@ -369,6 +389,82 @@ class ClaudeHarnessSession implements HarnessSession {
   close(): Promise<void> {
     if (!this.#closePromise) this.#closePromise = this.#close();
     return this.#closePromise;
+  }
+
+  async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session cannot select a Model during another operation",
+          retryable: true,
+        },
+      };
+    }
+    let model: string | undefined;
+    try {
+      model = decodeClaudeModelRef(command.model);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Model Ref is invalid",
+          retryable: false,
+        },
+      };
+    }
+    let resolveConfiguration = (): void => undefined;
+    this.#configurationTask = new Promise<void>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    try {
+      let transport = this.#transport;
+      if (!transport) {
+        try {
+          transport = await this.#ensureTransport();
+        } catch (error) {
+          return { ok: false, error: startupFailure(error) };
+        }
+      }
+      try {
+        await transport.setModel(model);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Claude Code rejected the Model selection",
+            retryable: true,
+          },
+        };
+      }
+      let resolvedModelLabel: string;
+      try {
+        const context = await transport.getContextUsage();
+        if (!context) throw new Error("Claude Code Model readback is unavailable");
+        resolvedModelLabel = harnessResolvedModelLabelSchema.parse(context.model);
+      } catch {
+        const error: HarnessError = {
+          code: "protocolError",
+          message: "Claude Code Model state could not be confirmed",
+          retryable: false,
+        };
+        this.#fault(error);
+        return { ok: false, error };
+      }
+      this.#requestedModel = command.model;
+      this.#publishState({
+        ...this.#state,
+        effectiveModel: command.model,
+        resolvedModelLabel,
+      });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      resolveConfiguration();
+      this.#configurationTask = null;
+    }
   }
 
   async #respond(
@@ -442,6 +538,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase === "closed") return;
     this.#usageGeneration += 1;
     if (this.#phase !== "faulted") this.#phase = "closing";
+    const configurationTask = this.#configurationTask;
+    if (configurationTask) {
+      await Promise.race([configurationTask, delay(this.#closeTimeoutMs)]);
+    }
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
@@ -459,14 +559,25 @@ class ClaudeHarnessSession implements HarnessSession {
 
   async #ensureTransport(): Promise<ClaudeTurnTransport> {
     if (this.#transport) return this.#transport;
+    const selectedModel =
+      this.#openMode === "create" ? (this.#requestedModel ?? CLAUDE_DEFAULT_MODEL_REF) : undefined;
+    const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
     const transport = this.#createTransport({
       cwd: this.#cwd,
       sessionId: this.#sessionId,
       openMode: this.#openMode,
+      ...(model ? { model } : {}),
       onFault: () => this.#fault(faultError()),
     });
     try {
       await transport.start();
+      const context = await transport.getContextUsage();
+      if (!context) throw new Error("Claude Code Model readback is unavailable");
+      this.#state = {
+        nativeRef: this.#nativeRef,
+        ...(selectedModel ? { effectiveModel: selectedModel } : {}),
+        resolvedModelLabel: harnessResolvedModelLabelSchema.parse(context.model),
+      };
     } catch (error) {
       await transport.close().catch(() => undefined);
       throw error;
@@ -475,13 +586,10 @@ class ClaudeHarnessSession implements HarnessSession {
     return transport;
   }
 
-  #publishState(): void {
-    if (this.#statePublished) return;
+  #publishState(state: HarnessSessionState = this.#state): void {
+    this.#state = state;
     this.#statePublished = true;
-    this.#event({
-      type: "session.state.changed",
-      state: { nativeRef: this.#nativeRef },
-    });
+    this.#event({ type: "session.state.changed", state });
   }
 
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
@@ -652,6 +760,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #inspectionCache = new Map<string, HarnessInspection>();
+  readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
 
@@ -665,6 +776,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           environment: options.environment ?? process.env,
         });
       },
+      createInspector: (input) =>
+        new ClaudeSdkModelInspector({
+          ...input,
+          ...(options.command ? { command: options.command } : {}),
+          environment: options.environment ?? process.env,
+          closeTimeoutMs: this.#closeTimeoutMs,
+        }),
       createTransport: (input) =>
         new ClaudeSdkTransport({
           ...input,
@@ -677,29 +795,77 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    void input;
     if (this.#closePromise) {
       return {
         status: "unavailable",
         error: invalidState("Claude Code Adapter is closing"),
       };
     }
+    const cwd = path.resolve(input.cwd ?? process.cwd());
+    if (!input.refresh) {
+      const cached = this.#inspectionCache.get(cwd);
+      if (cached) return cached;
+    }
+    const current = this.#inspectionInFlight.get(cwd);
+    if (current) return current;
+    const inspection = this.#inspectModels(cwd).then((result) => {
+      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      return result;
+    });
+    this.#inspectionInFlight.set(cwd, inspection);
+    void inspection.finally(() => {
+      if (this.#inspectionInFlight.get(cwd) === inspection) {
+        this.#inspectionInFlight.delete(cwd);
+      }
+    });
+    return inspection;
+  }
+
+  async #inspectModels(cwd: string): Promise<HarnessInspection> {
+    let inspector: ClaudeModelInspector | null = null;
     try {
       this.#dependencies.inspectInstallation();
+      inspector = this.#dependencies.createInspector({ cwd });
+      this.#inspectors.add(inspector);
+      const snapshot = await inspector.inspect();
+      if (!snapshot.canSelectModel) {
+        return {
+          status: "ready",
+          catalog: { models: [], thinkingOptions: [] },
+          capabilities: {
+            configuration: { selectModel: false, selectThinkingOption: false },
+            history: { fork: false, forkAcrossCwd: false },
+          },
+        };
+      }
+      const { catalog } = normalizeClaudeModelCatalog(snapshot);
       return {
         status: "ready",
-        catalog: { models: [], thinkingOptions: [] },
+        catalog,
         capabilities: {
-          configuration: { selectModel: false, selectThinkingOption: false },
+          configuration: { selectModel: true, selectThinkingOption: false },
           history: { fork: false, forkAcrossCwd: false },
         },
       };
     } catch (error) {
-      const normalized = startupFailure(error);
+      const message = error instanceof Error ? error.message : "";
+      const normalized =
+        message.startsWith("Claude Code Model") || message.startsWith("Claude SDK context Usage")
+          ? ({
+              code: "protocolError",
+              message: "Claude Code returned an invalid Model catalog",
+              retryable: false,
+            } satisfies HarnessError)
+          : startupFailure(error);
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
         error: normalized,
       };
+    } finally {
+      if (inspector) {
+        await inspector.close().catch(() => undefined);
+        this.#inspectors.delete(inspector);
+      }
     }
   }
 
@@ -730,15 +896,29 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "create" && (input.model || input.thinkingOptionId)) {
+    if (input.kind === "create" && input.thinkingOptionId) {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: "Claude Code create-time configuration selection is not supported",
+          message: "Claude Code Thinking selection is not supported",
           retryable: false,
         },
       };
+    }
+    if (input.kind === "create" && input.model) {
+      try {
+        decodeClaudeModelRef(input.model);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code create Model Ref is invalid",
+            retryable: false,
+          },
+        };
+      }
     }
     const nativeRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;
@@ -762,6 +942,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         sessionId: nativeRef?.success
           ? nativeRef.data.nativeSessionId
           : this.#dependencies.randomUUID(),
+        ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
       },
     );
     this.#sessions.add(session);
@@ -770,9 +951,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
-      this.#closePromise = Promise.all([...this.#sessions].map((session) => session.close())).then(
-        () => undefined,
-      );
+      this.#inspectionCache.clear();
+      this.#closePromise = Promise.all([
+        ...[...this.#inspectors].map((inspector) => inspector.close()),
+        ...[...this.#sessions].map((session) => session.close()),
+        ...this.#inspectionInFlight.values(),
+      ]).then(() => undefined);
     }
     return this.#closePromise;
   }

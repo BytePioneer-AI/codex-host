@@ -85,8 +85,8 @@ A started Claude Session SHALL support `model.select` only while Idle. The Adapt
 Claude Adapter SHALL keep `configuration.selectThinkingOption=false` and SHALL reject `thinking.select` even when ModelInfo reports supported effort levels. It MUST NOT report a requested effort as effective without a stable structured Session readback proving the actual value.
 
 #### Scenario: Catalog Model reports effort levels
-- **WHEN** official ModelInfo reports one or more supported effort levels
-- **THEN** the Adapter may preserve normalized capability metadata for future use
+- **WHEN** official ModelInfo reports one or more shape-valid supported effort level IDs, including an ID codexhost has not seen before
+- **THEN** the Adapter may preserve those runtime IDs without a Claude-specific semantic allowlist or fixed label mapping and keeps each Model's supported set distinct
 - **AND** Renderer does not expose a Claude Thinking selector in this Change
 
 #### Scenario: Caller attempts Claude Thinking selection

@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
+  decodeClaudeTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
+  encodeClaudeTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
@@ -83,6 +85,27 @@ describe("external Harness transport model routing", () => {
     ).toMatchObject({ harnessId: "pi", model, thinkingOptionId });
   });
 
+  it("round-trips a request-scoped Claude Code Model Ref", () => {
+    const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const transportModelId = encodeClaudeTransportModel(model);
+
+    expect(transportModelId).toBe(`${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(decodeClaudeTransportSelection(transportModelId)).toEqual({ model });
+    expect(
+      decodeCreateRoute({
+        id: 7,
+        method: "thread/start",
+        params: { model: transportModelId },
+      }),
+    ).toEqual({
+      harnessId: "claude-code",
+      routeMode: "native",
+      transportModelId,
+      model,
+    });
+    expect(encodeClaudeTransportModel()).toBe(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
+  });
+
   it("decodes existing Thread carriers only for their owning Harness", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const selectedPi = encodePiTransportModel(model);
@@ -93,8 +116,33 @@ describe("external Harness transport model routing", () => {
     expect(
       decodeExternalTransportModel("claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID),
     ).toBeUndefined();
+    const selectedClaude = encodeClaudeTransportModel(
+      harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" }),
+    );
+    expect(decodeExternalTransportModel("claude-code", selectedClaude)).toEqual({
+      id: "claude-model-v1.c29ubmV0",
+    });
     expect(decodeExternalTransportModel("claude-code", selectedPi)).toBeNull();
     expect(decodeExternalTransportModel("pi", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID)).toBeNull();
+  });
+
+  it("rejects malformed selected Claude carriers instead of forwarding them as official Models", () => {
+    for (const model of [
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`,
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@provider/model`,
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@${"x".repeat(513)}`,
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@claude-model-v1.valid@extra`,
+    ]) {
+      expect(() => decodeCreateRoute({ id: 8, method: "thread/start", params: { model } })).toThrow(
+        /invalid Model Ref|invalid component count/u,
+      );
+    }
+    expect(() =>
+      decodeExternalTransportModel(
+        "claude-code",
+        `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@provider/model`,
+      ),
+    ).toThrow("invalid Model Ref");
   });
 
   it("rejects malformed selected Pi carriers instead of forwarding them as official Models", () => {

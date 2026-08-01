@@ -29,6 +29,7 @@ function readyInspection() {
         {
           ref: firstRef,
           label: "provider / model",
+          resolvedModelLabel: "runtime/model-v1",
           supportedThinkingOptionIds: ["off", "high"],
         },
         { ref: secondRef, label: "other / model" },
@@ -53,13 +54,21 @@ describe("Harness Model runtime contracts", () => {
     expect(
       harnessModelSelectionStateSchema.parse({
         effectiveModel: firstRef,
+        resolvedModelLabel: "runtime/model-v1",
         effectiveThinkingOptionId: "high",
         availableThinkingOptions: [
           { id: "off", label: "Off" },
           { id: "high", label: "High" },
         ],
       }),
-    ).toMatchObject({ effectiveModel: firstRef, effectiveThinkingOptionId: "high" });
+    ).toMatchObject({
+      effectiveModel: firstRef,
+      resolvedModelLabel: "runtime/model-v1",
+      effectiveThinkingOptionId: "high",
+    });
+    expect(JSON.parse(JSON.stringify(harnessInspectionSchema.parse(readyInspection())))).toEqual(
+      readyInspection(),
+    );
   });
 
   it("rejects native configuration and unknown fields", () => {
@@ -102,6 +111,21 @@ describe("Harness Model runtime contracts", () => {
         nativeState: { modelId: "private" },
       }).success,
     ).toBe(false);
+    expect(
+      threadModelSelectParamsSchema.safeParse({
+        threadId: "thread-1",
+        model: firstRef,
+        resolvedModelLabel: "runtime/model-v1",
+      }).success,
+    ).toBe(false);
+    for (const resolvedModelLabel of ["", "   ", "x".repeat(257)]) {
+      expect(
+        harnessModelSelectionStateSchema.safeParse({
+          effectiveModel: firstRef,
+          resolvedModelLabel,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("requires bounded transport-safe opaque Model refs", () => {
@@ -232,6 +256,7 @@ describe("Harness Model runtime contracts", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: firstRef,
+        resolvedModelLabel: "runtime/model-v1",
         effectiveThinkingOptionId: "high",
         availableThinkingOptions: [
           { id: "off", label: "Off" },

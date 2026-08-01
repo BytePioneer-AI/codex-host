@@ -79,6 +79,7 @@ const defaultFakeCatalog = harnessModelCatalogSchema.parse({
     {
       ref: { id: "fake-model-v1.primary" },
       label: "Fake Primary",
+      resolvedModelLabel: "fake-runtime-primary",
       supportedThinkingOptionIds: ["off", "high"],
     },
     {
@@ -98,6 +99,13 @@ const defaultFakeCatalog = harnessModelCatalogSchema.parse({
 
 function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
   return catalog.models.some((candidate) => candidate.ref.id === model.id);
+}
+
+function resolvedLabelForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef | undefined,
+): string | undefined {
+  return catalog.models.find((candidate) => candidate.ref.id === model?.id)?.resolvedModelLabel;
 }
 
 function thinkingOptionsForModel(
@@ -186,9 +194,11 @@ export class FakeHarnessSession implements HarnessSession {
     };
     this.cwd = cwd;
     this.#catalog = catalog;
+    const resolvedModelLabel = resolvedLabelForModel(catalog, initialModel);
     this.initialState = {
       nativeRef,
       ...(initialModel ? { effectiveModel: initialModel } : {}),
+      ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
       ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
       ...(availableThinkingOptions.length > 0 ? { availableThinkingOptions } : {}),
     };
@@ -544,12 +554,15 @@ export class FakeHarnessSession implements HarnessSession {
     )
       ? this.#state.effectiveThinkingOptionId
       : availableThinkingOptions[0]?.id;
+    const resolvedModelLabel = resolvedLabelForModel(this.#catalog, command.model);
     const nextState: HarnessSessionState = {
       ...this.#state,
       effectiveModel: command.model,
+      ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
       ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
       availableThinkingOptions,
     };
+    if (!resolvedModelLabel) delete nextState.resolvedModelLabel;
     if (!effectiveThinkingOptionId) delete nextState.effectiveThinkingOptionId;
     this.#state = nextState;
     this.#event({ type: "session.state.changed", state: this.#state });

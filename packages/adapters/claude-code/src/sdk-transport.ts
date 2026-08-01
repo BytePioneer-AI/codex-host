@@ -10,9 +10,11 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { resolveClaudeCodeExecutable } from "./command.js";
+import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator } from "./native-message.js";
 import type {
   ClaudeInteractionResponse,
+  ClaudeModelInspector,
   ClaudeQuestion,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
@@ -75,8 +77,17 @@ export interface ClaudeSdkTransportOptions {
   cwd: string;
   sessionId: string;
   openMode: "create" | "resume";
+  model?: string;
   closeTimeoutMs: number;
   onFault(error: unknown): void;
+  queryFactory?: typeof query;
+}
+
+export interface ClaudeSdkModelInspectorOptions {
+  command?: string;
+  environment?: NodeJS.ProcessEnv;
+  cwd: string;
+  closeTimeoutMs: number;
   queryFactory?: typeof query;
 }
 
@@ -96,17 +107,21 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   if (!isRecord(value)) throw new Error("Claude SDK context Usage is invalid");
   const usedTokens = value.totalTokens;
   const maxTokens = value.maxTokens;
+  const model = value.model;
   if (
     typeof usedTokens !== "number" ||
     !Number.isSafeInteger(usedTokens) ||
     usedTokens < 0 ||
     typeof maxTokens !== "number" ||
     !Number.isSafeInteger(maxTokens) ||
-    maxTokens <= 0
+    maxTokens <= 0 ||
+    typeof model !== "string" ||
+    model.trim().length === 0 ||
+    model.length > 256
   ) {
-    throw new Error("Claude SDK context Usage contains invalid Token values");
+    throw new Error("Claude SDK context Usage contains invalid values");
   }
-  return { usedTokens, maxTokens };
+  return { usedTokens, maxTokens, model };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -171,6 +186,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #cwd: string;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #input = new PushableInput<SDKUserMessage>();
+  readonly #model: string | undefined;
   readonly #onFault: (error: unknown) => void;
   readonly #openMode: "create" | "resume";
   readonly #queryFactory: typeof query;
@@ -186,6 +202,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
+    this.#model = options.model;
     this.#onFault = options.onFault;
     this.#openMode = options.openMode;
     this.#queryFactory = options.queryFactory ?? query;
@@ -205,6 +222,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         ...(this.#openMode === "resume"
           ? { resume: this.sessionId }
           : { sessionId: this.sessionId }),
+        ...(this.#model ? { model: this.#model } : {}),
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
         permissionMode: "default",
@@ -234,6 +252,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage());
+  }
+
+  async setModel(model?: string): Promise<void> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
+    await activeQuery.setModel(model);
   }
 
   runTurn(
@@ -442,6 +466,121 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       active?.reject(error);
       if (!this.#closePromise) this.#onFault(error);
     }
+  }
+
+  #spawn(options: SpawnOptions): ChildProcessWithoutNullStreams {
+    const child = spawn(options.command, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      signal: options.signal,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    child.stderr.resume();
+    this.#children.push(child);
+    return child;
+  }
+
+  #waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+    if (processExited(child)) return Promise.resolve();
+    return new Promise((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("error", () => resolve());
+    });
+  }
+}
+
+export class ClaudeSdkModelInspector implements ClaudeModelInspector {
+  readonly #children: ChildProcessWithoutNullStreams[] = [];
+  readonly #closeTimeoutMs: number;
+  readonly #command: string | undefined;
+  readonly #cwd: string;
+  readonly #environment: NodeJS.ProcessEnv;
+  readonly #input = new PushableInput<SDKUserMessage>();
+  readonly #queryFactory: typeof query;
+  #closePromise: Promise<void> | null = null;
+  #query: Query | null = null;
+
+  constructor(options: ClaudeSdkModelInspectorOptions) {
+    this.#closeTimeoutMs = options.closeTimeoutMs;
+    this.#command = options.command;
+    this.#cwd = options.cwd;
+    this.#environment = options.environment ?? process.env;
+    this.#queryFactory = options.queryFactory ?? query;
+  }
+
+  async inspect(): Promise<ClaudeModelInspectionSnapshot> {
+    if (this.#closePromise) throw new Error("Claude SDK Model inspector is closing");
+    const executable = resolveClaudeCodeExecutable({
+      ...(this.#command ? { command: this.#command } : {}),
+      environment: this.#environment,
+    });
+    const activeQuery = this.#queryFactory({
+      prompt: this.#input,
+      options: {
+        cwd: this.#cwd,
+        pathToClaudeCodeExecutable: executable,
+        settingSources: ["user"],
+        permissionMode: "default",
+        tools: [],
+        persistSession: false,
+        includePartialMessages: false,
+        env: {
+          ...this.#environment,
+          CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
+        },
+        spawnClaudeCodeProcess: (options) => this.#spawn(options),
+      },
+    });
+    this.#query = activeQuery;
+    try {
+      const initialized = await activeQuery.initializationResult();
+      const candidate = activeQuery as unknown as Record<string, unknown>;
+      const canSelectModel =
+        Array.isArray(initialized.models) &&
+        typeof candidate.setModel === "function" &&
+        typeof candidate.getContextUsage === "function";
+      if (!canSelectModel) {
+        return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+      }
+      try {
+        const rawContext = await activeQuery.getContextUsage();
+        if (!isRecord(rawContext) || !("model" in rawContext)) {
+          return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+        }
+        const context = parseContextUsage(rawContext);
+        return { models: initialized.models, currentModel: context.model, canSelectModel: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (message.includes("unknown") || message.includes("unsupported")) {
+          return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+        }
+        throw error;
+      }
+    } finally {
+      await this.close();
+    }
+  }
+
+  close(): Promise<void> {
+    if (!this.#closePromise) this.#closePromise = this.#close();
+    return this.#closePromise;
+  }
+
+  async #close(): Promise<void> {
+    this.#input.end();
+    this.#query?.close();
+    for (const child of this.#children) {
+      if (!processExited(child)) child.kill("SIGTERM");
+    }
+    await Promise.race([
+      Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+      delay(this.#closeTimeoutMs),
+    ]);
+    for (const child of this.#children) {
+      if (!processExited(child)) child.kill("SIGKILL");
+    }
+    this.#query = null;
   }
 
   #spawn(options: SpawnOptions): ChildProcessWithoutNullStreams {

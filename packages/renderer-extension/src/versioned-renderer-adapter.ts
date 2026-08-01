@@ -18,6 +18,7 @@ import { createRendererModelClient, type RendererModelClient } from "./renderer-
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
+export const CLAUDE_CODE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -125,7 +126,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
 }
 
 function isTransportModelId(model: unknown): boolean {
-  return isPiTransportModelId(model) || model === CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  return isPiTransportModelId(model) || isClaudeTransportModelId(model);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -145,6 +146,21 @@ export function piTransportModelId(
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
   return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function claudeTransportModelId(model?: HarnessModelRef): string {
+  if (!model) return CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  const parsed = harnessModelRefSchema.parse(model);
+  return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsed.id}`;
+}
+
+export function isClaudeTransportModelId(value: unknown): value is string {
+  if (value === CLAUDE_CODE_TRANSPORT_MODEL_ID) return true;
+  if (typeof value !== "string" || !value.startsWith(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX)) {
+    return false;
+  }
+  const modelId = value.slice(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX.length);
+  return !modelId.includes("@") && harnessModelRefSchema.safeParse({ id: modelId }).success;
 }
 
 export function isPiTransportModelId(value: unknown): value is string {
@@ -306,7 +322,9 @@ export function decorateThreadStartParams(
   const transportModelId =
     selection.agent === "pi"
       ? piTransportModelId(selection.model, selection.thinkingOptionId)
-      : transportModelIdForAgent(selection.agent);
+      : selection.agent === "claude-code"
+        ? claudeTransportModelId(selection.model)
+        : transportModelIdForAgent(selection.agent);
   return transportModelId
     ? ({ ...params, model: transportModelId } as ThreadStartParams)
     : (params as ThreadStartParams);
@@ -620,7 +638,11 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
 ): ModelPowerSelection | null {
   const transportModelId =
-    agent === "pi" ? piTransportModelId(model, thinkingOptionId) : transportModelIdForAgent(agent);
+    agent === "pi"
+      ? piTransportModelId(model, thinkingOptionId)
+      : agent === "claude-code"
+        ? claudeTransportModelId(model)
+        : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
@@ -669,12 +691,24 @@ export function installCurrentRendererAdapter(): {
     applyPiModel: () => false,
     dispose() {},
   });
+  const inspectHarness = async (input: HarnessInspectParams) => {
+    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
+    return client.inspectHarness(input);
+  };
+  const selectThreadModel = async (input: ThreadModelSelectParams) => {
+    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
+    return client.selectThreadModel(input);
+  };
+  const selectThreadThinking = async (input: ThreadThinkingSelectParams) => {
+    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
+    return client.selectThreadThinking(input);
+  };
   const modelControl: RendererModelClient = Object.freeze({
-    async inspectPi(input: HarnessInspectParams) {
-      const client = createRendererModelClient(findActivePrewarmTargets(document));
-      if (!client) throw new Error("Renderer Model request manager is unavailable");
-      return client.inspectPi(input);
-    },
+    inspectHarness,
+    inspectPi: inspectHarness,
     async inspectThread(input: ThreadInspectionParams) {
       const client = createRendererModelClient(findActivePrewarmTargets(document));
       if (!client) throw new Error("Renderer Model request manager is unavailable");
@@ -685,16 +719,10 @@ export function installCurrentRendererAdapter(): {
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.listThreadOwnership(input);
     },
-    async selectPiThreadModel(input: ThreadModelSelectParams) {
-      const client = createRendererModelClient(findActivePrewarmTargets(document));
-      if (!client) throw new Error("Renderer Model request manager is unavailable");
-      return client.selectPiThreadModel(input);
-    },
-    async selectPiThreadThinking(input: ThreadThinkingSelectParams) {
-      const client = createRendererModelClient(findActivePrewarmTargets(document));
-      if (!client) throw new Error("Renderer Model request manager is unavailable");
-      return client.selectPiThreadThinking(input);
-    },
+    selectThreadModel,
+    selectPiThreadModel: selectThreadModel,
+    selectThreadThinking,
+    selectPiThreadThinking: selectThreadThinking,
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);

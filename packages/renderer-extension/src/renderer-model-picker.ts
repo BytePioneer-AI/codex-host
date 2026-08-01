@@ -21,12 +21,15 @@ export interface RendererModelControlView {
   catalog?: HarnessModelCatalog;
   selected?: HarnessModelRef;
   selectedThinkingOptionId?: HarnessThinkingOptionId;
+  resolvedModelLabel?: string;
+  thinkingSelectionSupported?: boolean;
   error?: string;
 }
 
 export interface RendererModelPickerPresentation {
   modelLabel: string;
   thinkingLabel?: string;
+  resolvedModelLabel?: string;
   thinkingOptions: HarnessThinkingOption[];
   showThinkingSection: boolean;
   thinkingSelectionEnabled: boolean;
@@ -88,19 +91,24 @@ export function rendererModelPickerPresentation(
   view: RendererModelControlView,
 ): RendererModelPickerPresentation {
   const selectedModel = view.catalog?.models.find((model) => model.ref.id === view.selected?.id);
-  const thinkingOptions = thinkingOptionsForModel(view.catalog, view.selected);
+  const thinkingOptions =
+    view.thinkingSelectionSupported === false
+      ? []
+      : thinkingOptionsForModel(view.catalog, view.selected);
   const selectedThinking = thinkingOptions.find(({ id }) => id === view.selectedThinkingOptionId);
   const showThinkingSection =
     thinkingOptions.length > 0 &&
     !(thinkingOptions.length === 1 && thinkingOptions[0]?.id === "off");
+  const resolvedModelLabel = view.resolvedModelLabel ?? selectedModel?.resolvedModelLabel;
   let modelLabel = "Select model";
   if (selectedModel) modelLabel = selectedModel.label;
   else if (view.status === "loading") modelLabel = "Loading models...";
   else if (view.status === "selecting") modelLabel = "Selecting...";
-  else if (view.status === "empty") modelLabel = "No Pi models";
+  else if (view.status === "empty") modelLabel = "No models";
   else if (view.status === "error") modelLabel = "Models unavailable";
   return {
     modelLabel,
+    ...(resolvedModelLabel && resolvedModelLabel !== modelLabel ? { resolvedModelLabel } : {}),
     thinkingOptions,
     showThinkingSection,
     thinkingSelectionEnabled: thinkingOptions.length > 1,
@@ -407,10 +415,11 @@ export function renderRendererModelPicker(
   }
 
   syncRendererLabelText(control.label, presentation.modelLabel);
-  syncRendererLabelText(control.thinkingLabel, presentation.thinkingLabel ?? "");
-  control.thinkingLabel.hidden = presentation.thinkingLabel === undefined;
-  const accessibleLabel = presentation.thinkingLabel
-    ? `${presentation.modelLabel}, Thinking ${presentation.thinkingLabel}`
+  const secondaryLabel = presentation.thinkingLabel ?? presentation.resolvedModelLabel;
+  syncRendererLabelText(control.thinkingLabel, secondaryLabel ?? "");
+  control.thinkingLabel.hidden = secondaryLabel === undefined;
+  const accessibleLabel = secondaryLabel
+    ? `${presentation.modelLabel}, ${secondaryLabel}`
     : presentation.modelLabel;
   control.trigger.title = view.error ?? accessibleLabel;
   control.trigger.setAttribute("aria-label", `Model: ${accessibleLabel}`);

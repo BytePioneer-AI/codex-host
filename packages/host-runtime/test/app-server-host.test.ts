@@ -11,6 +11,7 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  encodeClaudeTransportModel,
   encodePiTransportModel,
   type ExternalHarnessId,
   type JsonObject,
@@ -2260,6 +2261,83 @@ describe("AppServerHost HarnessAdapter projection", () => {
         (message.params as JsonObject).threadId === claudeThreadId,
     );
     expect(startedIndex).toBeGreaterThan(responseIndex);
+    await stopFixture(fixture);
+  });
+
+  it("keeps selected Claude Models request-scoped and projects confirmed actual state", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const firstModel = claudeAdapter.catalog.models[0]?.ref;
+    const secondModel = claudeAdapter.catalog.models[1]?.ref;
+    if (!firstModel || !secondModel) throw new Error("Fake Claude catalog is incomplete");
+
+    const firstThreadId = await startExternalThread(
+      fixture,
+      encodeClaudeTransportModel(secondModel),
+      20,
+    );
+    const secondThreadId = await startExternalThread(
+      fixture,
+      encodeClaudeTransportModel(firstModel),
+      21,
+    );
+    expect(claudeAdapter.sessions[0]?.initialState.effectiveModel).toEqual(secondModel);
+    expect(claudeAdapter.sessions[1]?.initialState.effectiveModel).toEqual(firstModel);
+
+    writeRequest(fixture.desktopInput, {
+      id: 22,
+      method: "codexhost/thread/model/select",
+      params: { threadId: firstThreadId, model: firstModel },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 22)),
+    ).resolves.toMatchObject({
+      result: {
+        effectiveModel: firstModel,
+        resolvedModelLabel: "fake-runtime-primary",
+      },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 23,
+      method: "codexhost/thread/inspect",
+      params: { threadId: firstThreadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 23)),
+    ).resolves.toMatchObject({
+      result: {
+        harnessId: "claude-code",
+        transportModelId: encodeClaudeTransportModel(secondModel),
+        effectiveModel: firstModel,
+        resolvedModelLabel: "fake-runtime-primary",
+      },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 24,
+      method: "turn/start",
+      params: {
+        threadId: secondThreadId,
+        model: encodePiTransportModel(piAdapter.catalog.defaultModel),
+        input: [{ type: "text", text: "foreign" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 24)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "Turn Model carrier does not belong to the Thread Harness",
+      },
+    });
+    expect(claudeAdapter.sessions[1]?.state.effectiveModel).toEqual(firstModel);
     await stopFixture(fixture);
   });
 

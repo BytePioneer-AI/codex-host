@@ -9,6 +9,7 @@ import {
 export const PI_NATIVE_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_NATIVE_TRANSPORT_MODEL_PREFIX = `${PI_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
+export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code"] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -94,6 +95,30 @@ export function decodePiTransportModel(value: unknown): HarnessModelRef | null |
   return selection === null ? null : selection.model;
 }
 
+export function encodeClaudeTransportModel(model?: HarnessModelRef): string {
+  if (!model) return CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID;
+  const parsed = harnessModelRefSchema.parse(model);
+  return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsed.id}`;
+}
+
+export function decodeClaudeTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const component = value.slice(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length);
+  if (component.includes("@")) {
+    throw new Error("Claude Code transport configuration has an invalid component count");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: component });
+  if (!model.success) {
+    throw new Error("Claude Code transport Model contains an invalid Model Ref");
+  }
+  return { model: model.data };
+}
+
 export function decodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   value: unknown,
@@ -102,7 +127,7 @@ export function decodeExternalTransportSelection(
     case "pi":
       return decodePiTransportSelection(value);
     case "claude-code":
-      return value === CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID ? {} : null;
+      return decodeClaudeTransportSelection(value);
   }
 }
 
@@ -127,6 +152,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...piSelection,
+    };
+  }
+  const claudeSelection = decodeClaudeTransportSelection(request.params.model);
+  if (claudeSelection !== null) {
+    return {
+      harnessId: "claude-code",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...claudeSelection,
     };
   }
 

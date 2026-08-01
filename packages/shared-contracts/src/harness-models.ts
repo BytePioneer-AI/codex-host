@@ -4,6 +4,7 @@ import { codexhostErrorSchema } from "./errors.js";
 import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
+export const HARNESS_MODEL_LABEL_MAX_LENGTH = 256;
 export const HARNESS_THINKING_OPTION_ID_MAX_LENGTH = 128;
 export const THREAD_OWNERSHIP_LIST_MAX_LENGTH = 100;
 
@@ -31,10 +32,14 @@ export const harnessThinkingOptionIdSchema = nonBlankTextSchema
 
 export type HarnessThinkingOptionId = z.infer<typeof harnessThinkingOptionIdSchema>;
 
+export const harnessResolvedModelLabelSchema = nonBlankTextSchema.max(
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
+);
+
 export const harnessThinkingOptionSchema = z
   .object({
     id: harnessThinkingOptionIdSchema,
-    label: nonBlankTextSchema.max(256),
+    label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   })
   .strict();
 
@@ -43,7 +48,8 @@ export type HarnessThinkingOption = z.infer<typeof harnessThinkingOptionSchema>;
 export const harnessModelSchema = z
   .object({
     ref: harnessModelRefSchema,
-    label: nonBlankTextSchema.max(256),
+    label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
+    resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     supportedThinkingOptionIds: z.array(harnessThinkingOptionIdSchema).optional(),
   })
   .strict();
@@ -149,6 +155,7 @@ export type HarnessSessionCapabilities = z.infer<typeof harnessSessionCapabiliti
 export const harnessModelSelectionStateSchema = z
   .object({
     effectiveModel: harnessModelRefSchema.optional(),
+    resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
   })
@@ -240,6 +247,7 @@ const externalThreadInspectionSchema = z
     harnessId: nonBlankTextSchema.max(256),
     transportModelId: nonBlankTextSchema.max(1_024),
     effectiveModel: harnessModelRefSchema.optional(),
+    resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
     locked: z.literal(true),

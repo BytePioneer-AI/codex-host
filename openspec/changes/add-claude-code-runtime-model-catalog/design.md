@@ -30,7 +30,7 @@
 
 Claude inspection使用与生产Claude Session相同的用户executable、environment、setting sources和cwd启动临时streaming Query，等待`initializationResult()`，严格消费`models`，再调用稳定`getContextUsage()`读取当前实际Model。`supportedModels()`只是同一初始化快照的便捷入口，不再并行读取配置文件。
 
-Catalog normalization只接受非空有界`value/displayName`和已知可选能力字段；`description`不作为身份或能力解析来源。未知字段、账户、Provider配置和完整context payload在Claude Adapter第一次正式消费时丢弃。无可用Model、重复冲突、malformed readback或启动失败返回显式normalized error。
+Catalog normalization只接受非空有界`value/displayName`和shape合法的可选能力字段；`description`不作为身份或能力解析来源。`supportedEffortLevels`只执行通用非空、长度和transport-safe shape校验，不维护Claude effort语义白名单；运行时返回的合法ID原样保留并按Model关联。未知字段、账户、Provider配置和完整context payload在Claude Adapter第一次正式消费时丢弃。无可用Model、重复冲突、malformed readback或启动失败返回显式normalized error。
 
 替代方案：Paseo式hardcoded manifest加settings补充。拒绝，因为第三方gateway会继续显示不可调用的Claude模型，且无法表达managed policy和动态alias解析。
 
@@ -55,7 +55,7 @@ resolvedModelLabel   = "当前实际底层模型"
 
 每个cold cwd inspection创建一个临时Query和受监督子进程，不提交User Message、不开始Turn、不调用模型endpoint。成功或失败都按Session close同级边界关闭Query和进程，并确认没有持久Native Session。结果按normalized cwd在Adapter进程内缓存；同cwd并发请求共享in-flight；`refresh:true`重建并原子替换成功缓存；失败不缓存。Adapter close清除缓存并等待所有inspection清理。
 
-Inspection返回`selectModel=true`仅当目录、默认Ref、实际Model readback和setter能力结构均可用。Thinking Catalog可根据ModelInfo保留已知effort元数据供诊断/未来能力使用，但`selectThinkingOption=false`且Renderer不得开放Claude Thinking控件。
+Inspection返回`selectModel=true`仅当目录、默认Ref、实际Model readback和setter能力结构均可用。Thinking Catalog可根据ModelInfo保留shape合法的runtime effort ID供诊断/未来能力使用，以原始ID作为当前显示label，并按每个Model的`supportedThinkingOptionIds`保持不同能力集合；它不维护固定ID或label映射。`selectThinkingOption=false`且Renderer不得开放Claude Thinking控件。
 
 ### 4. Lazy create在首Turn前应用并回读Model
 

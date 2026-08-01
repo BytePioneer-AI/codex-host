@@ -29,14 +29,17 @@ export type {
 } from "./thread-fork.js";
 export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX,
   EXTERNAL_HARNESS_IDS,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
+  decodeClaudeTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
+  encodeClaudeTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";

@@ -1,13 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
-import { ClaudeSdkTransport, type ClaudeSdkTransportOptions } from "../src/sdk-transport.js";
+import {
+  ClaudeSdkModelInspector,
+  ClaudeSdkTransport,
+  type ClaudeSdkTransportOptions,
+} from "../src/sdk-transport.js";
 import type { ClaudeTurnEvent } from "../src/transport.js";
 
 class FakeQuery {
-  readonly initializationResult = vi.fn(async () => ({}));
+  readonly initializationResult = vi.fn(async () => ({
+    models: [{ value: "default", displayName: "Default", description: "Default" }],
+  }));
   readonly interrupt = vi.fn(async () => undefined);
-  readonly getContextUsage = vi.fn(async () => ({ totalTokens: 40, maxTokens: 200 }));
+  readonly getContextUsage = vi.fn(async () => ({
+    totalTokens: 40,
+    maxTokens: 200,
+    model: "runtime-model",
+  }));
+  readonly setModel = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];
   #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
@@ -109,14 +120,86 @@ describe("ClaudeSdkTransport context Usage", () => {
     await expect(value.transport.getContextUsage()).resolves.toEqual({
       usedTokens: 40,
       maxTokens: 200,
+      model: "runtime-model",
     });
 
-    value.fakeQuery.getContextUsage.mockResolvedValueOnce({ totalTokens: -1, maxTokens: 0 });
-    await expect(value.transport.getContextUsage()).rejects.toThrow("invalid Token values");
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: -1,
+      maxTokens: 0,
+      model: "",
+    });
+    await expect(value.transport.getContextUsage()).rejects.toThrow("invalid values");
 
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
     await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport Model control", () => {
+  it("passes create-time Model and delegates setter without sending input", async () => {
+    const value = fixture();
+    const selected = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000009",
+      openMode: "create",
+      model: "custom-model",
+      closeTimeoutMs: 100,
+      onFault: value.onFault,
+      queryFactory: value.queryFactory,
+    });
+
+    await selected.start();
+    expect(options(value).model).toBe("custom-model");
+    await selected.setModel("sonnet");
+    await selected.setModel(undefined);
+    expect(value.fakeQuery.setModel).toHaveBeenNthCalledWith(1, "sonnet");
+    expect(value.fakeQuery.setModel).toHaveBeenNthCalledWith(2, undefined);
+    await selected.close();
+  });
+
+  it("downgrades an older context response that has no actual Model readback", async () => {
+    const value = fixture();
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 0,
+      maxTokens: 200,
+    } as never);
+    const inspector = new ClaudeSdkModelInspector({
+      command: process.execPath,
+      cwd: process.cwd(),
+      closeTimeoutMs: 100,
+      queryFactory: value.queryFactory,
+    });
+
+    await expect(inspector.inspect()).resolves.toMatchObject({
+      canSelectModel: false,
+      currentModel: undefined,
+    });
+  });
+
+  it("inspects initialization Models and actual Model with persistence disabled", async () => {
+    const value = fixture();
+    const inspector = new ClaudeSdkModelInspector({
+      command: process.execPath,
+      cwd: process.cwd(),
+      closeTimeoutMs: 100,
+      queryFactory: value.queryFactory,
+    });
+
+    await expect(inspector.inspect()).resolves.toEqual({
+      models: [{ value: "default", displayName: "Default", description: "Default" }],
+      currentModel: "runtime-model",
+      canSelectModel: true,
+    });
+    expect(options(value)).toMatchObject({
+      persistSession: false,
+      includePartialMessages: false,
+      tools: [],
+      settingSources: ["user"],
+    });
+    expect(options(value)).not.toHaveProperty("sessionId");
+    expect(options(value)).not.toHaveProperty("resume");
   });
 });
 

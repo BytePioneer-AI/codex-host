@@ -86,6 +86,7 @@ export interface PiTurnTransport {
   getEntries(): Promise<PiSessionHistory>;
   fork(entryId: string): Promise<PiSessionState>;
   clone(): Promise<PiSessionState>;
+  verifySessionCwd(expectedCwd: string): Promise<void>;
   selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
@@ -1181,6 +1182,7 @@ export class PiAdapter implements HarnessAdapter {
         ) {
           throw new Error("Pi Fork derived history does not match the requested Checkpoint");
         }
+        await transport.verifySessionCwd(input.cwd);
       }
 
       session = this.#trackSession(input.cwd, { startedTransport: transport });

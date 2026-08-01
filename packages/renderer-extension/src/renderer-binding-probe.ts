@@ -137,6 +137,12 @@ export function isLateConversationTarget(
   return mountedTarget?.[0] === "default" && currentTarget?.[0] === "conversation";
 }
 
+function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  return !target || editorForElement(target) === null;
+}
+
 export function installRendererBindingProbe(
   options: RendererBindingProbeOptions = {},
 ): RendererBindingProbeApi {
@@ -149,6 +155,7 @@ export function installRendererBindingProbe(
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   let scanScheduled = false;
+  let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ((agent: RendererAgent, model?: HarnessModelRef) => boolean) | null = null;
   let applyAdapterPiModel: ((model: HarnessModelRef) => boolean) | null = null;
@@ -446,6 +453,8 @@ export function installRendererBindingProbe(
 
   const scan = (): void => {
     scanScheduled = false;
+    const refreshTargets = refreshTargetsOnNextScan;
+    refreshTargetsOnNextScan = false;
     if (disposed) return;
     for (const replacement of pendingReplacements.values()) {
       const sourceState = controller.get(replacement.source);
@@ -467,7 +476,7 @@ export function installRendererBindingProbe(
         mountedByComposer.delete(composer);
         continue;
       }
-      refreshMountedConversationTarget(mounted);
+      if (refreshTargets) refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -475,7 +484,8 @@ export function installRendererBindingProbe(
     }
   };
 
-  const scheduleScan = (): void => {
+  const scheduleScan = (refreshTargets = false): void => {
+    refreshTargetsOnNextScan ||= refreshTargets;
     if (scanScheduled || disposed) return;
     scanScheduled = true;
     queueMicrotask(scan);
@@ -566,14 +576,8 @@ export function installRendererBindingProbe(
     const composer = composerForTarget(event.target);
     if (!composer) return;
     const mounted = mountedByComposer.get(composer);
-    if (mounted) refreshMountedConversationTarget(mounted);
-    if (
-      controller.isSwitching(composer) ||
-      (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) ||
-      !applyComposerAgent(composer)
-    ) {
-      blockEvent(event);
-    }
+    if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;
+    if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
@@ -590,13 +594,15 @@ export function installRendererBindingProbe(
   const onKeyDown = (event: KeyboardEvent): void => {
     const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (mounted) refreshMountedConversationTarget(mounted);
-    if (
-      composer &&
-      (controller.isSwitching(composer) ||
-        (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) ||
-        !applyComposerAgent(composer))
-    ) {
+    if (composer && controller.isSwitching(composer)) {
+      blockEvent(event);
+      return;
+    }
+    if (composer && mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) {
+      if (isComposerSubmissionKey(event)) blockEvent(event);
+      return;
+    }
+    if (composer && !applyComposerAgent(composer)) {
       blockEvent(event);
       return;
     }
@@ -623,7 +629,7 @@ export function installRendererBindingProbe(
 
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
-    scheduleScan();
+    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onAdapterStatus = () => {
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);

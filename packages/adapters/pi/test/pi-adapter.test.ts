@@ -59,6 +59,7 @@ class FakePiTransport implements PiTurnTransport {
     return this.deriveState();
   });
   readonly clone = vi.fn(async () => this.deriveState());
+  readonly verifySessionCwd = vi.fn(async () => undefined);
   readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
     this.state = { ...this.state, provider: model.provider, modelId: model.id };
     return this.state;
@@ -360,6 +361,7 @@ describe("Pi HarnessAdapter Session", () => {
     expect(transports[0]?.options).not.toHaveProperty("sessionFile");
     expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
     expect(transports[0]?.clone).not.toHaveBeenCalled();
+    expect(transports[0]?.verifySessionCwd).toHaveBeenCalledWith("/synthetic-worktree");
     expect(opened.value.initialState).toMatchObject({
       nativeRef: { nativeSessionId: "target-startup-session-derived" },
     });
@@ -406,6 +408,7 @@ describe("Pi HarnessAdapter Session", () => {
     if (!cloned.ok) throw new Error(cloned.error.message);
     expect(transports[0]?.clone).not.toHaveBeenCalled();
     expect(transports[0]?.fork).not.toHaveBeenCalled();
+    expect(transports[0]?.verifySessionCwd).toHaveBeenCalledWith("/synthetic-worktree");
     expect(cloned.value.initialState).toMatchObject({
       nativeRef: { nativeSessionId: "target-startup-session-1" },
     });

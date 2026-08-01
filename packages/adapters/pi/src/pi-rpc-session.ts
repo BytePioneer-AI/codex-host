@@ -5,6 +5,7 @@ import { jsonValueSchema, type JsonObject, type JsonValue } from "@codexhost/sha
 
 import type { PiSessionHistory } from "./pi-history.js";
 import type { PiNativeModelRef } from "./pi-model-catalog.js";
+import { verifyPiSessionCwd } from "./pi-session-file.js";
 
 export interface PiSessionState {
   sessionId: string;
@@ -396,6 +397,14 @@ export class PiRpcSession {
   async clone(): Promise<PiSessionState> {
     await this.#send("clone", {});
     return this.#refreshState("Clone");
+  }
+
+  verifySessionCwd(expectedCwd: string): Promise<void> {
+    return verifyPiSessionCwd({
+      sessionFile: this.state.sessionFile,
+      sessionId: this.state.sessionId,
+      expectedCwd,
+    });
   }
 
   async getAvailableModels(): Promise<PiNativeModelRef[]> {

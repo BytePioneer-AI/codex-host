@@ -354,11 +354,11 @@ export class MappingStore {
     updates: StoredTurnMappingV1[],
   ): StoredTurnMappingV1[] {
     const merged = current.map((mapping) => ({ ...mapping }));
+    const byHost = new Map(merged.map((mapping) => [mapping.hostTurnId, mapping] as const));
+    const byNative = new Map(merged.map((mapping) => [nativeTurnKey(mapping), mapping] as const));
     for (const update of updates) {
-      const hostMatch = merged.find((mapping) => mapping.hostTurnId === update.hostTurnId);
-      const nativeMatch = merged.find(
-        (mapping) => nativeTurnKey(mapping) === nativeTurnKey(update),
-      );
+      const hostMatch = byHost.get(update.hostTurnId);
+      const nativeMatch = byNative.get(nativeTurnKey(update));
       if (hostMatch || nativeMatch) {
         if (!hostMatch || hostMatch !== nativeMatch) {
           throw new MappingStoreError("MAPPING_CONFLICT", "Turn identity mapping conflicts");
@@ -378,7 +378,10 @@ export class MappingStore {
         }
         continue;
       }
-      merged.push(update);
+      const added = { ...update };
+      merged.push(added);
+      byHost.set(added.hostTurnId, added);
+      byNative.set(nativeTurnKey(added), added);
     }
     return merged;
   }
@@ -499,10 +502,7 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      const currentHostTurn = record.turnMappings.find(
-        (candidate) => nativeTurnKey(candidate) === nativeTurnKey(mapping),
-      )?.hostTurnId;
-      if (duplicateNativeTurn && duplicateNativeTurn !== currentHostTurn) {
+      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }

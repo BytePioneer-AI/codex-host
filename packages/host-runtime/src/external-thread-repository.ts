@@ -42,20 +42,12 @@ export interface AlignedExternalSnapshot {
   turns: JsonObject[];
 }
 
-function sameRef(left: NativeTurnRef, right: NativeTurnRef): boolean {
-  return (
-    left.harnessId === right.harnessId &&
-    left.nativeSessionId === right.nativeSessionId &&
-    left.nativeTurnKey === right.nativeTurnKey &&
-    left.formatVersion === right.formatVersion
-  );
+function nativeTurnKey(ref: NativeTurnRef): string {
+  return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
 }
 
-function mappingForNative(
-  mappings: StoredTurnMappingV1[],
-  nativeTurnRef: NativeTurnRef,
-): StoredTurnMappingV1 | undefined {
-  return mappings.find((mapping) => sameRef(mapping.nativeTurnRef, nativeTurnRef));
+function sameMapping(left: StoredTurnMappingV1, right: StoredTurnMappingV1): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function defaultMappingStoreDirectory(environment: NodeJS.ProcessEnv): string {
@@ -297,44 +289,44 @@ export class ExternalThreadRepository {
       }
     }
 
+    const mappingsByNative = new Map(
+      record.turnMappings.map(
+        (mapping) => [nativeTurnKey(mapping.nativeTurnRef), mapping] as const,
+      ),
+    );
     const aligned = snapshot.turns.map((turn) => {
-      const existing = mappingForNative(record.turnMappings, turn.nativeTurnRef);
+      const existing = mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef));
+      const mapping =
+        existing ??
+        ({
+          hostTurnId: hostTurnIdSchema.parse(randomUUID()),
+          nativeTurnRef: turn.nativeTurnRef,
+          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+        } satisfies StoredTurnMappingV1);
       return {
+        existing,
         snapshot: turn,
-        mapping:
-          existing ??
-          ({
-            hostTurnId: hostTurnIdSchema.parse(randomUUID()),
-            nativeTurnRef: turn.nativeTurnRef,
-            ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-          } satisfies StoredTurnMappingV1),
+        mapping: {
+          ...mapping,
+          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+        },
       };
     });
-    const alignedExistingIds = aligned
-      .filter(({ mapping }) =>
-        record.turnMappings.some((stored) => stored.hostTurnId === mapping.hostTurnId),
-      )
-      .map(({ mapping }) => mapping.hostTurnId);
-    if (
-      alignedExistingIds.length !== record.turnMappings.length ||
-      alignedExistingIds.some(
-        (hostTurnId, index) => hostTurnId !== record.turnMappings[index]?.hostTurnId,
-      )
-    ) {
+    let existingIndex = 0;
+    for (const { existing } of aligned) {
+      if (!existing) continue;
+      if (existing.hostTurnId !== record.turnMappings[existingIndex]?.hostTurnId) {
+        throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
+      }
+      existingIndex += 1;
+    }
+    if (existingIndex !== record.turnMappings.length) {
       throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
     }
 
-    const updates = aligned
-      .map(({ mapping, snapshot: turn }) => ({
-        ...mapping,
-        ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-      }))
-      .filter((mapping) => {
-        const current = record.turnMappings.find(
-          ({ hostTurnId }) => hostTurnId === mapping.hostTurnId,
-        );
-        return !current || JSON.stringify(current) !== JSON.stringify(mapping);
-      });
+    const updates = aligned.flatMap(({ existing, mapping }) =>
+      existing && sameMapping(existing, mapping) ? [] : [mapping],
+    );
     const nextRecord =
       updates.length > 0
         ? await this.store.upsertTurnMappings(record.hostThreadId, updates)

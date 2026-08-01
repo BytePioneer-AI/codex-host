@@ -95,6 +95,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
+  snapshotReads = 0;
   readonly #catalog: HarnessModelCatalog;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #active: ActiveFakeTurn | null = null;
@@ -148,6 +149,7 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    this.snapshotReads += 1;
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (this.#active) {
       return {
@@ -664,9 +666,9 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
+    if (input.kind === "resume") return { ok: true, value: source };
     const snapshot = await source.readSnapshot();
     if (!snapshot.ok) return snapshot;
-    if (input.kind === "resume") return { ok: true, value: source };
     if (!this.supportsFork || (!this.supportsForkAcrossCwd && input.cwd !== source.cwd)) {
       return {
         ok: false,

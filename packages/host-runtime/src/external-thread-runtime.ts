@@ -38,6 +38,7 @@ export interface ExternalThread {
   thread: JsonObject;
   transportModelId: string;
   turns: JsonObject[];
+  historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
@@ -46,9 +47,18 @@ export interface ExternalThread {
   ignoredInteractionIds: Set<HostInteractionId>;
 }
 
+export type ExternalThreadLocation =
+  | { kind: "official" }
+  | {
+      kind: "external";
+      record: StoredThreadRecordV1;
+      thread: ExternalThread | null;
+    }
+  | { kind: "error"; error: ExternalThreadRpcError };
+
 export type ExternalThreadResolution =
   | { kind: "official" }
-  | { kind: "external"; thread: ExternalThread }
+  | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
 class ExternalThreadOpenError extends Error {
@@ -125,6 +135,7 @@ export class ExternalThreadRuntime {
       thread: input.thread,
       transportModelId: input.record.transportModelId,
       turns: input.turns,
+      historyHydrated: true,
       running: false,
       activeTurnId: null,
       projectedTurns: new Map(),
@@ -164,9 +175,9 @@ export class ExternalThreadRuntime {
     return this.register(input);
   }
 
-  async resolve(threadId: string): Promise<ExternalThreadResolution> {
+  async locate(threadId: string): Promise<ExternalThreadLocation> {
     const loaded = this.#threads.get(threadId);
-    if (loaded) return { kind: "external", thread: loaded };
+    if (loaded) return { kind: "external", record: loaded.record, thread: loaded };
     let record: StoredThreadRecordV1 | null;
     try {
       record = await this.#repository.find(threadId);
@@ -183,15 +194,27 @@ export class ExternalThreadRuntime {
         error: { code: -32079, message: "External Native Session is unavailable" },
       };
     }
+    return { kind: "external", record, thread: null };
+  }
+
+  async resolve(threadId: string): Promise<ExternalThreadResolution> {
+    const location = await this.locate(threadId);
+    if (location.kind !== "external") return location;
+    if (location.thread) {
+      return { kind: "external", thread: location.thread, historyFresh: false };
+    }
+    const { record } = location;
     let restoring = this.#restores.get(threadId);
     if (!restoring) {
+      const restored = this.#threads.get(threadId);
+      if (restored) return { kind: "external", thread: restored, historyFresh: false };
       restoring = this.#restore(record).finally(() => {
         this.#restores.delete(threadId);
       });
       this.#restores.set(threadId, restoring);
     }
     try {
-      return { kind: "external", thread: await restoring };
+      return { kind: "external", thread: await restoring, historyFresh: true };
     } catch (error) {
       return {
         kind: "error",
@@ -210,6 +233,7 @@ export class ExternalThreadRuntime {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       thread.record = aligned.record;
       thread.turns = aligned.turns;
+      thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
         turns: aligned.turns,

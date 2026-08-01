@@ -23,6 +23,7 @@
     "trailingComma": "all"
   },
   "scripts": {
+    "start": "node tools/dev-desktop/run.mjs",
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
     "build:typescript": "tsc -b",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",

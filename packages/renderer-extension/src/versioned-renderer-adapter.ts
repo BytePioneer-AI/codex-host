@@ -6,6 +6,7 @@ import {
   type HostThreadId,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
+  type ThreadOwnershipListParams,
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -654,6 +655,11 @@ export function installCurrentRendererAdapter(): {
       const client = createRendererModelClient(findActivePrewarmTargets(document));
       if (!client) throw new Error("Renderer Model request manager is unavailable");
       return client.inspectThread(input);
+    },
+    async listThreadOwnership(input: ThreadOwnershipListParams) {
+      const client = createRendererModelClient(findActivePrewarmTargets(document));
+      if (!client) throw new Error("Renderer Model request manager is unavailable");
+      return client.listThreadOwnership(input);
     },
     async selectPiThreadModel(input: ThreadModelSelectParams) {
       const client = createRendererModelClient(findActivePrewarmTargets(document));

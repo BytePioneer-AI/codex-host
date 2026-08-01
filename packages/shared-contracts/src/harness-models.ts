@@ -4,6 +4,7 @@ import { codexhostErrorSchema } from "./errors.js";
 import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
+export const THREAD_OWNERSHIP_LIST_MAX_LENGTH = 100;
 
 const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "Value must not be empty or whitespace",
@@ -162,3 +163,67 @@ export const threadInspectionSchema = z.discriminatedUnion("owner", [
 ]);
 
 export type ThreadInspection = z.infer<typeof threadInspectionSchema>;
+
+export const threadOwnershipListParamsSchema = z
+  .object({
+    threadIds: z.array(hostThreadIdSchema).min(1).max(THREAD_OWNERSHIP_LIST_MAX_LENGTH),
+  })
+  .strict()
+  .superRefine(({ threadIds }, context) => {
+    const seen = new Set<string>();
+    for (const [index, threadId] of threadIds.entries()) {
+      if (seen.has(threadId)) {
+        context.addIssue({
+          code: "custom",
+          message: "Thread ownership-list IDs must be unique",
+          path: ["threadIds", index],
+        });
+      }
+      seen.add(threadId);
+    }
+  });
+
+export type ThreadOwnershipListParams = z.infer<typeof threadOwnershipListParamsSchema>;
+
+const codexThreadOwnershipSchema = z
+  .object({
+    threadId: hostThreadIdSchema,
+    owner: z.literal("codex"),
+  })
+  .strict();
+
+const externalThreadOwnershipSchema = z
+  .object({
+    threadId: hostThreadIdSchema,
+    owner: z.literal("external"),
+    harnessId: z.string().max(256).pipe(harnessIdSchema),
+  })
+  .strict();
+
+export const threadOwnershipSchema = z.discriminatedUnion("owner", [
+  codexThreadOwnershipSchema,
+  externalThreadOwnershipSchema,
+]);
+
+export type ThreadOwnership = z.infer<typeof threadOwnershipSchema>;
+
+export const threadOwnershipListResultSchema = z
+  .object({
+    threads: z.array(threadOwnershipSchema).min(1).max(THREAD_OWNERSHIP_LIST_MAX_LENGTH),
+  })
+  .strict()
+  .superRefine(({ threads }, context) => {
+    const seen = new Set<string>();
+    for (const [index, thread] of threads.entries()) {
+      if (seen.has(thread.threadId)) {
+        context.addIssue({
+          code: "custom",
+          message: "Thread ownership-list results must be unique",
+          path: ["threads", index, "threadId"],
+        });
+      }
+      seen.add(thread.threadId);
+    }
+  });
+
+export type ThreadOwnershipListResult = z.infer<typeof threadOwnershipListResultSchema>;

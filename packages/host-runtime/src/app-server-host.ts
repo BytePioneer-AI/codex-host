@@ -19,6 +19,8 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadOwnershipListParamsSchema,
+  threadOwnershipListResultSchema,
   type HarnessModelRef,
   type HostInteractionId,
   type HostTurnId,
@@ -345,6 +347,10 @@ export class AppServerHost {
         await this.#inspectThread(request);
         continue;
       }
+      if (request.method === "codexhost/thread/ownership/list") {
+        await this.#listThreadOwnership(request);
+        continue;
+      }
       if (request.method === "codexhost/thread/model/select") {
         await this.#selectThreadModel(request);
         continue;
@@ -571,6 +577,30 @@ export class AppServerHost {
           },
     );
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
+  async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {
+    const params = threadOwnershipListParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread ownership-list params"));
+      return;
+    }
+    try {
+      const threads = await Promise.all(
+        params.data.threadIds.map(async (threadId) => {
+          const record = await this.#repository.find(threadId);
+          return record
+            ? { threadId, owner: "external" as const, harnessId: record.harnessId }
+            : { threadId, owner: "codex" as const };
+        }),
+      );
+      const result = threadOwnershipListResultSchema.parse({ threads });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32081, "Thread ownership metadata could not be read"),
+      );
+    }
   }
 
   async #selectThreadModel(request: JsonRpcRequest): Promise<void> {

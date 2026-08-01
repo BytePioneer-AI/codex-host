@@ -16,6 +16,7 @@ export {
   HARNESS_INSPECT_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_OWNERSHIP_LIST_METHOD,
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";

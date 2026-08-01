@@ -36,6 +36,7 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
 
@@ -166,6 +167,9 @@ export function installRendererBindingProbe(
   let applyAdapterAgent: ((agent: RendererAgent, model?: HarnessModelRef) => boolean) | null = null;
   let applyAdapterPiModel: ((model: HarnessModelRef) => boolean) | null = null;
   let modelControl: RendererModelClient | null = null;
+  const sidebarAgentIcons = installRendererSidebarAgentIcons({
+    getClient: () => modelControl,
+  });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",
@@ -687,6 +691,7 @@ export function installRendererBindingProbe(
       applyAdapterPiModel = applyPiModel ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
+      sidebarAgentIcons.refresh();
       const connected = connectedComposers();
       if (connected.length === 1) {
         const mounted = connected[0];
@@ -714,6 +719,7 @@ export function installRendererBindingProbe(
       applyAdapterPiModel = null;
       modelControl = null;
       mutationObserver.disconnect();
+      sidebarAgentIcons.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);

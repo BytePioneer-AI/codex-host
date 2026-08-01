@@ -9,6 +9,7 @@ import {
   HARNESS_INSPECT_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_OWNERSHIP_LIST_METHOD,
   createRendererModelClient,
 } from "../src/renderer-model-client.js";
 
@@ -38,6 +39,12 @@ describe("Renderer fixed Model request client", () => {
         effectiveModel: model,
         locked: true,
       })
+      .mockResolvedValueOnce({
+        threads: [
+          { threadId: "thread-1", owner: "external", harnessId: "pi" },
+          { threadId: "official-thread", owner: "codex" },
+        ],
+      })
       .mockResolvedValueOnce({ effectiveModel: model });
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
@@ -48,6 +55,19 @@ describe("Renderer fixed Model request client", () => {
     await expect(
       client.inspectThread({ threadId: hostThreadIdSchema.parse("thread-1") }),
     ).resolves.toMatchObject({ owner: "external", harnessId: "pi", locked: true });
+    await expect(
+      client.listThreadOwnership({
+        threadIds: [
+          hostThreadIdSchema.parse("thread-1"),
+          hostThreadIdSchema.parse("official-thread"),
+        ],
+      }),
+    ).resolves.toEqual({
+      threads: [
+        { threadId: "thread-1", owner: "external", harnessId: "pi" },
+        { threadId: "official-thread", owner: "codex" },
+      ],
+    });
     await expect(
       client.selectPiThreadModel({
         threadId: hostThreadIdSchema.parse("thread-1"),
@@ -61,7 +81,10 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(2, THREAD_INSPECT_METHOD, {
       threadId: "thread-1",
     });
-    expect(sendRequest).toHaveBeenNthCalledWith(3, THREAD_MODEL_SELECT_METHOD, {
+    expect(sendRequest).toHaveBeenNthCalledWith(3, THREAD_OWNERSHIP_LIST_METHOD, {
+      threadIds: ["thread-1", "official-thread"],
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(4, THREAD_MODEL_SELECT_METHOD, {
       threadId: "thread-1",
       model,
     });
@@ -89,6 +112,23 @@ describe("Renderer fixed Model request client", () => {
     await expect(
       client.inspectThread({ threadId: hostThreadIdSchema.parse("thread-1") }),
     ).rejects.toThrow();
+  });
+
+  it("rejects ownership results that do not exactly match requested IDs", async () => {
+    const sendRequest = vi.fn(async () => ({
+      threads: [
+        { threadId: "thread-2", owner: "codex" },
+        { threadId: "thread-1", owner: "external", harnessId: "pi" },
+      ],
+    }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(
+      client.listThreadOwnership({
+        threadIds: [hostThreadIdSchema.parse("thread-1"), hostThreadIdSchema.parse("thread-2")],
+      }),
+    ).rejects.toThrow("does not match");
   });
 
   it("rejects a response that leaks undeclared native Model fields", async () => {

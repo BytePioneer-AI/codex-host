@@ -34,6 +34,12 @@ class FakeOfficialProcess extends EventEmitter {
   }
 }
 
+class FailingOwnershipMappingStore extends MappingStore {
+  override getThread(): Promise<never> {
+    return Promise.reject(new Error("Synthetic ownership read failure"));
+  }
+}
+
 class JsonLineCollector {
   readonly messages: JsonObject[] = [];
   readonly #waiters: Array<{
@@ -208,9 +214,13 @@ async function completePiTurn(
   return turnId;
 }
 
-async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
+async function closeFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
   fixture.desktopInput.end();
   await expect(fixture.running).resolves.toBe(0);
+}
+
+async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
+  await closeFixture(fixture);
   rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
 }
 
@@ -309,6 +319,88 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 41,
       result: { owner: "codex", locked: true },
     });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("lists persisted ownership without restoring external Sessions", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const first = createFixture({
+      externalAdapters: new Map([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    const piThreadId = await startExternalThread(first, "codexhost/pi-native", 1);
+    const claudeThreadId = await startExternalThread(
+      first,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      2,
+    );
+    const directory = first.mappingStoreDirectory;
+    await closeFixture(first);
+
+    const restartedPi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const restartedClaude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const restarted = createFixture({
+      externalAdapters: new Map([
+        ["pi", restartedPi],
+        ["claude-code", restartedClaude],
+      ]),
+      mappingStoreDirectory: directory,
+    });
+    const officialWrite = vi.fn();
+    restarted.official.stdin.on("data", officialWrite);
+
+    writeRequest(restarted.desktopInput, {
+      id: 42,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["official-thread", piThreadId, claudeThreadId] },
+    });
+    await expect(restarted.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual(
+      {
+        id: 42,
+        result: {
+          threads: [
+            { threadId: "official-thread", owner: "codex" },
+            { threadId: piThreadId, owner: "external", harnessId: "pi" },
+            { threadId: claudeThreadId, owner: "external", harnessId: "claude-code" },
+          ],
+        },
+      },
+    );
+    expect(restartedPi.sessions).toHaveLength(0);
+    expect(restartedClaude.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(restarted);
+  });
+
+  it("rejects invalid or unreadable ownership-list metadata locally", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+    const mappingStore = new FailingOwnershipMappingStore({ directory });
+    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 43,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["duplicate", "duplicate"] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 43)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 44,
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["unreadable-thread"] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 44)),
+    ).resolves.toMatchObject({ error: { code: -32081 } });
+    expect(fixture.adapter.sessions).toHaveLength(0);
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
+  THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
@@ -10,6 +11,8 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadOwnershipListParamsSchema,
+  threadOwnershipListResultSchema,
 } from "@codexhost/shared-contracts";
 
 const firstRef = { id: "pi-model-v1.cHJvdmlkZXI6bW9kZWw" };
@@ -169,6 +172,57 @@ describe("Harness Model runtime contracts", () => {
         transportModelId: "codexhost/pi-native",
         locked: true,
         nativeSessionRef: { nativeSessionId: "secret" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates strict bounded Thread ownership lists", () => {
+    const params = { threadIds: ["official-thread", "pi-thread", "claude-thread"] };
+    const result = {
+      threads: [
+        { threadId: "official-thread", owner: "codex" as const },
+        { threadId: "pi-thread", owner: "external" as const, harnessId: "pi" },
+        {
+          threadId: "claude-thread",
+          owner: "external" as const,
+          harnessId: "claude-code",
+        },
+      ],
+    };
+
+    expect(threadOwnershipListParamsSchema.parse(params)).toEqual(params);
+    expect(threadOwnershipListResultSchema.parse(result)).toEqual(result);
+    for (const invalid of [
+      { threadIds: [] },
+      { threadIds: ["thread-1", "thread-1"] },
+      {
+        threadIds: Array.from(
+          { length: THREAD_OWNERSHIP_LIST_MAX_LENGTH + 1 },
+          (_, index) => `thread-${index}`,
+        ),
+      },
+      { threadIds: ["thread-1"], nativeMethod: "get_entries" },
+    ]) {
+      expect(threadOwnershipListParamsSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(
+      threadOwnershipListResultSchema.safeParse({
+        threads: [
+          {
+            threadId: "pi-thread",
+            owner: "external",
+            harnessId: "pi",
+            nativeSessionRef: { nativeSessionId: "private" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      threadOwnershipListResultSchema.safeParse({
+        threads: [
+          { threadId: "thread-1", owner: "codex" },
+          { threadId: "thread-1", owner: "codex" },
+        ],
       }).success,
     ).toBe(false);
   });

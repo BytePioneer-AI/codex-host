@@ -471,7 +471,7 @@ describe("minimal Harness text Session", () => {
       status: "ready",
       catalog: adapter.catalog,
       capabilities: {
-        configuration: { selectModel: true },
+        configuration: { selectModel: true, selectThinkingOption: true },
         history: { fork: true, forkAcrossCwd: true },
       },
     });
@@ -503,20 +503,74 @@ describe("minimal Harness text Session", () => {
     await session.close();
   });
 
-  it("rejects Model writes during a Turn and preserves the confirmed state on failure", async () => {
+  it("publishes Model-dependent Thinking correction and selected Thinking before completion", async () => {
+    const adapter = new FakeHarnessAdapter();
+    const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!result.ok) throw new Error(result.error.message);
+    const session = result.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const model = adapter.catalog.models[1]?.ref;
+    const low = adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
+    if (!model || !low) throw new Error("Fake catalog is incomplete");
+
+    const selectingModel = session.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: {
+            effectiveModel: model,
+            effectiveThinkingOptionId: "off",
+            availableThinkingOptions: [
+              { id: "off", label: "Off" },
+              { id: "low", label: "Low" },
+            ],
+          },
+        },
+      },
+    });
+    await expect(selectingModel).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+
+    const selectingThinking = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: low,
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "session.state.changed",
+          state: { effectiveModel: model, effectiveThinkingOptionId: "low" },
+        },
+      },
+    });
+    await expect(selectingThinking).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    await session.close();
+  });
+
+  it("rejects Model and Thinking writes during a Turn and preserves confirmed state", async () => {
     const adapter = new FakeHarnessAdapter();
     const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
     if (!result.ok) throw new Error(result.error.message);
     const session = result.value as FakeHarnessSession;
     const original = session.state.effectiveModel;
     const model = adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
+    const off = adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!model || !off) throw new Error("Fake catalog is incomplete");
 
     await session.execute(textTurn("active"));
     await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
       ok: false,
       error: { code: "sessionBusy" },
     });
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: off }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     expect(session.state.effectiveModel).toEqual(original);
     session.succeedTurn();
 

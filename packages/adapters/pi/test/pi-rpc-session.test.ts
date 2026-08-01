@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
+import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -25,6 +26,8 @@ type Scenario =
   | "interaction-cancel"
   | "malformed-interaction"
   | "malformed-catalog"
+  | "malformed-thinking"
+  | "unsupported-thinking"
   | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
@@ -40,6 +43,7 @@ class FakePiRpcProcess extends EventEmitter {
   #sessionFile: string | null = "/synthetic/session.jsonl";
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
+  #thinkingLevel = "high";
   readonly #scenario: Scenario;
 
   constructor(scenario: Scenario) {
@@ -88,6 +92,7 @@ class FakePiRpcProcess extends EventEmitter {
         ...(this.#scenario === "missing-session-id" ? {} : { sessionId: this.#sessionId }),
         sessionFile: this.#sessionFile,
         model: { provider: this.#provider, id: this.#modelId },
+        thinkingLevel: this.#thinkingLevel,
       });
       return;
     }
@@ -128,11 +133,38 @@ class FakePiRpcProcess extends EventEmitter {
       });
       return;
     }
+    if (command.type === "get_available_thinking_levels") {
+      if (this.#scenario === "unsupported-thinking") {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
+        return;
+      }
+      this.#respond(command, {
+        levels:
+          this.#scenario === "malformed-thinking"
+            ? ["off", "invalid option"]
+            : ["off", "low", "high"],
+      });
+      return;
+    }
     if (command.type === "set_model") {
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
+        this.#thinkingLevel = command.modelId === "family/model" ? "low" : this.#thinkingLevel;
       }
+      this.#respond(command);
+      return;
+    }
+    if (command.type === "set_thinking_level") {
+      this.#thinkingLevel = ["off", "low", "high"].includes(String(command.level))
+        ? String(command.level)
+        : "high";
       this.#respond(command);
       return;
     }
@@ -411,11 +443,33 @@ describe("Pi RPC Turn aggregation", () => {
       command: "/synthetic/pi",
       arguments: ["--mode", "rpc", "--fork", "/synthetic/source.jsonl"],
     });
+    expect(
+      piRpcProcessCommand({
+        ...options,
+        model: { provider: "synthetic-provider", id: "synthetic-model" },
+      }),
+    ).toMatchObject({
+      arguments: [
+        "--mode",
+        "rpc",
+        "--provider",
+        "synthetic-provider",
+        "--model",
+        "synthetic-model",
+      ],
+    });
     expect(() =>
       piRpcProcessCommand({
         ...options,
         sessionFile: "/synthetic/resume.jsonl",
         forkSessionFile: "/synthetic/fork.jsonl",
+      }),
+    ).toThrow("cannot combine");
+    expect(() =>
+      piRpcProcessCommand({
+        ...options,
+        sessionFile: "/synthetic/resume.jsonl",
+        model: { provider: "synthetic-provider", id: "synthetic-model" },
       }),
     ).toThrow("cannot combine");
   });
@@ -553,6 +607,33 @@ describe("Pi RPC Turn aggregation", () => {
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
     expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
     await rpc.close();
+  });
+
+  it("reads actual Thinking options and corrected state after selection", async () => {
+    const rpc = session("final-only");
+    await rpc.start();
+
+    await expect(rpc.getAvailableThinkingLevels()).resolves.toEqual(["off", "low", "high"]);
+    await expect(
+      rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("xhigh")),
+    ).resolves.toMatchObject({ thinkingLevel: "high" });
+    expect(rpc.state.thinkingLevel).toBe("high");
+    await rpc.close();
+  });
+
+  it("degrades only an explicit unknown Thinking command and faults malformed levels", async () => {
+    const unsupported = session("unsupported-thinking");
+    await unsupported.start();
+    await expect(unsupported.getAvailableThinkingLevels()).resolves.toBeNull();
+    await expect(unsupported.getAvailableModels()).resolves.toHaveLength(2);
+    await unsupported.close();
+
+    const onFault = vi.fn();
+    const malformed = session("malformed-thinking", onFault);
+    await malformed.start();
+    await expect(malformed.getAvailableThinkingLevels()).rejects.toThrow("invalid level");
+    expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    await malformed.close();
   });
 
   it("faults a malformed native Model catalog", async () => {

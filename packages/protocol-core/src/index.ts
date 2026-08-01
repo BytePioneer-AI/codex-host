@@ -32,11 +32,18 @@ export {
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeCreateRoute,
   decodeExternalTransportModel,
+  decodeExternalTransportSelection,
   decodePiTransportModel,
+  decodePiTransportSelection,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
-export type { CreateRoute, ExternalHarnessId, RoutedHarnessId } from "./model-routing.js";
+export type {
+  CreateRoute,
+  ExternalConfigurationSelection,
+  ExternalHarnessId,
+  RoutedHarnessId,
+} from "./model-routing.js";
 export {
   encodeJsonFrame,
   parseJsonFrame,

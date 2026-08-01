@@ -24,6 +24,8 @@ import {
   type ModelSelectCompleted,
   type OpenSessionInput,
   type HostThreadSnapshot,
+  type ThinkingSelectCommand,
+  type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -144,7 +146,7 @@ function delay(milliseconds: number): Promise<void> {
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
-    configuration: { selectModel: false },
+    configuration: { selectModel: false, selectThinkingOption: false },
     history: { fork: false, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState;
@@ -254,11 +256,16 @@ class ClaudeHarnessSession implements HarnessSession {
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
+      | ThinkingSelectCompleted
     >
   > {
     if (this.#phase !== "open") {
@@ -266,12 +273,12 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
-    if (command.type === "model.select") {
+    if (command.type === "model.select" || command.type === "thinking.select") {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: "Claude Code Model selection is not supported",
+          message: `Claude Code ${command.type === "model.select" ? "Model" : "Thinking"} selection is not supported`,
           retryable: false,
         },
       };
@@ -648,9 +655,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       this.#dependencies.inspectInstallation();
       return {
         status: "ready",
-        catalog: { models: [] },
+        catalog: { models: [], thinkingOptions: [] },
         capabilities: {
-          configuration: { selectModel: false },
+          configuration: { selectModel: false, selectThinkingOption: false },
           history: { fork: false, forkAcrossCwd: false },
         },
       };
@@ -690,12 +697,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "create" && input.model) {
+    if (input.kind === "create" && (input.model || input.thinkingOptionId)) {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: "Claude Code create-time Model selection is not supported",
+          message: "Claude Code create-time configuration selection is not supported",
           retryable: false,
         },
       };

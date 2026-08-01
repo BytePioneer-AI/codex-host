@@ -1,4 +1,4 @@
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -67,15 +67,21 @@ describe("Renderer Composer DOM behavior", () => {
 
   it("restores validated Host ownership and blocks unresolved submission", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.restored" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     expect(
       restoredThreadOwnership({
         owner: "external",
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: model,
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [
+          { id: harnessThinkingOptionIdSchema.parse("off"), label: "Off" },
+          { id: thinkingOptionId, label: "High" },
+        ],
         locked: true,
       }),
-    ).toEqual({ agent: "pi", piModel: model });
+    ).toEqual({ agent: "pi", piModel: model, piThinkingOptionId: thinkingOptionId });
     expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
       agent: "codex",
     });
@@ -91,6 +97,20 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isOwnershipSubmissionBlocked("error")).toBe(true);
     expect(isOwnershipSubmissionBlocked("ready")).toBe(false);
     expect(isOwnershipSubmissionBlocked("not-required")).toBe(false);
+  });
+
+  it("does not bind readable Thinking when current options are unavailable", () => {
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.legacy" });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: `codexhost/pi-native@${model.id}`,
+        effectiveModel: model,
+        effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        locked: true,
+      }),
+    ).toEqual({ agent: "pi", piModel: model });
   });
 
   it("detects a conversation target that arrives after the Composer mounted", () => {

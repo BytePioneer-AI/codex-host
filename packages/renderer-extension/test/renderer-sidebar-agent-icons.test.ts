@@ -80,6 +80,7 @@ function clientWith(
     inspectThread: vi.fn(),
     listThreadOwnership: vi.fn(listThreadOwnership),
     selectPiThreadModel: vi.fn(),
+    selectPiThreadThinking: vi.fn(),
   };
 }
 

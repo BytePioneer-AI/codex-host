@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -141,19 +142,28 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(adapter.inspect()).resolves.toEqual({
       status: "ready",
-      catalog: { models: [] },
+      catalog: { models: [], thinkingOptions: [] },
       capabilities: {
-        configuration: { selectModel: false },
+        configuration: { selectModel: false, selectThinkingOption: false },
         history: { fork: false, forkAcrossCwd: false },
       },
     });
     expect(dependencies.inspectInstallation).toHaveBeenCalledOnce();
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
-      configuration: { selectModel: false },
+      configuration: { selectModel: false, selectThinkingOption: false },
       history: { fork: false, forkAcrossCwd: false },
     });
     await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toMatchObject({
       ok: false,
       error: { code: "unsupported", retryable: false },
     });

@@ -1,7 +1,13 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { jsonValueSchema, type JsonObject, type JsonValue } from "@codexhost/shared-contracts";
+import {
+  harnessThinkingOptionIdSchema,
+  jsonValueSchema,
+  type HarnessThinkingOptionId,
+  type JsonObject,
+  type JsonValue,
+} from "@codexhost/shared-contracts";
 
 import type { PiSessionHistory } from "./pi-history.js";
 import type { PiNativeModelRef } from "./pi-model-catalog.js";
@@ -12,6 +18,7 @@ export interface PiSessionState {
   sessionFile: string | null;
   provider: string | null;
   modelId: string | null;
+  thinkingLevel: HarnessThinkingOptionId | null;
 }
 
 export type PiInteractionRequest =
@@ -84,12 +91,20 @@ export class PiRpcFaultError extends Error {
   }
 }
 
+export class PiRpcUnsupportedCommandError extends Error {
+  constructor(readonly command: string) {
+    super(`Pi RPC does not support '${command}'`);
+    this.name = "PiRpcUnsupportedCommandError";
+  }
+}
+
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
   sessionFile?: string;
   forkSessionFile?: string;
+  model?: PiNativeModelRef;
   commandTimeoutMs?: number;
   turnTimeoutMs?: number;
   closeTimeoutMs?: number;
@@ -102,6 +117,7 @@ export interface PiRpcProcessOptions {
   environment: NodeJS.ProcessEnv;
   sessionFile?: string;
   forkSessionFile?: string;
+  model?: PiNativeModelRef;
 }
 
 export interface PiRpcProcessAdapter {
@@ -109,6 +125,7 @@ export interface PiRpcProcessAdapter {
 }
 
 interface PendingCommand {
+  command: string;
   resolve(value: Record<string, unknown>): void;
   reject(error: Error): void;
   timeout: NodeJS.Timeout;
@@ -160,11 +177,19 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
   if (!nonBlankString(data.sessionId)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
   }
+  const thinkingLevel =
+    data.thinkingLevel === undefined
+      ? null
+      : harnessThinkingOptionIdSchema.safeParse(data.thinkingLevel);
+  if (thinkingLevel !== null && !thinkingLevel.success) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC state has an invalid Thinking level");
+  }
   return {
     sessionId: data.sessionId,
     sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
+    thinkingLevel: thinkingLevel?.data ?? null,
   };
 }
 
@@ -187,6 +212,29 @@ function parseSessionHistory(response: Record<string, unknown>): PiSessionHistor
     throw new PiRpcFaultError("protocolError", "Pi RPC entries response has an invalid leaf ID");
   }
   return { entries, leafId: data.leafId as string | null };
+}
+
+function parseAvailableThinkingLevels(
+  response: Record<string, unknown>,
+): HarnessThinkingOptionId[] {
+  const data = isRecord(response.data) ? response.data : null;
+  if (!data || !Array.isArray(data.levels) || data.levels.length === 0) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC Thinking catalog response has no levels");
+  }
+  const levels = data.levels.map((level) => {
+    const parsed = harnessThinkingOptionIdSchema.safeParse(level);
+    if (!parsed.success) {
+      throw new PiRpcFaultError(
+        "protocolError",
+        "Pi RPC Thinking catalog contains an invalid level",
+      );
+    }
+    return parsed.data;
+  });
+  if (new Set(levels).size !== levels.length) {
+    throw new PiRpcFaultError("protocolError", "Pi RPC Thinking catalog contains duplicate levels");
+  }
+  return levels;
 }
 
 function parseAvailableModels(response: Record<string, unknown>): PiNativeModelRef[] {
@@ -256,13 +304,19 @@ export function piRpcProcessCommand(options: PiRpcProcessOptions): {
   if (options.sessionFile && options.forkSessionFile) {
     throw new Error("Pi RPC cannot combine Session resume and Fork startup");
   }
+  if (options.model && (options.sessionFile || options.forkSessionFile)) {
+    throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
+  }
   const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
   const sessionArguments = options.forkSessionFile
     ? ["--fork", options.forkSessionFile]
     : options.sessionFile
       ? ["--session", options.sessionFile]
       : [];
-  const arguments_ = ["--mode", "rpc", ...sessionArguments];
+  const modelArguments = options.model
+    ? ["--provider", options.model.provider, "--model", options.model.id]
+    : [];
+  const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
   if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
@@ -310,6 +364,9 @@ export class PiRpcSession {
     if (options.sessionFile && options.forkSessionFile) {
       throw new Error("Pi RPC cannot combine Session resume and Fork startup");
     }
+    if (options.model && (options.sessionFile || options.forkSessionFile)) {
+      throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
+    }
     this.#options = {
       commandTimeoutMs: 30_000,
       turnTimeoutMs: 180_000,
@@ -337,6 +394,7 @@ export class PiRpcSession {
       },
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
+      ...(this.#options.model ? { model: this.#options.model } : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));
@@ -419,9 +477,25 @@ export class PiRpcSession {
     }
   }
 
+  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null> {
+    try {
+      return parseAvailableThinkingLevels(await this.#send("get_available_thinking_levels", {}));
+    } catch (error) {
+      if (error instanceof PiRpcUnsupportedCommandError) return null;
+      if (error instanceof PiRpcFaultError) this.#fail(error);
+      throw error;
+    }
+  }
+
   async selectModel(model: PiNativeModelRef): Promise<PiSessionState> {
     await this.#send("set_model", { provider: model.provider, modelId: model.id });
     return this.#refreshState("Model");
+  }
+
+  async selectThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<PiSessionState> {
+    const level = harnessThinkingOptionIdSchema.parse(thinkingOptionId);
+    await this.#send("set_thinking_level", { level });
+    return this.#refreshState("Thinking");
   }
 
   async #refreshState(operation: string): Promise<PiSessionState> {
@@ -760,9 +834,12 @@ export class PiRpcSession {
     this.#pending.delete(id);
     if (value.success === true) pending.resolve(value);
     else {
-      pending.reject(
-        new Error(typeof value.error === "string" ? value.error : "Pi RPC command failed"),
-      );
+      const error = typeof value.error === "string" ? value.error : "Pi RPC command failed";
+      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+        pending.reject(new PiRpcUnsupportedCommandError(pending.command));
+      } else {
+        pending.reject(new Error(error));
+      }
     }
   }
 
@@ -895,7 +972,7 @@ export class PiRpcSession {
         this.#pending.delete(id);
         reject(new Error(`Pi RPC '${type}' command timed out`));
       }, this.#options.commandTimeoutMs);
-      this.#pending.set(id, { resolve, reject, timeout });
+      this.#pending.set(id, { command: type, resolve, reject, timeout });
       const frame = Buffer.from(`${JSON.stringify({ id, type, ...payload })}\n`, "utf8");
       child.stdin.write(frame, (error) => {
         if (error) {

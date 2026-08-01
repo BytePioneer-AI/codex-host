@@ -200,6 +200,7 @@ export function mountComposerAgentControl(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onSelectModel: (modelId: string) => void,
+  onSelectThinking: (thinkingOptionId: string) => void,
 ): ComposerAgentControl {
   const nativeModelControl = captureNativeModelControl(nativeModelControlForComposer(composer));
   const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect);
@@ -207,6 +208,7 @@ export function mountComposerAgentControl(
     composerId,
     nativeModelControl?.element.className,
     onSelectModel,
+    onSelectThinking,
   );
 
   const toolbar = sendButton.parentElement;
@@ -235,11 +237,20 @@ export function renderComposerAgentControl(
   modelView: PiModelControlView = { status: "idle" },
 ): void {
   const selectedModel = modelView.selected;
-  const modelReady =
-    modelView.catalog !== undefined &&
-    selectedModel !== undefined &&
-    modelView.catalog.models.some((model) => model.ref.id === selectedModel.id);
-  const modelBlocked = state.agent === "pi" && (modelView.status === "selecting" || !modelReady);
+  const selectedCatalogModel = modelView.catalog?.models.find(
+    (model) => model.ref.id === selectedModel?.id,
+  );
+  const availableThinkingOptions = selectedCatalogModel?.supportedThinkingOptionIds
+    ? (modelView.catalog?.thinkingOptions.filter((option) =>
+        selectedCatalogModel.supportedThinkingOptionIds?.includes(option.id),
+      ) ?? [])
+    : (modelView.catalog?.thinkingOptions ?? []);
+  const thinkingReady =
+    availableThinkingOptions.length === 0 ||
+    availableThinkingOptions.some(({ id }) => id === modelView.selectedThinkingOptionId);
+  const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
+  const modelBlocked =
+    state.agent === "pi" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
   const submissionBlocked = switching || modelBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;

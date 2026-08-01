@@ -9,6 +9,8 @@ import type {
   HarnessInspection,
   HarnessModelCatalog,
   HarnessModelRef,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
   HostInteractionId,
   HostItemId,
   JsonValue,
@@ -48,6 +50,8 @@ import type {
   ModelSelectCommand,
   ModelSelectCompleted,
   OpenSessionInput,
+  ThinkingSelectCommand,
+  ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnStartAccepted,
@@ -70,14 +74,47 @@ const invalidStateError: HarnessError = {
 
 const defaultFakeCatalog = harnessModelCatalogSchema.parse({
   models: [
-    { ref: { id: "fake-model-v1.primary" }, label: "Fake Primary" },
-    { ref: { id: "fake-model-v1.secondary" }, label: "Fake Secondary" },
+    {
+      ref: { id: "fake-model-v1.primary" },
+      label: "Fake Primary",
+      supportedThinkingOptionIds: ["off", "high"],
+    },
+    {
+      ref: { id: "fake-model-v1.secondary" },
+      label: "Fake Secondary",
+      supportedThinkingOptionIds: ["off", "low"],
+    },
   ],
   defaultModel: { id: "fake-model-v1.primary" },
+  thinkingOptions: [
+    { id: "off", label: "Off" },
+    { id: "low", label: "Low" },
+    { id: "high", label: "High" },
+  ],
+  defaultThinkingOptionId: "high",
 });
 
 function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
   return catalog.models.some((candidate) => candidate.ref.id === model.id);
+}
+
+function thinkingOptionsForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef | undefined,
+): HarnessThinkingOption[] {
+  const supported = catalog.models.find(
+    (candidate) => candidate.ref.id === model?.id,
+  )?.supportedThinkingOptionIds;
+  return supported
+    ? catalog.thinkingOptions.filter((option) => supported.includes(option.id))
+    : catalog.thinkingOptions;
+}
+
+function catalogHasThinkingOption(
+  catalog: HarnessModelCatalog,
+  thinkingOptionId: HarnessThinkingOptionId,
+): boolean {
+  return catalog.thinkingOptions.some(({ id }) => id === thinkingOptionId);
 }
 
 function invalidState(message: string): HarnessError {
@@ -104,6 +141,7 @@ export class FakeHarnessSession implements HarnessSession {
   #interactionOrdinal = 0;
   #itemOrdinal = 0;
   #nextModelRejection: HarnessError | null = null;
+  #nextThinkingRejection: HarnessError | null = null;
   #nextQuestion: {
     question: HostQuestion;
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
@@ -126,10 +164,20 @@ export class FakeHarnessSession implements HarnessSession {
     supportsFork = true,
     cwd = "/synthetic",
     supportsForkAcrossCwd = supportsFork,
+    initialThinkingOptionId: HarnessThinkingOptionId | undefined = catalog.defaultThinkingOptionId,
   ) {
     this.harnessId = harnessId;
+    const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
+    const effectiveThinkingOptionId = availableThinkingOptions.some(
+      ({ id }) => id === initialThinkingOptionId,
+    )
+      ? initialThinkingOptionId
+      : availableThinkingOptions[0]?.id;
     this.capabilities = {
-      configuration: { selectModel: true },
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: catalog.thinkingOptions.length > 0,
+      },
       history: { fork: supportsFork, forkAcrossCwd: supportsForkAcrossCwd },
     };
     this.cwd = cwd;
@@ -137,6 +185,8 @@ export class FakeHarnessSession implements HarnessSession {
     this.initialState = {
       nativeRef,
       ...(initialModel ? { effectiveModel: initialModel } : {}),
+      ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+      ...(availableThinkingOptions.length > 0 ? { availableThinkingOptions } : {}),
     };
     this.#state = this.initialState;
     this.#snapshot = cloneJson(snapshot);
@@ -172,6 +222,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#nextModelRejection = error;
   }
 
+  rejectNextThinkingSelection(error: HarnessError): void {
+    this.#nextThinkingRejection = error;
+  }
+
   completeCancellationOnRequest(): void {
     this.#completeCancellationDuringRequest = true;
   }
@@ -187,17 +241,23 @@ export class FakeHarnessSession implements HarnessSession {
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
+      | ThinkingSelectCompleted
     >
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
+    if (command.type === "thinking.select") return this.#selectThinking(command);
     if (this.#nextRejection) {
       const error = this.#nextRejection;
       this.#nextRejection = null;
@@ -450,7 +510,62 @@ export class FakeHarnessSession implements HarnessSession {
         },
       };
     }
-    this.#state = { ...this.#state, effectiveModel: command.model };
+    const availableThinkingOptions = thinkingOptionsForModel(this.#catalog, command.model);
+    const effectiveThinkingOptionId = availableThinkingOptions.some(
+      ({ id }) => id === this.#state.effectiveThinkingOptionId,
+    )
+      ? this.#state.effectiveThinkingOptionId
+      : availableThinkingOptions[0]?.id;
+    const nextState: HarnessSessionState = {
+      ...this.#state,
+      effectiveModel: command.model,
+      ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+      availableThinkingOptions,
+    };
+    if (!effectiveThinkingOptionId) delete nextState.effectiveThinkingOptionId;
+    this.#state = nextState;
+    this.#event({ type: "session.state.changed", state: this.#state });
+    return { ok: true, value: { completed: true } };
+  }
+
+  #selectThinking(command: ThinkingSelectCommand): HarnessResult<ThinkingSelectCompleted> {
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Fake Harness Session cannot select Thinking during an active Turn",
+          retryable: true,
+        },
+      };
+    }
+    if (!this.capabilities.configuration.selectThinkingOption) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Harness does not support Thinking selection",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#nextThinkingRejection) {
+      const error = this.#nextThinkingRejection;
+      this.#nextThinkingRejection = null;
+      return { ok: false, error };
+    }
+    const available = this.#state.availableThinkingOptions ?? [];
+    if (!available.some(({ id }) => id === command.thinkingOptionId)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Harness Thinking option is not currently available",
+          retryable: false,
+        },
+      };
+    }
+    this.#state = { ...this.#state, effectiveThinkingOptionId: command.thinkingOptionId };
     this.#event({ type: "session.state.changed", state: this.#state });
     return { ok: true, value: { completed: true } };
   }
@@ -594,7 +709,6 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    void input;
     this.inspectionCalls += 1;
     if (this.#closePromise) {
       return {
@@ -606,11 +720,24 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
+    if (input.model && !catalogHasModel(this.catalog, input.model)) {
+      return {
+        status: "error",
+        error: {
+          code: "invalidRequest",
+          message: "Fake inspection Model is not in the current catalog",
+          retryable: false,
+        },
+      };
+    }
     return {
       status: "ready",
       catalog: this.catalog,
       capabilities: {
-        configuration: { selectModel: true },
+        configuration: {
+          selectModel: true,
+          selectThinkingOption: this.catalog.thinkingOptions.length > 0,
+        },
         history: {
           fork: this.supportsFork,
           forkAcrossCwd: this.supportsForkAcrossCwd,
@@ -642,7 +769,23 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           },
         };
       }
-      return { ok: true, value: this.#createSession(input.cwd, input.model) };
+      if (
+        input.thinkingOptionId &&
+        !catalogHasThinkingOption(this.catalog, input.thinkingOptionId)
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Fake Adapter create Thinking option is not in the current catalog",
+            retryable: false,
+          },
+        };
+      }
+      return {
+        ok: true,
+        value: this.#createSession(input.cwd, input.model, [], input.thinkingOptionId),
+      };
     }
     const sourceRef = input.kind === "resume" ? input.nativeRef : input.sourceRef;
     if (sourceRef.harnessId !== this.harnessId) {
@@ -711,6 +854,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         input.cwd,
         source.state.effectiveModel,
         snapshot.value.turns.slice(0, checkpointIndex + 1),
+        source.state.effectiveThinkingOptionId,
       ),
     };
   }
@@ -719,6 +863,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     cwd: string,
     model: HarnessModelRef | undefined,
     sourceTurns: HostTurnSnapshot[] = [],
+    thinkingOptionId?: HarnessThinkingOptionId,
   ): FakeHarnessSession {
     this.#sessionOrdinal += 1;
     const nativeRef: NativeSessionRef = {
@@ -761,6 +906,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       this.supportsFork,
       cwd,
       this.supportsForkAcrossCwd,
+      thinkingOptionId,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

@@ -1,0 +1,125 @@
+import { expect, test } from "@playwright/test";
+import { build } from "esbuild";
+import path from "node:path";
+
+const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
+if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
+
+const { outputFiles } = await build({
+  stdin: {
+    contents: `
+      import {
+        mountRendererModelPicker,
+        renderRendererModelPicker,
+      } from "./packages/renderer-extension/src/renderer-model-picker.ts";
+
+      globalThis.setupRendererModelPicker = () => {
+        const modelA = { id: "model-a" };
+        const modelB = { id: "model-b" };
+        const catalog = {
+          models: [
+            {
+              ref: modelA,
+              label: "Provider / Model A",
+              supportedThinkingOptionIds: ["off", "low"],
+            },
+            {
+              ref: modelB,
+              label: "Provider / Model B",
+              supportedThinkingOptionIds: ["off", "high", "xhigh"],
+            },
+          ],
+          defaultModel: modelA,
+          thinkingOptions: [
+            { id: "off", label: "Off" },
+            { id: "low", label: "Low" },
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra High" },
+          ],
+          defaultThinkingOptionId: "low",
+        };
+        let view = {
+          status: "ready",
+          catalog,
+          selected: modelA,
+          selectedThinkingOptionId: "low",
+        };
+        let control;
+        control = mountRendererModelPicker(
+          "test-composer",
+          undefined,
+          (modelId) => {
+            view = { ...view, status: "selecting" };
+            renderRendererModelPicker(control, view, true);
+            setTimeout(() => {
+              view = {
+                status: "ready",
+                catalog,
+                selected: modelId === modelB.id ? modelB : modelA,
+                selectedThinkingOptionId: modelId === modelB.id ? "high" : "low",
+              };
+              renderRendererModelPicker(control, view, true);
+            }, 250);
+          },
+          () => {},
+        );
+        document.body.append(control.root);
+        renderRendererModelPicker(control, view, true);
+      };
+    `,
+    resolveDir: repositoryRoot,
+    sourcefile: "renderer-model-picker-e2e-entry.ts",
+    loader: "ts",
+  },
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "es2024",
+  write: false,
+});
+
+const browserBundle = outputFiles[0]?.text;
+if (!browserBundle) throw new Error("Renderer Model picker E2E bundle was not generated");
+
+test("selecting a Model keeps the main menu open and refreshes Thinking options", async ({
+  page,
+}) => {
+  await page.setContent(
+    '<!doctype html><body style="display:flex;align-items:flex-end;min-height:100vh;margin:0"></body>',
+  );
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererModelPicker");
+    if (typeof setup !== "function") throw new Error("Model picker setup is unavailable");
+    setup();
+  });
+
+  const root = page.locator('[data-codexhost-model-control="test-composer"]');
+  const trigger = root.locator(':scope > button[aria-haspopup="menu"]');
+  const mainMenu = root.locator('[aria-label="Model and Thinking"]');
+  const modelMenu = root.locator('[aria-label="Model"]');
+
+  await trigger.click();
+  await expect(mainMenu).toBeVisible();
+  await root.locator("button[data-open-model-menu]").click();
+  await expect(modelMenu).toBeVisible();
+  await modelMenu.locator('button[data-model-id="model-b"]').click();
+
+  await expect(modelMenu).toBeHidden();
+  await expect(mainMenu).toBeVisible();
+  await expect(trigger).toBeDisabled();
+  await expect(root.locator("button[data-thinking-option-id]:not(:disabled)")).toHaveCount(0);
+
+  await expect(trigger).toBeEnabled();
+  await expect(mainMenu).toBeVisible();
+  const thinkingOptions = root.locator("button[data-thinking-option-id]");
+  await expect(thinkingOptions).toHaveCount(3);
+  await expect
+    .poll(() =>
+      thinkingOptions.evaluateAll((options) =>
+        options.map((option) => option.getAttribute("data-thinking-option-id")),
+      ),
+    )
+    .toEqual(["off", "high", "xhigh"]);
+});

@@ -12,7 +12,12 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type { HostInteractionId, HostTurnId, NativeSessionRef } from "@codexhost/shared-contracts";
+import type {
+  HarnessThinkingOptionId,
+  HostInteractionId,
+  HostTurnId,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   externalThreadValue,
@@ -32,6 +37,7 @@ export interface ExternalThread {
   session: HarnessSession;
   outputTask: Promise<void>;
   requestedModel?: HarnessModelRef;
+  requestedThinkingOptionId?: HarnessThinkingOptionId;
   record: StoredThreadRecordV1;
   sessionId: string;
   stateObserver: SessionStateObserver;
@@ -116,12 +122,15 @@ export class ExternalThreadRuntime {
     thread: JsonObject;
     turns: JsonObject[];
     requestedModel?: HarnessModelRef;
+    requestedThinkingOptionId?: HarnessThinkingOptionId;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
       throw new Error(`External Harness '${input.record.harnessId}' is not registered`);
     }
     const effectiveModel = input.requestedModel ?? input.session.initialState.effectiveModel;
+    const effectiveThinkingOptionId =
+      input.requestedThinkingOptionId ?? input.session.initialState.effectiveThinkingOptionId;
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -129,6 +138,9 @@ export class ExternalThreadRuntime {
       session: input.session,
       outputTask: Promise.resolve(),
       ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
+      ...(effectiveThinkingOptionId
+        ? { requestedThinkingOptionId: effectiveThinkingOptionId }
+        : {}),
       record: input.record,
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(input.session.initialState),

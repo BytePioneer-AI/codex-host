@@ -2,15 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
+  HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessThinkingOptionIdSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
 } from "@codexhost/shared-contracts";
@@ -23,13 +26,22 @@ function readyInspection() {
     status: "ready",
     catalog: {
       models: [
-        { ref: firstRef, label: "provider / model" },
+        {
+          ref: firstRef,
+          label: "provider / model",
+          supportedThinkingOptionIds: ["off", "high"],
+        },
         { ref: secondRef, label: "other / model" },
       ],
       defaultModel: firstRef,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "high",
     },
     capabilities: {
-      configuration: { selectModel: true },
+      configuration: { selectModel: true, selectThinkingOption: true },
       history: { fork: true, forkAcrossCwd: true },
     },
   };
@@ -38,9 +50,16 @@ function readyInspection() {
 describe("Harness Model runtime contracts", () => {
   it("accepts a strict browser-safe ready inspection", () => {
     expect(harnessInspectionSchema.parse(readyInspection())).toEqual(readyInspection());
-    expect(harnessModelSelectionStateSchema.parse({ effectiveModel: firstRef })).toEqual({
-      effectiveModel: firstRef,
-    });
+    expect(
+      harnessModelSelectionStateSchema.parse({
+        effectiveModel: firstRef,
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
+      }),
+    ).toMatchObject({ effectiveModel: firstRef, effectiveThinkingOptionId: "high" });
   });
 
   it("rejects native configuration and unknown fields", () => {
@@ -48,7 +67,7 @@ describe("Harness Model runtime contracts", () => {
       harnessInspectionSchema.safeParse({
         ...readyInspection(),
         capabilities: {
-          configuration: { selectModel: true },
+          configuration: { selectModel: true, selectThinkingOption: true },
           history: { fork: true },
         },
       }).success,
@@ -57,7 +76,7 @@ describe("Harness Model runtime contracts", () => {
       harnessInspectionSchema.safeParse({
         ...readyInspection(),
         capabilities: {
-          configuration: { selectModel: true },
+          configuration: { selectModel: true, selectThinkingOption: true },
           history: { fork: false, forkAcrossCwd: true },
         },
       }).success,
@@ -97,6 +116,15 @@ describe("Harness Model runtime contracts", () => {
       expect(harnessModelRefSchema.safeParse({ id }).success).toBe(false);
     }
     expect(harnessModelRefSchema.parse(firstRef)).toEqual(firstRef);
+    for (const id of [
+      "",
+      "thinking option",
+      "thinking/option",
+      "x".repeat(HARNESS_THINKING_OPTION_ID_MAX_LENGTH + 1),
+    ]) {
+      expect(harnessThinkingOptionIdSchema.safeParse(id).success).toBe(false);
+    }
+    expect(harnessThinkingOptionIdSchema.parse("xhigh")).toBe("xhigh");
   });
 
   it("rejects duplicate refs and a default outside the catalog", () => {
@@ -107,12 +135,34 @@ describe("Harness Model runtime contracts", () => {
           { ref: firstRef, label: "duplicate" },
         ],
         defaultModel: firstRef,
+        thinkingOptions: [],
       }).success,
     ).toBe(false);
     expect(
       harnessModelCatalogSchema.safeParse({
         models: [{ ref: firstRef, label: "first" }],
         defaultModel: secondRef,
+        thinkingOptions: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        models: [
+          {
+            ref: firstRef,
+            label: "first",
+            supportedThinkingOptionIds: ["missing"],
+          },
+        ],
+        defaultModel: firstRef,
+        thinkingOptions: [{ id: "off", label: "Off" }],
+        defaultThinkingOptionId: "missing",
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelSelectionStateSchema.safeParse({
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [{ id: "off", label: "Off" }],
       }).success,
     ).toBe(false);
   });
@@ -123,8 +173,9 @@ describe("Harness Model runtime contracts", () => {
         harnessId: "pi",
         cwd: "/synthetic",
         refresh: true,
+        model: firstRef,
       }),
-    ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true });
+    ).toEqual({ harnessId: "pi", cwd: "/synthetic", refresh: true, model: firstRef });
     expect(harnessInspectParamsSchema.parse({ harnessId: "claude-code" })).toEqual({
       harnessId: "claude-code",
     });
@@ -132,6 +183,12 @@ describe("Harness Model runtime contracts", () => {
       threadId: "thread-1",
       model: firstRef,
     });
+    expect(
+      threadThinkingSelectParamsSchema.parse({
+        threadId: "thread-1",
+        thinkingOptionId: "high",
+      }),
+    ).toEqual({ threadId: "thread-1", thinkingOptionId: "high" });
 
     expect(
       harnessInspectParamsSchema.safeParse({
@@ -158,6 +215,11 @@ describe("Harness Model runtime contracts", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: firstRef,
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
         locked: true,
       }),
     ).toMatchObject({ owner: "external", harnessId: "pi", locked: true });

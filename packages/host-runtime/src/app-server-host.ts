@@ -19,9 +19,11 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
   type HarnessModelRef,
+  type HarnessThinkingOptionId,
   type HostInteractionId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
@@ -54,7 +56,7 @@ import {
 import {
   CodexTurnProjector,
   decodeCreateRoute,
-  decodeExternalTransportModel,
+  decodeExternalTransportSelection,
   decodeThreadForkRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
@@ -361,6 +363,10 @@ export class AppServerHost {
         await this.#selectThreadModel(request);
         continue;
       }
+      if (request.method === "codexhost/thread/thinking/select") {
+        await this.#selectThreadThinking(request);
+        continue;
+      }
       let createRoute: CreateRequestRouteObservation | null;
       try {
         createRoute = classifyCreateRequestRoute(request, this.#options.defaultAgent);
@@ -587,6 +593,7 @@ export class AppServerHost {
       inspection = await adapter.inspect({
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
+        ...(params.data.model ? { model: params.data.model } : {}),
       });
     } catch (error) {
       await this.#writer.json(
@@ -626,6 +633,18 @@ export class AppServerHost {
             transportModelId: resolution.thread.transportModelId,
             ...(resolution.thread.stateObserver.state.effectiveModel
               ? { effectiveModel: resolution.thread.stateObserver.state.effectiveModel }
+              : {}),
+            ...(resolution.thread.stateObserver.state.effectiveThinkingOptionId
+              ? {
+                  effectiveThinkingOptionId:
+                    resolution.thread.stateObserver.state.effectiveThinkingOptionId,
+                }
+              : {}),
+            ...(resolution.thread.stateObserver.state.availableThinkingOptions
+              ? {
+                  availableThinkingOptions:
+                    resolution.thread.stateObserver.state.availableThinkingOptions,
+                }
               : {}),
             locked: true,
           },
@@ -694,6 +713,12 @@ export class AppServerHost {
       const state = await thread.stateObserver.waitForChange(beforeRevision);
       const projected = harnessModelSelectionStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+        ...(state.effectiveThinkingOptionId
+          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+          : {}),
+        ...(state.availableThinkingOptions
+          ? { availableThinkingOptions: state.availableThinkingOptions }
+          : {}),
       });
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
@@ -702,6 +727,63 @@ export class AppServerHost {
     } catch (error) {
       await this.#writer.json(
         rpcError(request, -32078, `Model state was not confirmed: ${errorMessage(error)}`),
+      );
+    }
+  }
+
+  async #selectThreadThinking(request: JsonRpcRequest): Promise<void> {
+    const params = threadThinkingSelectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Invalid Thread Thinking selection params"),
+      );
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (resolution.kind === "error") {
+      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+      return;
+    }
+    const thread = resolution.kind === "external" ? resolution.thread : undefined;
+    if (!thread) {
+      await this.#writer.json(
+        rpcError(request, -32078, "Thinking selection requires a current-process external Thread"),
+      );
+      return;
+    }
+    if (!thread.session.capabilities.configuration.selectThinkingOption) {
+      await this.#writer.json(
+        rpcError(request, -32078, "External Harness does not support Thinking selection"),
+      );
+      return;
+    }
+    const beforeRevision = thread.stateObserver.revision;
+    const result = await thread.session.execute({
+      type: "thinking.select",
+      thinkingOptionId: params.data.thinkingOptionId,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32078, result.error.message));
+      return;
+    }
+    try {
+      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const projected = harnessModelSelectionStateSchema.parse({
+        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+        ...(state.effectiveThinkingOptionId
+          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+          : {}),
+        ...(state.availableThinkingOptions
+          ? { availableThinkingOptions: state.availableThinkingOptions }
+          : {}),
+      });
+      if (!projected.effectiveThinkingOptionId) {
+        throw new Error("Harness Session did not report effective Thinking");
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
       );
     }
   }
@@ -718,6 +800,8 @@ export class AppServerHost {
     const params = requestObject(request);
     const route = decodeCreateRoute(request);
     const requestedModel = route && route.harnessId !== "codex" ? route.model : undefined;
+    const requestedThinkingOptionId =
+      route && route.harnessId !== "codex" ? route.thinkingOptionId : undefined;
     const transportModelId =
       route && route.harnessId === harnessId
         ? route.transportModelId
@@ -751,6 +835,7 @@ export class AppServerHost {
       kind: "create",
       cwd,
       ...(requestedModel ? { model: requestedModel } : {}),
+      ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
     });
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
@@ -779,6 +864,7 @@ export class AppServerHost {
         thread,
         turns: [],
         ...(requestedModel ? { requestedModel } : {}),
+        ...(requestedThinkingOptionId ? { requestedThinkingOptionId } : {}),
       });
       this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
       await this.#writer.json(
@@ -824,6 +910,7 @@ export class AppServerHost {
     thread: JsonObject;
     turns: JsonObject[];
     requestedModel?: HarnessModelRef;
+    requestedThinkingOptionId?: HarnessThinkingOptionId;
   }): ExternalThread {
     return this.#externalRuntime.register(input);
   }
@@ -1150,13 +1237,14 @@ export class AppServerHost {
       return;
     }
     const params = requestObject(request);
-    let requestedModel: HarnessModelRef | null | undefined;
+    let requestedSelection: ReturnType<typeof decodeExternalTransportSelection>;
     try {
-      requestedModel = decodeExternalTransportModel(thread.harnessId, params.model);
+      requestedSelection = decodeExternalTransportSelection(thread.harnessId, params.model);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    const requestedModel = requestedSelection?.model;
     if (requestedModel) {
       if (!thread.session.capabilities.configuration.selectModel) {
         await this.#writer.json(
@@ -1187,8 +1275,43 @@ export class AppServerHost {
           return;
         }
       }
-      thread.transportModelId = params.model as string;
       thread.requestedModel = requestedModel;
+    }
+    const requestedThinkingOptionId = requestedSelection?.thinkingOptionId;
+    if (requestedThinkingOptionId) {
+      if (!thread.session.capabilities.configuration.selectThinkingOption) {
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not support Thinking selection"),
+        );
+        return;
+      }
+      const current = thread.stateObserver.state.effectiveThinkingOptionId;
+      const pendingCreateSelection =
+        current === undefined && thread.requestedThinkingOptionId === requestedThinkingOptionId;
+      if (current !== requestedThinkingOptionId && !pendingCreateSelection) {
+        const beforeRevision = thread.stateObserver.revision;
+        const selection = await thread.session.execute({
+          type: "thinking.select",
+          thinkingOptionId: requestedThinkingOptionId,
+        });
+        if (!selection.ok) {
+          await this.#writer.json(rpcError(request, -32078, selection.error.message));
+          return;
+        }
+        try {
+          const state = await thread.stateObserver.waitForChange(beforeRevision);
+          if (!state.effectiveThinkingOptionId) {
+            throw new Error("Harness Session did not report effective Thinking");
+          }
+          thread.requestedThinkingOptionId = state.effectiveThinkingOptionId;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
+          return;
+        }
+      }
+    }
+    if (requestedModel || requestedThinkingOptionId) {
+      thread.transportModelId = params.model as string;
     }
     let text: string;
     try {

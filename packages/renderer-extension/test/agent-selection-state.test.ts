@@ -1,4 +1,4 @@
-import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { DraftAgentController } from "../src/index.js";
@@ -251,16 +251,18 @@ describe("Renderer draft Agent controller", () => {
     const target = ["conversation", "fork-thread"];
     const agents = controller();
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fork" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
 
     agents.mount(forkComposer, target);
     const stale = agents.beginOwnershipRequest(forkComposer);
     const current = agents.beginOwnershipRequest(forkComposer);
     expect(agents.isCurrentOwnershipRequest(forkComposer, stale)).toBe(false);
     expect(agents.isCurrentOwnershipRequest(forkComposer, current)).toBe(true);
-    expect(agents.restore(forkComposer, "pi", model)).toMatchObject({
+    expect(agents.restore(forkComposer, "pi", model, thinkingOptionId)).toMatchObject({
       agent: "pi",
       phase: "locked",
       piModel: model,
+      piThinkingOptionId: thinkingOptionId,
     });
 
     agents.mount(replacement, ["conversation", "fork-thread"]);
@@ -268,6 +270,7 @@ describe("Renderer draft Agent controller", () => {
       agent: "pi",
       phase: "locked",
       piModel: model,
+      piThinkingOptionId: thinkingOptionId,
     });
     expect(agents.restore(replacement, "claude-code")).toMatchObject({
       agent: "claude-code",
@@ -284,22 +287,30 @@ describe("Renderer draft Agent controller", () => {
     const target = ["conversation", targetMember];
     const agents = controller();
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
 
     agents.mount(draft, ["default"]);
-    agents.setPiModel(draft, model);
+    agents.setPiConfiguration(draft, model, thinkingOptionId);
     const firstGeneration = agents.beginModelRequest(draft);
     expect(agents.transfer(draft, conversation, target)).toBe(true);
-    expect(agents.get(conversation).piModel).toEqual(model);
+    expect(agents.get(conversation)).toMatchObject({
+      piModel: model,
+      piThinkingOptionId: thinkingOptionId,
+    });
     expect(agents.isCurrentModelRequest(conversation, firstGeneration)).toBe(true);
 
     const secondGeneration = agents.beginModelRequest(conversation);
     expect(agents.isCurrentModelRequest(draft, firstGeneration)).toBe(false);
     expect(agents.isCurrentModelRequest(draft, secondGeneration)).toBe(true);
     agents.mount(revisit, ["conversation", targetMember]);
-    expect(agents.get(revisit).piModel).toEqual(model);
+    expect(agents.get(revisit)).toMatchObject({
+      piModel: model,
+      piThinkingOptionId: thinkingOptionId,
+    });
 
     agents.mount(newDefault, ["default"]);
     expect(agents.get(newDefault).piModel).toBeUndefined();
+    expect(agents.get(newDefault).piThinkingOptionId).toBeUndefined();
   });
 
   it("applies the target Agent before clearing stale prewarm", async () => {

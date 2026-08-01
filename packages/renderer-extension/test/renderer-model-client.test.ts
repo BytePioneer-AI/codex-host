@@ -1,6 +1,7 @@
 import {
   harnessIdSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -9,20 +10,34 @@ import {
   HARNESS_INSPECT_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
   createRendererModelClient,
 } from "../src/renderer-model-client.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
+const high = harnessThinkingOptionIdSchema.parse("high");
+const thinkingOptions = [
+  { id: harnessThinkingOptionIdSchema.parse("off"), label: "Off" },
+  { id: high, label: "High" },
+];
 const inspection = {
   status: "ready" as const,
   catalog: {
-    models: [{ ref: model, label: "provider / model" }],
+    models: [
+      {
+        ref: model,
+        label: "provider / model",
+        supportedThinkingOptionIds: thinkingOptions.map(({ id }) => id),
+      },
+    ],
     defaultModel: model,
+    thinkingOptions,
+    defaultThinkingOptionId: high,
   },
   capabilities: {
-    configuration: { selectModel: true },
+    configuration: { selectModel: true, selectThinkingOption: true },
     history: { fork: true, forkAcrossCwd: true },
   },
 };
@@ -37,6 +52,8 @@ describe("Renderer fixed Model request client", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: model,
+        effectiveThinkingOptionId: high,
+        availableThinkingOptions: thinkingOptions,
         locked: true,
       })
       .mockResolvedValueOnce({
@@ -45,13 +62,22 @@ describe("Renderer fixed Model request client", () => {
           { threadId: "official-thread", owner: "codex" },
         ],
       })
-      .mockResolvedValueOnce({ effectiveModel: model });
+      .mockResolvedValueOnce({
+        effectiveModel: model,
+        effectiveThinkingOptionId: high,
+        availableThinkingOptions: thinkingOptions,
+      })
+      .mockResolvedValueOnce({
+        effectiveModel: model,
+        effectiveThinkingOptionId: high,
+        availableThinkingOptions: thinkingOptions,
+      });
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
 
-    await expect(client.inspectPi({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
-      inspection,
-    );
+    await expect(
+      client.inspectPi({ harnessId: piHarnessId, refresh: true, model }),
+    ).resolves.toEqual(inspection);
     await expect(
       client.inspectThread({ threadId: hostThreadIdSchema.parse("thread-1") }),
     ).resolves.toMatchObject({ owner: "external", harnessId: "pi", locked: true });
@@ -73,10 +99,17 @@ describe("Renderer fixed Model request client", () => {
         threadId: hostThreadIdSchema.parse("thread-1"),
         model,
       }),
-    ).resolves.toEqual({ effectiveModel: model });
+    ).resolves.toMatchObject({ effectiveModel: model, effectiveThinkingOptionId: high });
+    await expect(
+      client.selectPiThreadThinking({
+        threadId: hostThreadIdSchema.parse("thread-1"),
+        thinkingOptionId: high,
+      }),
+    ).resolves.toMatchObject({ effectiveModel: model, effectiveThinkingOptionId: high });
     expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_INSPECT_METHOD, {
       harnessId: "pi",
       refresh: true,
+      model,
     });
     expect(sendRequest).toHaveBeenNthCalledWith(2, THREAD_INSPECT_METHOD, {
       threadId: "thread-1",
@@ -87,6 +120,10 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(4, THREAD_MODEL_SELECT_METHOD, {
       threadId: "thread-1",
       model,
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(5, THREAD_THINKING_SELECT_METHOD, {
+      threadId: "thread-1",
+      thinkingOptionId: high,
     });
   });
 

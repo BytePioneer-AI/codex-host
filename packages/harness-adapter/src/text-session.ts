@@ -3,6 +3,8 @@ import type {
   HarnessInspection,
   HarnessModelRef,
   HarnessSessionCapabilities,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
   HostInteractionId,
   HostItemId,
   HostTurnId,
@@ -18,6 +20,8 @@ export type {
   HarnessModelCatalog,
   HarnessModelRef,
   HarnessSessionCapabilities,
+  HarnessThinkingOption,
+  HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
 export type HarnessErrorCode =
@@ -47,12 +51,14 @@ export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: Harn
 export interface InspectHarnessInput {
   cwd?: string;
   refresh?: boolean;
+  model?: HarnessModelRef;
 }
 
 export interface CreateSessionInput {
   kind: "create";
   cwd: string;
   model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
 }
 
 export interface ResumeSessionInput {
@@ -74,6 +80,8 @@ export type OpenSessionInput = CreateSessionInput | ResumeSessionInput | ForkSes
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;
   effectiveModel?: HarnessModelRef;
+  effectiveThinkingOptionId?: HarnessThinkingOptionId;
+  availableThinkingOptions?: HarnessThinkingOption[];
 }
 
 export interface HostTextInput {
@@ -150,8 +158,17 @@ export interface ModelSelectCommand {
   model: HarnessModelRef;
 }
 
+export interface ThinkingSelectCommand {
+  type: "thinking.select";
+  thinkingOptionId: HarnessThinkingOptionId;
+}
+
 export type HostCommand =
-  TurnStartCommand | TurnCancelCommand | InteractionRespondCommand | ModelSelectCommand;
+  | TurnStartCommand
+  | TurnCancelCommand
+  | InteractionRespondCommand
+  | ModelSelectCommand
+  | ThinkingSelectCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
@@ -166,6 +183,10 @@ export interface InteractionRespondAccepted {
 }
 
 export interface ModelSelectCompleted {
+  completed: true;
+}
+
+export interface ThinkingSelectCompleted {
   completed: true;
 }
 
@@ -330,6 +351,7 @@ export interface HarnessSession {
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
   close(): Promise<void>;
 }
 

@@ -13,6 +13,7 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type HarnessThinkingOptionId,
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
@@ -30,6 +31,8 @@ import {
   type ModelSelectCompleted,
   type OpenSessionInput,
   type HostThreadSnapshot,
+  type ThinkingSelectCommand,
+  type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
@@ -38,6 +41,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   nativeCheckpointRefSchema,
@@ -55,6 +59,7 @@ import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./p
 import {
   PiRpcFaultError,
   PiRpcSession,
+  PiRpcUnsupportedCommandError,
   type PiInteractionRequest,
   type PiInteractionResponse,
   type PiRpcSessionOptions,
@@ -66,6 +71,7 @@ import {
   decodePiModelRef,
   encodePiModelRef,
   normalizePiModelCatalog,
+  normalizePiThinkingOptions,
   samePiModel,
   type PiNativeModelRef,
 } from "./pi-model-catalog.js";
@@ -83,11 +89,13 @@ export interface PiTurnTransport {
   readonly state: PiSessionState;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModelRef[]>;
+  getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
   getEntries(): Promise<PiSessionHistory>;
   fork(entryId: string): Promise<PiSessionState>;
   clone(): Promise<PiSessionState>;
   verifySessionCwd(expectedCwd: string): Promise<void>;
   selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
+  selectThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<PiSessionState>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
@@ -143,6 +151,13 @@ class PiAdapterFaultError extends Error {
 
 function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): HarnessError {
   if (error instanceof PiAdapterFaultError) return error.harnessError;
+  if (error instanceof PiRpcUnsupportedCommandError) {
+    return {
+      code: "unsupported",
+      message: error.message,
+      retryable: false,
+    };
+  }
   if (error instanceof PiRpcFaultError) {
     return {
       code: error.kind,
@@ -174,8 +189,23 @@ function effectiveModelFromState(state: PiSessionState): HarnessModelRef | undef
   return model ? encodePiModelRef(model) : undefined;
 }
 
-function harnessStateFromPi(state: PiSessionState): HarnessSessionState {
+function harnessStateFromPi(
+  state: PiSessionState,
+  thinkingLevels: readonly HarnessThinkingOptionId[] | null,
+): HarnessSessionState {
   const effectiveModel = effectiveModelFromState(state);
+  const availableThinkingOptions = thinkingLevels
+    ? normalizePiThinkingOptions(thinkingLevels)
+    : undefined;
+  if (
+    availableThinkingOptions &&
+    (!state.thinkingLevel || !thinkingLevels?.includes(state.thinkingLevel))
+  ) {
+    throw new PiRpcFaultError(
+      "protocolError",
+      "Pi effective Thinking level is absent from its available levels",
+    );
+  }
   return {
     nativeRef: nativeSessionRefSchema.parse({
       harnessId: piHarnessId,
@@ -184,6 +214,8 @@ function harnessStateFromPi(state: PiSessionState): HarnessSessionState {
       formatVersion: 1,
     }) as NativeSessionRef,
     ...(effectiveModel ? { effectiveModel } : {}),
+    ...(state.thinkingLevel ? { effectiveThinkingOptionId: state.thinkingLevel } : {}),
+    ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
   };
 }
 
@@ -286,10 +318,7 @@ function delay(milliseconds: number): Promise<void> {
 
 class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
-  readonly capabilities: HarnessSessionCapabilities = {
-    configuration: { selectModel: true },
-    history: { fork: true, forkAcrossCwd: true },
-  };
+  readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -298,6 +327,7 @@ class PiHarnessSession implements HarnessSession {
   readonly #cwd: string;
   readonly #onClosed: () => void;
   readonly #requestedModel: HarnessModelRef | undefined;
+  readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
@@ -315,8 +345,11 @@ class PiHarnessSession implements HarnessSession {
     options: {
       closeTimeoutMs: number;
       model?: HarnessModelRef;
+      thinkingOptionId?: HarnessThinkingOptionId;
       toolOutputLimit: number;
+      supportsThinkingSelection: boolean;
       startedTransport?: PiTurnTransport;
+      startedThinkingLevels?: HarnessThinkingOptionId[] | null;
     },
   ) {
     this.#cwd = cwd;
@@ -324,10 +357,18 @@ class PiHarnessSession implements HarnessSession {
     this.#onClosed = onClosed;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#requestedModel = options.model;
+    this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.capabilities = {
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: options.supportsThinkingSelection,
+      },
+      history: { fork: true, forkAcrossCwd: true },
+    };
     this.#transport = options.startedTransport ?? null;
     this.initialState = options.startedTransport
-      ? harnessStateFromPi(options.startedTransport.state)
+      ? harnessStateFromPi(options.startedTransport.state, options.startedThinkingLevels ?? null)
       : {};
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
@@ -370,11 +411,16 @@ class PiHarnessSession implements HarnessSession {
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
+      | ThinkingSelectCompleted
     >
   > {
     if (this.#phase !== "open") {
@@ -383,6 +429,7 @@ class PiHarnessSession implements HarnessSession {
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
+    if (command.type === "thinking.select") return this.#selectThinking(command);
     if (this.#acceptingTurn || this.#active || this.#configuring) {
       return {
         ok: false,
@@ -584,13 +631,15 @@ class PiHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       let state: PiSessionState;
+      let thinkingLevels: HarnessThinkingOptionId[] | null;
       try {
         state = await transport.selectModel(requested);
+        thinkingLevels = await transport.getAvailableThinkingLevels();
+        this.#publishTransportState(state, thinkingLevels);
       } catch (error) {
         if (error instanceof PiRpcFaultError) this.#fault(error);
         return { ok: false, error: normalizedError(error, "nativeFailure") };
       }
-      this.#publishTransportState(state);
       const actual = nativeModelFromState(state);
       if (!samePiModel(actual, requested)) {
         return {
@@ -601,6 +650,83 @@ class PiHarnessSession implements HarnessSession {
             retryable: false,
           },
         };
+      }
+      return { ok: true, value: { completed: true } };
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #selectThinking(
+    command: ThinkingSelectCommand,
+  ): Promise<HarnessResult<ThinkingSelectCompleted>> {
+    if (!this.capabilities.configuration.selectThinkingOption) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Pi Thinking selection is unavailable",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#acceptingTurn || this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Pi Session cannot select Thinking while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) {
+      return {
+        ok: false,
+        error: invalidState("Pi Thinking selection requires a started Native Session"),
+      };
+    }
+    const parsedThinkingOptionId = harnessThinkingOptionIdSchema.safeParse(
+      command.thinkingOptionId,
+    );
+    if (!parsedThinkingOptionId.success) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi Thinking option is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const thinkingOptionId = parsedThinkingOptionId.data;
+    this.#configuring = true;
+    try {
+      let state: PiSessionState;
+      let thinkingLevels: HarnessThinkingOptionId[] | null;
+      try {
+        state = await transport.selectThinkingOption(thinkingOptionId);
+        thinkingLevels = await transport.getAvailableThinkingLevels();
+      } catch (error) {
+        if (error instanceof PiRpcFaultError) this.#fault(error);
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+      if (!thinkingLevels) {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "Pi Thinking discovery became unavailable",
+            retryable: false,
+          },
+        };
+      }
+      try {
+        this.#publishTransportState(state, thinkingLevels);
+      } catch (error) {
+        if (error instanceof PiRpcFaultError) this.#fault(error);
+        return { ok: false, error: normalizedError(error, "protocolError") };
       }
       return { ok: true, value: { completed: true } };
     } finally {
@@ -643,17 +769,30 @@ class PiHarnessSession implements HarnessSession {
       .then(async () => {
         if (this.#phase !== "open") throw new Error("Pi Session closed during startup");
         let state = transport.state;
+        let thinkingLevels = await transport.getAvailableThinkingLevels();
         if (this.#requestedModel) {
           const requested = decodePiModelRef(this.#requestedModel);
           const current = nativeModelFromState(state);
           if (!samePiModel(current, requested)) state = await transport.selectModel(requested);
+          thinkingLevels = await transport.getAvailableThinkingLevels();
           if (!samePiModel(nativeModelFromState(state), requested)) {
-            this.#publishTransportState(state);
+            this.#publishTransportState(state, thinkingLevels);
             throw new Error("Pi did not activate the requested create Model");
           }
         }
+        if (this.#requestedThinkingOptionId) {
+          if (!thinkingLevels) {
+            throw new PiAdapterFaultError({
+              code: "unsupported",
+              message: "Installed Pi does not support Thinking selection",
+              retryable: false,
+            });
+          }
+          state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
+          thinkingLevels = await transport.getAvailableThinkingLevels();
+        }
         this.#transport = transport;
-        this.#publishTransportState(state);
+        this.#publishTransportState(state, thinkingLevels);
         return transport;
       })
       .catch(async (error: unknown) => {
@@ -668,8 +807,11 @@ class PiHarnessSession implements HarnessSession {
     return starting;
   }
 
-  #publishTransportState(state: PiSessionState): void {
-    this.#state = harnessStateFromPi(state);
+  #publishTransportState(
+    state: PiSessionState,
+    thinkingLevels: readonly HarnessThinkingOptionId[] | null,
+  ): void {
+    this.#state = harnessStateFromPi(state, thinkingLevels);
     this.#event({ type: "session.state.changed", state: this.#state });
   }
 
@@ -1015,6 +1157,7 @@ export class PiAdapter implements HarnessAdapter {
   readonly #sessions = new Set<PiHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
+  #thinkingSelectionSupported: boolean | null = null;
 
   constructor(
     options: PiAdapterOptions = {},
@@ -1038,21 +1181,43 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
+    let inspectionModel: PiNativeModelRef | undefined;
+    if (input.model) {
+      try {
+        inspectionModel = decodePiModelRef(input.model);
+      } catch (error) {
+        return {
+          status: "error",
+          error: normalizedError(error, "invalidRequest"),
+        };
+      }
+    }
     const transport = this.#createTransport({
       cwd: input.cwd ?? process.cwd(),
+      ...(inspectionModel ? { model: inspectionModel } : {}),
       onFault: () => undefined,
     });
     this.#inspections.add(transport);
     try {
       await transport.start();
       const models = await transport.getAvailableModels();
-      const catalog = normalizePiModelCatalog(models, nativeModelFromState(transport.state));
+      const thinkingLevels = await transport.getAvailableThinkingLevels();
+      this.#thinkingSelectionSupported = thinkingLevels !== null;
+      const catalog = normalizePiModelCatalog(
+        models,
+        nativeModelFromState(transport.state),
+        thinkingLevels,
+        transport.state.thinkingLevel,
+      );
       await transport.close();
       return {
         status: "ready",
         catalog,
         capabilities: {
-          configuration: { selectModel: true },
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: thinkingLevels !== null,
+          },
           history: { fork: true, forkAcrossCwd: true },
         },
       };
@@ -1090,10 +1255,25 @@ export class PiAdapter implements HarnessAdapter {
           return { ok: false, error: normalizedError(error, "invalidRequest") };
         }
       }
+      const thinkingOptionId = input.thinkingOptionId
+        ? harnessThinkingOptionIdSchema.safeParse(input.thinkingOptionId)
+        : null;
+      if (thinkingOptionId && !thinkingOptionId.success) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Pi create Thinking option is invalid",
+            retryable: false,
+          },
+        };
+      }
       return {
         ok: true,
         value: this.#trackSession(input.cwd, {
           ...(input.model ? { model: input.model } : {}),
+          ...(thinkingOptionId?.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
+          supportsThinkingSelection: this.#thinkingSelectionSupported === true,
         }),
       };
     }
@@ -1185,7 +1365,13 @@ export class PiAdapter implements HarnessAdapter {
         await transport.verifySessionCwd(input.cwd);
       }
 
-      session = this.#trackSession(input.cwd, { startedTransport: transport });
+      const startedThinkingLevels = await transport.getAvailableThinkingLevels();
+      this.#thinkingSelectionSupported = startedThinkingLevels !== null;
+      session = this.#trackSession(input.cwd, {
+        startedTransport: transport,
+        startedThinkingLevels,
+        supportsThinkingSelection: startedThinkingLevels !== null,
+      });
       return { ok: true, value: session };
     } catch (error) {
       await transport?.close().catch(() => undefined);
@@ -1195,7 +1381,13 @@ export class PiAdapter implements HarnessAdapter {
 
   #trackSession(
     cwd: string,
-    options: { model?: HarnessModelRef; startedTransport?: PiTurnTransport },
+    options: {
+      model?: HarnessModelRef;
+      thinkingOptionId?: HarnessThinkingOptionId;
+      supportsThinkingSelection: boolean;
+      startedTransport?: PiTurnTransport;
+      startedThinkingLevels?: HarnessThinkingOptionId[] | null;
+    },
   ): PiHarnessSession {
     const session = new PiHarnessSession(
       cwd,
@@ -1206,8 +1398,13 @@ export class PiAdapter implements HarnessAdapter {
       {
         closeTimeoutMs: this.#closeTimeoutMs,
         ...(options.model ? { model: options.model } : {}),
+        ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
+        supportsThinkingSelection: options.supportsThinkingSelection,
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
+        ...(options.startedThinkingLevels !== undefined
+          ? { startedThinkingLevels: options.startedThinkingLevels }
+          : {}),
       },
     );
     this.#sessions.add(session);

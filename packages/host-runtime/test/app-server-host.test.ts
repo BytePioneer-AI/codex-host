@@ -242,7 +242,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         status: "ready",
         catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
         capabilities: {
-          configuration: { selectModel: true },
+          configuration: { selectModel: true, selectThinkingOption: true },
           history: { fork: true, forkAcrossCwd: true },
         },
       },
@@ -563,9 +563,18 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/thread/model/select",
       params: { threadId, model },
     });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 31))).resolves.toEqual({
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({
       id: 31,
-      result: { effectiveModel: model },
+      result: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "off",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     expect(fixture.adapter.sessions[0]?.state.effectiveModel).toEqual(model);
     expect(officialWrite).not.toHaveBeenCalled();
@@ -590,12 +599,45 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/thread/model/select",
       params: { threadId, model },
     });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 33))).resolves.toEqual({
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({
       id: 33,
-      result: { effectiveModel: model },
+      result: { effectiveModel: model, effectiveThinkingOptionId: "off" },
     });
     expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
     expect(pi.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("selects existing Thread Thinking from ordered complete Session state", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake catalog has no Off Thinking option");
+
+    writeRequest(fixture.desktopInput, {
+      id: 34,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 34)),
+    ).resolves.toMatchObject({
+      id: 34,
+      result: {
+        effectiveModel: fixture.adapter.catalog.defaultModel,
+        effectiveThinkingOptionId: "off",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+    expect(fixture.adapter.sessions[0]?.state.effectiveThinkingOptionId).toBe("off");
+    expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 
@@ -635,18 +677,35 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       error: { code: -32078, message: expect.stringContaining("active") },
     });
+    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake catalog has no Off Thinking option");
+    writeRequest(fixture.desktopInput, {
+      id: 36,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 36)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: expect.stringContaining("active") },
+    });
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
 
-  it("binds a selected Pi Model carrier to create and later Turn routing", async () => {
+  it("binds a selected Pi Model and Thinking carrier to create and later Turn routing", async () => {
     const fixture = createFixture();
     const model = fixture.adapter.catalog.models[1]?.ref;
     if (!model) throw new Error("Fake catalog has no secondary Model");
-    const carrier = encodePiTransportModel(model);
+    const low = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
+    if (!low) throw new Error("Fake catalog has no Low Thinking option");
+    const carrier = encodePiTransportModel(model, low);
     const threadId = await startPiThread(fixture, carrier);
 
-    expect(fixture.adapter.sessions[0]?.initialState.effectiveModel).toEqual(model);
+    expect(fixture.adapter.sessions[0]?.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: low,
+    });
     expect(
       (fixture.collector.messages.find((message) => requestId(message, 1))?.result as JsonObject)
         .model,
@@ -2074,6 +2133,23 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     expect(claudeSession.state.effectiveModel).toEqual(claudeAdapter.catalog.defaultModel);
+
+    const off = claudeAdapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
+    if (!off) throw new Error("Fake Claude catalog has no Thinking option");
+    claudeSession.capabilities.configuration.selectThinkingOption = false;
+    writeRequest(fixture.desktopInput, {
+      id: 22,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: off },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 22)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: "External Harness does not support Thinking selection",
+      },
+    });
     await stopFixture(fixture);
   });
 

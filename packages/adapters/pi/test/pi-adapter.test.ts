@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
 import type {
@@ -33,6 +35,7 @@ class FakePiTransport implements PiTurnTransport {
     sessionFile: "/synthetic/pi-session.jsonl",
     provider: "synthetic-provider",
     modelId: "synthetic-model",
+    thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
   };
   readonly abort = vi.fn(async () => undefined);
   readonly respondToInteraction = vi.fn(async (response: PiInteractionResponse) => {
@@ -47,6 +50,16 @@ class FakePiTransport implements PiTurnTransport {
     { provider: "synthetic-provider", id: "synthetic-model" },
     { provider: "synthetic-provider", id: "alternate-model" },
   ]);
+  readonly getAvailableThinkingLevels = vi.fn<() => Promise<HarnessThinkingOptionId[] | null>>(
+    async () =>
+      this.state.modelId === "alternate-model"
+        ? [harnessThinkingOptionIdSchema.parse("off"), harnessThinkingOptionIdSchema.parse("low")]
+        : [
+            harnessThinkingOptionIdSchema.parse("off"),
+            harnessThinkingOptionIdSchema.parse("low"),
+            harnessThinkingOptionIdSchema.parse("high"),
+          ],
+  );
   readonly getEntries = vi.fn(async (): Promise<PiSessionHistory> => structuredClone(this.history));
   readonly fork = vi.fn(async (entryId: string) => {
     const cutoff = this.history.entries.findIndex((entry) => entry.id === entryId);
@@ -61,7 +74,24 @@ class FakePiTransport implements PiTurnTransport {
   readonly clone = vi.fn(async () => this.deriveState());
   readonly verifySessionCwd = vi.fn(async () => undefined);
   readonly selectModel = vi.fn(async (model: { provider: string; id: string }) => {
-    this.state = { ...this.state, provider: model.provider, modelId: model.id };
+    this.state = {
+      ...this.state,
+      provider: model.provider,
+      modelId: model.id,
+      ...(model.id === "alternate-model"
+        ? { thinkingLevel: harnessThinkingOptionIdSchema.parse("low") }
+        : {}),
+    };
+    return this.state;
+  });
+  readonly selectThinkingOption = vi.fn(async (thinkingOptionId: HarnessThinkingOptionId) => {
+    const available = (await this.getAvailableThinkingLevels()) ?? [
+      harnessThinkingOptionIdSchema.parse("off"),
+    ];
+    const effective = available.includes(thinkingOptionId)
+      ? thinkingOptionId
+      : (available.at(-1) ?? harnessThinkingOptionIdSchema.parse("off"));
+    this.state = { ...this.state, thinkingLevel: effective };
     return this.state;
   });
   readonly close = vi.fn(async () => {
@@ -156,6 +186,17 @@ function fixture(options: PiAdapterOptions = {}) {
     createTransport: vi.fn((sessionOptions) => {
       const transport = new FakePiTransport();
       transport.options = sessionOptions;
+      if (sessionOptions.model) {
+        transport.state = {
+          ...transport.state,
+          provider: sessionOptions.model.provider,
+          modelId: sessionOptions.model.id,
+          thinkingLevel:
+            sessionOptions.model.id === "alternate-model"
+              ? harnessThinkingOptionIdSchema.parse("low")
+              : transport.state.thinkingLevel,
+        };
+      }
       transports.push(transport);
       return transport;
     }),
@@ -246,14 +287,70 @@ describe("Pi HarnessAdapter Session", () => {
           provider: "synthetic-provider",
           id: "synthetic-model",
         }),
+        thinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+        defaultThinkingOptionId: "high",
       },
       capabilities: {
-        configuration: { selectModel: true },
+        configuration: { selectModel: true, selectThinkingOption: true },
         history: { fork: true, forkAcrossCwd: true },
       },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
     expect(transports[0]?.getAvailableModels).toHaveBeenCalledOnce();
+    expect(transports[0]?.getAvailableThinkingLevels).toHaveBeenCalledOnce();
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("inspects exact target-Model Thinking through startup selection without set_model", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const model = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+
+    await expect(adapter.inspect({ cwd: "/synthetic", model })).resolves.toMatchObject({
+      status: "ready",
+      catalog: {
+        defaultModel: model,
+        thinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+        defaultThinkingOptionId: "low",
+      },
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: { provider: "synthetic-provider", id: "alternate-model" },
+      }),
+    );
+    expect(transports[0]?.selectModel).not.toHaveBeenCalled();
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("keeps Model inspection ready when Thinking RPC discovery is unsupported", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.getAvailableThinkingLevels.mockResolvedValueOnce(null);
+      transports.push(transport);
+      return transport;
+    });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      catalog: { thinkingOptions: [] },
+      capabilities: {
+        configuration: { selectModel: true, selectThinkingOption: false },
+      },
+    });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
   });
@@ -304,6 +401,12 @@ describe("Pi HarnessAdapter Session", () => {
     );
     expect(opened.value.initialState).toMatchObject({
       nativeRef: { nativeSessionId: "source-session" },
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
@@ -533,12 +636,60 @@ describe("Pi HarnessAdapter Session", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: model },
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     expect((await nextEvent(iterator)).type).toBe("item.started");
     transports[0]?.succeed("done");
     await session.close();
+  });
+
+  it("applies create Thinking and publishes Pi-corrected readback before the first Turn", async () => {
+    const { adapter, transports } = fixture();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    const model = encodePiModelRef({
+      provider: "synthetic-provider",
+      id: "alternate-model",
+    });
+    const requestedThinking = harnessThinkingOptionIdSchema.parse("xhigh");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model,
+      thinkingOptionId: requestedThinking,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+
+    await expect(opened.value.execute(textTurn("selected-thinking"))).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledWith(requestedThinking);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.succeed("done");
+    await opened.value.close();
   });
 
   it("selects an idle Model with state-before-result ordering and rejects active races", async () => {
@@ -560,7 +711,14 @@ describe("Pi HarnessAdapter Session", () => {
     const selecting = session.execute({ type: "model.select", model: alternate });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: alternate },
+      state: {
+        effectiveModel: alternate,
+        effectiveThinkingOptionId: "low",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+        ],
+      },
     });
     await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
 
@@ -575,6 +733,54 @@ describe("Pi HarnessAdapter Session", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     expect(transports[0]?.selectModel).toHaveBeenCalledOnce();
     transports[0]?.succeed("active");
+    await session.close();
+  });
+
+  it("selects Thinking with corrected state-before-result ordering and rejects active races", async () => {
+    const { adapter, transports } = fixture();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("start-thinking"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[1]?.succeed("start-thinking");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selecting = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: xhigh,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    await session.execute(textTurn("active-thinking"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledOnce();
+    transports[1]?.succeed("active-thinking");
     await session.close();
   });
 
@@ -598,7 +804,12 @@ describe("Pi HarnessAdapter Session", () => {
     });
     transport.selectModel.mockImplementationOnce(async (model) => {
       await selectionGate;
-      transport.state = { ...transport.state, provider: model.provider, modelId: model.id };
+      transport.state = {
+        ...transport.state,
+        provider: model.provider,
+        modelId: model.id,
+        thinkingLevel: harnessThinkingOptionIdSchema.parse("low"),
+      };
       return transport.state;
     });
     const model = encodePiModelRef({ provider: "synthetic-provider", id: "alternate-model" });

@@ -1,4 +1,4 @@
-import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import type { HarnessModelRef, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
@@ -10,6 +10,7 @@ export interface DraftComposerState {
   phase: ComposerAgentPhase;
   composerId: string;
   piModel?: HarnessModelRef;
+  piThinkingOptionId?: HarnessThinkingOptionId;
 }
 
 type MutableComposerState = DraftComposerState;
@@ -125,6 +126,7 @@ export class DraftAgentController<Composer extends object> {
     composer: Composer,
     agent: RendererAgent,
     piModel?: HarnessModelRef,
+    piThinkingOptionId?: HarnessThinkingOptionId,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
@@ -132,12 +134,38 @@ export class DraftAgentController<Composer extends object> {
     state.phase = "locked";
     if (agent === "pi" && piModel) state.piModel = piModel;
     else if (agent !== "pi") delete state.piModel;
+    if (agent === "pi" && piThinkingOptionId) {
+      state.piThinkingOptionId = piThinkingOptionId;
+    } else {
+      delete state.piThinkingOptionId;
+    }
+    return state;
+  }
+
+  setPiConfiguration(
+    composer: Composer,
+    model: HarnessModelRef,
+    thinkingOptionId?: HarnessThinkingOptionId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piModel = model;
+    if (thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
+    else delete state.piThinkingOptionId;
     return state;
   }
 
   setPiModel(composer: Composer, model: HarnessModelRef): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     state.piModel = model;
+    return state;
+  }
+
+  setPiThinkingOption(
+    composer: Composer,
+    thinkingOptionId: HarnessThinkingOptionId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.piThinkingOptionId = thinkingOptionId;
     return state;
   }
 

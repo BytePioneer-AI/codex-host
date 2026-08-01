@@ -5,6 +5,7 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
   type HarnessInspection,
@@ -13,6 +14,7 @@ import {
   type ThreadInspection,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
+  type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
 } from "@codexhost/shared-contracts";
@@ -20,6 +22,7 @@ import {
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
+export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 
 interface RequestManagerCandidate {
@@ -31,6 +34,7 @@ export interface RendererModelClient {
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
+  selectPiThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
 }
 
 export function createRendererModelClient(
@@ -71,6 +75,13 @@ export function createRendererModelClient(
     async selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState> {
       const params = threadModelSelectParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_MODEL_SELECT_METHOD, params);
+      return harnessModelSelectionStateSchema.parse(result);
+    },
+    async selectPiThreadThinking(
+      input: ThreadThinkingSelectParams,
+    ): Promise<HarnessModelSelectionState> {
+      const params = threadThinkingSelectParamsSchema.parse(input);
+      const result = await manager.sendRequest(THREAD_THINKING_SELECT_METHOD, params);
       return harnessModelSelectionStateSchema.parse(result);
     },
   });

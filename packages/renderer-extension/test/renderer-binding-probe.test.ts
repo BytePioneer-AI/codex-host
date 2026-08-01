@@ -2,6 +2,7 @@ import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  isLateConversationTarget,
   isOwnershipSubmissionBlocked,
   restoredThreadOwnership,
   shouldTransferComposerState,
@@ -90,6 +91,17 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isOwnershipSubmissionBlocked("error")).toBe(true);
     expect(isOwnershipSubmissionBlocked("ready")).toBe(false);
     expect(isOwnershipSubmissionBlocked("not-required")).toBe(false);
+  });
+
+  it("detects a conversation target that arrives after the Composer mounted", () => {
+    const defaultTarget = ["default"];
+    const conversationTarget = ["conversation", "opaque-1"];
+
+    expect(isLateConversationTarget(defaultTarget, conversationTarget)).toBe(true);
+    expect(isLateConversationTarget(defaultTarget, defaultTarget)).toBe(false);
+    expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
+    expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(false);
+    expect(isLateConversationTarget(null, conversationTarget)).toBe(false);
   });
 
   it("transfers only the same Model target or a first-create transition", () => {

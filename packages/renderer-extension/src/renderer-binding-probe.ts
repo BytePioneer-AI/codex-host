@@ -130,6 +130,13 @@ export function shouldTransferComposerState(
   );
 }
 
+export function isLateConversationTarget(
+  mountedTarget: readonly unknown[] | null,
+  currentTarget: readonly unknown[] | null,
+): boolean {
+  return mountedTarget?.[0] === "default" && currentTarget?.[0] === "conversation";
+}
+
 export function installRendererBindingProbe(
   options: RendererBindingProbeOptions = {},
 ): RendererBindingProbeApi {
@@ -227,6 +234,22 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
       }
     }
+  };
+
+  const refreshMountedConversationTarget = (mounted: MountedComposer): boolean => {
+    const currentTarget = findComposerModelTarget(mounted.composer);
+    if (!isLateConversationTarget(mounted.modelTarget, currentTarget)) return false;
+
+    mounted.modelTarget = currentTarget;
+    mounted.ownershipStatus = "loading";
+    if (!controller.transfer(mounted.composer, mounted.composer, currentTarget)) {
+      mounted.ownershipStatus = "error";
+      renderMounted(mounted);
+      return true;
+    }
+    renderMounted(mounted);
+    void loadThreadOwnership(mounted);
+    return true;
   };
 
   const loadPiCatalog = async (mounted: MountedComposer): Promise<void> => {
@@ -442,7 +465,9 @@ export function installRendererBindingProbe(
       if (!composer.isConnected || !mounted.control.root.isConnected) {
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
+        continue;
       }
+      refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -514,6 +539,7 @@ export function installRendererBindingProbe(
   const prepareComposer = (composer: Element): boolean | null => {
     const mounted = mountedByComposer.get(composer);
     if (!mounted) return null;
+    refreshMountedConversationTarget(mounted);
     const current = controller.get(composer);
     if (controller.isSwitching(composer) || isOwnershipSubmissionBlocked(mounted.ownershipStatus)) {
       return false;
@@ -539,7 +565,15 @@ export function installRendererBindingProbe(
   const onBeforeInput = (event: InputEvent): void => {
     const composer = composerForTarget(event.target);
     if (!composer) return;
-    if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
+    const mounted = mountedByComposer.get(composer);
+    if (mounted) refreshMountedConversationTarget(mounted);
+    if (
+      controller.isSwitching(composer) ||
+      (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) ||
+      !applyComposerAgent(composer)
+    ) {
+      blockEvent(event);
+    }
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
@@ -555,7 +589,14 @@ export function installRendererBindingProbe(
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
-    if (composer && (controller.isSwitching(composer) || !applyComposerAgent(composer))) {
+    const mounted = composer ? mountedByComposer.get(composer) : undefined;
+    if (mounted) refreshMountedConversationTarget(mounted);
+    if (
+      composer &&
+      (controller.isSwitching(composer) ||
+        (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) ||
+        !applyComposerAgent(composer))
+    ) {
       blockEvent(event);
       return;
     }

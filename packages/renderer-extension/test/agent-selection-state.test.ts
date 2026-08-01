@@ -155,6 +155,27 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("binds an in-place first conversation target to the existing logical Composer", async () => {
+    const composer = {};
+    const revisit = {};
+    const defaultTarget = ["default"];
+    const conversationTarget = ["conversation", "late-fork-thread"];
+    const agents = controller();
+
+    agents.mount(composer, defaultTarget);
+    await agents.switchAgent(composer, "pi", {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    });
+    agents.lock(composer);
+    const original = agents.get(composer);
+
+    expect(agents.transfer(composer, composer, conversationTarget)).toBe(true);
+    agents.mount(revisit, ["conversation", "late-fork-thread"]);
+
+    expect(agents.get(revisit)).toEqual(original);
+  });
+
   it("restores a newly mounted Fork owner and ignores stale ownership generations", () => {
     const forkComposer = {};
     const replacement = {};

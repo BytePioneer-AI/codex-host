@@ -140,9 +140,9 @@ On mounting a conversation target not already bound to a logical Composer, Rende
 
 The Fork response carrier may provide an immediate optimistic hint, but Host inspection is authoritative. No message-button DOM hook is introduced.
 
-### 9. Claude fails explicitly until its mapper is implemented
+### 9. Claude persists live identity but fails unsupported history explicitly
 
-The shared interface is implemented by ClaudeCodeAdapter, but `open(resume|fork)` and `readSnapshot()` return `unsupported` in this change. This preserves the finite generic Host route and prevents an external Claude Thread from falling through to official Codex. A later Claude history Change can use proven `getSessionMessages` and `forkSession` without changing Host semantics.
+The shared interface is implemented by ClaudeCodeAdapter, but `open(resume|fork)` and `readSnapshot()` return `unsupported` in this change. Create-mode live Turns still emit a NativeTurnRef from the confirmed Native Session identity and caller-assigned User Message UUID, which the Claude Probe proved remains stable in native history. They emit no Checkpoint. This lets the generic Host persist an accepted terminal without claiming recoverable history or Fork support, preserves the finite generic Host route, and prevents an external Claude Thread from falling through to official Codex. A later Claude history Change can use proven `getSessionMessages` and `forkSession` without changing Host semantics.
 
 ### 10. Verification is layered
 

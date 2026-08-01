@@ -33,8 +33,10 @@ import {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  nativeTurnRefSchema,
   type HarnessId,
   type HostInteractionId,
+  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import { ClaudeCodeExecutableError } from "./command.js";
@@ -67,6 +69,7 @@ interface ActiveTurn {
   item: HostAgentMessageItem;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByNativeId: Map<string, HostInteractionId>;
+  nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -257,6 +260,7 @@ class ClaudeHarnessSession implements HarnessSession {
       item,
       interactions: new Map(),
       interactionByNativeId: new Map(),
+      nativeTurnRef: null,
       cancellationRequested: false,
       completion,
       resolveCompletion,
@@ -265,9 +269,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
     try {
-      const running = transport.runTurn(text, this.#randomUUID(), (event) => {
+      const nativeTurnRef = nativeTurnRefSchema.parse({
+        harnessId: this.harnessId,
+        nativeSessionId: this.#sessionId,
+        nativeTurnKey: this.#randomUUID(),
+        formatVersion: 1,
+      });
+      const running = transport.runTurn(text, nativeTurnRef.nativeTurnKey, (event) => {
         this.#handleTurnEvent(active, event);
       });
+      // Claude preserves caller-assigned User Message UUIDs in native history.
+      active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
         () => this.#fault(faultError()),
@@ -510,7 +522,12 @@ class ClaudeHarnessSession implements HarnessSession {
       turnId: active.command.turnId,
       snapshot: { item: active.item, outcome: itemOutcome },
     });
-    this.#event({ type: "turn.completed", turnId: active.command.turnId, outcome });
+    this.#event({
+      type: "turn.completed",
+      turnId: active.command.turnId,
+      ...(active.nativeTurnRef ? { nativeTurnRef: active.nativeTurnRef } : {}),
+      outcome,
+    });
     this.#active = null;
     active.resolveCompletion();
   }

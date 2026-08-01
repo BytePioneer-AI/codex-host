@@ -1,11 +1,14 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { ClaudeCodeAdapter, type ClaudeAdapterDependencies } from "@codexhost/adapter-claude-code";
+import { MappingStore } from "@codexhost/mapping-store";
+import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   type ExternalHarnessId,
@@ -98,6 +101,97 @@ function method(message: JsonObject, name: string): boolean {
 function writeRequest(input: PassThrough, request: JsonObject): void {
   input.write(`${JSON.stringify(request)}\n`);
 }
+
+describe("AppServerHost hermetic Claude projection", () => {
+  it("keeps a successful Claude Turn successful when history is unsupported", async () => {
+    const mappingStoreDirectory = await fs.mkdtemp(
+      path.join(tmpdir(), "codexhost-host-claude-hermetic-"),
+    );
+    let uuid = 0;
+    let nativeSessionId: string | undefined;
+    let nativeTurnKey: string | undefined;
+    const dependencies: ClaudeAdapterDependencies = {
+      randomUUID: () => `claude-hermetic-${++uuid}`,
+      createTransport: (input) => {
+        nativeSessionId = input.sessionId;
+        return {
+          sessionId: input.sessionId,
+          start: async () => undefined,
+          runTurn: async (_text, userMessageId, onEvent) => {
+            nativeTurnKey = userMessageId;
+            onEvent({ type: "text.delta", delta: "hermetic response" });
+            return { status: "succeeded" };
+          },
+          respondToInteraction: async () => undefined,
+          abort: async () => undefined,
+          close: async () => undefined,
+        };
+      },
+    };
+    const desktopInput = new PassThrough();
+    const desktopOutput = new PassThrough();
+    const diagnosticOutput = new PassThrough();
+    const collector = new JsonCollector(desktopOutput);
+    const official = new OfficialProcess();
+    const claudeAdapter = new ClaudeCodeAdapter({ closeTimeoutMs: 50 }, dependencies);
+    const mappingStore = new MappingStore({ directory: mappingStoreDirectory });
+    const host = new AppServerHost({
+      stockCodexPath: "/synthetic/codex",
+      arguments: [],
+      defaultAgent: "codex",
+      desktopInput,
+      desktopOutput,
+      diagnosticOutput,
+      externalAdapters: new Map([["claude-code", claudeAdapter]]),
+      mappingStore,
+      spawnOfficial: (() =>
+        official as unknown as ChildProcessWithoutNullStreams) as unknown as typeof spawn,
+    });
+    const running = host.run();
+
+    try {
+      writeRequest(desktopInput, {
+        id: 1,
+        method: "thread/start",
+        params: { model: CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, cwd: "/synthetic" },
+      });
+      const startResponse = await collector.waitFor((message) => requestId(message, 1));
+      const threadId = ((startResponse.result as JsonObject).thread as JsonObject).id;
+      if (typeof threadId !== "string") throw new Error("Host returned no Thread ID");
+
+      writeRequest(desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "hermetic prompt" }] },
+      });
+      await collector.waitFor((message) => requestId(message, 2));
+      const completed = await collector.waitFor((message) => method(message, "turn/completed"));
+
+      expect(JSON.stringify(completed)).not.toContain(
+        "External Turn identity could not be persisted",
+      );
+      expect(completed).toMatchObject({ params: { turn: { status: "completed" } } });
+      await expect(
+        mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).resolves.toMatchObject({
+        turnMappings: [
+          {
+            nativeTurnRef: {
+              harnessId: "claude-code",
+              nativeSessionId,
+              nativeTurnKey,
+            },
+          },
+        ],
+      });
+    } finally {
+      desktopInput.end();
+      await running;
+      await claudeAdapter.close();
+      await fs.rm(mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe.skipIf(!RUN_REAL)("AppServerHost real Claude projection", () => {
   it(

@@ -175,6 +175,12 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
+      nativeTurnRef: {
+        harnessId: "claude-code",
+        nativeSessionId: transports[0]?.sessionId,
+        nativeTurnKey: transports[0]?.turns[0]?.userMessageId,
+        formatVersion: 1,
+      },
       outcome: { status: "succeeded" },
     });
     await session.close();

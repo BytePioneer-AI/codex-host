@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Harness Sessions expose stable historical identity
-Every production external HarnessSession SHALL provide an idle full Snapshot in which each visible Native Turn has one stable NativeTurnRef, deterministic final Item identities, an evidence-based historical outcome, and an optional NativeCheckpointRef only when that exact position can be Forked.
+Every history-capable production external HarnessSession SHALL provide an idle full Snapshot in which each visible Native Turn has one stable NativeTurnRef, deterministic final Item identities, an evidence-based historical outcome, and an optional NativeCheckpointRef only when that exact position can be Forked. An explicitly development-gated Adapter whose history mapper is not implemented MAY return `unsupported` from `readSnapshot()`, but it SHALL report no Fork capability.
 
 #### Scenario: Snapshot is read repeatedly
 - **WHEN** a caller reads the same unchanged Native Session Snapshot more than once
@@ -16,7 +16,7 @@ Every production external HarnessSession SHALL provide an idle full Snapshot in 
 - **THEN** the Snapshot SHALL use an explicit unknown outcome rather than report success
 
 ### Requirement: Live terminal identity aligns with Snapshot identity
-A live accepted Turn that becomes part of Native history SHALL emit the same NativeTurnRef and exact Checkpoint that a later Snapshot returns for that logical Turn, and Host-visible completion SHALL not precede required identity persistence.
+A live accepted Turn that becomes part of Native history SHALL emit a stable NativeTurnRef and any supported exact Checkpoint before Host-visible completion. When the Session supports Snapshot reads, a later Snapshot SHALL return the same NativeTurnRef and Checkpoint for that logical Turn.
 
 #### Scenario: Live Turn is read from history
 - **WHEN** a completed live Turn is later returned by `readSnapshot()`
@@ -26,6 +26,11 @@ A live accepted Turn that becomes part of Native history SHALL emit the same Nat
 #### Scenario: Accepted Turn leaves no stable history
 - **WHEN** an Adapter cannot establish the stable identity required for a Turn that native history persisted
 - **THEN** it SHALL fail or fault the Turn instead of emitting an unmappable successful terminal
+
+#### Scenario: Development-gated Adapter has no history mapper
+- **WHEN** a development-gated Adapter confirms that a create-mode Turn's caller-assigned Native Turn identity entered native history but Snapshot, resume, and Fork remain unsupported
+- **THEN** its terminal SHALL emit that stable NativeTurnRef without a Checkpoint
+- **AND** `readSnapshot()` and `open(resume|fork)` SHALL continue to return explicit `unsupported` results
 
 ### Requirement: Resume opens the referenced Native Session
 `HarnessAdapter.open(resume)` SHALL validate the opaque NativeSessionRef, open that exact Session without changing Harness ownership or native configuration, and allow an immediate idle Snapshot read.

@@ -76,7 +76,6 @@ jobs:
           path: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
-            build/release/*/${{ matrix.target }}/codexhost-*.sha256
           if-no-files-found: error
 
       - name: Upload GitHub Release assets
@@ -87,4 +86,3 @@ jobs:
           files: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
-            build/release/*/${{ matrix.target }}/codexhost-*.sha256

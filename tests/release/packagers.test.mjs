@@ -20,6 +20,18 @@ describe("platform packagers", () => {
     expect(source).not.toContain("cargo-packager");
   });
 
+  it("produces and uploads only installable release artifacts", async () => {
+    const [workflow, releaseBuilder] = await Promise.all([
+      readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
+      readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
+    ]);
+    expect(workflow).toContain("codexhost-*.dmg");
+    expect(workflow).toContain("codexhost-*.msi");
+    expect(workflow).not.toContain("codexhost-*.sha256");
+    expect(releaseBuilder).not.toContain("checksumPath");
+    expect(releaseBuilder).not.toContain("sha256=${result.checksum}");
+  });
+
   it("pins WiX 4 and maps both Windows installer architectures", async () => {
     const [manifest, script, wix, installUi] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/.config/dotnet-tools.json"), "utf8"),

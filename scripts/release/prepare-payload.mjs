@@ -3,7 +3,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { ensureNodeArchive, extractNodeRuntime, sha256File } from "./node-runtime.mjs";
+import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -327,11 +327,7 @@ export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   const extension = target.hostPlatform === "darwin" ? ".dmg" : ".msi";
   const artifactBase = path.join(prepared.outputRoot, `codexhost-${prepared.version}-${target.id}`);
   const artifactPath = `${artifactBase}${extension}`;
-  const checksumPath = `${artifactPath}.sha256`;
-  const priorExtensions =
-    target.hostPlatform === "darwin"
-      ? [".app.zip", ".app.zip.sha256", ".dmg", ".dmg.sha256"]
-      : [".msi", ".msi.sha256"];
+  const priorExtensions = target.hostPlatform === "darwin" ? [".app.zip", ".dmg"] : [".msi"];
   await Promise.all(
     priorExtensions.map((suffix) => rm(`${artifactBase}${suffix}`, { force: true })),
   );
@@ -375,9 +371,7 @@ export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   }
 
   await requireNonEmptyArtifact(artifactPath);
-  const checksum = await sha256File(artifactPath);
-  await writeFile(checksumPath, `${checksum}  ${path.basename(artifactPath)}\n`, "utf8");
-  return { ...prepared, artifactPath, checksumPath, checksum };
+  return { ...prepared, artifactPath };
 }
 
 export async function runReleaseCli(arguments_) {
@@ -389,7 +383,6 @@ export async function runReleaseCli(arguments_) {
   const result = await packageReleaseTarget({ target: parsed.target });
   console.log(`payload=${result.payloadRoot}`);
   console.log(`artifact=${result.artifactPath}`);
-  console.log(`sha256=${result.checksum}`);
 }
 
 const invoked = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;

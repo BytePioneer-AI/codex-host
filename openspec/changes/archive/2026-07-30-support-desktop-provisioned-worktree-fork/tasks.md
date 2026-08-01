@@ -24,4 +24,4 @@
 - [x] 5.1 Run focused Shared Contracts, HarnessAdapter, PiAdapter, Pi transport, Protocol Core, Mapping Store, and Host tests
 - [x] 5.2 Run `npm run check`, `npm run build`, strict OpenSpec validation, and `git diff --check`
 - [x] 5.3 Run an isolated offline Pi control-plane Gate proving native `--fork` creates a distinct target-cwd Session without modifying the source
-- [ ] 5.4 Run controlled macOS and Windows Desktop/Pi `Use a new worktree` tail/non-tail Gates, verify target-only file execution and source isolation, and record only sanitized evidence
+- [x] 5.4 Run controlled macOS and Windows Desktop/Pi `Use a new worktree` tail/non-tail Gates, verify target-only file execution and source isolation, and record only sanitized evidence

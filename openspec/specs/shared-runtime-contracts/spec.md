@@ -175,10 +175,10 @@ Shared Contracts SHALL export browser-safe types and Runtime Schemas for opaque 
 - **THEN** the Model Ref Runtime Schema rejects it
 
 ### Requirement: Shared Model control params are method-specific
-Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness inspection params and current-process Thread Model-selection params, and SHALL NOT provide an arbitrary method/payload control envelope.
+Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness inspection params and current-process Thread Model-selection params, and SHALL NOT provide an arbitrary method/payload control envelope. Harness inspection params SHALL carry a validated opaque Harness ID and MUST NOT be restricted to one concrete Harness.
 
-#### Scenario: Valid Pi inspection params
-- **WHEN** the control boundary receives Pi Harness identity with optional cwd and refresh
+#### Scenario: Valid registered Harness inspection params
+- **WHEN** the control boundary receives a non-empty Harness identity with optional cwd and refresh
 - **THEN** the inspection params schema accepts and preserves only those fields
 
 #### Scenario: Valid Thread Model selection params

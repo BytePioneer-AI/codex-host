@@ -28,6 +28,24 @@ export type {
   ExternalThreadRpcError,
 } from "./thread-fork.js";
 export {
+  decodeHostThreadListCursor,
+  decodeOfficialThreadListPage,
+  decodeThreadArchiveRequest,
+  decodeThreadListRequest,
+  decodeThreadMetadataUpdateRequest,
+  encodeHostThreadListCursor,
+} from "./thread-management.js";
+export type {
+  DecodedThreadListRequest,
+  DecodedThreadManagementRequest,
+  DecodedThreadMetadataUpdateRequest,
+  HostThreadListCursor,
+  OfficialThreadListPage,
+  ThreadListExternalAnchor,
+  ThreadListSortDirection,
+  ThreadListSortKey,
+} from "./thread-management.js";
+export {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   EXTERNAL_HARNESS_IDS,
   PI_NATIVE_TRANSPORT_MODEL_ID,

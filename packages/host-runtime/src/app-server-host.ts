@@ -47,6 +47,7 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import { OfficialRequestBroker } from "./official-request-broker.js";
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -54,10 +55,18 @@ import {
   type RequestRouteObservation,
 } from "./route-observation.js";
 import {
+  aggregateThreadList,
+  officialThreadListPageFromResponse,
+  OfficialThreadListError,
+} from "./thread-list-aggregator.js";
+import {
   CodexTurnProjector,
   decodeCreateRoute,
   decodeExternalTransportSelection,
+  decodeThreadArchiveRequest,
   decodeThreadForkRequest,
+  decodeThreadListRequest,
+  decodeThreadMetadataUpdateRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   parseJsonFrame,
@@ -71,6 +80,7 @@ import {
   transportModelIdForHarness,
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
+  type DecodedThreadListRequest,
   type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
   type CodexQuestionRequestProjection,
@@ -157,6 +167,19 @@ function unixSeconds(): number {
 
 const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
 const HOST_QUESTION_REQUEST_ID_MAX = -1;
+const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
+  "thread/archive",
+  "thread/delete",
+  "thread/fork",
+  "thread/items/list",
+  "thread/metadata/update",
+  "thread/name/set",
+  "thread/read",
+  "thread/resume",
+  "thread/rollback",
+  "thread/turns/list",
+  "thread/unarchive",
+]);
 
 function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId {
   return (
@@ -257,6 +280,7 @@ export class AppServerHost {
   #repository: ExternalThreadRepository;
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
+  #officialRequestBroker: OfficialRequestBroker;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
 
@@ -268,6 +292,13 @@ export class AppServerHost {
       ...options,
     };
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
+    this.#officialRequestBroker = new OfficialRequestBroker({
+      send: async (request) => {
+        const official = this.#official;
+        if (!official) throw new Error("official app-server is unavailable");
+        await writeJsonFrame(official.stdin, request);
+      },
+    });
     this.#repository = new ExternalThreadRepository(
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
@@ -330,6 +361,7 @@ export class AppServerHost {
           () => undefined,
         );
       }
+      this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
       this.#externalRuntime.clear();
       this.#routeObservationTracker.clear();
       await this.#repository.close().catch((error) => this.#diagnose(error));
@@ -366,6 +398,69 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/thinking/select") {
         await this.#selectThreadThinking(request);
+        continue;
+      }
+      if (request.method === "thread/list") {
+        let listRequest: DecodedThreadListRequest;
+        try {
+          const decoded = decodeThreadListRequest(request);
+          if (!decoded) throw new Error("Expected thread/list request");
+          listRequest = decoded;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          continue;
+        }
+        if (!listRequest.supportsExternal) {
+          await writeFrame(official.stdin, frame);
+          continue;
+        }
+        await this.#listThreads(request, listRequest);
+        continue;
+      }
+      if (request.method === "thread/archive" || request.method === "thread/unarchive") {
+        let threadId: string;
+        try {
+          const decoded = decodeThreadArchiveRequest(request);
+          if (!decoded) throw new Error(`Expected ${request.method} request`);
+          threadId = decoded.threadId;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          continue;
+        }
+        const location = await this.#locateExternalThread(threadId);
+        if (await this.#writeResolutionError(request, location)) continue;
+        if (location.kind === "official") {
+          await writeFrame(official.stdin, frame);
+          continue;
+        }
+        if (location.kind === "external") {
+          await this.#setExternalThreadArchived(
+            request,
+            location,
+            request.method === "thread/archive",
+          );
+        }
+        continue;
+      }
+      if (request.method === "thread/metadata/update") {
+        let threadId: string;
+        try {
+          const decoded = decodeThreadMetadataUpdateRequest(request);
+          if (!decoded) throw new Error("Expected thread/metadata/update request");
+          threadId = decoded.threadId;
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          continue;
+        }
+        const location = await this.#locateExternalThread(threadId);
+        if (await this.#writeResolutionError(request, location)) continue;
+        if (location.kind === "official") {
+          await writeFrame(official.stdin, frame);
+          continue;
+        }
+        await this.#writer.json(
+          rpcError(request, -32078, "External Thread metadata updates are unsupported"),
+        );
         continue;
       }
       let createRoute: CreateRequestRouteObservation | null;
@@ -558,6 +653,21 @@ export class AppServerHost {
           continue;
         }
       }
+      if (
+        request.method.startsWith("thread/") &&
+        !EXPLICIT_EXTERNAL_THREAD_METHODS.has(request.method) &&
+        isRecord(request.params) &&
+        typeof request.params.threadId === "string"
+      ) {
+        const location = await this.#locateExternalThread(request.params.threadId);
+        if (await this.#writeResolutionError(request, location)) continue;
+        if (location.kind === "external") {
+          await this.#writer.json(
+            rpcError(request, -32076, `External Thread does not support ${request.method}`),
+          );
+          continue;
+        }
+      }
       await writeFrame(official.stdin, frame);
     }
     official.stdin.end();
@@ -566,11 +676,95 @@ export class AppServerHost {
   async #forwardOfficial(): Promise<void> {
     const official = this.#official;
     if (!official) throw new Error("official app-server is unavailable");
-    for await (const frame of readLfFrames(official.stdout)) {
-      const parsed = parseJsonFrame(frame);
-      this.#routeObservationTracker.bindOfficialResponse(parsed);
-      await this.#writer.frame(frame);
+    try {
+      for await (const frame of readLfFrames(official.stdout)) {
+        const parsed = parseJsonFrame(frame);
+        if (this.#officialRequestBroker.handle(parsed)) continue;
+        this.#routeObservationTracker.bindOfficialResponse(parsed);
+        await this.#writer.frame(frame);
+      }
+    } finally {
+      this.#officialRequestBroker.failAll(new Error("official app-server output closed"));
     }
+  }
+
+  async #listThreads(
+    request: JsonRpcRequest,
+    listRequest: DecodedThreadListRequest,
+  ): Promise<void> {
+    try {
+      const records = await this.#repository.list();
+      const result = await aggregateThreadList({
+        query: listRequest,
+        records,
+        runtimeFor: (threadId) => {
+          const thread = this.#externalRuntime.get(threadId);
+          return thread ? { running: thread.running } : null;
+        },
+        requestOfficialPage: async (params) =>
+          officialThreadListPageFromResponse(
+            await this.#officialRequestBroker.request("thread/list", params),
+          ),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      if (error instanceof OfficialThreadListError) {
+        await this.#writer.json(rpcEnvelope(request, { error: error.rpcError }));
+        return;
+      }
+      await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
+      this.#diagnose(error);
+    }
+  }
+
+  async #setExternalThreadArchived(
+    request: JsonRpcRequest,
+    location: Extract<ExternalThreadLocation, { kind: "external" }>,
+    archived: boolean,
+  ): Promise<void> {
+    if (location.record.state !== "ready" || !location.record.nativeSessionRef) {
+      await this.#writer.json(rpcError(request, -32079, "External Native Session is unavailable"));
+      return;
+    }
+    const sessionId =
+      location.thread?.sessionId ??
+      (await this.#repository.sessionTreeId(location.record).catch(() => null));
+    if (!sessionId) {
+      await this.#writer.json(
+        rpcError(request, -32081, "External Thread metadata could not be projected"),
+      );
+      return;
+    }
+    let record: StoredThreadRecordV1;
+    try {
+      record = await this.#repository.setArchived(location.record.hostThreadId, archived);
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32081, "External Thread archive state could not be persisted"),
+      );
+      return;
+    }
+    const projected = externalThreadValue({
+      record,
+      turns: [],
+      sessionId,
+      ...(location.thread ? { running: location.thread.running } : { loaded: false }),
+    });
+    if (location.thread) {
+      location.thread.record = record;
+      location.thread.thread = {
+        ...location.thread.thread,
+        ...projected,
+        turns: location.thread.thread.turns ?? [],
+      };
+    }
+    await this.#writer.json(
+      rpcEnvelope(request, { result: archived ? {} : { thread: projected } }),
+    );
+    await this.#writer.json({
+      method: archived ? "thread/archived" : "thread/unarchived",
+      params: { threadId: record.hostThreadId },
+    });
   }
 
   async #inspectHarness(request: JsonRpcRequest): Promise<void> {

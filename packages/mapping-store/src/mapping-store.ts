@@ -281,6 +281,12 @@ export class MappingStore {
     return this.#update(hostThreadId, (current) => ({ ...current, title }));
   }
 
+  async setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) =>
+      current.archived === archived ? null : { ...current, archived },
+    );
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     const record = this.#records.get(hostThreadId);
@@ -326,7 +332,7 @@ export class MappingStore {
 
   async #update(
     hostThreadId: HostThreadId,
-    change: (current: StoredThreadRecordV1) => StoredThreadRecordV1,
+    change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -334,8 +340,13 @@ export class MappingStore {
       const current = this.#records.get(hostThreadId);
       if (!current)
         throw new MappingStoreError("THREAD_NOT_FOUND", "External Thread was not found");
+      const changed = change(cloneRecord(current));
+      if (!changed) {
+        result = cloneRecord(current);
+        return;
+      }
       const next = storedThreadRecordV1Schema.parse({
-        ...change(cloneRecord(current)),
+        ...changed,
         revision: current.revision + 1,
         updatedAt: this.#now().toISOString(),
       }) as StoredThreadRecordV1;
@@ -529,14 +540,12 @@ export class MappingStore {
   async #enqueue(hostThreadId: HostThreadId, operation: () => Promise<void>): Promise<void> {
     const prior = this.#writeTails.get(hostThreadId) ?? Promise.resolve();
     const next = prior.then(operation, operation);
-    this.#writeTails.set(
-      hostThreadId,
-      next.catch(() => undefined),
-    );
+    const settled = next.catch(() => undefined);
+    this.#writeTails.set(hostThreadId, settled);
     try {
       await next;
     } finally {
-      if (this.#writeTails.get(hostThreadId) === next) this.#writeTails.delete(hostThreadId);
+      if (this.#writeTails.get(hostThreadId) === settled) this.#writeTails.delete(hostThreadId);
     }
   }
 

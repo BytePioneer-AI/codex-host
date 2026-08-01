@@ -24,6 +24,7 @@ import {
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
+  listThreads(): Promise<StoredThreadRecordV1[]>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
@@ -32,6 +33,7 @@ export interface ExternalThreadStore {
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
   close(): Promise<void>;
@@ -80,6 +82,10 @@ export class ExternalThreadRepository {
     return parsed.success ? this.store.getThread(parsed.data) : null;
   }
 
+  list(): Promise<StoredThreadRecordV1[]> {
+    return this.store.listThreads();
+  }
+
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
     return this.store.createProvisional(input);
   }
@@ -94,6 +100,10 @@ export class ExternalThreadRepository {
 
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
     return this.store.setTitle(hostThreadId, title);
+  }
+
+  setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
+    return this.store.setArchived(hostThreadId, archived);
   }
 
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {
@@ -368,6 +378,7 @@ export function externalThreadValue(input: {
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
+  loaded?: boolean;
 }): JsonObject {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
@@ -409,7 +420,12 @@ export function externalThreadValue(input: {
     createdAt,
     updatedAt,
     recencyAt: updatedAt,
-    status: input.running ? { type: "active", activeFlags: [] } : { type: "idle" },
+    status:
+      input.loaded === false
+        ? { type: "notLoaded" }
+        : input.running
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" },
     turns: input.turns,
     preview: previewText,
     name: record.title || null,
@@ -417,8 +433,9 @@ export function externalThreadValue(input: {
     forkedFromId: record.forkSource?.hostThreadId ?? null,
     parentThreadId: null,
     ephemeral: record.ephemeral,
-    canAcceptDirectInput: true,
+    canAcceptDirectInput: input.loaded === false ? null : true,
     historyMode: record.historyMode,
+    isPinned: false,
     agentNickname: null,
     agentRole: null,
     extra: null,

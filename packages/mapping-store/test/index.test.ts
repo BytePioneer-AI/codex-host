@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -264,6 +264,78 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("persists archive state atomically and treats matching state as a no-op", async () => {
+    const directory = await temporaryStoreDirectory();
+    let replacements = 0;
+    const first = new MappingStore({
+      directory,
+      now: () => new Date("2026-08-01T00:00:00.000Z"),
+      beforeReplace() {
+        replacements += 1;
+      },
+    });
+    await first.initialize();
+    await createReady(first);
+    const before = await first.getThread(threadId);
+    const archived = await first.setArchived(threadId, true);
+    expect(archived).toMatchObject({ archived: true, revision: (before?.revision ?? 0) + 1 });
+    const afterChangeReplacements = replacements;
+    const unchanged = await first.setArchived(threadId, true);
+    expect(unchanged).toEqual(archived);
+    expect(replacements).toBe(afterChangeReplacements);
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({ archived: true });
+    await second.setArchived(threadId, false);
+    await second.close();
+
+    const third = new MappingStore({ directory });
+    await third.initialize();
+    await expect(third.getThread(threadId)).resolves.toMatchObject({ archived: false });
+    await third.close();
+  });
+
+  it("keeps prior archive state and Revision when archive replacement fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    let fail = false;
+    const store = new MappingStore({
+      directory,
+      beforeReplace() {
+        if (fail) throw new Error("synthetic archive failure");
+      },
+    });
+    await store.initialize();
+    await createReady(store);
+    const before = await store.getThread(threadId);
+    fail = true;
+    await expect(store.setArchived(threadId, true)).rejects.toMatchObject({ code: "IO_ERROR" });
+    await expect(store.getThread(threadId)).resolves.toEqual(before);
+    await store.close();
+  });
+
+  it("returns defensive content-free enumeration copies", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+    const records = await store.listThreads();
+    expect(records).toHaveLength(1);
+    expect(JSON.stringify(records)).not.toMatch(
+      /prompt|transcript|toolOutput|diff|usage|apiKey|accessToken/iu,
+    );
+    const returned = records[0];
+    if (!returned) throw new Error("Expected one enumerated record");
+    returned.title = "mutated caller copy";
+    returned.turnMappings.length = 0;
+    await expect(store.getThread(threadId)).resolves.toMatchObject({
+      title: "External Thread",
+      turnMappings: [mapping(1)],
+    });
+    await store.close();
+  });
+
   it("recovers a malformed primary from the latest valid backup", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });
@@ -369,6 +441,45 @@ describe("mapping-store package", () => {
       ephemeral: false,
       historyMode: "legacy",
     });
+    await store.close();
+  });
+
+  it("enumerates 1000 valid startup records without a persistent query index", async () => {
+    const directory = await temporaryStoreDirectory();
+    const threadsDirectory = path.join(directory, "threads");
+    await mkdir(threadsDirectory, { recursive: true });
+    const timestamp = new Date("2026-08-01T00:00:00.000Z").toISOString();
+    await Promise.all(
+      Array.from({ length: 1_000 }, async (_, index) => {
+        const id = `scale-thread-${index.toString().padStart(4, "0")}`;
+        const record = storedThreadRecordV1Schema.parse({
+          formatVersion: 1,
+          revision: 1,
+          hostThreadId: id,
+          createRequestId: `scale-create-${index}`,
+          harnessId,
+          state: "ready",
+          nativeSessionRef: {
+            harnessId,
+            nativeSessionId: `scale-native-${index}`,
+            formatVersion: 1,
+          },
+          cwd: "/scale",
+          title: `Scale Thread ${index}`,
+          archived: false,
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "legacy",
+          turnMappings: [],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        await writeFile(path.join(threadsDirectory, `${id}.json`), JSON.stringify(record), "utf8");
+      }),
+    );
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await expect(store.listThreads()).resolves.toHaveLength(1_000);
     await store.close();
   });
 

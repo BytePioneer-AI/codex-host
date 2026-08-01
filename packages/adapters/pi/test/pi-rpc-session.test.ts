@@ -481,6 +481,29 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("resolves the default Windows Pi command through PATH before spawning", () => {
+    const piCommand = String.raw`C:\Pi\pi.CMD`;
+    const invocation = piRpcProcessCommand(
+      {
+        cwd: process.cwd(),
+        environment: {
+          PATH: String.raw`C:\missing;C:\Pi`,
+          PATHEXT: ".EXE;.CMD",
+          ComSpec: String.raw`C:\Windows\System32\cmd.exe`,
+        },
+      },
+      {
+        platform: "win32",
+        isFile: (candidate) => candidate === piCommand,
+      },
+    );
+
+    expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
+    expect(invocation.arguments.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
+    expect(invocation.arguments.at(-1)).toContain(`"${piCommand}" "--mode" "rpc"`);
+    expect(invocation.windowsVerbatimArguments).toBe(true);
+  });
+
   it("builds mutually exclusive Native Session resume and Fork argv", async () => {
     const options = {
       cwd: process.cwd(),

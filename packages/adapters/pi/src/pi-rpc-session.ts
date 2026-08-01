@@ -1,5 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
+import path from "node:path";
 
 import type { HostUsage } from "@codexhost/harness-adapter";
 import {
@@ -307,7 +309,54 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
   ]);
 }
 
-export function piRpcProcessCommand(options: PiRpcProcessOptions): {
+interface PiProcessCommandDependencies {
+  platform: NodeJS.Platform;
+  isFile(filePath: string): boolean;
+}
+
+function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
+  return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+}
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveWindowsCommand(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  isFile: (filePath: string) => boolean,
+): string {
+  if (path.win32.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+    return command;
+  }
+  const extensions = path.win32.extname(command)
+    ? [""]
+    : (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+        .split(";")
+        .map((extension) => extension.trim())
+        .filter((extension) => extension.length > 0);
+  const pathValue = environmentValue(environment, "PATH");
+  if (!pathValue) return command;
+  for (const rawDirectory of pathValue.split(path.win32.delimiter)) {
+    const directory = rawDirectory.trim().replace(/^"|"$/gu, "");
+    if (!directory) continue;
+    for (const extension of extensions) {
+      const candidate = path.win32.join(directory, `${command}${extension}`);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return command;
+}
+
+export function piRpcProcessCommand(
+  options: PiRpcProcessOptions,
+  dependencies: Partial<PiProcessCommandDependencies> = {},
+): {
   command: string;
   arguments: string[];
   windowsVerbatimArguments: boolean;
@@ -318,7 +367,16 @@ export function piRpcProcessCommand(options: PiRpcProcessOptions): {
   if (options.model && (options.sessionFile || options.forkSessionFile)) {
     throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
   }
-  const command = options.command ?? options.environment.PI_COMMAND ?? "pi";
+  const platform = dependencies.platform ?? process.platform;
+  const selectedCommand = options.command ?? options.environment.PI_COMMAND ?? "pi";
+  const command =
+    platform === "win32"
+      ? resolveWindowsCommand(
+          selectedCommand,
+          options.environment,
+          dependencies.isFile ?? isRegularFile,
+        )
+      : selectedCommand;
   const sessionArguments = options.forkSessionFile
     ? ["--fork", options.forkSessionFile]
     : options.sessionFile
@@ -328,7 +386,8 @@ export function piRpcProcessCommand(options: PiRpcProcessOptions): {
     ? ["--provider", options.model.provider, "--model", options.model.id]
     : [];
   const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
-  if (process.platform !== "win32" || !command.toLowerCase().endsWith(".cmd")) {
+  const extension = path.win32.extname(command).toLowerCase();
+  if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
   }
   const quote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;

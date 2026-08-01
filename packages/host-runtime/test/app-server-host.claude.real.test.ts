@@ -105,7 +105,7 @@ function writeRequest(input: PassThrough, request: JsonObject): void {
 }
 
 describe("AppServerHost hermetic Claude projection", () => {
-  it("keeps a successful Claude Turn successful when history is unsupported", async () => {
+  it("keeps a successful Claude Turn mapped and rereads its Native history", async () => {
     const mappingStoreDirectory = await fs.mkdtemp(
       path.join(tmpdir(), "codexhost-host-claude-hermetic-"),
     );
@@ -115,6 +115,27 @@ describe("AppServerHost hermetic Claude projection", () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => `claude-hermetic-${++uuid}`,
       inspectInstallation: () => undefined,
+      readSessionMessages: async ({ sessionId }) => {
+        if (sessionId !== nativeSessionId || !nativeTurnKey) return [];
+        return [
+          {
+            type: "user",
+            uuid: nativeTurnKey,
+            session_id: sessionId,
+            message: { role: "user", content: "hermetic prompt" },
+          },
+          {
+            type: "assistant",
+            uuid: "claude-hermetic-assistant",
+            session_id: sessionId,
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "hermetic response" }],
+              stop_reason: "end_turn",
+            },
+          },
+        ];
+      },
       createTransport: (input) => {
         nativeSessionId = input.sessionId;
         return {
@@ -186,6 +207,28 @@ describe("AppServerHost hermetic Claude projection", () => {
             },
           },
         ],
+      });
+
+      writeRequest(desktopInput, {
+        id: 3,
+        method: "thread/read",
+        params: { threadId, includeTurns: true },
+      });
+      await expect(collector.waitFor((message) => requestId(message, 3))).resolves.toMatchObject({
+        result: {
+          thread: {
+            id: threadId,
+            turns: [
+              {
+                status: "completed",
+                items: [
+                  { type: "userMessage", content: [{ type: "text", text: "hermetic prompt" }] },
+                  { type: "agentMessage", text: "hermetic response" },
+                ],
+              },
+            ],
+          },
+        },
       });
     } finally {
       desktopInput.end();

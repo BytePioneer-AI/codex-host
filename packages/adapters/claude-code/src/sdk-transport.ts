@@ -73,6 +73,7 @@ export interface ClaudeSdkTransportOptions {
   environment?: NodeJS.ProcessEnv;
   cwd: string;
   sessionId: string;
+  openMode: "create" | "resume";
   closeTimeoutMs: number;
   onFault(error: unknown): void;
   queryFactory?: typeof query;
@@ -153,6 +154,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #input = new PushableInput<SDKUserMessage>();
   readonly #onFault: (error: unknown) => void;
+  readonly #openMode: "create" | "resume";
   readonly #queryFactory: typeof query;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -167,6 +169,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
     this.#onFault = options.onFault;
+    this.#openMode = options.openMode;
     this.#queryFactory = options.queryFactory ?? query;
   }
 
@@ -181,7 +184,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       prompt: this.#input,
       options: {
         cwd: this.#cwd,
-        sessionId: this.sessionId,
+        ...(this.#openMode === "resume"
+          ? { resume: this.sessionId }
+          : { sessionId: this.sessionId }),
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
         permissionMode: "default",

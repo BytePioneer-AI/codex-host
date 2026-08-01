@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import {
   HarnessOutputChannel,
   validateHostQuestionResponse,
@@ -33,13 +34,16 @@ import {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
   type HostInteractionId,
+  type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
+import { mapClaudeSnapshot } from "./claude-history.js";
 import { ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
@@ -143,19 +147,23 @@ class ClaudeHarnessSession implements HarnessSession {
     configuration: { selectModel: false },
     history: { fork: false, forkAcrossCwd: false },
   };
-  readonly initialState: HarnessSessionState = {};
+  readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;
   readonly #createTransport: ClaudeAdapterDependencies["createTransport"];
   readonly #cwd: string;
+  readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
+  readonly #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
+  readonly #readSessionMessages: ClaudeAdapterDependencies["readSessionMessages"];
   readonly #sessionId: string;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #phase: SessionPhase = "open";
+  #readingHistory = false;
   #statePublished = false;
   #transport: ClaudeTurnTransport | null = null;
 
@@ -164,25 +172,82 @@ class ClaudeHarnessSession implements HarnessSession {
     dependencies: ClaudeAdapterDependencies,
     closeTimeoutMs: number,
     onClosed: () => void,
+    options: { openMode: "create" | "resume"; sessionId: string },
   ) {
     this.#cwd = cwd;
     this.#createTransport = dependencies.createTransport;
     this.#randomUUID = dependencies.randomUUID;
+    this.#readSessionMessages = dependencies.readSessionMessages;
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
-    this.#sessionId = this.#randomUUID();
+    this.#openMode = options.openMode;
+    this.#sessionId = options.sessionId;
+    this.#nativeRef = nativeSessionRefSchema.parse({
+      harnessId: this.harnessId,
+      nativeSessionId: this.#sessionId,
+      formatVersion: 1,
+    });
+    this.initialState = this.#openMode === "resume" ? { nativeRef: this.#nativeRef } : {};
+    this.#statePublished = this.#openMode === "resume";
     this.outputs = this.#channel.outputs;
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    return {
-      ok: false,
-      error: {
-        code: "unsupported",
-        message: "Claude Code history Snapshot is not implemented",
-        retryable: false,
-      },
-    };
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Claude Code Session is not open") };
+    }
+    if (this.#active || this.#acceptingTurn || this.#readingHistory) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session cannot read history during another operation",
+          retryable: true,
+        },
+      };
+    }
+    if (!this.#statePublished) return { ok: true, value: { turns: [] } };
+
+    this.#readingHistory = true;
+    try {
+      let messages: unknown[];
+      try {
+        messages = await this.#readSessionMessages({ cwd: this.#cwd, sessionId: this.#sessionId });
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Claude Code history could not be read",
+            retryable: true,
+          },
+        };
+      }
+      if (messages.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "Claude Code Native Session is unavailable",
+            retryable: false,
+          },
+        };
+      }
+      try {
+        return { ok: true, value: mapClaudeSnapshot(messages, this.#sessionId) };
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "protocolError",
+            message: "Claude Code history is invalid",
+            retryable: false,
+          },
+        };
+      }
+    } finally {
+      this.#readingHistory = false;
+    }
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -211,7 +276,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#acceptingTurn || this.#active) {
+    if (this.#acceptingTurn || this.#active || this.#readingHistory) {
       return {
         ok: false,
         error: {
@@ -385,6 +450,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const transport = this.#createTransport({
       cwd: this.#cwd,
       sessionId: this.#sessionId,
+      openMode: this.#openMode,
       onFault: () => this.#fault(faultError()),
     });
     try {
@@ -402,13 +468,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#statePublished = true;
     this.#event({
       type: "session.state.changed",
-      state: {
-        nativeRef: {
-          harnessId: this.harnessId,
-          nativeSessionId: this.#sessionId,
-          formatVersion: 1,
-        },
-      },
+      state: { nativeRef: this.#nativeRef },
     });
   }
 
@@ -572,6 +632,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           environment: options.environment ?? process.env,
           closeTimeoutMs: this.#closeTimeoutMs,
         }),
+      readSessionMessages: ({ cwd, sessionId }) => getSessionMessages(sessionId, { dir: cwd }),
     };
   }
 
@@ -619,17 +680,17 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind !== "create") {
+    if (input.kind === "fork") {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: `Claude Code ${input.kind} is not implemented`,
+          message: "Claude Code fork is not implemented",
           retryable: false,
         },
       };
     }
-    if (input.model) {
+    if (input.kind === "create" && input.model) {
       return {
         ok: false,
         error: {
@@ -639,11 +700,29 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    const nativeRef =
+      input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;
+    if (nativeRef && (!nativeRef.success || nativeRef.data.harnessId !== this.harnessId)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Adapter cannot resume another Harness's Native Session",
+          retryable: false,
+        },
+      };
+    }
     const session = new ClaudeHarnessSession(
       input.cwd,
       this.#dependencies,
       this.#closeTimeoutMs,
       () => this.#sessions.delete(session),
+      {
+        openMode: input.kind,
+        sessionId: nativeRef?.success
+          ? nativeRef.data.nativeSessionId
+          : this.#dependencies.randomUUID(),
+      },
     );
     this.#sessions.add(session);
     return { ok: true, value: session };

@@ -79,12 +79,14 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
 }
 
 function fixture() {
+  const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
   const inspectInstallation = vi.fn();
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
     inspectInstallation,
+    readSessionMessages: vi.fn(async () => structuredClone(history)),
     createTransport: vi.fn((input) => {
       const transport = new FakeClaudeTransport(input.sessionId);
       transports.push(transport);
@@ -92,7 +94,7 @@ function fixture() {
     }),
   };
   const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 50 }, dependencies);
-  return { adapter, dependencies, inspectInstallation, transports };
+  return { adapter, dependencies, history, inspectInstallation, transports };
 }
 
 async function openSession(adapter: ClaudeCodeAdapter): Promise<HarnessSession> {
@@ -175,7 +177,67 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("returns unsupported for history open modes without starting a Transport", async () => {
+  it("reads and resumes Native history without starting a Transport until the next Turn", async () => {
+    const { adapter, dependencies, history, transports } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    history.push(
+      {
+        type: "user",
+        uuid: "source-user",
+        session_id: "source-session",
+        message: { role: "user", content: "source prompt" },
+      },
+      {
+        type: "assistant",
+        uuid: "source-assistant",
+        session_id: "source-session",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "source response" }],
+          stop_reason: "end_turn",
+        },
+      },
+    );
+
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState).toEqual({ nativeRef: sourceRef });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: { nativeTurnKey: "source-user" },
+            input: [{ type: "text", text: "source prompt" }],
+            items: [{ item: { type: "agentMessage", text: "source response" } }],
+          },
+        ],
+      },
+    });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await expect(opened.value.execute(textTurn("continued"))).resolves.toMatchObject({ ok: true });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/synthetic",
+        sessionId: "source-session",
+        openMode: "resume",
+      }),
+    );
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await opened.value.close();
+  });
+
+  it("keeps Fork unsupported and rejects missing resumed history", async () => {
     const { adapter, dependencies } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -189,13 +251,17 @@ describe("Claude Code HarnessAdapter", () => {
       formatVersion: 1,
     });
 
-    await expect(
-      adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    const resumed = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionNotFound" },
+    });
     await expect(
       adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     expect(dependencies.createTransport).not.toHaveBeenCalled();
+    await resumed.value.close();
   });
 
   it("starts lazily and emits a complete text lifecycle", async () => {
@@ -563,6 +629,7 @@ describe("Claude Code HarnessAdapter", () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => "claude-id",
       inspectInstallation: () => undefined,
+      readSessionMessages: async () => [],
       createTransport: () => ({
         sessionId: "claude-id",
         start: async () => {

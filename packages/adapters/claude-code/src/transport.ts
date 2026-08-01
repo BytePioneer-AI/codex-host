@@ -52,11 +52,13 @@ export interface ClaudeTurnTransport {
 export interface ClaudeTransportFactoryInput {
   cwd: string;
   sessionId: string;
+  openMode: "create" | "resume";
   onFault(error: unknown): void;
 }
 
 export interface ClaudeAdapterDependencies {
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
   inspectInstallation(): void;
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
   randomUUID(): string;
 }

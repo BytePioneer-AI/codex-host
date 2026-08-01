@@ -1,0 +1,129 @@
+import { describe, expect, it } from "vitest";
+
+import { mapClaudeSnapshot } from "../src/claude-history.js";
+
+const sessionId = "claude-session";
+
+function message(type: "user" | "assistant", uuid: string, content: unknown, stopReason?: string) {
+  return {
+    type,
+    uuid,
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: {
+      role: type,
+      content,
+      ...(stopReason ? { stop_reason: stopReason } : {}),
+    },
+  };
+}
+
+describe("Claude history mapping", () => {
+  it("groups human Turns around native Tool messages with stable identities", () => {
+    const history = [
+      message("user", "user-1", "first"),
+      message(
+        "assistant",
+        "assistant-1",
+        [
+          { type: "text", text: "checking" },
+          { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+        ],
+        "tool_use",
+      ),
+      message("user", "tool-result-1", [
+        { type: "tool_result", tool_use_id: "tool-1", content: "ignored" },
+      ]),
+      message("assistant", "assistant-2", [{ type: "text", text: "done" }], "end_turn"),
+      message("user", "user-2", [{ type: "text", text: "second" }]),
+      message("assistant", "assistant-3", [{ type: "text", text: "answer" }], "end_turn"),
+    ];
+
+    const first = mapClaudeSnapshot(history, sessionId);
+    const repeated = mapClaudeSnapshot(structuredClone(history), sessionId);
+
+    expect(repeated).toEqual(first);
+    expect(first).toEqual({
+      turns: [
+        {
+          nativeTurnRef: {
+            harnessId: "claude-code",
+            nativeSessionId: sessionId,
+            nativeTurnKey: "user-1",
+            formatVersion: 1,
+          },
+          input: [{ type: "text", text: "first" }],
+          items: [
+            {
+              item: {
+                type: "agentMessage",
+                itemId: "claude-item-v1-assistant-1",
+                text: "checking",
+              },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: {
+                type: "agentMessage",
+                itemId: "claude-item-v1-assistant-2",
+                text: "done",
+              },
+              outcome: { status: "succeeded" },
+            },
+          ],
+          outcome: {
+            status: "unknown",
+            reason: "Claude history does not include complete Result terminal evidence",
+          },
+        },
+        {
+          nativeTurnRef: {
+            harnessId: "claude-code",
+            nativeSessionId: sessionId,
+            nativeTurnKey: "user-2",
+            formatVersion: 1,
+          },
+          input: [{ type: "text", text: "second" }],
+          items: [
+            {
+              item: {
+                type: "agentMessage",
+                itemId: "claude-item-v1-assistant-3",
+                text: "answer",
+              },
+              outcome: { status: "succeeded" },
+            },
+          ],
+          outcome: {
+            status: "unknown",
+            reason: "Claude history does not include complete Result terminal evidence",
+          },
+        },
+      ],
+    });
+  });
+
+  it("keeps an incomplete historical Turn without inventing success evidence", () => {
+    expect(mapClaudeSnapshot([message("user", "user-1", "first")], sessionId)).toMatchObject({
+      turns: [
+        {
+          nativeTurnRef: { nativeTurnKey: "user-1" },
+          items: [],
+          outcome: { status: "unknown" },
+        },
+      ],
+    });
+  });
+
+  it("rejects mismatched Sessions and duplicate native message identities", () => {
+    const wrongSession = { ...message("user", "user-1", "first"), session_id: "other" };
+    expect(() => mapClaudeSnapshot([wrongSession], sessionId)).toThrow("invalid message identity");
+    expect(() =>
+      mapClaudeSnapshot(
+        [message("user", "same", "first"), message("assistant", "same", "answer", "end_turn")],
+        sessionId,
+      ),
+    ).toThrow("duplicate message IDs");
+  });
+});

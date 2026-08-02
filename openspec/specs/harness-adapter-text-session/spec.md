@@ -40,8 +40,14 @@ A Session SHALL expose one single-consumer ordered output stream. Every accepted
 
 #### Scenario: Successful text Turn
 
-- **WHEN** Pi emits text deltas and settles successfully for an accepted Turn
+- **WHEN** Pi emits text deltas and `agent_settled`, and the subsequent native state readback confirms `isStreaming === false`
 - **THEN** outputs contain `turn.started`, Agent Message `item.started`, ordered `text.append` updates, `item.completed`, and `turn.completed(succeeded)` in that order
+
+#### Scenario: Native settlement cannot be confirmed
+
+- **WHEN** Pi emits `agent_settled` but native state remains Streaming, is malformed, or cannot be read back within the RPC Command bound
+- **THEN** the started lifecycle SHALL complete exactly once with a failed outcome
+- **AND** the Session SHALL emit `session.faulted`
 
 #### Scenario: Accepted Turn fails
 
@@ -60,6 +66,12 @@ A Session SHALL expose one single-consumer ordered output stream. Every accepted
 - **WHEN** a second Turn is submitted while one Turn is active
 - **THEN** the Session rejects it with `sessionBusy`
 - **AND** the active Turn lifecycle remains unchanged
+
+#### Scenario: Accepted Turn runs for an extended duration
+
+- **WHEN** an accepted native Turn remains active without a native failure, process exit, protocol fault, cancellation, or Session close
+- **THEN** the Session SHALL continue waiting for the native terminal condition
+- **AND** elapsed wall-clock time alone SHALL NOT fail the Turn or fault the Session
 
 ### Requirement: Session state and faults use the ordered stream
 

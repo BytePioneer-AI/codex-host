@@ -1514,6 +1514,35 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("fails the Turn and faults the Session when Abort is rejected", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("cancel failure"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    transport?.abort.mockRejectedValueOnce(new Error("synthetic Abort rejection"));
+
+    await expect(session.execute(cancelTurn("cancel failure"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "session.faulted" });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    expect(transport?.close).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
   it("rejects a concurrent Turn while transport startup is reserved", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);

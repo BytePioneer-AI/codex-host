@@ -115,7 +115,7 @@ export interface PiRpcSessionOptions {
   forkSessionFile?: string;
   model?: PiNativeModelRef;
   commandTimeoutMs?: number;
-  turnTimeoutMs?: number;
+  cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onFault?: (error: PiRpcFaultError) => void;
 }
@@ -147,13 +147,13 @@ interface ActiveTurn {
   onEvent(event: PiTurnEvent): void;
   resolve(value: PiTurnResult): void;
   reject(error: Error): void;
-  timeout: NodeJS.Timeout;
   failure: Error | null;
   sawTool: boolean;
   tools: Map<string, string>;
   interactions: Map<string, { request: PiInteractionRequest; timeout: NodeJS.Timeout | null }>;
-  settled: boolean;
+  settlement: "pending" | "confirming" | "confirmed";
   cancellation: "none" | "requesting" | "accepted";
+  cancellationTimeout: NodeJS.Timeout | null;
   abortPromise: Promise<void> | null;
 }
 
@@ -179,9 +179,14 @@ function parseNativeModel(value: unknown, context: string): PiNativeModelRef | n
   return { provider: value.provider, id: value.id };
 }
 
-function parseSessionState(response: Record<string, unknown>): PiSessionState {
+function sessionStateData(response: Record<string, unknown>): Record<string, unknown> {
   const data = isRecord(response.data) ? response.data : null;
   if (!data) throw new PiRpcFaultError("protocolError", "Pi RPC state response has no data");
+  return data;
+}
+
+function parseSessionState(response: Record<string, unknown>): PiSessionState {
+  const data = sessionStateData(response);
   const model = parseNativeModel(data.model, "state");
   if (!nonBlankString(data.sessionId)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
@@ -201,6 +206,14 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     thinkingLevel: thinkingLevel?.data ?? null,
     contextUsage: optionalPiStateContextUsage(data.contextUsage),
   };
+}
+
+function parseSessionStreaming(response: Record<string, unknown>): boolean {
+  const isStreaming = sessionStateData(response).isStreaming;
+  if (typeof isStreaming !== "boolean") {
+    throw new PiRpcFaultError("protocolError", "Pi RPC state has no Streaming status");
+  }
+  return isStreaming;
 }
 
 function parseSessionHistory(response: Record<string, unknown>): PiSessionHistory {
@@ -415,7 +428,7 @@ const nodeProcessAdapter: PiRpcProcessAdapter = {
 
 export class PiRpcSession {
   readonly #options: Required<
-    Pick<PiRpcSessionOptions, "commandTimeoutMs" | "turnTimeoutMs" | "closeTimeoutMs">
+    Pick<PiRpcSessionOptions, "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs">
   > &
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
@@ -439,7 +452,7 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      turnTimeoutMs: 180_000,
+      cancelTimeoutMs: 2_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
@@ -612,9 +625,6 @@ export class PiRpcSession {
     if (text.length === 0) throw new Error("Pi text Turn must not be empty");
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#fail(new PiRpcFaultError("protocolError", "Pi Turn timed out"));
-      }, this.#options.turnTimeoutMs);
       this.#activeTurn = {
         text: "",
         streamedMessageText: "",
@@ -622,13 +632,13 @@ export class PiRpcSession {
         onEvent,
         resolve,
         reject,
-        timeout,
         failure: null,
         sawTool: false,
         tools: new Map(),
         interactions: new Map(),
-        settled: false,
+        settlement: "pending",
         cancellation: "none",
+        cancellationTimeout: null,
         abortPromise: null,
       };
     });
@@ -689,6 +699,15 @@ export class PiRpcSession {
     }
     if (active.abortPromise) return active.abortPromise;
     active.cancellation = "requesting";
+    active.cancellationTimeout = setTimeout(() => {
+      this.#terminateFailedCancellation(
+        active,
+        new PiRpcFaultError(
+          "protocolError",
+          "Pi Turn cancellation did not settle within its bound",
+        ),
+      );
+    }, this.#options.cancelTimeoutMs);
     const aborting = this.#send("abort", {})
       .then(() => {
         if (this.#activeTurn !== active) return;
@@ -696,14 +715,24 @@ export class PiRpcSession {
         this.#finishSettledTurn(active);
       })
       .catch((error: unknown) => {
-        if (this.#activeTurn === active) {
-          active.cancellation = "none";
-          this.#finishSettledTurn(active);
-        }
-        throw error;
+        if (this.#activeTurn !== active) throw error;
+        const fault =
+          error instanceof PiRpcFaultError
+            ? error
+            : new PiRpcFaultError("protocolError", `Pi RPC Abort failed: ${message(error)}`);
+        this.#terminateFailedCancellation(active, fault);
+        throw fault;
       });
     active.abortPromise = aborting;
     return aborting;
+  }
+
+  #terminateFailedCancellation(active: ActiveTurn, fault: PiRpcFaultError): void {
+    if (this.#activeTurn !== active) return;
+    if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    active.cancellationTimeout = null;
+    this.#fail(fault);
+    void this.close().catch(() => undefined);
   }
 
   async close(): Promise<void> {
@@ -808,8 +837,9 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "agent_settled") {
-      active.settled = true;
-      this.#finishSettledTurn(active);
+      if (active.settlement !== "pending") return;
+      active.settlement = "confirming";
+      void this.#confirmSettledTurn(active);
     }
   }
 
@@ -989,10 +1019,40 @@ export class PiRpcSession {
     });
   }
 
+  async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
+    try {
+      const response = await this.#send("get_state", {});
+      const state = parseSessionState(response);
+      if (parseSessionStreaming(response)) {
+        throw new PiRpcFaultError("protocolError", "Pi RPC agent_settled state is still Streaming");
+      }
+      if (this.#activeTurn !== active) return;
+      this.#state = state;
+      active.settlement = "confirmed";
+      this.#finishSettledTurn(active);
+    } catch (error) {
+      if (this.#activeTurn !== active) return;
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError(
+              "protocolError",
+              `Pi RPC stable Turn state could not be confirmed: ${message(error)}`,
+            );
+      this.#fail(fault);
+    }
+  }
+
   #finishSettledTurn(active: ActiveTurn): void {
-    if (this.#activeTurn !== active || !active.settled || active.cancellation === "requesting") {
+    if (
+      this.#activeTurn !== active ||
+      active.settlement !== "confirmed" ||
+      active.cancellation === "requesting"
+    ) {
       return;
     }
+    if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    active.cancellationTimeout = null;
     this.#closeInteractions(
       active,
       active.cancellation === "accepted" ? "cancelled" : "superseded",
@@ -1003,7 +1063,6 @@ export class PiRpcSession {
       );
       return;
     }
-    clearTimeout(active.timeout);
     this.#activeTurn = null;
     if (active.cancellation === "accepted") {
       active.resolve({ text: active.text, cancelled: true });
@@ -1088,7 +1147,7 @@ export class PiRpcSession {
   #rejectActiveTurn(error: Error): void {
     const active = this.#activeTurn;
     if (!active) return;
-    clearTimeout(active.timeout);
+    if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
     active.reject(error);

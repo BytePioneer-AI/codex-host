@@ -15,11 +15,14 @@ import {
 
 type Scenario =
   | "final-only"
+  | "settled-streaming"
   | "assistant-error"
   | "retry-success"
   | "empty"
   | "tools"
+  | "long-running"
   | "cancel"
+  | "cancel-no-settle"
   | "malformed-tool"
   | "interaction"
   | "interaction-timeout"
@@ -49,6 +52,7 @@ class FakePiRpcProcess extends EventEmitter {
   #sessionId = "synthetic-session";
   #sessionFile: string | null = "/synthetic/session.jsonl";
   #stateRequestCount = 0;
+  #isStreaming = false;
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
   #thinkingLevel = "high";
@@ -108,6 +112,7 @@ class FakePiRpcProcess extends EventEmitter {
               : this.#modelId,
         },
         thinkingLevel: this.#thinkingLevel,
+        isStreaming: this.#isStreaming,
         contextUsage: { tokens: 45, contextWindow: 200 },
       });
       return;
@@ -224,6 +229,7 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command);
       return;
     }
+    if (command.type === "prompt") this.#isStreaming = true;
     if (
       command.type === "prompt" &&
       [
@@ -239,8 +245,9 @@ class FakePiRpcProcess extends EventEmitter {
     this.#respond(command);
     if (
       command.type === "abort" &&
-      (this.#scenario === "cancel" || this.#scenario === "interaction-cancel")
+      ["cancel", "cancel-no-settle", "interaction-cancel"].includes(this.#scenario)
     ) {
+      if (this.#scenario === "cancel-no-settle") return;
       if (this.#scenario === "cancel") {
         this.#output({
           type: "tool_execution_end",
@@ -250,17 +257,24 @@ class FakePiRpcProcess extends EventEmitter {
           isError: true,
         });
       }
-      this.#output({ type: "agent_settled" });
+      this.#settleAgent();
       return;
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
-    if (this.#scenario === "final-only" || (this.#scenario === "cancel" && this.#promptCount > 1)) {
-      const text = this.#scenario === "cancel" ? "continued" : "synthetic final text";
+    if (
+      this.#scenario === "final-only" ||
+      this.#scenario === "settled-streaming" ||
+      ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
+    ) {
+      const text =
+        this.#scenario === "cancel" || this.#scenario === "long-running"
+          ? "continued"
+          : "synthetic final text";
       const message = { role: "assistant", content: [{ type: "text", text }] };
       this.#output({ type: "message_start", message });
       this.#output({ type: "message_end", message });
-      this.#output({ type: "agent_settled" });
+      this.#settleAgent();
       return;
     }
     if (this.#scenario === "assistant-error" || this.#scenario === "retry-success") {
@@ -279,7 +293,7 @@ class FakePiRpcProcess extends EventEmitter {
         willRetry: this.#scenario === "retry-success",
       });
       if (this.#scenario === "assistant-error") {
-        this.#output({ type: "agent_settled" });
+        this.#settleAgent();
         return;
       }
       this.#output({
@@ -299,11 +313,11 @@ class FakePiRpcProcess extends EventEmitter {
       this.#output({ type: "turn_end", message: recovered, toolResults: [] });
       this.#output({ type: "agent_end", messages: [recovered], willRetry: false });
       this.#output({ type: "auto_retry_end", success: true, attempt: 1 });
-      this.#output({ type: "agent_settled" });
+      this.#settleAgent();
       return;
     }
     if (this.#scenario === "empty") {
-      this.#output({ type: "agent_settled" });
+      this.#settleAgent();
       return;
     }
     if (this.#scenario === "malformed-tool") {
@@ -314,7 +328,32 @@ class FakePiRpcProcess extends EventEmitter {
       });
       return;
     }
-    if (this.#scenario === "cancel") {
+    if (this.#scenario === "long-running") {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "long-tool",
+        toolName: "gate_long_tool",
+        args: {},
+      });
+      setTimeout(() => {
+        this.#output({
+          type: "tool_execution_end",
+          toolCallId: "long-tool",
+          toolName: "gate_long_tool",
+          result: { content: [{ type: "text", text: "complete" }] },
+          isError: false,
+        });
+        const message = {
+          role: "assistant",
+          content: [{ type: "text", text: "long turn complete" }],
+        };
+        this.#output({ type: "message_start", message });
+        this.#output({ type: "message_end", message });
+        this.#settleAgent();
+      }, 180_001);
+      return;
+    }
+    if (this.#scenario === "cancel" || this.#scenario === "cancel-no-settle") {
       this.#output({
         type: "tool_execution_start",
         toolCallId: "long-tool",
@@ -353,7 +392,7 @@ class FakePiRpcProcess extends EventEmitter {
     const message = { role: "assistant", content: [{ type: "text", text: "answered" }] };
     this.#output({ type: "message_start", message });
     this.#output({ type: "message_end", message });
-    this.#output({ type: "agent_settled" });
+    this.#settleAgent();
   }
 
   #toolEvents(): void {
@@ -401,6 +440,11 @@ class FakePiRpcProcess extends EventEmitter {
     const message = { role: "assistant", content: [{ type: "text", text: "tools complete" }] };
     this.#output({ type: "message_start", message });
     this.#output({ type: "message_end", message });
+    this.#settleAgent();
+  }
+
+  #settleAgent(): void {
+    if (this.#scenario !== "settled-streaming") this.#isStreaming = false;
     this.#output({ type: "agent_settled" });
   }
 
@@ -422,7 +466,7 @@ class FakePiRpcProcess extends EventEmitter {
 function session(
   scenario: Scenario,
   onFault = vi.fn(),
-  options: { commandTimeoutMs?: number; turnTimeoutMs?: number } = {},
+  options: { commandTimeoutMs?: number; cancelTimeoutMs?: number } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
@@ -433,7 +477,7 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      turnTimeoutMs: options.turnTimeoutMs ?? 2_000,
+      cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
       closeTimeoutMs: 500,
       onFault,
     },
@@ -459,7 +503,6 @@ describe("Pi RPC Turn aggregation", () => {
       {
         cwd: process.cwd(),
         commandTimeoutMs: 2_000,
-        turnTimeoutMs: 2_000,
         closeTimeoutMs: 500,
       },
       { spawn: spawnProcess },
@@ -605,6 +648,18 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     expect(events).toEqual([{ type: "text.delta", delta: "synthetic final text" }]);
+    await rpc.close();
+  });
+
+  it("faults when agent_settled does not agree with the native Streaming state", async () => {
+    const onFault = vi.fn();
+    const rpc = session("settled-streaming", onFault);
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
+      "agent_settled state is still Streaming",
+    );
+    expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await rpc.close();
   });
 
@@ -804,6 +859,35 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("fails and closes a cancellation that does not reach stable settlement", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("cancel-no-settle", onFault, { cancelTimeoutMs: 10 });
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me", () => undefined);
+      const rejected = expect(turn).rejects.toThrow(
+        "Pi Turn cancellation did not settle within its bound",
+      );
+      await rpc.abort();
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await rejected;
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "protocolError",
+          message: "Pi Turn cancellation did not settle within its bound",
+        }),
+      );
+      await expect(rpc.runTurn("unavailable", () => undefined)).rejects.toThrow("unavailable");
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("round-trips an Interaction that arrives before the Prompt response", async () => {
     const rpc = session("interaction");
     const events: PiTurnEvent[] = [];
@@ -881,16 +965,33 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("faults and rejects a Tool Turn that cannot settle before its bound", async () => {
+  it("allows a Tool Turn to run beyond the former wall-clock bound", async () => {
+    vi.useFakeTimers();
     const onFault = vi.fn();
-    const rpc = session("cancel", onFault, { turnTimeoutMs: 10 });
-    await rpc.start();
+    const rpc = session("long-running", onFault);
+    const events: PiTurnEvent[] = [];
 
-    await expect(rpc.runTurn("timeout", () => undefined)).rejects.toThrow("Pi Turn timed out");
-    expect(onFault).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "protocolError", message: "Pi Turn timed out" }),
-    );
-    await rpc.close();
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("long task", (event) => events.push(event));
+
+      await vi.advanceTimersByTimeAsync(180_001);
+
+      await expect(turn).resolves.toEqual({ text: "long turn complete", cancelled: false });
+      expect(events.map(({ type }) => type)).toEqual([
+        "tool.started",
+        "tool.completed",
+        "text.delta",
+      ]);
+      expect(onFault).not.toHaveBeenCalled();
+      await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
   });
 
   it("faults a known malformed Tool lifecycle instead of leaving the Turn pending", async () => {

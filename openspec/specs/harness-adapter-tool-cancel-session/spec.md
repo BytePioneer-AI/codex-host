@@ -61,7 +61,7 @@ PiAdapter SHALL emit a File Change only for a successful Pi Edit result carrying
 - **AND** it SHALL NOT emit a File Change or turn Diff
 
 ### Requirement: Cancellation waits for stable native stop
-A successful `turn.cancel` command SHALL request Pi Abort but SHALL NOT complete the Turn until Pi reaches the proven stable settled state. Repeated cancellation SHALL be idempotent, and cancellation, close, process exit, timeout, and Tool completion races SHALL produce one Turn terminal event.
+A successful `turn.cancel` command SHALL request Pi Abort but SHALL NOT complete the Turn until Pi reaches the proven stable settled state. Repeated cancellation SHALL be idempotent, and cancellation requests, cancellation or close supervision timeouts, process exit, and Tool completion races SHALL produce one Turn terminal event.
 
 #### Scenario: Active Tool Turn is cancelled
 - **WHEN** Host requests cancellation while Pi is streaming or running a Tool
@@ -69,7 +69,7 @@ A successful `turn.cancel` command SHALL request Pi Abort but SHALL NOT complete
 - **AND** all started Items SHALL terminate before one `turn.completed(cancelled)`
 
 #### Scenario: Cancellation cannot be proven
-- **WHEN** Abort fails, times out, the process exits unexpectedly, or stable stop cannot be established
+- **WHEN** Abort is rejected, its RPC Command times out, the cancellation grace period expires before stable stop, or the process exits unexpectedly
 - **THEN** the active Turn SHALL complete once with a failed outcome
 - **AND** PiAdapter SHALL NOT report the Turn as cancelled
 

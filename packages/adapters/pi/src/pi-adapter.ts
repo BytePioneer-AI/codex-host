@@ -83,7 +83,7 @@ export interface PiAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
-  turnTimeoutMs?: number;
+  cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   toolOutputLimit?: number;
 }
@@ -768,8 +768,12 @@ class PiHarnessSession implements HarnessSession {
       await transport.abort();
       return { ok: true, value: { cancellationRequested: true } };
     } catch (error) {
-      if (this.#active === active) active.cancellationRequested = false;
-      return { ok: false, error: normalizedError(error, "nativeFailure") };
+      const normalized = normalizedError(error, "nativeFailure");
+      if (this.#active === active) {
+        this.#fault(new PiAdapterFaultError(normalized));
+        void transport.close().catch(() => undefined);
+      }
+      return { ok: false, error: normalized };
     }
   }
 

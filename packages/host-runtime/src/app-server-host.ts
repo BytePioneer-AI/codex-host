@@ -1711,13 +1711,15 @@ export class AppServerHost {
     if (requestedModel || requestedThinkingOptionId || requestedPermissionModeId) {
       const transportModelId = params.model as string;
       thread.transportModelId = transportModelId;
-      try {
-        thread.record = await this.#repository.setTransportModelId(
-          thread.record.hostThreadId,
-          transportModelId,
-        );
-      } catch (error) {
-        this.#diagnose(error);
+      if (requestedPermissionModeId) {
+        try {
+          thread.record = await this.#repository.setTransportModelId(
+            thread.record.hostThreadId,
+            transportModelId,
+          );
+        } catch (error) {
+          this.#diagnose(error);
+        }
       }
     }
     let text: string;

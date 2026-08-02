@@ -27,6 +27,7 @@ describe("Claude history mapping", () => {
         "assistant",
         "assistant-1",
         [
+          { type: "thinking", thinking: "inspect first", signature: "ignored" },
           { type: "text", text: "checking" },
           { type: "tool_use", id: "tool-1", name: "Read", input: {} },
         ],
@@ -35,7 +36,15 @@ describe("Claude history mapping", () => {
       message("user", "tool-result-1", [
         { type: "tool_result", tool_use_id: "tool-1", content: "ignored" },
       ]),
-      message("assistant", "assistant-2", [{ type: "text", text: "done" }], "end_turn"),
+      message(
+        "assistant",
+        "assistant-2",
+        [
+          { type: "redacted_thinking", data: "encrypted" },
+          { type: "text", text: "done" },
+        ],
+        "end_turn",
+      ),
       message("user", "user-2", [{ type: "text", text: "second" }]),
       message("assistant", "assistant-3", [{ type: "text", text: "answer" }], "end_turn"),
     ];
@@ -55,6 +64,14 @@ describe("Claude history mapping", () => {
           },
           input: [{ type: "text", text: "first" }],
           items: [
+            {
+              item: {
+                type: "reasoning",
+                itemId: "claude-item-v1-assistant-1-reasoning",
+                text: "inspect first",
+              },
+              outcome: { status: "succeeded" },
+            },
             {
               item: {
                 type: "agentMessage",
@@ -104,12 +121,22 @@ describe("Claude history mapping", () => {
     });
   });
 
-  it("keeps an incomplete historical Turn without inventing success evidence", () => {
-    expect(mapClaudeSnapshot([message("user", "user-1", "first")], sessionId)).toMatchObject({
+  it("keeps an incomplete reasoning-only historical Turn without inventing success", () => {
+    expect(
+      mapClaudeSnapshot(
+        [
+          message("user", "user-1", "first"),
+          message("assistant", "assistant-reasoning", [
+            { type: "thinking", thinking: "visible but not terminal", signature: "ignored" },
+          ]),
+        ],
+        sessionId,
+      ),
+    ).toMatchObject({
       turns: [
         {
           nativeTurnRef: { nativeTurnKey: "user-1" },
-          items: [],
+          items: [{ item: { type: "reasoning", text: "visible but not terminal" } }],
           outcome: { status: "unknown" },
         },
       ],

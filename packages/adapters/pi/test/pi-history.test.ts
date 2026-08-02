@@ -31,6 +31,7 @@ const history: PiSessionHistory = {
         role: "assistant",
         stopReason: "toolUse",
         content: [
+          { type: "thinking", thinking: "inspect first", thinkingSignature: "ignored" },
           { type: "text", text: "checking" },
           { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } },
         ],
@@ -114,6 +115,13 @@ describe("Pi active-branch history", () => {
       model: encodePiModelRef({ provider: "provider-a", id: "model-a" }),
       outcome: { status: "succeeded" },
       items: [
+        {
+          item: {
+            type: "reasoning",
+            itemId: "pi-item-v1-assistant-1-reasoning-0",
+            text: "inspect first",
+          },
+        },
         { item: { type: "agentMessage", text: "checking" } },
         {
           item: {
@@ -133,6 +141,100 @@ describe("Pi active-branch history", () => {
       items: [{ item: { type: "agentMessage", text: "done" } }],
     });
     expect(mapPiSnapshot(history, state)).toEqual(snapshot);
+  });
+
+  it("replays interleaved Assistant messages and Tools in native order", () => {
+    const ids = ["user", "assistant-1", "tool-1", "assistant-2", "tool-2", "assistant-3"];
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "work" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "first" },
+          { type: "toolCall", id: "call-1", name: "read", arguments: {} },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        isError: false,
+        content: [{ type: "text", text: "one" }],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "second" },
+          { type: "toolCall", id: "call-2", name: "read", arguments: {} },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-2",
+        toolName: "read",
+        isError: false,
+        content: [{ type: "text", text: "two" }],
+      },
+      { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "third" }] },
+    ];
+    const boundaryHistory: PiSessionHistory = {
+      entries: messages.map((message, index) => ({
+        id: ids[index] as string,
+        parentId: ids[index - 1] ?? null,
+        type: "message",
+        message,
+      })),
+      leafId: ids.at(-1) as string,
+    };
+
+    const items = mapPiSnapshot(boundaryHistory, state).turns[0]?.items ?? [];
+    expect(
+      items.map(({ item }) =>
+        item.type === "agentMessage" ? `agent:${item.text}` : `tool:${item.type}`,
+      ),
+    ).toEqual([
+      "agent:first",
+      "tool:toolExecution",
+      "agent:second",
+      "tool:toolExecution",
+      "agent:third",
+    ]);
+    expect(items.map(({ item }) => item.itemId)).toEqual([
+      "pi-item-v1-assistant-1-assistant-0",
+      "pi-item-v1-assistant-1-tool-1",
+      "pi-item-v1-assistant-2-assistant-0",
+      "pi-item-v1-assistant-2-tool-1",
+      "pi-item-v1-assistant-3-assistant-0",
+    ]);
+  });
+
+  it("does not infer success from reasoning-only history", () => {
+    const reasoningOnly: PiSessionHistory = {
+      entries: [
+        {
+          id: "reasoning-user",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "question" }] },
+        },
+        {
+          id: "reasoning-assistant",
+          parentId: "reasoning-user",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "visible but not terminal" }],
+          },
+        },
+      ],
+      leafId: "reasoning-assistant",
+    };
+
+    const turn = mapPiSnapshot(reasoningOnly, state).turns[0];
+    expect(turn).toMatchObject({
+      outcome: { status: "unknown" },
+      items: [{ item: { type: "reasoning", text: "visible but not terminal" } }],
+    });
   });
 
   it("resolves middle and terminal logical Fork boundaries", () => {

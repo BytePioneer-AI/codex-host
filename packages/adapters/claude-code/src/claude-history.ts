@@ -30,6 +30,15 @@ function textParts(value: unknown): string[] {
   );
 }
 
+function thinkingParts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) =>
+    isRecord(part) && part.type === "thinking" && typeof part.thinking === "string"
+      ? [part.thinking]
+      : [],
+  );
+}
+
 function conversationMessages(values: unknown[], sessionId: string): ClaudeHistoryMessage[] {
   const messages: ClaudeHistoryMessage[] = [];
   const ids = new Set<string>();
@@ -112,18 +121,51 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
       input: textParts(user.message.content).map((text) => ({ type: "text", text })),
       items: turnMessages.flatMap((message) => {
         if (message.type !== "assistant") return [];
-        const text = textParts(message.message.content).join("");
-        if (text.length === 0) return [];
-        return [
-          {
-            item: {
-              type: "agentMessage" as const,
-              itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
-              text,
-            },
-            outcome: itemOutcome(outcome),
-          },
-        ];
+        const content = message.message.content;
+        const text = textParts(content).join("");
+        const reasoning = thinkingParts(content).join("");
+        if (!Array.isArray(content)) {
+          return text.length > 0
+            ? [
+                {
+                  item: {
+                    type: "agentMessage" as const,
+                    itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                    text,
+                  },
+                  outcome: itemOutcome(outcome),
+                },
+              ]
+            : [];
+        }
+        const items = [];
+        let projectedReasoning = false;
+        let projectedText = false;
+        for (const block of content) {
+          if (!isRecord(block)) continue;
+          if (block.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
+            items.push({
+              item: {
+                type: "reasoning" as const,
+                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}-reasoning`),
+                text: reasoning,
+              },
+              outcome: itemOutcome(outcome),
+            });
+            projectedReasoning = true;
+          } else if (block.type === "text" && !projectedText && text.length > 0) {
+            items.push({
+              item: {
+                type: "agentMessage" as const,
+                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                text,
+              },
+              outcome: itemOutcome(outcome),
+            });
+            projectedText = true;
+          }
+        }
+        return items;
       }),
       outcome,
     });

@@ -644,9 +644,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         const active = this.#active;
         if (!active) continue;
         const interpreted = active.accumulator.consume(message);
-        for (const delta of interpreted.deltas) {
-          active.onEvent({ type: "text.delta", delta });
-        }
+        for (const event of interpreted.events) active.onEvent(event);
         if (interpreted.terminal) {
           this.#closeInteractions(active, "superseded");
           this.#active = null;

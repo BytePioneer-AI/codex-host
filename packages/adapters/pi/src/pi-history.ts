@@ -2,6 +2,7 @@ import type {
   HostAgentMessageItem,
   HostItemOutcome,
   HostItemSnapshot,
+  HostReasoningItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
   HostToolOutput,
@@ -52,6 +53,17 @@ function textContent(value: unknown): string {
         isRecord(part) && part.type === "text" && typeof part.text === "string",
     )
     .map((part) => part.text as string)
+    .join("");
+}
+
+function thinkingContent(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value
+    .filter(
+      (part): part is Record<string, unknown> =>
+        isRecord(part) && part.type === "thinking" && typeof part.thinking === "string",
+    )
+    .map((part) => part.thinking as string)
     .join("");
 }
 
@@ -159,17 +171,32 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
     const content = Array.isArray(nativeMessage.content) ? nativeMessage.content : [];
     if (nativeMessage.role === "assistant") {
       const text = textContent(content);
-      if (text.length > 0) {
-        const item: HostAgentMessageItem = {
-          type: "agentMessage",
-          itemId: itemId(entry.id, "assistant", 0),
-          text,
-        };
-        snapshots.push({ item, outcome: itemOutcome(outcome) });
-      }
+      const reasoning = thinkingContent(content);
+      let projectedText = false;
+      let projectedReasoning = false;
       for (const [ordinal, part] of content.entries()) {
+        if (!isRecord(part)) continue;
+        if (part.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
+          const item: HostReasoningItem = {
+            type: "reasoning",
+            itemId: itemId(entry.id, "reasoning", 0),
+            text: reasoning,
+          };
+          snapshots.push({ item, outcome: itemOutcome(outcome) });
+          projectedReasoning = true;
+          continue;
+        }
+        if (part.type === "text" && !projectedText && text.length > 0) {
+          const item: HostAgentMessageItem = {
+            type: "agentMessage",
+            itemId: itemId(entry.id, "assistant", 0),
+            text,
+          };
+          snapshots.push({ item, outcome: itemOutcome(outcome) });
+          projectedText = true;
+          continue;
+        }
         if (
-          !isRecord(part) ||
           part.type !== "toolCall" ||
           typeof part.id !== "string" ||
           typeof part.name !== "string"

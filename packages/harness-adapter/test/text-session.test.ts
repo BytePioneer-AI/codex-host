@@ -66,6 +66,39 @@ describe("minimal Harness text Session", () => {
     });
   });
 
+  it("exposes visible Reasoning as a separate ordered textual Item", async () => {
+    const session = new FakeHarnessSession(harnessIdSchema.parse("fake"));
+    const collected = collect(session.outputs);
+
+    await session.execute(textTurn("reasoning-turn"));
+    const reasoningId = session.startReasoning("visible ");
+    session.appendReasoning(reasoningId, "analysis");
+    session.completeItem(reasoningId, { status: "succeeded" });
+    session.appendText("answer");
+    session.succeedTurn();
+    await session.close();
+
+    const hostEvents = events(await collected);
+    expect(hostEvents.map(({ type }) => type)).toEqual([
+      "turn.started",
+      "item.started",
+      "item.started",
+      "item.updated",
+      "item.updated",
+      "item.completed",
+      "item.updated",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(hostEvents[5]).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "reasoning", itemId: reasoningId, text: "visible analysis" },
+        outcome: { status: "succeeded" },
+      },
+    });
+  });
+
   it("publishes complete Session Usage replacements after a Turn terminal", async () => {
     const initialUsage = {
       totalTokens: 10,

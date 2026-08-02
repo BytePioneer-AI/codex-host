@@ -46,6 +46,14 @@ describe("Codex UI projector", () => {
       input: [{ type: "text", text: "question" }],
       items: [
         {
+          item: {
+            type: "reasoning",
+            itemId: itemId("historical-reasoning"),
+            text: "visible analysis",
+          },
+          outcome: { status: "succeeded" },
+        },
+        {
           item: { type: "agentMessage", itemId: itemId("historical-agent"), text: "answer" },
           outcome: { status: "succeeded" },
         },
@@ -72,6 +80,12 @@ describe("Codex UI projector", () => {
           type: "userMessage",
           clientId: null,
           content: [{ type: "text", text: "question" }],
+        },
+        {
+          id: "historical-reasoning",
+          type: "reasoning",
+          summary: ["visible analysis"],
+          content: [],
         },
         {
           id: "historical-agent",
@@ -103,11 +117,13 @@ describe("Codex UI projector", () => {
     expect(value.project({ type: "turn.started", turnId }).messages).toMatchObject([
       { method: "turn/started", params: { turn: { status: "inProgress" } } },
     ]);
-    value.project({
-      type: "item.started",
-      turnId,
-      item: { type: "agentMessage", itemId: agentId, text: "" },
-    });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "agentMessage", itemId: agentId, text: "" },
+      }).messages,
+    ).toEqual([]);
     expect(
       value.project({
         type: "item.updated",
@@ -115,7 +131,10 @@ describe("Codex UI projector", () => {
         itemId: agentId,
         update: { type: "text.append", text: "done" },
       }).messages,
-    ).toMatchObject([{ method: "item/agentMessage/delta", params: { delta: "done" } }]);
+    ).toMatchObject([
+      { method: "item/started", params: { item: { type: "agentMessage", text: "" } } },
+      { method: "item/agentMessage/delta", params: { delta: "done" } },
+    ]);
     value.project({
       type: "item.completed",
       turnId,
@@ -182,6 +201,146 @@ describe("Codex UI projector", () => {
       durationMs: 1_500,
       items: [{ type: "agentMessage", text: "done" }],
     });
+  });
+
+  it("projects Reasoning before a deferred Agent Message through one summary part", () => {
+    const value = projector();
+    const agentId = itemId("deferred-agent");
+    const reasoningId = itemId("reasoning-1");
+    value.project({ type: "turn.started", turnId });
+
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "agentMessage", itemId: agentId, text: "" },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "" },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { id: reasoningId, type: "reasoning", summary: [], content: [] },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "visible " },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/reasoning/summaryPartAdded",
+        params: { itemId: reasoningId, summaryIndex: 0 },
+      },
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { itemId: reasoningId, summaryIndex: 0, delta: "visible " },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "analysis" },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { itemId: reasoningId, summaryIndex: 0, delta: "analysis" },
+      },
+    ]);
+    const reasoningCompleted = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: { type: "reasoning", itemId: reasoningId, text: "visible analysis" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(reasoningCompleted.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: reasoningId,
+            type: "reasoning",
+            summary: ["visible analysis"],
+            content: [],
+          },
+        },
+      },
+    ]);
+    expect(JSON.stringify(reasoningCompleted)).not.toContain("summaryTextDelta");
+
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: agentId,
+        update: { type: "text.append", text: "answer" },
+      }).messages,
+    ).toMatchObject([
+      { method: "item/started", params: { item: { id: agentId, type: "agentMessage" } } },
+      { method: "item/agentMessage/delta", params: { itemId: agentId, delta: "answer" } },
+    ]);
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: { type: "agentMessage", itemId: agentId, text: "answer" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn).toMatchObject({
+      items: [
+        { id: reasoningId, type: "reasoning", summary: ["visible analysis"], content: [] },
+        { id: agentId, type: "agentMessage", text: "answer" },
+      ],
+    });
+  });
+
+  it("omits an empty deferred Agent Message from a cancelled Turn", () => {
+    const value = projector();
+    const agentId = itemId("empty-agent");
+    value.project({ type: "turn.started", turnId });
+    value.project({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", itemId: agentId, text: "" },
+    });
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId: agentId, text: "" },
+          outcome: { status: "cancelled" },
+        },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "turn.completed",
+        turnId,
+        outcome: { status: "cancelled", reason: "user" },
+      }).completedTurn,
+    ).toMatchObject({ status: "interrupted", items: [] });
   });
 
   it("keeps final Command output when no output delta was projected", () => {

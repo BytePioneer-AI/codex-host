@@ -15,6 +15,9 @@ import {
 
 type Scenario =
   | "final-only"
+  | "reasoning"
+  | "reasoning-trailing-whitespace"
+  | "reasoning-conflict"
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
@@ -263,6 +266,46 @@ class FakePiRpcProcess extends EventEmitter {
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
     if (
+      this.#scenario === "reasoning" ||
+      this.#scenario === "reasoning-trailing-whitespace" ||
+      this.#scenario === "reasoning-conflict"
+    ) {
+      const finalThinking =
+        this.#scenario === "reasoning"
+          ? "streamed reasoning suffix"
+          : this.#scenario === "reasoning-trailing-whitespace"
+            ? "streamed reasoning"
+            : "conflicting reasoning";
+      const message = {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: finalThinking, thinkingSignature: "ignored" },
+          { type: "text", text: "reasoned answer" },
+        ],
+      };
+      this.#output({ type: "message_start", message });
+      this.#output({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_start" },
+        message,
+      });
+      this.#output({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", delta: "streamed reasoning" },
+        message,
+      });
+      if (this.#scenario === "reasoning-trailing-whitespace") {
+        this.#output({
+          type: "message_update",
+          assistantMessageEvent: { type: "thinking_delta", delta: "\n\n" },
+          message,
+        });
+      }
+      this.#output({ type: "message_end", message });
+      this.#settleAgent();
+      return;
+    }
+    if (
       this.#scenario === "final-only" ||
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
@@ -396,6 +439,13 @@ class FakePiRpcProcess extends EventEmitter {
   }
 
   #toolEvents(): void {
+    const before = {
+      role: "assistant",
+      responseId: "before-tools",
+      content: [{ type: "text", text: "before tools" }],
+    };
+    this.#output({ type: "message_start", message: before });
+    this.#output({ type: "message_end", message: before });
     this.#output({
       type: "tool_execution_start",
       toolCallId: "custom-1",
@@ -437,7 +487,11 @@ class FakePiRpcProcess extends EventEmitter {
       result: { content: [{ type: "text", text: "first second" }] },
       isError: true,
     });
-    const message = { role: "assistant", content: [{ type: "text", text: "tools complete" }] };
+    const message = {
+      role: "assistant",
+      responseId: "after-tools",
+      content: [{ type: "text", text: "tools complete" }],
+    };
     this.#output({ type: "message_start", message });
     this.#output({ type: "message_end", message });
     this.#settleAgent();
@@ -647,7 +701,66 @@ describe("Pi RPC Turn aggregation", () => {
       text: "synthetic final text",
       cancelled: false,
     });
-    expect(events).toEqual([{ type: "text.delta", delta: "synthetic final text" }]);
+    expect(events).toEqual([
+      { type: "text.delta", messageId: expect.any(String), delta: "synthetic final text" },
+    ]);
+    await rpc.close();
+  });
+
+  it("reconciles streamed and complete visible reasoning without exposing signatures", async () => {
+    const rpc = session("reasoning");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "reasoned answer",
+      cancelled: false,
+    });
+    expect(events).toEqual([
+      { type: "reasoning.delta", messageId: expect.any(String), delta: "streamed reasoning" },
+      { type: "reasoning.delta", messageId: expect.any(String), delta: " suffix" },
+      { type: "reasoning.completed", messageId: expect.any(String) },
+      { type: "text.delta", messageId: expect.any(String), delta: "reasoned answer" },
+    ]);
+    expect(
+      new Set(events.flatMap((event) => ("messageId" in event ? [event.messageId] : []))).size,
+    ).toBe(1);
+    expect(JSON.stringify(events)).not.toContain("ignored");
+    await rpc.close();
+  });
+
+  it("accepts Pi reasoning summaries with a stream-only trailing separator", async () => {
+    const rpc = session("reasoning-trailing-whitespace");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "reasoned answer",
+      cancelled: false,
+    });
+    expect(events).toContainEqual({
+      type: "reasoning.delta",
+      messageId: expect.any(String),
+      delta: "\n\n",
+    });
+    expect(events.some(({ type }) => type === "reasoning.completed")).toBe(true);
+    await rpc.close();
+  });
+
+  it("fails a Turn when complete reasoning conflicts with its streamed prefix", async () => {
+    const rpc = session("reasoning-conflict");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).rejects.toThrow(
+      "conflicts with streamed reasoning",
+    );
+    expect(events).toContainEqual({
+      type: "reasoning.delta",
+      messageId: expect.any(String),
+      delta: "streamed reasoning",
+    });
+    expect(events.some(({ type }) => type === "reasoning.completed")).toBe(false);
     await rpc.close();
   });
 
@@ -682,7 +795,9 @@ describe("Pi RPC Turn aggregation", () => {
       text: "recovered",
       cancelled: false,
     });
-    expect(events).toEqual([{ type: "text.delta", delta: "recovered" }]);
+    expect(events).toEqual([
+      { type: "text.delta", messageId: expect.any(String), delta: "recovered" },
+    ]);
     await rpc.close();
   });
 
@@ -702,10 +817,11 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toMatchObject({
-      text: "tools complete",
+      text: "before toolstools complete",
       cancelled: false,
     });
     expect(events.map(({ type }) => type)).toEqual([
+      "text.delta",
       "tool.started",
       "tool.started",
       "tool.updated",
@@ -715,16 +831,17 @@ describe("Pi RPC Turn aggregation", () => {
       "tool.completed",
       "text.delta",
     ]);
-    expect(events[2]).toMatchObject({
-      type: "tool.updated",
-      callId: "custom-1",
-      output: { content: [{ text: "first" }] },
-    });
-    expect(events[4]).toMatchObject({
-      type: "tool.updated",
-      callId: "custom-1",
-      output: { content: [{ text: "first second" }] },
-    });
+    const textEvents = events.filter((event) => event.type === "text.delta");
+    expect(textEvents).toEqual([
+      { type: "text.delta", messageId: "before-tools", delta: "before tools" },
+      { type: "text.delta", messageId: "after-tools", delta: "tools complete" },
+    ]);
+    expect(
+      events.filter((event) => event.type === "tool.updated" && event.callId === "custom-1"),
+    ).toMatchObject([
+      { output: { content: [{ text: "first" }] } },
+      { output: { content: [{ text: "first second" }] } },
+    ]);
     await rpc.close();
   });
 

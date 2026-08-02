@@ -2,7 +2,7 @@ import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
 
 export type ClaudeTransportFailureKind =
-  "authentication" | "cancellationUnproven" | "native" | "textConflict";
+  "authentication" | "cancellationUnproven" | "native" | "reasoningConflict" | "textConflict";
 
 export type ClaudeTransportTurnResult =
   | { status: "succeeded" }
@@ -49,7 +49,9 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; cancelled: true };
 
 export type ClaudeTurnEvent =
-  | { type: "text.delta"; delta: string }
+  | { type: "text.delta"; messageId: string; delta: string }
+  | { type: "reasoning.delta"; messageId: string; delta: string }
+  | { type: "reasoning.completed"; messageId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

@@ -163,7 +163,11 @@ describe("AppServerHost hermetic Claude projection", () => {
           },
           runTurn: async (_text, userMessageId, onEvent) => {
             nativeTurnKey = userMessageId;
-            onEvent({ type: "text.delta", delta: "hermetic response" });
+            onEvent({
+              type: "text.delta",
+              messageId: "hermetic-assistant",
+              delta: "hermetic response",
+            });
             return { status: "succeeded" };
           },
           respondToInteraction: async () => undefined,

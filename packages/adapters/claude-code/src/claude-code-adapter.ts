@@ -23,6 +23,7 @@ import {
   type HostEvent,
   type HostItemOutcome,
   type HostQuestionInteraction,
+  type HostReasoningItem,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -103,7 +104,9 @@ type ActiveInteraction =
 
 interface ActiveTurn {
   command: TurnStartCommand;
-  item: HostAgentMessageItem;
+  item: HostAgentMessageItem | null;
+  assistantMessageId: string | null;
+  reasoningItems: Map<string, HostReasoningItem>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
   nativeTurnRef: NativeTurnRef | null;
@@ -132,10 +135,12 @@ function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
     message:
       kind === "textConflict"
         ? "Claude Code returned inconsistent streamed text"
-        : kind === "cancellationUnproven"
-          ? "Claude Code cancellation could not be proven"
-          : "Claude Code Turn failed",
-    retryable: kind !== "textConflict",
+        : kind === "reasoningConflict"
+          ? "Claude Code returned inconsistent streamed reasoning"
+          : kind === "cancellationUnproven"
+            ? "Claude Code cancellation could not be proven"
+            : "Claude Code Turn failed",
+    retryable: kind !== "textConflict" && kind !== "reasoningConflict",
   };
 }
 
@@ -387,6 +392,8 @@ class ClaudeHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       item,
+      assistantMessageId: null,
+      reasoningItems: new Map(),
       interactions: new Map(),
       interactionByRequestId: new Map(),
       nativeTurnRef: null,
@@ -766,7 +773,12 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     if (event.type === "text.delta") {
-      this.#appendText(active, event.delta);
+      this.#appendText(active, event.messageId, event.delta);
+    } else if (event.type === "reasoning.delta") {
+      this.#activateAssistantMessage(active, event.messageId);
+      this.#appendReasoning(active, event.messageId, event.delta);
+    } else if (event.type === "reasoning.completed") {
+      this.#completeReasoning(active, event.messageId, { status: "succeeded" });
     } else if (event.type === "interaction.requested") {
       this.#startInteraction(active, event.request);
     } else {
@@ -871,14 +883,78 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
-  #appendText(active: ActiveTurn, delta: string): void {
+  #activateAssistantMessage(active: ActiveTurn, messageId: string): void {
+    if (active.assistantMessageId === messageId) return;
+    if (active.assistantMessageId !== null) {
+      this.#completeReasoning(active, active.assistantMessageId, { status: "succeeded" });
+      this.#completeAgentItem(active, { status: "succeeded" }, false);
+    }
+    if (!active.item) {
+      active.item = {
+        type: "agentMessage",
+        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        text: "",
+      };
+      this.#event({ type: "item.started", turnId: active.command.turnId, item: active.item });
+    }
+    active.assistantMessageId = messageId;
+  }
+
+  #appendText(active: ActiveTurn, messageId: string, delta: string): void {
     if (this.#active !== active || delta.length === 0) return;
+    this.#activateAssistantMessage(active, messageId);
+    if (!active.item) throw new Error("Claude Assistant text has no active Item");
     active.item = { ...active.item, text: active.item.text + delta };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
       itemId: active.item.itemId,
       update: { type: "text.append", text: delta },
+    });
+  }
+
+  #completeAgentItem(active: ActiveTurn, outcome: HostItemOutcome, completeEmpty: boolean): void {
+    active.assistantMessageId = null;
+    const item = active.item;
+    if (!item || (!completeEmpty && item.text.length === 0)) return;
+    active.item = null;
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
+    });
+  }
+
+  #appendReasoning(active: ActiveTurn, messageId: string, delta: string): void {
+    if (this.#active !== active || delta.length === 0) return;
+    let item = active.reasoningItems.get(messageId);
+    if (!item) {
+      item = {
+        type: "reasoning",
+        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        text: "",
+      };
+      active.reasoningItems.set(messageId, item);
+      this.#event({ type: "item.started", turnId: active.command.turnId, item });
+    }
+    item = { ...item, text: item.text + delta };
+    active.reasoningItems.set(messageId, item);
+    this.#event({
+      type: "item.updated",
+      turnId: active.command.turnId,
+      itemId: item.itemId,
+      update: { type: "text.append", text: delta },
+    });
+  }
+
+  #completeReasoning(active: ActiveTurn, messageId: string, outcome: HostItemOutcome): void {
+    const item = active.reasoningItems.get(messageId);
+    if (!item) return;
+    active.reasoningItems.delete(messageId);
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
     });
   }
 
@@ -930,11 +1006,10 @@ class ClaudeHarnessSession implements HarnessSession {
       outcome.status === "succeeded" ? "superseded" : "cancelled",
     );
     const itemOutcome: HostItemOutcome = outcome;
-    this.#event({
-      type: "item.completed",
-      turnId: active.command.turnId,
-      snapshot: { item: active.item, outcome: itemOutcome },
-    });
+    for (const messageId of [...active.reasoningItems.keys()]) {
+      this.#completeReasoning(active, messageId, itemOutcome);
+    }
+    this.#completeAgentItem(active, itemOutcome, true);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,

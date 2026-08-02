@@ -66,7 +66,9 @@ export type PiInteractionResponse =
   | { requestId: string; confirmed: boolean };
 
 export type PiTurnEvent =
-  | { type: "text.delta"; delta: string }
+  | { type: "text.delta"; messageId: string; delta: string }
+  | { type: "reasoning.delta"; messageId: string; delta: string }
+  | { type: "reasoning.completed"; messageId: string }
   | { type: "interaction.requested"; request: PiInteractionRequest }
   | {
       type: "interaction.closed";
@@ -142,8 +144,12 @@ interface PendingCommand {
 
 interface ActiveTurn {
   text: string;
+  assistantMessageId: string | null;
   streamedMessageText: string;
+  streamedMessageReasoning: string;
   lastFinalizedMessageText: string | null;
+  lastFinalizedMessageReasoning: string | null;
+  reasoningMessageOpen: boolean;
   onEvent(event: PiTurnEvent): void;
   resolve(value: PiTurnResult): void;
   reject(error: Error): void;
@@ -285,6 +291,22 @@ function assistantText(value: unknown): string | null {
         isRecord(content) && content.type === "text" && typeof content.text === "string",
     )
     .map((content) => content.text as string)
+    .join("");
+}
+
+function assistantMessageId(value: unknown): string | null {
+  if (!isRecord(value) || value.role !== "assistant") return null;
+  return nonBlankString(value.responseId) ? value.responseId : null;
+}
+
+function assistantReasoning(value: unknown): string | null {
+  if (!isRecord(value) || value.role !== "assistant" || !Array.isArray(value.content)) return null;
+  return value.content
+    .filter(
+      (content): content is Record<string, unknown> =>
+        isRecord(content) && content.type === "thinking" && typeof content.thinking === "string",
+    )
+    .map((content) => content.thinking as string)
     .join("");
 }
 
@@ -627,8 +649,12 @@ export class PiRpcSession {
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
         text: "",
+        assistantMessageId: null,
         streamedMessageText: "",
+        streamedMessageReasoning: "",
         lastFinalizedMessageText: null,
+        lastFinalizedMessageReasoning: null,
+        reasoningMessageOpen: false,
         onEvent,
         resolve,
         reject,
@@ -799,16 +825,25 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "message_start" && assistantText(value.message) !== null) {
-      active.streamedMessageText = "";
+      this.#startAssistantMessage(active, value.message);
       return;
     }
     if (value.type === "message_update" && isRecord(value.assistantMessageEvent)) {
       const event = value.assistantMessageEvent;
       if (event.type === "text_delta" && typeof event.delta === "string") {
+        const messageId = this.#ensureAssistantMessage(active, value.message);
         active.text += event.delta;
         active.streamedMessageText += event.delta;
-        active.onEvent({ type: "text.delta", delta: event.delta });
+        active.onEvent({ type: "text.delta", messageId, delta: event.delta });
+      } else if (event.type === "thinking_delta" && typeof event.delta === "string") {
+        const messageId = this.#ensureAssistantMessage(active, value.message);
+        if (event.delta.length > 0) {
+          active.reasoningMessageOpen = true;
+          active.streamedMessageReasoning += event.delta;
+          active.onEvent({ type: "reasoning.delta", messageId, delta: event.delta });
+        }
       } else if (event.type === "error") {
+        this.#ensureAssistantMessage(active, value.message);
         active.failure =
           assistantFailure(event.error) ??
           assistantFailure(value.message) ??
@@ -1075,27 +1110,79 @@ export class PiRpcSession {
     }
   }
 
+  #startAssistantMessage(active: ActiveTurn, value: unknown): string {
+    if (active.assistantMessageId !== null && active.reasoningMessageOpen) {
+      active.onEvent({ type: "reasoning.completed", messageId: active.assistantMessageId });
+    }
+    const messageId = assistantMessageId(value) ?? randomUUID();
+    active.assistantMessageId = messageId;
+    active.streamedMessageText = "";
+    active.streamedMessageReasoning = "";
+    active.reasoningMessageOpen = false;
+    return messageId;
+  }
+
+  #ensureAssistantMessage(active: ActiveTurn, value: unknown): string {
+    return active.assistantMessageId ?? this.#startAssistantMessage(active, value);
+  }
+
   #finalizeAssistantMessage(active: ActiveTurn, value: unknown): void {
     const finalText = assistantText(value);
+    const finalReasoning = assistantReasoning(value);
     const failure = assistantFailure(value);
-    if (finalText === null || failure === undefined) return;
-    active.failure = failure;
-    if (finalText === active.lastFinalizedMessageText && active.streamedMessageText.length === 0) {
+    if (finalText === null || finalReasoning === null || failure === undefined) return;
+    if (
+      active.assistantMessageId === null &&
+      finalText === active.lastFinalizedMessageText &&
+      finalReasoning === active.lastFinalizedMessageReasoning &&
+      active.streamedMessageText.length === 0 &&
+      active.streamedMessageReasoning.length === 0
+    ) {
       return;
     }
+
+    active.failure = failure;
+    const messageId = this.#ensureAssistantMessage(active, value);
+    const streamedReasoningExtra = active.streamedMessageReasoning.startsWith(finalReasoning)
+      ? active.streamedMessageReasoning.slice(finalReasoning.length)
+      : null;
+    const missingReasoning = finalReasoning.startsWith(active.streamedMessageReasoning)
+      ? finalReasoning.slice(active.streamedMessageReasoning.length)
+      : streamedReasoningExtra !== null && streamedReasoningExtra.trim().length === 0
+        ? ""
+        : active.streamedMessageReasoning.length === 0
+          ? finalReasoning
+          : null;
+    if (missingReasoning === null) {
+      active.failure = new Error(
+        "Pi complete Assistant reasoning conflicts with streamed reasoning",
+      );
+    } else if (missingReasoning.length > 0) {
+      active.reasoningMessageOpen = true;
+      active.onEvent({ type: "reasoning.delta", messageId, delta: missingReasoning });
+    }
+    if (active.reasoningMessageOpen && active.failure === null) {
+      active.onEvent({ type: "reasoning.completed", messageId });
+    }
+
     const missingText = finalText.startsWith(active.streamedMessageText)
       ? finalText.slice(active.streamedMessageText.length)
       : active.streamedMessageText.length === 0
         ? finalText
         : null;
     if (missingText === null) {
-      active.text = active.text.slice(0, -active.streamedMessageText.length) + finalText;
+      active.failure = new Error("Pi complete Assistant text conflicts with streamed text");
     } else if (missingText.length > 0) {
       active.text += missingText;
-      active.onEvent({ type: "text.delta", delta: missingText });
+      active.onEvent({ type: "text.delta", messageId, delta: missingText });
     }
+
+    active.assistantMessageId = null;
     active.streamedMessageText = "";
+    active.streamedMessageReasoning = "";
+    active.reasoningMessageOpen = false;
     active.lastFinalizedMessageText = finalText;
+    active.lastFinalizedMessageReasoning = finalReasoning;
   }
 
   #write(value: Record<string, unknown>): Promise<void> {

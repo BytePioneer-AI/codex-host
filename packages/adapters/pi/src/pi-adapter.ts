@@ -578,6 +578,16 @@ class PiHarnessSession implements HarnessSession {
         error: invalidState("Pi Interaction Response must reference a pending Question"),
       };
     }
+    if (command.response.type !== "question") {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi Question requires a Question Response",
+          retryable: false,
+        },
+      };
+    }
     const validationError = validateHostQuestionResponse(pending.interaction, command.response);
     if (validationError) return { ok: false, error: validationError };
     const transport = this.#transport;

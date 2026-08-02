@@ -20,18 +20,36 @@ export interface ClaudeQuestion {
   multiSelect: boolean;
 }
 
-export interface ClaudeQuestionRequest {
+export type ClaudeApprovalSuggestionScope = "session" | "always";
+
+export interface ClaudeApprovalRequest {
+  type: "approval";
   requestId: string;
-  toolUseId: string;
+  title: string;
+  description?: string;
+  suggestedScope?: ClaudeApprovalSuggestionScope;
+}
+
+export interface ClaudeQuestionRequest {
+  type: "question";
+  requestId: string;
   questions: ClaudeQuestion[];
 }
 
+export type ClaudeInteractionRequest = ClaudeApprovalRequest | ClaudeQuestionRequest;
+
 export type ClaudeInteractionResponse =
-  { requestId: string; answers: Record<string, string> } | { requestId: string; cancelled: true };
+  | {
+      type: "approval";
+      requestId: string;
+      decision: "allowOnce" | "allowForSession" | "allowAlways" | "deny";
+    }
+  | { type: "question"; requestId: string; answers: Record<string, string> }
+  | { type: "question"; requestId: string; cancelled: true };
 
 export type ClaudeTurnEvent =
   | { type: "text.delta"; delta: string }
-  | { type: "interaction.requested"; request: ClaudeQuestionRequest }
+  | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";
       requestId: string;

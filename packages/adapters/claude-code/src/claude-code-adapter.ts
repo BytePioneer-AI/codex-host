@@ -5,6 +5,7 @@ import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessError,
@@ -16,6 +17,7 @@ import {
   type HarnessSessionCapabilities,
   type HarnessSessionState,
   type HostAgentMessageItem,
+  type HostApprovalInteraction,
   type HostCommand,
   type HostEvent,
   type HostItemOutcome,
@@ -58,6 +60,8 @@ import {
 import { ClaudeSdkModelInspector, ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
+  ClaudeApprovalRequest,
+  ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
   ClaudeQuestionRequest,
@@ -75,16 +79,23 @@ export interface ClaudeCodeAdapterOptions {
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
-interface ActiveInteraction {
-  interaction: HostQuestionInteraction;
-  nativeRequest: ClaudeQuestionRequest;
-}
+type ActiveInteraction =
+  | {
+      type: "approval";
+      interaction: HostApprovalInteraction;
+      request: ClaudeApprovalRequest;
+    }
+  | {
+      type: "question";
+      interaction: HostQuestionInteraction;
+      request: ClaudeQuestionRequest;
+    };
 
 interface ActiveTurn {
   command: TurnStartCommand;
   item: HostAgentMessageItem;
   interactions: Map<HostInteractionId, ActiveInteraction>;
-  interactionByNativeId: Map<string, HostInteractionId>;
+  interactionByRequestId: Map<string, HostInteractionId>;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   completion: Promise<void>;
@@ -355,7 +366,7 @@ class ClaudeHarnessSession implements HarnessSession {
       command,
       item,
       interactions: new Map(),
-      interactionByNativeId: new Map(),
+      interactionByRequestId: new Map(),
       nativeTurnRef: null,
       cancellationRequested: false,
       completion,
@@ -475,25 +486,78 @@ class ClaudeHarnessSession implements HarnessSession {
     if (!active || !pending) {
       return {
         ok: false,
-        error: invalidState("Claude Code Interaction Response must reference a pending Question"),
+        error: invalidState(
+          "Claude Code Interaction Response must reference a pending Interaction",
+        ),
       };
     }
-    const validationError = validateHostQuestionResponse(pending.interaction, command.response);
-    if (validationError) return { ok: false, error: validationError };
     const transport = this.#transport;
     if (!transport) {
       return { ok: false, error: invalidState("Claude Code transport is unavailable") };
     }
+
     let response: ClaudeInteractionResponse;
-    if (command.response.cancelled) {
-      response = { requestId: pending.nativeRequest.requestId, cancelled: true };
-    } else {
-      const answers: Record<string, string> = {};
-      for (const [index, question] of pending.nativeRequest.questions.entries()) {
-        answers[question.question] =
-          command.response.answers[`question-${index + 1}`]?.join(", ") ?? "";
+    if (pending.type === "approval") {
+      if (command.response.type !== "approval") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code Approval requires an Approval Response",
+            retryable: false,
+          },
+        };
       }
-      response = { requestId: pending.nativeRequest.requestId, answers };
+      const validationError = validateHostApprovalResponse(pending.interaction, command.response);
+      if (validationError) return { ok: false, error: validationError };
+      const actionId = command.response.actionId;
+      const action = pending.interaction.actions.find(({ id }) => id === actionId);
+      if (!action) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code Approval action is unavailable",
+            retryable: false,
+          },
+        };
+      }
+      response = {
+        type: "approval",
+        requestId: pending.request.requestId,
+        decision: action.effect,
+      };
+    } else {
+      if (command.response.type !== "question") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code Question requires a Question Response",
+            retryable: false,
+          },
+        };
+      }
+      const validationError = validateHostQuestionResponse(pending.interaction, command.response);
+      if (validationError) return { ok: false, error: validationError };
+      if (command.response.cancelled) {
+        response = {
+          type: "question",
+          requestId: pending.request.requestId,
+          cancelled: true,
+        };
+      } else {
+        const answers: Record<string, string> = {};
+        for (const [index, question] of pending.request.questions.entries()) {
+          answers[question.question] =
+            command.response.answers[`question-${index + 1}`]?.join(", ") ?? "";
+        }
+        response = {
+          type: "question",
+          requestId: pending.request.requestId,
+          answers,
+        };
+      }
     }
     try {
       await transport.respondToInteraction(response);
@@ -503,7 +567,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ok: false,
         error: {
           code: "nativeFailure",
-          message: "Claude Code Question response failed",
+          message: "Claude Code Interaction response failed",
           retryable: false,
         },
       };
@@ -542,16 +606,19 @@ class ClaudeHarnessSession implements HarnessSession {
     if (configurationTask) {
       await Promise.race([configurationTask, delay(this.#closeTimeoutMs)]);
     }
+    let transportClosed = false;
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
       await this.#transport?.abort().catch(() => undefined);
       await Promise.race([active.completion, delay(this.#closeTimeoutMs)]);
       if (this.#active === active) {
+        await this.#transport?.close().catch(() => undefined);
+        transportClosed = true;
         this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
       }
     }
-    await this.#transport?.close().catch(() => undefined);
+    if (!transportClosed) await this.#transport?.close().catch(() => undefined);
     this.#phase = "closed";
     this.#channel.end();
     this.#onClosed();
@@ -603,46 +670,81 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
-  #startInteraction(active: ActiveTurn, request: ClaudeQuestionRequest): void {
-    if (active.interactionByNativeId.has(request.requestId)) {
+  #startInteraction(active: ActiveTurn, request: ClaudeInteractionRequest): void {
+    if (active.interactionByRequestId.has(request.requestId)) {
       throw new Error("Claude Code Interaction started more than once");
     }
     const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
-    const firstQuestion = request.questions[0];
-    if (!firstQuestion) throw new Error("Claude Code Question request is empty");
-    const interaction: HostQuestionInteraction = {
-      type: "question",
-      interactionId,
-      turnId: active.command.turnId,
-      title: request.questions.length === 1 ? firstQuestion.header : "Claude Code",
-      questions: request.questions.map((question, index) => ({
-        id: `question-${index + 1}`,
-        type: "choice",
-        prompt: question.question,
-        options: question.options.map((option) => ({
-          value: option.label,
-          label: option.label,
-          description: option.description,
+    let pending: ActiveInteraction;
+    if (request.type === "approval") {
+      const interaction: HostApprovalInteraction = {
+        type: "approval",
+        interactionId,
+        turnId: active.command.turnId,
+        title: request.title,
+        ...(request.description ? { description: request.description } : {}),
+        subject: { type: "nativeAction" },
+        actions: [
+          { id: "allowOnce", label: "Allow once", effect: "allowOnce" },
+          ...(request.suggestedScope === "session"
+            ? [
+                {
+                  id: "allowForSession",
+                  label: "Allow this conversation",
+                  effect: "allowForSession" as const,
+                },
+              ]
+            : request.suggestedScope === "always"
+              ? [
+                  {
+                    id: "allowAlways",
+                    label: "Always allow",
+                    effect: "allowAlways" as const,
+                  },
+                ]
+              : []),
+          { id: "deny", label: "Deny", effect: "deny" },
+        ],
+      };
+      pending = { type: "approval", interaction, request };
+    } else {
+      const firstQuestion = request.questions[0];
+      if (!firstQuestion) throw new Error("Claude Code Question request is empty");
+      const interaction: HostQuestionInteraction = {
+        type: "question",
+        interactionId,
+        turnId: active.command.turnId,
+        title: request.questions.length === 1 ? firstQuestion.header : "Claude Code",
+        questions: request.questions.map((question, index) => ({
+          id: `question-${index + 1}`,
+          type: "choice",
+          prompt: question.question,
+          options: question.options.map((option) => ({
+            value: option.label,
+            label: option.label,
+            description: option.description,
+          })),
+          multiple: question.multiSelect,
+          allowOther: true,
+          optional: false,
         })),
-        multiple: question.multiSelect,
-        allowOther: true,
-        optional: false,
-      })),
-    };
-    active.interactions.set(interactionId, { interaction, nativeRequest: request });
-    active.interactionByNativeId.set(request.requestId, interactionId);
-    this.#channel.emit({ kind: "interaction", interaction });
+      };
+      pending = { type: "question", interaction, request };
+    }
+    active.interactions.set(interactionId, pending);
+    active.interactionByRequestId.set(request.requestId, interactionId);
+    this.#channel.emit({ kind: "interaction", interaction: pending.interaction });
   }
 
   #closeInteraction(
     active: ActiveTurn,
-    nativeRequestId: string,
+    requestId: string,
     reason: "responded" | "cancelled" | "superseded",
   ): void {
-    const interactionId = active.interactionByNativeId.get(nativeRequestId);
+    const interactionId = active.interactionByRequestId.get(requestId);
     if (!interactionId)
       throw new Error("Claude Code Interaction close references an unknown request");
-    active.interactionByNativeId.delete(nativeRequestId);
+    active.interactionByRequestId.delete(requestId);
     active.interactions.delete(interactionId);
     this.#event({
       type: "interaction.closed",
@@ -655,7 +757,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #closeActiveInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
     for (const [interactionId, pending] of active.interactions) {
       active.interactions.delete(interactionId);
-      active.interactionByNativeId.delete(pending.nativeRequest.requestId);
+      active.interactionByRequestId.delete(pending.request.requestId);
       this.#event({
         type: "interaction.closed",
         interactionId,

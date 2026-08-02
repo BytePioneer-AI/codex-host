@@ -4,6 +4,7 @@ import {
   query,
   type CanUseTool,
   type PermissionResult,
+  type PermissionUpdate,
   type Query,
   type SDKUserMessage,
   type SpawnOptions,
@@ -13,10 +14,12 @@ import { resolveClaudeCodeExecutable } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator } from "./native-message.js";
 import type {
+  ClaudeApprovalRequest,
+  ClaudeApprovalSuggestionScope,
+  ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
   ClaudeQuestion,
-  ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -24,6 +27,8 @@ import type {
 } from "./transport.js";
 
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
+const APPROVAL_TITLE_MAX_LENGTH = 120;
+const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
 
 class PushableInput<T> implements AsyncIterable<T> {
   #closed = false;
@@ -56,15 +61,19 @@ class PushableInput<T> implements AsyncIterable<T> {
 }
 
 interface PendingInteraction {
+  controlRequestId: string;
   input: Record<string, unknown>;
   onAbort(): void;
-  request: ClaudeQuestionRequest;
+  request: ClaudeInteractionRequest;
   resolve(result: PermissionResult): void;
+  suggestions?: PermissionUpdate[];
   signal: AbortSignal;
+  toolUseId: string;
 }
 
 interface ActiveTurn {
   accumulator: ClaudeNativeTurnAccumulator;
+  controlRequestIds: Set<string>;
   interactions: Map<string, PendingInteraction>;
   onEvent(event: ClaudeTurnEvent): void;
   resolve(result: ClaudeTransportTurnResult): void;
@@ -169,12 +178,111 @@ function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null
   return questions;
 }
 
+function boundedDisplayText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text.length > 0 && text.length <= maxLength ? text : null;
+}
+
+const SESSION_PERMISSION_DESTINATIONS = new Set(["session", "cliArg"]);
+const PERSISTENT_PERMISSION_DESTINATIONS = new Set([
+  "userSettings",
+  "projectSettings",
+  "localSettings",
+]);
+const PERMISSION_BEHAVIORS = new Set(["allow", "deny", "ask"]);
+const PERMISSION_MODES = new Set([
+  "default",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+  "dontAsk",
+  "auto",
+]);
+
+function permissionUpdateDestination(value: unknown): "session" | "always" | undefined {
+  if (typeof value !== "string") return undefined;
+  if (SESSION_PERMISSION_DESTINATIONS.has(value)) return "session";
+  if (PERSISTENT_PERMISSION_DESTINATIONS.has(value)) return "always";
+  return undefined;
+}
+
+function isPermissionUpdate(value: unknown): value is PermissionUpdate {
+  if (!isRecord(value) || !permissionUpdateDestination(value.destination)) return false;
+  if (value.type === "setMode") {
+    return typeof value.mode === "string" && PERMISSION_MODES.has(value.mode);
+  }
+  if (value.type === "addDirectories" || value.type === "removeDirectories") {
+    return (
+      Array.isArray(value.directories) &&
+      value.directories.every((directory) => typeof directory === "string")
+    );
+  }
+  if (value.type === "addRules" || value.type === "replaceRules" || value.type === "removeRules") {
+    return (
+      typeof value.behavior === "string" &&
+      PERMISSION_BEHAVIORS.has(value.behavior) &&
+      Array.isArray(value.rules) &&
+      value.rules.every(
+        (rule) =>
+          isRecord(rule) &&
+          typeof rule.toolName === "string" &&
+          (rule.ruleContent === undefined || typeof rule.ruleContent === "string"),
+      )
+    );
+  }
+  return false;
+}
+
+function permissionSuggestionScope(value: unknown): ClaudeApprovalSuggestionScope | undefined {
+  if (!Array.isArray(value) || value.length === 0 || !value.every(isPermissionUpdate)) {
+    return undefined;
+  }
+  return value.some(({ destination }) => permissionUpdateDestination(destination) === "always")
+    ? "always"
+    : "session";
+}
+
+function parseApprovalRequest(
+  requestId: string,
+  toolName: string,
+  options: Parameters<CanUseTool>[2],
+): ClaudeApprovalRequest | null {
+  const title = [options.title, options.displayName, options.description, toolName]
+    .map((value) => boundedDisplayText(value, APPROVAL_TITLE_MAX_LENGTH))
+    .find((value): value is string => value !== null);
+  if (!title) return null;
+  const description = boundedDisplayText(options.description, APPROVAL_DESCRIPTION_MAX_LENGTH);
+  const suggestedScope = permissionSuggestionScope(options.suggestions);
+  return {
+    type: "approval",
+    requestId,
+    title,
+    ...(description && description !== title ? { description } : {}),
+    ...(suggestedScope ? { suggestedScope } : {}),
+  };
+}
+
 function denied(toolUseId: string, message: string): PermissionResult {
   return {
     behavior: "deny",
     message,
     toolUseID: toolUseId,
     decisionClassification: "user_reject",
+  };
+}
+
+function allowed(
+  toolUseId: string,
+  input: Record<string, unknown>,
+  suggestions?: PermissionUpdate[],
+): PermissionResult {
+  return {
+    behavior: "allow",
+    updatedInput: input,
+    toolUseID: toolUseId,
+    decisionClassification: suggestions ? "user_permanent" : "user_temporary",
+    ...(suggestions ? { updatedPermissions: suggestions } : {}),
   };
 }
 
@@ -193,6 +301,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
+  #interactionOrdinal = 0;
   #query: Query | null = null;
   #started = false;
 
@@ -272,6 +381,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
       this.#active = {
         accumulator: new ClaudeNativeTurnAccumulator(),
+        controlRequestIds: new Set(),
         interactions: new Map(),
         onEvent,
         resolve,
@@ -295,11 +405,33 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (!active || !pending) {
       return Promise.reject(new Error("Claude SDK Interaction is not pending"));
     }
+    if (response.type === "approval") {
+      if (pending.request.type !== "approval") {
+        return Promise.reject(new Error("Claude SDK Interaction response type does not match"));
+      }
+      let result: PermissionResult;
+      if (response.decision === "deny") {
+        result = denied(pending.toolUseId, "User denied the Tool request");
+      } else if (response.decision === "allowOnce") {
+        result = allowed(pending.toolUseId, pending.input);
+      } else {
+        const requestedScope = response.decision === "allowForSession" ? "session" : "always";
+        if (pending.request.suggestedScope !== requestedScope || !pending.suggestions) {
+          return Promise.reject(new Error("Claude SDK Approval scope is not pending"));
+        }
+        result = allowed(pending.toolUseId, pending.input, pending.suggestions);
+      }
+      this.#settleInteraction(active, pending, result, "responded");
+      return Promise.resolve();
+    }
+    if (pending.request.type !== "question") {
+      return Promise.reject(new Error("Claude SDK Interaction response type does not match"));
+    }
     if ("cancelled" in response) {
       this.#settleInteraction(
         active,
         pending,
-        denied(pending.request.toolUseId, "User cancelled the Question"),
+        denied(pending.toolUseId, "User cancelled the Question"),
         "cancelled",
       );
       return Promise.resolve();
@@ -320,7 +452,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       {
         behavior: "allow",
         updatedInput: { ...pending.input, answers: { ...response.answers } },
-        toolUseID: pending.request.toolUseId,
+        toolUseID: pending.toolUseId,
         decisionClassification: "user_temporary",
       },
       "responded",
@@ -346,48 +478,66 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
-    if (toolName !== "AskUserQuestion") {
-      return Promise.resolve(
-        denied(options.toolUseID, "Interactive Tool permission is unsupported"),
-      );
-    }
     const active = this.#active;
-    const questions = parseQuestions(input);
+    const validToolName = boundedDisplayText(toolName, APPROVAL_TITLE_MAX_LENGTH);
     if (
       !active ||
-      !questions ||
+      !validToolName ||
+      typeof options.requestId !== "string" ||
       options.requestId.length === 0 ||
+      typeof options.toolUseID !== "string" ||
       options.toolUseID.length === 0 ||
-      active.interactions.has(options.requestId)
+      options.signal.aborted ||
+      active.controlRequestIds.has(options.requestId)
     ) {
-      return Promise.resolve(denied(options.toolUseID, "Claude Question request is invalid"));
+      return Promise.resolve(
+        denied(options.toolUseID, "Claude Tool permission request is invalid"),
+      );
     }
-    const request: ClaudeQuestionRequest = {
-      requestId: options.requestId,
-      toolUseId: options.toolUseID,
-      questions,
-    };
+
+    this.#interactionOrdinal += 1;
+    const requestId = `claude-${toolName === "AskUserQuestion" ? "question" : "approval"}-${this.#interactionOrdinal}`;
+    let request: ClaudeInteractionRequest | null;
+    if (toolName === "AskUserQuestion") {
+      const questions = parseQuestions(input);
+      request = questions ? { type: "question", requestId, questions } : null;
+    } else {
+      request = parseApprovalRequest(requestId, toolName, options);
+    }
+    if (!request) {
+      return Promise.resolve(
+        denied(options.toolUseID, "Claude Tool permission request is invalid"),
+      );
+    }
+
     return new Promise<PermissionResult>((resolve) => {
       const pending: PendingInteraction = {
+        controlRequestId: options.requestId,
         input,
         request,
         resolve,
         signal: options.signal,
+        ...(request.type === "approval" && request.suggestedScope && options.suggestions
+          ? { suggestions: options.suggestions }
+          : {}),
+        toolUseId: options.toolUseID,
         onAbort: () => {
           this.#settleInteraction(
             active,
             pending,
-            denied(request.toolUseId, "Claude Question was interrupted"),
+            denied(
+              pending.toolUseId,
+              pending.request.type === "question"
+                ? "Claude Question was interrupted"
+                : "Claude Tool approval was interrupted",
+            ),
             "cancelled",
           );
         },
       };
       active.interactions.set(request.requestId, pending);
+      active.controlRequestIds.add(options.requestId);
       options.signal.addEventListener("abort", pending.onAbort, { once: true });
-      if (options.signal.aborted) {
-        pending.onAbort();
-        return;
-      }
       active.onEvent({ type: "interaction.requested", request });
     });
   }
@@ -399,6 +549,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     reason: "responded" | "cancelled" | "superseded",
   ): void {
     if (!active.interactions.delete(pending.request.requestId)) return;
+    active.controlRequestIds.delete(pending.controlRequestId);
     pending.signal.removeEventListener("abort", pending.onAbort);
     active.onEvent({
       type: "interaction.closed",
@@ -413,7 +564,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       this.#settleInteraction(
         active,
         pending,
-        denied(pending.request.toolUseId, "Claude Question is no longer pending"),
+        denied(
+          pending.toolUseId,
+          pending.request.type === "question"
+            ? "Claude Question is no longer pending"
+            : "Claude Tool approval is no longer pending",
+        ),
         reason,
       );
     }

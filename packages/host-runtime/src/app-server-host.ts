@@ -6,6 +6,8 @@ import type {
   HarnessAdapter,
   HarnessOutput,
   HarnessSession,
+  HostApprovalInteraction,
+  HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -78,11 +80,13 @@ import {
   threadForkResult,
   threadRollbackResult,
   transportModelIdForHarness,
+  type CodexApprovalProjection,
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
   type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
+  type CodexApprovalRequestProjection,
   type CodexQuestionRequestProjection,
   type ExternalHarnessId,
   type JsonObject,
@@ -115,7 +119,14 @@ interface ProjectedTurn {
   projector: CodexTurnProjector;
 }
 
+type HostApprovalRequestId = number;
 type HostQuestionRequestId = number;
+
+interface PendingDesktopApproval {
+  thread: ExternalThread;
+  interaction: HostApprovalInteraction;
+  projection: CodexApprovalRequestProjection;
+}
 
 interface PendingDesktopQuestion {
   thread: ExternalThread;
@@ -165,6 +176,12 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function approvalServerName(harnessId: ExternalHarnessId): string {
+  return harnessId === "claude-code" ? "Claude Code" : "Pi";
+}
+
+const HOST_APPROVAL_REQUEST_ID_MIN = -2_000_000;
+const HOST_APPROVAL_REQUEST_ID_MAX = -1_000_001;
 const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
 const HOST_QUESTION_REQUEST_ID_MAX = -1;
 const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
@@ -180,6 +197,15 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/turns/list",
   "thread/unarchive",
 ]);
+
+function isHostApprovalRequestId(value: unknown): value is HostApprovalRequestId {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= HOST_APPROVAL_REQUEST_ID_MIN &&
+    value <= HOST_APPROVAL_REQUEST_ID_MAX
+  );
+}
 
 function isHostQuestionRequestId(value: unknown): value is HostQuestionRequestId {
   return (
@@ -278,7 +304,9 @@ export class AppServerHost {
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #externalRuntime: ExternalThreadRuntime;
   #repository: ExternalThreadRepository;
+  #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
+  #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
   #routeObservationTracker = new RequestRouteObservationTracker();
@@ -356,6 +384,11 @@ export class AppServerHost {
       await Promise.allSettled(
         [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
       );
+      for (const pending of [...this.#pendingDesktopApprovals.values()]) {
+        await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
+          () => undefined,
+        );
+      }
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
         await this.#resolveDesktopQuestion(pending.interaction.interactionId).catch(
           () => undefined,
@@ -373,6 +406,7 @@ export class AppServerHost {
     if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
+      if (await this.#handleDesktopApprovalResponse(parsed)) continue;
       if (await this.#handleDesktopQuestionResponse(parsed)) continue;
       const requestResult = jsonRpcRequestSchema.safeParse(parsed);
       if (!requestResult.success) {
@@ -1609,7 +1643,11 @@ export class AppServerHost {
 
   async #projectHarnessOutput(thread: ExternalThread, output: HarnessOutput): Promise<void> {
     if (output.kind === "interaction") {
-      await this.#projectQuestion(thread, output.interaction);
+      if (output.interaction.type === "approval") {
+        await this.#projectApproval(thread, output.interaction);
+      } else {
+        await this.#projectQuestion(thread, output.interaction);
+      }
       return;
     }
     let event = output.event;
@@ -1664,6 +1702,7 @@ export class AppServerHost {
       return;
     }
     if (event.type === "interaction.closed") {
+      await this.#resolveDesktopApproval(event.interactionId);
       await this.#resolveDesktopQuestion(event.interactionId);
     }
     if (event.type === "turn.completed") {
@@ -1703,6 +1742,125 @@ export class AppServerHost {
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(thread, { type: "idle" });
     }
+  }
+
+  async #projectApproval(
+    thread: ExternalThread,
+    interaction: HostApprovalInteraction,
+  ): Promise<void> {
+    const projection = this.#projectedTurn(thread, interaction.turnId);
+    await this.#waitForTurnResponse(thread, interaction.turnId);
+    let result: CodexApprovalProjection;
+    try {
+      result = projection.projector.projectApproval(
+        interaction,
+        approvalServerName(thread.harnessId),
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      thread.ignoredInteractionIds.add(interaction.interactionId);
+      const denied = await this.#denyApproval(thread, interaction);
+      if (!denied) thread.ignoredInteractionIds.delete(interaction.interactionId);
+      return;
+    }
+    for (const message of result.messages) await this.#writer.json(message);
+
+    const requestId = this.#allocateApprovalRequestId();
+    const pending: PendingDesktopApproval = {
+      thread,
+      interaction,
+      projection: result.approvalRequest,
+    };
+    this.#pendingDesktopApprovals.set(requestId, pending);
+    try {
+      await this.#writer.json({ id: requestId, ...result.approvalRequest.request });
+    } catch (error) {
+      this.#pendingDesktopApprovals.delete(requestId);
+      await this.#denyApproval(thread, interaction);
+      throw error;
+    }
+  }
+
+  async #handleDesktopApprovalResponse(value: JsonValue): Promise<boolean> {
+    if (!isRecord(value) || !isHostApprovalRequestId(value.id)) return false;
+    const pending = this.#pendingDesktopApprovals.get(value.id);
+    if (!pending) return true;
+    this.#pendingDesktopApprovals.delete(value.id);
+
+    let response: HostApprovalResponse;
+    try {
+      response =
+        "error" in value
+          ? pending.projection.denyResponse
+          : pending.projection.parseResponse(value.result);
+    } catch (error) {
+      this.#diagnose(error);
+      response = pending.projection.denyResponse;
+    }
+    const result = await pending.thread.session.execute({
+      type: "interaction.respond",
+      interactionId: pending.interaction.interactionId,
+      response,
+    });
+    if (!result.ok && result.error.code !== "invalidState") {
+      this.#diagnose(`Approval response failed: ${result.error.message}`);
+      const cancelled = await pending.thread.session.execute({
+        type: "turn.cancel",
+        turnId: pending.interaction.turnId,
+      });
+      if (!cancelled.ok && cancelled.error.code !== "invalidState") {
+        this.#diagnose(`Approval fail-closed cancellation failed: ${cancelled.error.message}`);
+      }
+    }
+    return true;
+  }
+
+  async #denyApproval(
+    thread: ExternalThread,
+    interaction: HostApprovalInteraction,
+  ): Promise<boolean> {
+    const denyActions = interaction.actions.filter(({ effect }) => effect === "deny");
+    if (denyActions.length !== 1) {
+      const cancelled = await thread.session.execute({
+        type: "turn.cancel",
+        turnId: interaction.turnId,
+      });
+      if (!cancelled.ok) {
+        this.#diagnose(`Unsupported Approval cancellation failed: ${cancelled.error.message}`);
+      }
+      return cancelled.ok;
+    }
+    const action = denyActions[0];
+    if (!action) return false;
+    const denied = await thread.session.execute({
+      type: "interaction.respond",
+      interactionId: interaction.interactionId,
+      response: { type: "approval", actionId: action.id },
+    });
+    if (!denied.ok) {
+      this.#diagnose(`Unsupported Approval denial failed: ${denied.error.message}`);
+    }
+    return denied.ok;
+  }
+
+  async #resolveDesktopApproval(interactionId: HostInteractionId): Promise<void> {
+    for (const [requestId, pending] of this.#pendingDesktopApprovals) {
+      if (pending.interaction.interactionId !== interactionId) continue;
+      this.#pendingDesktopApprovals.delete(requestId);
+      await this.#writer.json({
+        method: "serverRequest/resolved",
+        params: { threadId: pending.thread.id, requestId },
+      });
+    }
+  }
+
+  #allocateApprovalRequestId(): HostApprovalRequestId {
+    if (this.#nextApprovalRequestId < HOST_APPROVAL_REQUEST_ID_MIN) {
+      throw new Error("Host Approval Request ID namespace is exhausted");
+    }
+    const requestId = this.#nextApprovalRequestId;
+    this.#nextApprovalRequestId -= 1;
+    return requestId;
   }
 
   async #projectQuestion(

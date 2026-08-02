@@ -20,8 +20,8 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { validateHostInteractionResponse } from "./interaction.js";
 import { HarnessOutputChannel } from "./output-channel.js";
-import { validateHostQuestionResponse } from "./question.js";
 import { parseHostUsage, type HostUsage } from "./usage.js";
 import type {
   HarnessAdapter,
@@ -33,6 +33,7 @@ import type {
   HarnessSessionState,
   InspectHarnessInput,
   HostAgentMessageItem,
+  HostApprovalInteraction,
   HostCommand,
   HostCommandExecutionItem,
   HostEvent,
@@ -40,6 +41,7 @@ import type {
   HostItem,
   HostItemOutcome,
   HostItemSnapshot,
+  HostInteraction,
   HostItemUpdate,
   HostQuestion,
   HostQuestionInteraction,
@@ -64,7 +66,7 @@ interface ActiveFakeTurn {
   command: TurnStartCommand;
   items: Map<HostItemId, HostItem>;
   completedItems: HostItemSnapshot[];
-  interactions: Map<HostInteractionId, HostQuestionInteraction>;
+  interactions: Map<HostInteractionId, HostInteraction>;
   cancellationRequested: boolean;
 }
 
@@ -153,6 +155,7 @@ export class FakeHarnessSession implements HarnessSession {
   #nextModelRejection: HarnessError | null = null;
   #nextThinkingRejection: HarnessError | null = null;
   #nextTurnUsage: HostUsage | null | undefined;
+  #nextApproval: { title: string; description?: string } | null = null;
   #nextQuestion: {
     question: HostQuestion;
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
@@ -263,6 +266,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#completeCancellationDuringRequest = true;
   }
 
+  requestApprovalOnNextTurn(title: string, description?: string): void {
+    this.#nextApproval = { title, ...(description ? { description } : {}) };
+  }
+
   askQuestionOnNextTurn(
     question: HostQuestion,
     options: { itemId?: HostItemId; title?: string; expiresAt?: string } = {},
@@ -340,6 +347,11 @@ export class FakeHarnessSession implements HarnessSession {
       const pending = this.#nextQuestion;
       this.#nextQuestion = null;
       this.askQuestion(pending.question, pending.options);
+    }
+    if (this.#nextApproval) {
+      const pending = this.#nextApproval;
+      this.#nextApproval = null;
+      this.requestApproval(pending.title, pending.description);
     }
     return { ok: true, value: { turnId: command.turnId } };
   }
@@ -439,11 +451,53 @@ export class FakeHarnessSession implements HarnessSession {
     return interactionId;
   }
 
+  requestApproval(
+    title: string,
+    description?: string,
+    suggestedScope?: "session" | "always",
+  ): HostInteractionId {
+    const active = this.#requireActive();
+    const interactionId = this.#nextInteractionId();
+    const interaction: HostApprovalInteraction = {
+      type: "approval",
+      interactionId,
+      turnId: active.command.turnId,
+      title,
+      ...(description ? { description } : {}),
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allowOnce", label: "Allow once", effect: "allowOnce" },
+        ...(suggestedScope === "session"
+          ? [
+              {
+                id: "allowForSession",
+                label: "Allow this conversation",
+                effect: "allowForSession" as const,
+              },
+            ]
+          : suggestedScope === "always"
+            ? [
+                {
+                  id: "allowAlways",
+                  label: "Always allow",
+                  effect: "allowAlways" as const,
+                },
+              ]
+            : []),
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    active.interactions.set(interactionId, interaction);
+    this.#channel.emit({ kind: "interaction", interaction });
+    return interactionId;
+  }
+
   expireQuestion(interactionId: HostInteractionId): void {
     const active = this.#requireActive();
-    if (!active.interactions.delete(interactionId)) {
+    if (active.interactions.get(interactionId)?.type !== "question") {
       throw new Error("Fake Harness Question is not pending");
     }
+    active.interactions.delete(interactionId);
     this.#event({
       type: "interaction.closed",
       interactionId,
@@ -506,10 +560,10 @@ export class FakeHarnessSession implements HarnessSession {
     if (!active || !interaction) {
       return {
         ok: false,
-        error: invalidState("Interaction Response must reference a pending Question"),
+        error: invalidState("Interaction Response must reference a pending Interaction"),
       };
     }
-    const error = validateHostQuestionResponse(interaction, command.response);
+    const error = validateHostInteractionResponse(interaction, command.response);
     if (error) return { ok: false, error };
     active.interactions.delete(command.interactionId);
     this.interactionResponses.push(command);
@@ -517,7 +571,10 @@ export class FakeHarnessSession implements HarnessSession {
       type: "interaction.closed",
       interactionId: command.interactionId,
       turnId: active.command.turnId,
-      reason: command.response.cancelled ? "cancelled" : "responded",
+      reason:
+        command.response.type === "question" && command.response.cancelled
+          ? "cancelled"
+          : "responded",
     });
     return { ok: true, value: { accepted: true } };
   }

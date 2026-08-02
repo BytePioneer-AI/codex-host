@@ -280,7 +280,9 @@ async function nextInteraction(
   iterator: AsyncIterator<HarnessOutput>,
 ): Promise<HostQuestionInteraction> {
   const output = await nextOutput(iterator);
-  if (output.kind !== "interaction") throw new Error("Expected a Harness Interaction output");
+  if (output.kind !== "interaction" || output.interaction.type !== "question") {
+    throw new Error("Expected a Harness Question output");
+  }
   return output.interaction;
 }
 

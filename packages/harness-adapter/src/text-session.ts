@@ -139,7 +139,26 @@ export interface HostQuestionInteraction {
   expiresAt?: string;
 }
 
-export type HostInteraction = HostQuestionInteraction;
+export type HostApprovalEffect = "allowOnce" | "allowForSession" | "allowAlways" | "deny";
+
+export interface HostApprovalAction {
+  id: string;
+  label: string;
+  effect: HostApprovalEffect;
+}
+
+export interface HostApprovalInteraction {
+  type: "approval";
+  interactionId: HostInteractionId;
+  turnId: HostTurnId;
+  title: string;
+  description?: string;
+  subject: { type: "nativeAction" };
+  actions: HostApprovalAction[];
+  expiresAt?: string;
+}
+
+export type HostInteraction = HostQuestionInteraction | HostApprovalInteraction;
 
 export interface HostQuestionResponse {
   type: "question";
@@ -147,7 +166,12 @@ export interface HostQuestionResponse {
   cancelled?: boolean;
 }
 
-export type HostInteractionResponse = HostQuestionResponse;
+export interface HostApprovalResponse {
+  type: "approval";
+  actionId: string;
+}
+
+export type HostInteractionResponse = HostQuestionResponse | HostApprovalResponse;
 
 export interface InteractionRespondCommand {
   type: "interaction.respond";

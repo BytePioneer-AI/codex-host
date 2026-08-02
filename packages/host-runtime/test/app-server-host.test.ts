@@ -2276,6 +2276,180 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("round-trips an early Approval through the reviewed Codex native request", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.requestApprovalOnNextTurn("Allow native action?", "One-shot approval");
+
+    const turnId = await startPiTurn(fixture, threadId);
+    const request = await fixture.collector.waitFor((message) =>
+      method(message, "mcpServer/elicitation/request"),
+    );
+    expect(request).toEqual({
+      id: -1_000_001,
+      method: "mcpServer/elicitation/request",
+      params: {
+        serverName: "Pi",
+        threadId,
+        turnId,
+        mode: "form",
+        message: "Allow native action?",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          reason: "One-shot approval",
+        },
+      },
+    });
+    expect(
+      fixture.collector.messages.some((message) => method(message, "item/tool/requestUserInput")),
+    ).toBe(false);
+
+    const approvalRequestId = request.id;
+    if (typeof approvalRequestId !== "number") {
+      throw new Error("Approval request has no numeric Host ID");
+    }
+    writeRequest(fixture.desktopInput, {
+      id: approvalRequestId,
+      result: { action: "accept", content: {}, _meta: null },
+    });
+    await vi.waitFor(() => {
+      expect(session.interactionResponses).toMatchObject([
+        { response: { type: "approval", actionId: "allowOnce" } },
+      ]);
+    });
+    writeRequest(fixture.desktopInput, {
+      id: approvalRequestId,
+      result: { action: "accept" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.interactionResponses).toHaveLength(1);
+
+    session.appendText("continued");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await stopFixture(fixture);
+  });
+
+  it("round-trips a declared native Approval scope without exposing a payload", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await startPiTurn(fixture, threadId);
+    session.requestApproval("Remember native action?", undefined, "always");
+    const request = await fixture.collector.waitFor((message) =>
+      method(message, "mcpServer/elicitation/request"),
+    );
+    expect(request).toMatchObject({ params: { _meta: { persist: "always" } } });
+    if (typeof request.id !== "number") throw new Error("Approval request has no numeric ID");
+    writeRequest(fixture.desktopInput, {
+      id: request.id,
+      result: { action: "accept", content: {}, _meta: { persist: "always" } },
+    });
+    await vi.waitFor(() => {
+      expect(session.interactionResponses).toMatchObject([
+        { response: { type: "approval", actionId: "allowAlways" } },
+      ]);
+    });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    await stopFixture(fixture);
+  });
+
+  it("fails closed for denied, cancelled, errored, and malformed native Approval responses", async () => {
+    const responses: JsonObject[] = [
+      { result: { action: "decline" } },
+      { result: { action: "cancel" } },
+      { error: { code: -1, message: "dismissed" } },
+      { result: { action: "allowForSession" } },
+      { result: { action: "accept", content: {}, _meta: { persist: "session" } } },
+    ];
+    for (const response of responses) {
+      const fixture = createFixture();
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await startPiTurn(fixture, threadId);
+      session.requestApproval("Approve once");
+      const request = await fixture.collector.waitFor((message) =>
+        method(message, "mcpServer/elicitation/request"),
+      );
+      const approvalRequestId = request.id;
+      if (typeof approvalRequestId !== "number") {
+        throw new Error("Approval request has no numeric Host ID");
+      }
+      writeRequest(fixture.desktopInput, { id: approvalRequestId, ...response });
+      await vi.waitFor(() => {
+        expect(session.interactionResponses.at(-1)).toMatchObject({
+          response: { type: "approval", actionId: "deny" },
+        });
+      });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+      await stopFixture(fixture);
+    }
+  });
+
+  it("resolves cancelled Approval state and consumes its reserved late-response namespace", async () => {
+    const fixture = createFixture();
+    const forwarded: string[] = [];
+    fixture.official.stdin.setEncoding("utf8");
+    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.requestApproval("Cancel pending Approval");
+    const approvalRequest = await fixture.collector.waitFor((message) =>
+      method(message, "mcpServer/elicitation/request"),
+    );
+    const approvalRequestId = approvalRequest.id;
+    if (typeof approvalRequestId !== "number") {
+      throw new Error("Approval request has no numeric Host ID");
+    }
+    session.completeCancellationOnRequest();
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/interrupt",
+      params: { threadId, turnId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 3));
+    const resolved = await fixture.collector.waitFor((message) =>
+      method(message, "serverRequest/resolved"),
+    );
+    const completed = await fixture.collector.waitFor((message) =>
+      method(message, "turn/completed"),
+    );
+    expect(resolved).toMatchObject({
+      params: { threadId, requestId: approvalRequestId },
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
+    const resolvedIndex = fixture.collector.messages.indexOf(resolved);
+    const terminalIndex = fixture.collector.messages.indexOf(completed);
+    expect(resolvedIndex).toBeGreaterThan(responseIndex);
+    expect(terminalIndex).toBeGreaterThan(resolvedIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: approvalRequestId,
+      result: { action: "accept" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: -1_500_000,
+      result: { action: "accept" },
+    });
+    writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(forwarded.join("")).toContain(JSON.stringify({ id: 999, result: { official: true } }));
+    expect(forwarded.join("")).not.toContain(String(approvalRequestId));
+    expect(forwarded.join("")).not.toContain("-1500000");
+    expect(session.interactionResponses).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
   it("round-trips an early standalone Question through the Codex native request", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

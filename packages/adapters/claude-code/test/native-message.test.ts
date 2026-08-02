@@ -17,6 +17,13 @@ function assistant(text: string, error?: string) {
   };
 }
 
+function toolUse(name: string) {
+  return {
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name, id: "synthetic-tool", input: {} }] },
+  };
+}
+
 function result(input: Record<string, unknown> = {}) {
   return {
     type: "result",
@@ -41,6 +48,17 @@ describe("Claude native Turn interpretation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(assistant("complete text"))).toEqual({ deltas: ["complete text"] });
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("reconciles separate Assistant text responses across a Tool loop", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(turn.consume(partial("before"))).toEqual({ deltas: ["before"] });
+    expect(turn.consume(assistant("before tool\n"))).toEqual({ deltas: [" tool\n"] });
+    expect(turn.consume(toolUse("Edit"))).toEqual({ deltas: [] });
+    expect(turn.consume(partial("after"))).toEqual({ deltas: ["after"] });
+    expect(turn.consume(assistant("after denial"))).toEqual({ deltas: [" denial"] });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 

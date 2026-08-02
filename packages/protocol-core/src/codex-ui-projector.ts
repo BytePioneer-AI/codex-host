@@ -1,4 +1,5 @@
 import type {
+  HostApprovalInteraction,
   HostFileChange,
   HostItem,
   HostItemOutcome,
@@ -22,6 +23,10 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  projectCodexApprovalRequest,
+  type CodexApprovalRequestProjection,
+} from "./codex-approval.js";
+import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
@@ -37,6 +42,10 @@ export type ProjectableHostEvent =
 export interface CodexTurnProjection {
   messages: JsonObject[];
   completedTurn?: JsonObject;
+}
+
+export interface CodexApprovalProjection extends CodexTurnProjection {
+  approvalRequest: CodexApprovalRequestProjection;
 }
 
 export interface CodexQuestionProjection extends CodexTurnProjection {
@@ -56,10 +65,8 @@ interface ProjectedItem {
   streamedCommandOutput: boolean;
 }
 
-interface ProjectedInteraction {
-  itemId: HostItemId;
-  syntheticItem: boolean;
-}
+type ProjectedInteraction =
+  { type: "approval" } | { type: "question"; itemId: HostItemId; syntheticItem: boolean };
 
 function itemStatus(outcome: HostItemOutcome | null): "inProgress" | "completed" | "failed" {
   if (!outcome) return "inProgress";
@@ -263,6 +270,27 @@ export class CodexTurnProjector {
     }
   }
 
+  projectApproval(
+    interaction: HostApprovalInteraction,
+    serverName: string,
+  ): CodexApprovalProjection {
+    if (interaction.turnId !== this.#turnId) {
+      throw new Error("Host Interaction references another Turn");
+    }
+    this.#requireStarted();
+    if (this.#completed) throw new Error("Host Interaction follows the Turn terminal event");
+    if (this.#interactions.has(interaction.interactionId)) {
+      throw new Error("Host Interaction opened more than once");
+    }
+    const approvalRequest = projectCodexApprovalRequest({
+      threadId: this.#threadId,
+      interaction,
+      serverName,
+    });
+    this.#interactions.set(interaction.interactionId, { type: "approval" });
+    return { messages: [], approvalRequest };
+  }
+
   projectQuestion(
     interaction: HostQuestionInteraction,
     syntheticItemId: HostItemId,
@@ -304,7 +332,11 @@ export class CodexTurnProjector {
         ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }).messages,
       );
     }
-    this.#interactions.set(interaction.interactionId, { itemId, syntheticItem });
+    this.#interactions.set(interaction.interactionId, {
+      type: "question",
+      itemId,
+      syntheticItem,
+    });
     return { messages, itemId, questionRequest };
   }
 
@@ -388,7 +420,10 @@ export class CodexTurnProjector {
 
   #completeItem(event: ItemCompletedEvent, emittedAtMs: number): CodexTurnProjection {
     if (
-      [...this.#interactions.values()].some(({ itemId }) => itemId === event.snapshot.item.itemId)
+      [...this.#interactions.values()].some(
+        (interaction) =>
+          interaction.type === "question" && interaction.itemId === event.snapshot.item.itemId,
+      )
     ) {
       throw new Error("Host Item completed with a pending Interaction");
     }
@@ -423,7 +458,7 @@ export class CodexTurnProjector {
     const interaction = this.#interactions.get(event.interactionId);
     if (!interaction) throw new Error("Host output closes an unknown Interaction");
     this.#interactions.delete(event.interactionId);
-    if (!interaction.syntheticItem) return { messages: [] };
+    if (interaction.type === "approval" || !interaction.syntheticItem) return { messages: [] };
     const projected = this.#activeItem(interaction.itemId);
     return this.#completeItem(
       {

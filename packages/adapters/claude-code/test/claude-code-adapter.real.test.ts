@@ -85,7 +85,12 @@ describe.skipIf(!RUN_REAL)("ClaudeCodeAdapter real SDK integration", () => {
         const questionOutput = await collector.waitFor(
           (output) => output.kind === "interaction" && output.interaction.turnId === questionTurnId,
         );
-        if (questionOutput.kind !== "interaction") throw new Error("Question was not emitted");
+        if (
+          questionOutput.kind !== "interaction" ||
+          questionOutput.interaction.type !== "question"
+        ) {
+          throw new Error("Question was not emitted");
+        }
         const question = questionOutput.interaction.questions[0];
         if (!question || question.type !== "choice") throw new Error("Choice was not emitted");
         const answer = question.options[0]?.value;

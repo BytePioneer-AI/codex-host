@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import {
   ClaudeSdkModelInspector,
@@ -87,6 +87,30 @@ function completeTurn(fakeQuery: FakeQuery): void {
   } as unknown as SDKMessage);
 }
 
+function pushPartialText(fakeQuery: FakeQuery, text: string): void {
+  fakeQuery.push({
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    },
+    parent_tool_use_id: null,
+    uuid: "00000000-0000-4000-8000-000000000020",
+    session_id: "00000000-0000-4000-8000-000000000001",
+  } as unknown as SDKMessage);
+}
+
+function pushAssistantText(fakeQuery: FakeQuery, text: string): void {
+  fakeQuery.push({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+    parent_tool_use_id: null,
+    uuid: "00000000-0000-4000-8000-000000000021",
+    session_id: "00000000-0000-4000-8000-000000000001",
+  } as unknown as SDKMessage);
+}
+
 function options(value: ReturnType<typeof fixture>): NonNullable<QueryInput["options"]> {
   const queryOptions = value.queryInput().options;
   if (!queryOptions) throw new Error("SDK query options are missing");
@@ -132,6 +156,67 @@ describe("ClaudeSdkTransport context Usage", () => {
 
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport text reconciliation", () => {
+  it("keeps a permission-denial Tool loop successful when text surrounds the callback", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000022",
+      (event) => events.push(event),
+    );
+
+    pushPartialText(value.fakeQuery, "before");
+    pushAssistantText(value.fakeQuery, "before tool\n");
+    await vi.waitFor(() => {
+      expect(events.filter(({ type }) => type === "text.delta")).toEqual([
+        { type: "text.delta", delta: "before" },
+        { type: "text.delta", delta: " tool\n" },
+      ]);
+    });
+
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const permission = canUseTool(
+      "Edit",
+      { file_path: "/synthetic/file" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "text-loop-tool",
+        requestId: "text-loop-control",
+        displayName: "Edit file",
+      },
+    );
+    const approval = events.find(
+      (event) => event.type === "interaction.requested" && event.request.type === "approval",
+    );
+    if (!approval || approval.type !== "interaction.requested") {
+      throw new Error("Approval was not emitted");
+    }
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: approval.request.requestId,
+      decision: "deny",
+    });
+    await expect(permission).resolves.toMatchObject({
+      behavior: "deny",
+      decisionClassification: "user_reject",
+    });
+
+    pushPartialText(value.fakeQuery, "after");
+    pushAssistantText(value.fakeQuery, "after denial");
+    completeTurn(value.fakeQuery);
+
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(
+      events.flatMap((event) => (event.type === "text.delta" ? [event.delta] : [])).join(""),
+    ).toBe("before tool\nafter denial");
+    expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
 });
@@ -248,8 +333,8 @@ describe("ClaudeSdkTransport Question callbacks", () => {
       {
         type: "interaction.requested",
         request: {
-          requestId: "native-request",
-          toolUseId: "native-tool",
+          type: "question",
+          requestId: "claude-question-1",
           questions: [
             {
               question: "Which path?",
@@ -265,7 +350,8 @@ describe("ClaudeSdkTransport Question callbacks", () => {
       },
     ]);
     await value.transport.respondToInteraction({
-      requestId: "native-request",
+      type: "question",
+      requestId: "claude-question-1",
       answers: { "Which path?": "Alpha" },
     });
     await expect(permission).resolves.toEqual({
@@ -276,12 +362,13 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     });
     expect(events.at(-1)).toEqual({
       type: "interaction.closed",
-      requestId: "native-request",
+      requestId: "claude-question-1",
       reason: "responded",
     });
     await expect(
       value.transport.respondToInteraction({
-        requestId: "native-request",
+        type: "question",
+        requestId: "claude-question-1",
         answers: { "Which path?": "Beta" },
       }),
     ).rejects.toThrow("not pending");
@@ -292,17 +379,11 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     expect(value.onFault).not.toHaveBeenCalled();
   });
 
-  it("denies unknown and malformed callbacks without exposing an Interaction", async () => {
+  it("denies out-of-Turn, malformed, and duplicate Question callbacks without leaking IDs", async () => {
     const value = fixture();
     await value.transport.start();
     const canUseTool = options(value).canUseTool;
     if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
-    const events: ClaudeTurnEvent[] = [];
-    const turn = value.transport.runTurn(
-      "synthetic",
-      "00000000-0000-4000-8000-000000000003",
-      (event) => events.push(event),
-    );
 
     await expect(
       canUseTool(
@@ -310,11 +391,18 @@ describe("ClaudeSdkTransport Question callbacks", () => {
         {},
         {
           signal: new AbortController().signal,
-          toolUseID: "other-tool",
-          requestId: "other-request",
+          toolUseID: "outside-tool",
+          requestId: "outside-request",
         },
       ),
-    ).resolves.toMatchObject({ behavior: "deny", toolUseID: "other-tool" });
+    ).resolves.toMatchObject({ behavior: "deny", toolUseID: "outside-tool" });
+
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000003",
+      (event) => events.push(event),
+    );
     await expect(
       canUseTool(
         "AskUserQuestion",
@@ -340,9 +428,17 @@ describe("ClaudeSdkTransport Question callbacks", () => {
         requestId: "duplicate-request",
       }),
     ).resolves.toMatchObject({ behavior: "deny", toolUseID: "second-tool" });
-    expect(events.map(({ type }) => type)).toEqual(["interaction.requested"]);
+    const requested = events.find(
+      (event) => event.type === "interaction.requested" && event.request.type === "question",
+    );
+    if (requested?.type !== "interaction.requested") {
+      throw new Error("Claude Question request was not exposed");
+    }
+    expect(JSON.stringify(requested)).not.toContain("duplicate-request");
+    expect(JSON.stringify(requested)).not.toContain("duplicate-tool");
     await value.transport.respondToInteraction({
-      requestId: "duplicate-request",
+      type: "question",
+      requestId: requested.request.requestId,
       cancelled: true,
     });
     await expect(first).resolves.toMatchObject({ behavior: "deny", toolUseID: "duplicate-tool" });
@@ -403,11 +499,449 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     expect(events.map(({ type }) => type)).toEqual(["interaction.requested", "interaction.closed"]);
     expect(events.at(-1)).toMatchObject({ reason: "cancelled" });
     await expect(
-      value.transport.respondToInteraction({ requestId: "abort-request", cancelled: true }),
+      value.transport.respondToInteraction({
+        type: "question",
+        requestId: "claude-question-1",
+        cancelled: true,
+      }),
     ).rejects.toThrow("not pending");
 
     completeTurn(value.fakeQuery);
     await turn;
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport Tool Approval callbacks", () => {
+  it("resolves independent Edit and Bash callbacks with exact one-shot SDK results", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000010",
+      (event) => events.push(event),
+    );
+    const editInput = { file_path: "/synthetic/private", new_string: "private-content" };
+    const editPermission = canUseTool("Edit", editInput, {
+      signal: new AbortController().signal,
+      toolUseID: "native-edit-tool",
+      requestId: "native-edit-control",
+      title: "Claude wants to edit a file",
+      displayName: "Edit file",
+      description: "One-shot file edit",
+      suggestions: [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Edit" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ],
+    });
+    const bashPermission = canUseTool(
+      "Bash",
+      { command: "synthetic-command" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "native-bash-tool",
+        requestId: "native-bash-control",
+        displayName: "Run command",
+      },
+    );
+
+    const requests = events.flatMap((event) =>
+      event.type === "interaction.requested" && event.request.type === "approval"
+        ? [event.request]
+        : [],
+    );
+    expect(requests).toEqual([
+      {
+        type: "approval",
+        requestId: "claude-approval-1",
+        title: "Claude wants to edit a file",
+        description: "One-shot file edit",
+        suggestedScope: "session",
+      },
+      {
+        type: "approval",
+        requestId: "claude-approval-2",
+        title: "Run command",
+      },
+    ]);
+    const exposed = JSON.stringify(requests);
+    expect(exposed).not.toContain("native-edit");
+    expect(exposed).not.toContain("private-content");
+    expect(exposed).not.toContain("updatedPermissions");
+
+    await expect(
+      value.transport.respondToInteraction({
+        type: "question",
+        requestId: "claude-approval-1",
+        cancelled: true,
+      }),
+    ).rejects.toThrow("type does not match");
+    await expect(
+      canUseTool(
+        "Bash",
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: "duplicate-tool",
+          requestId: "native-bash-control",
+        },
+      ),
+    ).resolves.toMatchObject({ behavior: "deny", toolUseID: "duplicate-tool" });
+
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-2",
+      decision: "deny",
+    });
+    await expect(bashPermission).resolves.toEqual({
+      behavior: "deny",
+      message: "User denied the Tool request",
+      toolUseID: "native-bash-tool",
+      decisionClassification: "user_reject",
+    });
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-1",
+      decision: "allowOnce",
+    });
+    const editResult = await editPermission;
+    expect(editResult).toEqual({
+      behavior: "allow",
+      updatedInput: editInput,
+      toolUseID: "native-edit-tool",
+      decisionClassification: "user_temporary",
+    });
+    if (!editResult || editResult.behavior !== "allow") throw new Error("Edit was not allowed");
+    expect(editResult.updatedInput).toBe(editInput);
+    expect(editResult).not.toHaveProperty("updatedPermissions");
+    expect(events.filter(({ type }) => type === "interaction.closed")).toHaveLength(2);
+
+    completeTurn(value.fakeQuery);
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    await value.transport.close();
+    expect(value.fakeQuery.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact native suggestions only for their declared scope", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000013",
+      (event) => events.push(event),
+    );
+    const sessionSuggestions = [
+      {
+        type: "addRules" as const,
+        rules: [{ toolName: "Edit" }],
+        behavior: "allow" as const,
+        destination: "session" as const,
+      },
+      {
+        type: "addDirectories" as const,
+        directories: ["/synthetic"],
+        destination: "cliArg" as const,
+      },
+    ];
+    const persistentSuggestions = [
+      {
+        type: "addRules" as const,
+        rules: [{ toolName: "Bash", ruleContent: "npm test" }],
+        behavior: "allow" as const,
+        destination: "projectSettings" as const,
+      },
+    ];
+    const sessionInput = { file_path: "/synthetic/private-session" };
+    const persistentInput = { command: "npm test" };
+    const sessionPermission = canUseTool("Edit", sessionInput, {
+      signal: new AbortController().signal,
+      toolUseID: "session-tool",
+      requestId: "session-control",
+      suggestions: sessionSuggestions,
+    });
+    const persistentPermission = canUseTool("Bash", persistentInput, {
+      signal: new AbortController().signal,
+      toolUseID: "persistent-tool",
+      requestId: "persistent-control",
+      suggestions: persistentSuggestions,
+    });
+    expect(
+      events.flatMap((event) =>
+        event.type === "interaction.requested" && event.request.type === "approval"
+          ? [event.request]
+          : [],
+      ),
+    ).toEqual([
+      expect.objectContaining({ requestId: "claude-approval-1", suggestedScope: "session" }),
+      expect.objectContaining({ requestId: "claude-approval-2", suggestedScope: "always" }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("projectSettings");
+    expect(JSON.stringify(events)).not.toContain("private-session");
+
+    await expect(
+      value.transport.respondToInteraction({
+        type: "approval",
+        requestId: "claude-approval-1",
+        decision: "allowAlways",
+      }),
+    ).rejects.toThrow("scope is not pending");
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-1",
+      decision: "allowForSession",
+    });
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-2",
+      decision: "allowAlways",
+    });
+    const sessionResult = await sessionPermission;
+    const persistentResult = await persistentPermission;
+    expect(sessionResult).toEqual({
+      behavior: "allow",
+      updatedInput: sessionInput,
+      toolUseID: "session-tool",
+      decisionClassification: "user_permanent",
+      updatedPermissions: sessionSuggestions,
+    });
+    expect(persistentResult).toEqual({
+      behavior: "allow",
+      updatedInput: persistentInput,
+      toolUseID: "persistent-tool",
+      decisionClassification: "user_permanent",
+      updatedPermissions: persistentSuggestions,
+    });
+    if (
+      !sessionResult ||
+      sessionResult.behavior !== "allow" ||
+      !persistentResult ||
+      persistentResult.behavior !== "allow"
+    ) {
+      throw new Error("Scoped permission was not allowed");
+    }
+    expect(sessionResult.updatedPermissions).toBe(sessionSuggestions);
+    expect(persistentResult.updatedPermissions).toBe(persistentSuggestions);
+
+    completeTurn(value.fakeQuery);
+    await turn;
+    await value.transport.close();
+  });
+
+  it("omits broader scope for empty, malformed, and unknown suggestions", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000014",
+      (event) => events.push(event),
+    );
+    const suggestionCases: Array<{ name: string; suggestions: PermissionUpdate[] }> = [
+      { name: "empty", suggestions: [] },
+      {
+        name: "malformed",
+        suggestions: [
+          {
+            type: "addRules",
+            behavior: "allow",
+            destination: "session",
+          } as unknown as PermissionUpdate,
+        ],
+      },
+      {
+        name: "unknown-destination",
+        suggestions: [
+          {
+            type: "addRules",
+            rules: [{ toolName: "Edit" }],
+            behavior: "allow",
+            destination: "futureSettings",
+          } as unknown as PermissionUpdate,
+        ],
+      },
+    ];
+    const permissions = suggestionCases.map(({ name, suggestions }, index) =>
+      canUseTool(
+        "Edit",
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: `${name}-tool`,
+          requestId: `${name}-control`,
+          suggestions,
+        },
+      ).then((result) => ({ index, result })),
+    );
+    const requests = events.flatMap((event) =>
+      event.type === "interaction.requested" && event.request.type === "approval"
+        ? [event.request]
+        : [],
+    );
+    expect(requests).toHaveLength(suggestionCases.length);
+    for (const [index, request] of requests.entries()) {
+      expect(request).not.toHaveProperty("suggestedScope");
+      await expect(
+        value.transport.respondToInteraction({
+          type: "approval",
+          requestId: request.requestId,
+          decision: "allowForSession",
+        }),
+      ).rejects.toThrow("scope is not pending");
+      await value.transport.respondToInteraction({
+        type: "approval",
+        requestId: request.requestId,
+        decision: "allowOnce",
+      });
+      await expect(permissions[index]).resolves.toMatchObject({
+        index,
+        result: { behavior: "allow", decisionClassification: "user_temporary" },
+      });
+      const resolved = await permissions[index];
+      expect(resolved?.result).not.toHaveProperty("updatedPermissions");
+    }
+    completeTurn(value.fakeQuery);
+    await turn;
+    await value.transport.close();
+  });
+
+  it("uses bounded display fallback and denies callbacks with no valid display identity", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000011",
+      (event) => events.push(event),
+    );
+
+    const fallback = canUseTool(
+      "Edit",
+      {},
+      {
+        signal: new AbortController().signal,
+        toolUseID: "fallback-tool",
+        requestId: "fallback-control",
+        title: "x".repeat(121),
+        displayName: "Edit file",
+        description: "Bounded description",
+      },
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "interaction.requested",
+      request: {
+        type: "approval",
+        title: "Edit file",
+        description: "Bounded description",
+      },
+    });
+    await value.transport.respondToInteraction({
+      type: "approval",
+      requestId: "claude-approval-1",
+      decision: "deny",
+    });
+    await fallback;
+
+    const exposedCount = events.filter(({ type }) => type === "interaction.requested").length;
+    await expect(
+      canUseTool(
+        "x".repeat(121),
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: "invalid-display-tool",
+          requestId: "invalid-display-control",
+        },
+      ),
+    ).resolves.toMatchObject({ behavior: "deny", toolUseID: "invalid-display-tool" });
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      canUseTool(
+        "Bash",
+        {},
+        {
+          signal: aborted.signal,
+          toolUseID: "pre-aborted-tool",
+          requestId: "pre-aborted-control",
+        },
+      ),
+    ).resolves.toMatchObject({ behavior: "deny", toolUseID: "pre-aborted-tool" });
+    expect(events.filter(({ type }) => type === "interaction.requested")).toHaveLength(
+      exposedCount,
+    );
+
+    completeTurn(value.fakeQuery);
+    await turn;
+    await value.transport.close();
+  });
+
+  it("closes Approval callbacks once on AbortSignal and native terminal cleanup", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const canUseTool = options(value).canUseTool;
+    if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000012",
+      (event) => events.push(event),
+    );
+    const controller = new AbortController();
+    const abortedPermission = canUseTool(
+      "Edit",
+      {},
+      {
+        signal: controller.signal,
+        toolUseID: "aborted-tool",
+        requestId: "aborted-control",
+      },
+    );
+    const terminalPermission = canUseTool(
+      "Bash",
+      {},
+      {
+        signal: new AbortController().signal,
+        toolUseID: "terminal-tool",
+        requestId: "terminal-control",
+      },
+    );
+
+    controller.abort();
+    await expect(abortedPermission).resolves.toMatchObject({
+      behavior: "deny",
+      toolUseID: "aborted-tool",
+    });
+    completeTurn(value.fakeQuery);
+    await expect(terminalPermission).resolves.toMatchObject({
+      behavior: "deny",
+      toolUseID: "terminal-tool",
+    });
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events.filter(({ type }) => type === "interaction.closed")).toEqual([
+      expect.objectContaining({ requestId: "claude-approval-1", reason: "cancelled" }),
+      expect.objectContaining({ requestId: "claude-approval-2", reason: "superseded" }),
+    ]);
+    await expect(
+      value.transport.respondToInteraction({
+        type: "approval",
+        requestId: "claude-approval-1",
+        decision: "allowOnce",
+      }),
+    ).rejects.toThrow("not pending");
     await value.transport.close();
   });
 });

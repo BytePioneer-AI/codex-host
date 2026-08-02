@@ -12,6 +12,7 @@ import { ClaudeCodeExecutableError } from "../src/command.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
 import type {
   ClaudeAdapterDependencies,
+  ClaudeApprovalRequest,
   ClaudeInteractionResponse,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
@@ -74,6 +75,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   event(event: ClaudeTurnEvent): void {
     if (!this.#active) throw new Error("No active fake Claude Turn");
     this.#active.onEvent(event);
+  }
+
+  approval(request: ClaudeApprovalRequest): void {
+    this.event({ type: "interaction.requested", request });
   }
 
   question(request: ClaudeQuestionRequest): void {
@@ -710,6 +715,224 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("maps independent native Approvals to bounded Host actions and exact responses", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("approvals"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.approval({
+      type: "approval",
+      requestId: "transport-approval-1",
+      title: "Allow Edit?",
+      description: "One-shot edit permission",
+    });
+    transports[0]?.approval({
+      type: "approval",
+      requestId: "transport-approval-2",
+      title: "Allow Bash?",
+    });
+    const allowInteraction = await nextInteraction(iterator);
+    const denyInteraction = await nextInteraction(iterator);
+    expect(allowInteraction).toMatchObject({
+      type: "approval",
+      title: "Allow Edit?",
+      description: "One-shot edit permission",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allowOnce", label: "Allow once", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    });
+    expect(denyInteraction).toMatchObject({ type: "approval", title: "Allow Bash?" });
+    expect(allowInteraction.interactionId).not.toBe(denyInteraction.interactionId);
+    expect(JSON.stringify(allowInteraction)).not.toContain("transport-approval-1");
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: allowInteraction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: allowInteraction.interactionId,
+        response: { type: "approval", actionId: "allowForSession" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: denyInteraction.interactionId,
+        response: { type: "approval", actionId: "deny" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transports[0]?.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "transport-approval-2",
+      decision: "deny",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: denyInteraction.interactionId,
+      reason: "responded",
+    });
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: allowInteraction.interactionId,
+        response: { type: "approval", actionId: "allowOnce" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transports[0]?.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "transport-approval-1",
+      decision: "allowOnce",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: allowInteraction.interactionId,
+      reason: "responded",
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: allowInteraction.interactionId,
+        response: { type: "approval", actionId: "allowOnce" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("maps declared native suggestion scopes without exposing suggestions", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("approval-scopes"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.approval({
+      type: "approval",
+      requestId: "session-approval",
+      title: "Allow Edit?",
+      suggestedScope: "session",
+    });
+    transports[0]?.approval({
+      type: "approval",
+      requestId: "always-approval",
+      title: "Allow Bash?",
+      suggestedScope: "always",
+    });
+    const sessionInteraction = await nextInteraction(iterator);
+    const alwaysInteraction = await nextInteraction(iterator);
+    expect(sessionInteraction).toMatchObject({
+      type: "approval",
+      actions: expect.arrayContaining([
+        {
+          id: "allowForSession",
+          label: "Allow this conversation",
+          effect: "allowForSession",
+        },
+      ]),
+    });
+    expect(alwaysInteraction).toMatchObject({
+      type: "approval",
+      actions: expect.arrayContaining([
+        { id: "allowAlways", label: "Always allow", effect: "allowAlways" },
+      ]),
+    });
+    expect(JSON.stringify([sessionInteraction, alwaysInteraction])).not.toContain(
+      "session-approval",
+    );
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: sessionInteraction.interactionId,
+        response: { type: "approval", actionId: "allowAlways" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: sessionInteraction.interactionId,
+      response: { type: "approval", actionId: "allowForSession" },
+    });
+    expect(transports[0]?.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "session-approval",
+      decision: "allowForSession",
+    });
+    await nextEvent(iterator);
+    await session.execute({
+      type: "interaction.respond",
+      interactionId: alwaysInteraction.interactionId,
+      response: { type: "approval", actionId: "allowAlways" },
+    });
+    expect(transports[0]?.respondToInteraction).toHaveBeenLastCalledWith({
+      type: "approval",
+      requestId: "always-approval",
+      decision: "allowAlways",
+    });
+    await nextEvent(iterator);
+
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("closes a pending Approval before Session-close Turn terminals", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("close-approval"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.approval({
+      type: "approval",
+      requestId: "close-approval-request",
+      title: "Allow pending action?",
+    });
+    const interaction = await nextInteraction(iterator);
+
+    await session.close();
+    const terminalEvents = [];
+    for (;;) {
+      const output = await iterator.next();
+      if (output.done) break;
+      if (output.value.kind === "event") terminalEvents.push(output.value.event);
+    }
+    const closedIndex = terminalEvents.findIndex(
+      (event) =>
+        event.type === "interaction.closed" && event.interactionId === interaction.interactionId,
+    );
+    const turnIndex = terminalEvents.findIndex((event) => event.type === "turn.completed");
+    expect(closedIndex).toBeGreaterThanOrEqual(0);
+    expect(closedIndex).toBeLessThan(turnIndex);
+    expect(
+      terminalEvents.filter(
+        (event) =>
+          event.type === "interaction.closed" && event.interactionId === interaction.interactionId,
+      ),
+    ).toHaveLength(1);
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+  });
+
   it("round-trips native multiple, multi-select, and Other Questions then continues", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -720,8 +943,8 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     transports[0]?.question({
-      requestId: "native-request",
-      toolUseId: "native-tool",
+      type: "question",
+      requestId: "question-request",
       questions: [
         {
           question: "Which path?",
@@ -784,7 +1007,8 @@ describe("Claude Code HarnessAdapter", () => {
       }),
     ).resolves.toEqual({ ok: true, value: { accepted: true } });
     expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
-      requestId: "native-request",
+      type: "question",
+      requestId: "question-request",
       answers: {
         "Which path?": "Alpha",
         "Which features?": "Search, Custom feature",
@@ -828,8 +1052,8 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     transports[0]?.question({
+      type: "question",
       requestId: "dismiss-request",
-      toolUseId: "dismiss-tool",
       questions: [
         {
           question: "Continue?",
@@ -851,6 +1075,7 @@ describe("Claude Code HarnessAdapter", () => {
       }),
     ).resolves.toEqual({ ok: true, value: { accepted: true } });
     expect(transports[0]?.respondToInteraction).toHaveBeenCalledWith({
+      type: "question",
       requestId: "dismiss-request",
       cancelled: true,
     });
@@ -873,20 +1098,10 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
-    transports[0]?.question({
+    transports[0]?.approval({
+      type: "approval",
       requestId: "cancel-request",
-      toolUseId: "cancel-tool",
-      questions: [
-        {
-          question: "Continue?",
-          header: "Continue",
-          options: [
-            { label: "Yes", description: "Continue" },
-            { label: "No", description: "Stop" },
-          ],
-          multiSelect: false,
-        },
-      ],
+      title: "Allow pending native action?",
     });
     const cancelledInteraction = await nextInteraction(iterator);
     const cancel = {
@@ -964,20 +1179,10 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
-    transports[0]?.question({
+    transports[0]?.approval({
+      type: "approval",
       requestId: "fault-request",
-      toolUseId: "fault-tool",
-      questions: [
-        {
-          question: "Continue?",
-          header: "Continue",
-          options: [
-            { label: "Yes", description: "Continue" },
-            { label: "No", description: "Stop" },
-          ],
-          multiSelect: false,
-        },
-      ],
+      title: "Allow pending native action?",
     });
     await nextInteraction(iterator);
     transports[0]?.fault(new Error("synthetic Query fault"));

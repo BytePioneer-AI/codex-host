@@ -64,7 +64,7 @@ export class ClaudeNativeTurnAccumulator {
   #assistantErrors: string[] = [];
   #cancelRequested = false;
   #completed = false;
-  #publishedText = "";
+  #pendingStreamedText = "";
   #textConflict = false;
 
   requestCancel(): void {
@@ -76,7 +76,7 @@ export class ClaudeNativeTurnAccumulator {
     const deltas: string[] = [];
     const delta = textDelta(message);
     if (delta !== null && delta.length > 0) {
-      this.#publishedText += delta;
+      this.#pendingStreamedText += delta;
       deltas.push(delta);
     }
 
@@ -85,15 +85,13 @@ export class ClaudeNativeTurnAccumulator {
 
     const completeText = assistantText(message);
     if (completeText !== null && completeText.length > 0) {
-      if (completeText.startsWith(this.#publishedText)) {
-        const suffix = completeText.slice(this.#publishedText.length);
-        if (suffix.length > 0) {
-          this.#publishedText += suffix;
-          deltas.push(suffix);
-        }
-      } else if (completeText !== this.#publishedText) {
+      if (completeText.startsWith(this.#pendingStreamedText)) {
+        const suffix = completeText.slice(this.#pendingStreamedText.length);
+        if (suffix.length > 0) deltas.push(suffix);
+      } else if (completeText !== this.#pendingStreamedText) {
         this.#textConflict = true;
       }
+      this.#pendingStreamedText = "";
     }
 
     if (!isRecord(message) || message.type !== "result") return { deltas };

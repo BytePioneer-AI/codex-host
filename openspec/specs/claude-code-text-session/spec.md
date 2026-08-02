@@ -272,12 +272,17 @@ Claude Adapter SHALL keep `configuration.selectThinkingOption=false` and SHALL r
 
 ### Requirement: Claude exposes the reviewed native Permission Modes
 
-Claude Adapter SHALL expose `plan`, `default`, `acceptEdits`, `auto`, and `bypassPermissions` with provider-native semantics and SHALL NOT expose `dontAsk` in the current catalog. Query creation SHALL keep `settingSources: ["user"]`, pass the selected Session mode, and set `allowDangerouslySkipPermissions: true` only as the SDK prerequisite for an explicit later bypass selection.
+Claude Adapter SHALL expose `plan`, `default`, `acceptEdits`, and `bypassPermissions` with provider-native semantics. It SHALL expose `auto` only when at least one inspected native Model explicitly reports `supportsAutoMode=true`, SHALL NOT infer Auto support from setter presence or a custom Provider, and SHALL NOT expose `dontAsk` in the current catalog. Query creation SHALL keep `settingSources: ["user"]`, pass the selected Session mode, and set `allowDangerouslySkipPermissions: true` only as the SDK prerequisite for an explicit later bypass selection.
 
 #### Scenario: First Turn uses the selected Permission Mode
 
 - **WHEN** create input carries a valid Claude mode
-- **THEN** the lazy Query SHALL initialize with that exact mode and publish it in complete Session state before `turn.started`
+- **THEN** the lazy Query SHALL initialize with that exact mode and publish the native effective mode in complete Session state before `turn.started`
+
+#### Scenario: Custom Model does not declare Auto support
+
+- **WHEN** every inspected native Model omits or denies `supportsAutoMode`
+- **THEN** the normalized catalog SHALL omit `auto` while retaining the other native modes and selection capability
 
 #### Scenario: Bypass capability is enabled but not selected
 

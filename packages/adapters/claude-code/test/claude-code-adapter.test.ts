@@ -156,6 +156,7 @@ function fixture() {
               displayName: "Default",
               description: "ignored",
               resolvedModel: "runtime-default",
+              supportsAutoMode: true,
             },
             {
               value: "sonnet",
@@ -312,6 +313,33 @@ describe("Claude Code HarnessAdapter", () => {
     if (configured.ok) await configured.value.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("omits Auto when no runtime Model explicitly supports it", async () => {
+    const { adapter, dependencies } = fixture();
+    vi.mocked(dependencies.createInspector).mockReturnValueOnce({
+      inspect: vi.fn(async () => ({
+        models: [{ value: "default", displayName: "Custom Model" }],
+        currentModel: "runtime-custom",
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+      })),
+      close: vi.fn(async () => undefined),
+    });
+
+    await expect(adapter.inspect({ cwd: "/no-auto" })).resolves.toMatchObject({
+      status: "ready",
+      permissionModes: {
+        defaultModeId: "default",
+        modes: [
+          { id: "plan" },
+          { id: "default" },
+          { id: "acceptEdits" },
+          { id: "bypassPermissions" },
+        ],
+      },
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
   });
 
   it("coalesces concurrent inspection and does not cache failures or unsupported capability", async () => {

@@ -423,8 +423,13 @@ On the supported Desktop build, Renderer SHALL identify the unique official perm
 #### Scenario: User selects Claude Code
 
 - **WHEN** Claude inspection reports selectable Permission Modes
-- **THEN** the replacement picker SHALL display `plan`, `default`, `acceptEdits`, `auto`, and `bypassPermissions` with provider-native labels
+- **THEN** the replacement picker SHALL display exactly the Adapter catalog with provider-native labels
 - **AND** it SHALL visually distinguish the dangerous bypass option without changing its semantics
+
+#### Scenario: Current Claude catalog does not support Auto
+
+- **WHEN** Claude inspection omits `auto` because no native Model explicitly supports it
+- **THEN** Renderer SHALL not display or restore Auto and SHALL fall back from a stale Auto preference to the catalog default
 
 ### Requirement: Claude mode preference supplies provider defaults
 

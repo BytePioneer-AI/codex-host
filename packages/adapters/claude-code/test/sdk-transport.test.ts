@@ -10,7 +10,14 @@ import type { ClaudeTurnEvent } from "../src/transport.js";
 
 class FakeQuery {
   readonly initializationResult = vi.fn(async () => ({
-    models: [{ value: "default", displayName: "Default", description: "Default" }],
+    models: [
+      {
+        value: "default",
+        displayName: "Default",
+        description: "Default",
+        supportsAutoMode: true,
+      },
+    ],
   }));
   readonly interrupt = vi.fn(async () => undefined);
   readonly getContextUsage = vi.fn(async () => ({
@@ -344,7 +351,14 @@ describe("ClaudeSdkTransport Model control", () => {
     });
 
     await expect(inspector.inspect()).resolves.toEqual({
-      models: [{ value: "default", displayName: "Default", description: "Default" }],
+      models: [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "Default",
+          supportsAutoMode: true,
+        },
+      ],
       currentModel: "runtime-model",
       canSelectModel: true,
       canSelectPermissionMode: true,

@@ -5,6 +5,7 @@ import {
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
+import { z } from "zod";
 
 export type ClaudePermissionMode = Exclude<PermissionMode, "dontAsk">;
 
@@ -18,38 +19,58 @@ const nativePermissionModes = new Set<ClaudePermissionMode>([
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse("default");
 
-export const CLAUDE_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
-  harnessPermissionModeCatalogSchema.parse({
-    modes: [
-      {
-        id: "plan",
-        label: "Plan mode",
-        description: "Analyze and plan without executing tools.",
-      },
-      {
-        id: "default",
-        label: "Default",
-        description: "Ask before edits and other protected actions.",
-      },
-      {
-        id: "acceptEdits",
-        label: "Accept edits",
-        description: "Allow file edits and ask for other protected actions.",
-      },
-      {
-        id: "auto",
-        label: "Auto mode",
-        description: "Let Claude classify permission requests.",
-      },
-      {
-        id: "bypassPermissions",
-        label: "Bypass permissions",
-        description: "Skip Claude Code permission checks.",
-        dangerous: true,
-      },
-    ],
+const claudePermissionModes = [
+  {
+    id: "plan",
+    label: "Plan mode",
+    description: "Analyze and plan without executing tools.",
+  },
+  {
+    id: "default",
+    label: "Default",
+    description: "Ask before edits and other protected actions.",
+  },
+  {
+    id: "acceptEdits",
+    label: "Accept edits",
+    description: "Allow file edits and ask for other protected actions.",
+  },
+  {
+    id: "auto",
+    label: "Auto mode",
+    description: "Let Claude classify permission requests.",
+  },
+  {
+    id: "bypassPermissions",
+    label: "Bypass permissions",
+    description: "Skip Claude Code permission checks.",
+    dangerous: true,
+  },
+] as const;
+
+function createPermissionModeCatalog(includeAuto: boolean): HarnessPermissionModeCatalog {
+  return harnessPermissionModeCatalogSchema.parse({
+    modes: includeAuto
+      ? claudePermissionModes
+      : claudePermissionModes.filter(({ id }) => id !== "auto"),
     defaultModeId: CLAUDE_DEFAULT_PERMISSION_MODE_ID,
   });
+}
+
+export const CLAUDE_PERMISSION_MODE_CATALOG = createPermissionModeCatalog(true);
+const CLAUDE_PERMISSION_MODE_CATALOG_WITHOUT_AUTO = createPermissionModeCatalog(false);
+const autoModeModelInfoSchema = z.object({ supportsAutoMode: z.literal(true) });
+
+export function claudePermissionModeCatalogForModels(
+  models: unknown,
+): HarnessPermissionModeCatalog {
+  const supportsAutoMode =
+    Array.isArray(models) &&
+    models.some((model) => autoModeModelInfoSchema.safeParse(model).success);
+  return supportsAutoMode
+    ? CLAUDE_PERMISSION_MODE_CATALOG
+    : CLAUDE_PERMISSION_MODE_CATALOG_WITHOUT_AUTO;
+}
 
 export function decodeClaudePermissionModeId(
   permissionModeId: HarnessPermissionModeId,

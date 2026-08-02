@@ -63,7 +63,7 @@ import {
 } from "./model-catalog.js";
 import {
   CLAUDE_DEFAULT_PERMISSION_MODE_ID,
-  CLAUDE_PERMISSION_MODE_CATALOG,
+  claudePermissionModeCatalogForModels,
   decodeClaudePermissionModeId,
   encodeClaudePermissionModeId,
   type ClaudePermissionMode,
@@ -1109,13 +1109,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       inspector = this.#dependencies.createInspector({ cwd });
       this.#inspectors.add(inspector);
       const snapshot = await inspector.inspect();
+      const permissionModes = snapshot.canSelectPermissionMode
+        ? claudePermissionModeCatalogForModels(snapshot.models)
+        : undefined;
       if (!snapshot.canSelectModel) {
         return {
           status: "ready",
           catalog: { models: [], thinkingOptions: [] },
-          ...(snapshot.canSelectPermissionMode
-            ? { permissionModes: CLAUDE_PERMISSION_MODE_CATALOG }
-            : {}),
+          ...(permissionModes ? { permissionModes } : {}),
           capabilities: {
             configuration: {
               selectModel: false,
@@ -1130,9 +1131,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog,
-        ...(snapshot.canSelectPermissionMode
-          ? { permissionModes: CLAUDE_PERMISSION_MODE_CATALOG }
-          : {}),
+        ...(permissionModes ? { permissionModes } : {}),
         capabilities: {
           configuration: {
             selectModel: true,

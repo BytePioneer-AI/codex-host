@@ -13,26 +13,41 @@ import {
   type RendererModelControlView,
   type RendererModelPickerControl,
 } from "./renderer-model-picker.js";
+import {
+  isPermissionModeControlReady,
+  mountRendererPermissionModePicker,
+  renderRendererPermissionModePicker,
+  syncRendererPermissionModeTriggerClass,
+  type RendererPermissionModeControlView,
+  type RendererPermissionModePickerControl,
+} from "./renderer-permission-mode-picker.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
+export type ExternalPermissionModeControlView = RendererPermissionModeControlView;
 export type PiModelControlView = ExternalModelControlView;
 export const CODEX_COMPOSER_SELECTOR = "[data-codex-composer-root]";
 export const EDITOR_SELECTOR = 'textarea, [contenteditable="true"], [role="textbox"]';
 
-interface NativeModelControlState {
+interface NativeControlState {
   element: HTMLElement;
   hidden: HTMLElement["hidden"];
   ariaHidden: string | null;
 }
+
+type NativeModelControlState = NativeControlState;
+type NativePermissionModeControlState = NativeControlState;
 
 export interface ComposerAgentControl {
   composer: Element;
   root: HTMLElement;
   picker: RendererAgentPickerControl;
   modelPicker: RendererModelPickerControl;
+  permissionModePicker: RendererPermissionModePickerControl;
   nativeModelControl: NativeModelControlState | null;
+  nativePermissionModeControl: NativePermissionModeControlState | null;
+  nativePermissionModeControlVerified: boolean;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -151,6 +166,65 @@ export function isNativeModelControlCandidate(element: Element): boolean {
   return false;
 }
 
+export function isNativePermissionModeControlCandidate(element: Element): boolean {
+  if (
+    element.hasAttribute(CONTROL_ATTRIBUTE) ||
+    element.hasAttribute("data-codexhost-permission-mode-control") ||
+    !element.matches('button[aria-haspopup="menu"][data-composer-navigation-target="permissions"]')
+  ) {
+    return false;
+  }
+  const fiberName = Object.getOwnPropertyNames(element).find((name) =>
+    name.startsWith("__reactFiber$"),
+  );
+  let fiber = fiberName
+    ? (Object.getOwnPropertyDescriptor(element, fiberName)?.value as {
+        return?: unknown;
+        memoizedProps?: unknown;
+      } | null)
+    : null;
+  let ownsTrigger = false;
+  let ownsComposerPermissionState = false;
+  for (let depth = 0; fiber && depth < 60; depth += 1) {
+    const props = fiber.memoizedProps;
+    if (isRecord(props)) {
+      if (
+        props["data-composer-navigation-target"] === "permissions" &&
+        props["aria-haspopup"] === "menu"
+      ) {
+        ownsTrigger = true;
+      }
+      if (
+        typeof props.showPermissionsModeDropdown === "boolean" &&
+        typeof props.permissionsHostId === "string" &&
+        "permissionsCwdOverride" in props
+      ) {
+        ownsComposerPermissionState = true;
+      }
+    }
+    const parent = fiber.return;
+    fiber =
+      (typeof parent === "object" || typeof parent === "function") && parent !== null
+        ? (parent as typeof fiber)
+        : null;
+  }
+  return ownsTrigger && ownsComposerPermissionState;
+}
+
+function semanticNativePermissionModeControlForComposer(composer: Element): HTMLElement | null {
+  const candidates = [
+    ...composer.querySelectorAll<HTMLElement>(
+      'button[aria-haspopup="menu"][data-composer-navigation-target="permissions"]',
+    ),
+  ].filter((element) => !element.hasAttribute("data-codexhost-permission-mode-control"));
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+function nativePermissionModeControlForComposer(composer: Element): HTMLElement | null {
+  const candidate = semanticNativePermissionModeControlForComposer(composer);
+  return candidate && isNativePermissionModeControlCandidate(candidate) ? candidate : null;
+}
+
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
     ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
@@ -158,7 +232,7 @@ function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function captureNativeModelControl(element: HTMLElement | null): NativeModelControlState | null {
+function captureNativeControl(element: HTMLElement | null): NativeControlState | null {
   return element
     ? {
         element,
@@ -168,7 +242,7 @@ function captureNativeModelControl(element: HTMLElement | null): NativeModelCont
     : null;
 }
 
-function restoreNativeModelControl(state: NativeModelControlState | null): void {
+function restoreNativeControl(state: NativeControlState | null): void {
   if (!state) return;
   state.element.hidden = state.hidden;
   if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
@@ -178,19 +252,41 @@ function restoreNativeModelControl(state: NativeModelControlState | null): void 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
   if (!candidate || candidate === control.nativeModelControl?.element) return;
-  restoreNativeModelControl(control.nativeModelControl);
-  control.nativeModelControl = captureNativeModelControl(candidate);
+  restoreNativeControl(control.nativeModelControl);
+  control.nativeModelControl = captureNativeControl(candidate);
   syncRendererModelTriggerClass(control.modelPicker, candidate.className);
 }
 
-function setNativeModelControlHidden(state: NativeModelControlState | null, hidden: boolean): void {
+function refreshNativePermissionModeControl(control: ComposerAgentControl): void {
+  const semanticCandidate = semanticNativePermissionModeControlForComposer(control.composer);
+  if (semanticCandidate !== control.nativePermissionModeControl?.element) {
+    restoreNativeControl(control.nativePermissionModeControl);
+    control.nativePermissionModeControl = captureNativeControl(semanticCandidate);
+  }
+  const candidate = nativePermissionModeControlForComposer(control.composer);
+  control.nativePermissionModeControlVerified =
+    candidate === semanticCandidate && candidate !== null;
+  if (!candidate) return;
+  syncRendererPermissionModeTriggerClass(control.permissionModePicker, candidate.className);
+  const parent = candidate.parentElement;
+  if (
+    parent &&
+    (control.permissionModePicker.root.parentElement !== parent ||
+      control.permissionModePicker.root.nextElementSibling !== candidate)
+  ) {
+    parent.insertBefore(control.permissionModePicker.root, candidate);
+  }
+}
+
+function setNativeControlHidden(state: NativeControlState | null, hidden: boolean): void {
   if (!state) return;
   if (!hidden) {
-    restoreNativeModelControl(state);
+    restoreNativeControl(state);
     return;
   }
   const active = document.activeElement;
   if (active instanceof HTMLElement && state.element.contains(active)) active.blur();
+  if (state.element.getAttribute("aria-expanded") === "true") state.element.click();
   state.element.hidden = true;
   state.element.setAttribute("aria-hidden", "true");
 }
@@ -203,8 +299,15 @@ export function mountComposerAgentControl(
   onSelect: (agent: RendererAgent) => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
+  onSelectPermissionMode: (permissionModeId: string) => void,
 ): ComposerAgentControl {
-  const nativeModelControl = captureNativeModelControl(nativeModelControlForComposer(composer));
+  const nativeModelControl = captureNativeControl(nativeModelControlForComposer(composer));
+  const semanticNativePermissionModeControl =
+    semanticNativePermissionModeControlForComposer(composer);
+  const nativePermissionModeControl = captureNativeControl(semanticNativePermissionModeControl);
+  const nativePermissionModeControlVerified =
+    semanticNativePermissionModeControl !== null &&
+    nativePermissionModeControlForComposer(composer) === semanticNativePermissionModeControl;
   const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect);
   const modelPicker = mountRendererModelPicker(
     composerId,
@@ -212,6 +315,18 @@ export function mountComposerAgentControl(
     onSelectModel,
     onSelectThinking,
   );
+  const permissionModePicker = mountRendererPermissionModePicker(
+    composerId,
+    nativePermissionModeControl?.element.className,
+    onSelectPermissionMode,
+  );
+
+  const permissionParent = nativePermissionModeControl?.element.parentElement;
+  if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
+    permissionParent.insertBefore(permissionModePicker.root, nativePermissionModeControl.element);
+  } else {
+    composer.append(permissionModePicker.root);
+  }
 
   const toolbar = sendButton.parentElement;
   if (toolbar) {
@@ -225,7 +340,10 @@ export function mountComposerAgentControl(
     root: picker.root,
     picker,
     modelPicker,
+    permissionModePicker,
     nativeModelControl,
+    nativePermissionModeControl,
+    nativePermissionModeControlVerified,
     sendButton,
     sendDisabledBeforeSwitch: null,
   };
@@ -237,6 +355,7 @@ export function renderComposerAgentControl(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   modelView: ExternalModelControlView = { status: "idle" },
+  permissionModeView: RendererPermissionModeControlView = { status: "idle" },
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -252,7 +371,12 @@ export function renderComposerAgentControl(
   const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
   const modelBlocked =
     state.agent !== "codex" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
-  const submissionBlocked = switching || modelBlocked;
+  const permissionModeBlocked =
+    state.agent !== "codex" &&
+    (!isPermissionModeControlReady(permissionModeView) ||
+      (permissionModeView.status !== "unsupported" &&
+        !control.nativePermissionModeControlVerified));
+  const submissionBlocked = switching || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
@@ -262,15 +386,30 @@ export function renderComposerAgentControl(
   }
   const pickerView = renderRendererAgentPicker(control.picker, state, adapterState, switching);
   refreshNativeModelControl(control);
-  setNativeModelControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
+  refreshNativePermissionModeControl(control);
+  setNativeControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
+  setNativeControlHidden(control.nativePermissionModeControl, switching || state.agent !== "codex");
   renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
+  const permissionModeVisible =
+    state.agent !== "codex" &&
+    permissionModeView.status !== "idle" &&
+    permissionModeView.status !== "loading" &&
+    permissionModeView.status !== "unsupported" &&
+    control.nativePermissionModeControlVerified;
+  renderRendererPermissionModePicker(
+    control.permissionModePicker,
+    permissionModeView,
+    permissionModeVisible,
+  );
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
   }
-  restoreNativeModelControl(control.nativeModelControl);
+  restoreNativeControl(control.nativeModelControl);
+  restoreNativeControl(control.nativePermissionModeControl);
+  control.permissionModePicker.dispose();
   control.modelPicker.dispose();
   control.picker.dispose();
 }

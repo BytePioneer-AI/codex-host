@@ -1,8 +1,13 @@
-import type { HarnessModelRef, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import type {
+  HarnessModelRef,
+  HarnessPermissionModeId,
+  HarnessThinkingOptionId,
+} from "@codexhost/shared-contracts";
 
 export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
+export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
 export type ComposerAgentPhase = "draft" | "locked";
 
 export interface DraftComposerState {
@@ -12,6 +17,7 @@ export interface DraftComposerState {
   piModel?: HarnessModelRef;
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
+  permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
 type MutableComposerState = DraftComposerState;
@@ -128,6 +134,7 @@ export class DraftAgentController<Composer extends object> {
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
+    permissionModeId?: HarnessPermissionModeId,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
@@ -140,6 +147,19 @@ export class DraftAgentController<Composer extends object> {
     } else if (agent === "pi") {
       delete state.piThinkingOptionId;
     }
+    if (agent !== "codex") {
+      const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
+      for (const candidate of ["pi", "claude-code"] as const) {
+        const current = state.permissionModeByAgent?.[candidate];
+        if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
+      }
+      if (permissionModeId) permissionModeByAgent[agent] = permissionModeId;
+      if (Object.keys(permissionModeByAgent).length > 0) {
+        state.permissionModeByAgent = permissionModeByAgent;
+      } else {
+        delete state.permissionModeByAgent;
+      }
+    }
     return state;
   }
 
@@ -148,9 +168,29 @@ export class DraftAgentController<Composer extends object> {
     return agent === "pi" ? state.piModel : agent === "claude-code" ? state.claudeModel : undefined;
   }
 
+  permissionModeForAgent(
+    composer: Composer,
+    agent: ExternalRendererAgent,
+  ): HarnessPermissionModeId | undefined {
+    return this.#state(composer).permissionModeByAgent?.[agent];
+  }
+
+  setExternalPermissionMode(
+    composer: Composer,
+    agent: ExternalRendererAgent,
+    permissionModeId: HarnessPermissionModeId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    state.permissionModeByAgent = {
+      ...state.permissionModeByAgent,
+      [agent]: permissionModeId,
+    };
+    return state;
+  }
+
   setExternalModel(
     composer: Composer,
-    agent: Exclude<RendererAgent, "codex">,
+    agent: ExternalRendererAgent,
     model: HarnessModelRef,
   ): Readonly<DraftComposerState> {
     const state = this.#state(composer);

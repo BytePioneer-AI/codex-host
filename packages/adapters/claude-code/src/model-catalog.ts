@@ -28,6 +28,7 @@ export interface ClaudeModelInspectionSnapshot {
   models: unknown;
   currentModel: unknown;
   canSelectModel: boolean;
+  canSelectPermissionMode: boolean;
 }
 
 export interface NormalizedClaudeModelCatalog {

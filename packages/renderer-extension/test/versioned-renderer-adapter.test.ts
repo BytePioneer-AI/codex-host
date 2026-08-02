@@ -1,9 +1,14 @@
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   claudeTransportModelId,
+  decodeClaudeTransportModelId,
   decorateThreadStartParams,
   findPrewarmTargets,
   isClaudeTransportModelId,
@@ -13,6 +18,7 @@ import {
   modelSelectionForAgent,
   piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
+  sameModelPowerSelection,
   threadIdFromComposerModelTarget,
   selectOptimisticModelAtom,
   wrapElectronRendererBridge,
@@ -66,6 +72,17 @@ describe("versioned Renderer Agent adapter", () => {
     expect(isDraftPrewarmPolicyReady(null)).toBe(false);
   });
 
+  it("compares Model power selections before writing the optimistic atom", () => {
+    const selected = { model: "external/model", reasoningEffort: "medium" };
+
+    expect(sameModelPowerSelection(selected, selected)).toBe(true);
+    expect(sameModelPowerSelection(selected, { ...selected })).toBe(true);
+    expect(sameModelPowerSelection(null, null)).toBe(true);
+    expect(sameModelPowerSelection(selected, null)).toBe(false);
+    expect(sameModelPowerSelection(selected, { ...selected, reasoningEffort: "high" })).toBe(false);
+    expect(sameModelPowerSelection(selected, { ...selected, model: "other/model" })).toBe(false);
+  });
+
   it("creates external optimistic selections and restores the original Codex snapshot", () => {
     const official = { model: "official/model", reasoningEffort: "medium" };
 
@@ -101,20 +118,34 @@ describe("versioned Renderer Agent adapter", () => {
     ).toEqual({ model: selected });
   });
 
-  it("encodes a selected Claude Model without a Thinking component", () => {
+  it("encodes a selected Claude Model and optional Permission Mode", () => {
     const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("acceptEdits");
     const selected = claudeTransportModelId(model);
+    const configured = claudeTransportModelId(model, permissionModeId);
 
     expect(selected).toBe(`${CLAUDE_CODE_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(configured).toBe(`${selected}@${permissionModeId}`);
     expect(isClaudeTransportModelId(selected)).toBe(true);
-    expect(isClaudeTransportModelId(`${selected}@extra`)).toBe(false);
-    expect(modelSelectionForAgent(null, "high", "claude-code", model)).toEqual({
-      model: selected,
+    expect(isClaudeTransportModelId(configured)).toBe(true);
+    expect(decodeClaudeTransportModelId(configured)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(isClaudeTransportModelId(`${configured}@extra`)).toBe(false);
+    expect(isClaudeTransportModelId(`${selected}@provider/mode`)).toBe(false);
+    expect(
+      modelSelectionForAgent(null, "high", "claude-code", model, undefined, permissionModeId),
+    ).toEqual({
+      model: configured,
       reasoningEffort: "high",
     });
     expect(
-      decorateThreadStartParams({ model: "official/model" }, { ...lockedClaudeCode, model }),
-    ).toEqual({ model: selected });
+      decorateThreadStartParams(
+        { model: "official/model" },
+        { ...lockedClaudeCode, model, permissionModeId },
+      ),
+    ).toEqual({ model: configured });
   });
 
   it("extracts only a validated conversation Thread identity", () => {

@@ -22,18 +22,21 @@ export type {
   DraftAgentControllerOptions,
   DraftAgentSwitchOperations,
   DraftComposerState,
+  ExternalRendererAgent,
   RendererAgent,
 } from "./agent-selection-state.js";
 export {
   HARNESS_INSPECT_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
 export {
+  draftPermissionMode,
   installRendererBindingProbe,
   isOwnershipSubmissionBlocked,
   restoredThreadOwnership,
@@ -50,6 +53,7 @@ export {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_TRANSPORT_MODEL_PREFIX,
   claudeTransportModelId,
+  decodeClaudeTransportModelId,
   decorateThreadStartParams,
   describePrewarmTargets,
   findActivePrewarmTargets,
@@ -64,6 +68,7 @@ export {
   piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_PREFIX,
+  sameModelPowerSelection,
   selectOptimisticModelAtom,
   threadIdFromComposerModelTarget,
   wrapElectronRendererBridge,
@@ -81,7 +86,27 @@ export type {
   RendererAdapterState,
   RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
-export type { ExternalModelControlView, PiModelControlView } from "./renderer-composer-dom.js";
+export type {
+  ExternalModelControlView,
+  ExternalPermissionModeControlView,
+  PiModelControlView,
+} from "./renderer-composer-dom.js";
+export {
+  CLAUDE_PERMISSION_MODE_PREFERENCE_KEY,
+  readClaudePermissionModePreference,
+  writeClaudePermissionModePreference,
+} from "./renderer-permission-mode-preference.js";
+export type { PermissionModePreferenceStorage } from "./renderer-permission-mode-preference.js";
+export {
+  isPermissionModeControlReady,
+  mountRendererPermissionModePicker,
+  renderRendererPermissionModePicker,
+  rendererPermissionModeLabel,
+} from "./renderer-permission-mode-picker.js";
+export type {
+  RendererPermissionModeControlView,
+  RendererPermissionModePickerControl,
+} from "./renderer-permission-mode-picker.js";
 export {
   RendererSettingsNavigationState,
   RendererSettingsPageScope,

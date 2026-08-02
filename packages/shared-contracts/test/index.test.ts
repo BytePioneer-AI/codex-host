@@ -47,7 +47,11 @@ describe("shared-contracts public package", () => {
           defaultThinkingOptionId: "high",
         },
         capabilities: {
-          configuration: { selectModel: true, selectThinkingOption: true },
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: true,
+            selectPermissionMode: false,
+          },
           history: { fork: true, forkAcrossCwd: true },
         },
       }),

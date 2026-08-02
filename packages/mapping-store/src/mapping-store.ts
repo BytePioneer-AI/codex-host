@@ -281,6 +281,15 @@ export class MappingStore {
     return this.#update(hostThreadId, (current) => ({ ...current, title }));
   }
 
+  async setTransportModelId(
+    hostThreadId: HostThreadId,
+    transportModelId: string,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) =>
+      current.transportModelId === transportModelId ? null : { ...current, transportModelId },
+    );
+  }
+
   async setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) =>
       current.archived === archived ? null : { ...current, archived },

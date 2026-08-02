@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import { codexhostErrorSchema } from "./errors.js";
+import {
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
+} from "./harness-permission-modes.js";
 import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
@@ -135,6 +139,7 @@ export const harnessSessionCapabilitiesSchema = z
       .object({
         selectModel: z.boolean(),
         selectThinkingOption: z.boolean(),
+        selectPermissionMode: z.boolean(),
       })
       .strict(),
     history: z
@@ -152,12 +157,13 @@ export const harnessSessionCapabilitiesSchema = z
 
 export type HarnessSessionCapabilities = z.infer<typeof harnessSessionCapabilitiesSchema>;
 
-export const harnessModelSelectionStateSchema = z
+export const harnessConfigurationStateSchema = z
   .object({
     effectiveModel: harnessModelRefSchema.optional(),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
+    effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
   })
   .strict()
   .superRefine((state, context) => {
@@ -174,15 +180,31 @@ export const harnessModelSelectionStateSchema = z
     }
   });
 
-export type HarnessModelSelectionState = z.infer<typeof harnessModelSelectionStateSchema>;
+export type HarnessConfigurationState = z.infer<typeof harnessConfigurationStateSchema>;
+
+export const harnessModelSelectionStateSchema = harnessConfigurationStateSchema;
+export type HarnessModelSelectionState = HarnessConfigurationState;
 
 const readyHarnessInspectionSchema = z
   .object({
     status: z.literal("ready"),
     catalog: harnessModelCatalogSchema,
+    permissionModes: harnessPermissionModeCatalogSchema.optional(),
     capabilities: harnessSessionCapabilitiesSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((inspection, context) => {
+    const selectable = inspection.capabilities.configuration.selectPermissionMode;
+    if (selectable !== Boolean(inspection.permissionModes)) {
+      context.addIssue({
+        code: "custom",
+        message: "Permission Mode catalog and capability must agree",
+        path: selectable
+          ? ["permissionModes"]
+          : ["capabilities", "configuration", "selectPermissionMode"],
+      });
+    }
+  });
 
 const failedHarnessInspectionSchema = z
   .object({
@@ -191,7 +213,7 @@ const failedHarnessInspectionSchema = z
   })
   .strict();
 
-export const harnessInspectionSchema = z.discriminatedUnion("status", [
+export const harnessInspectionSchema = z.union([
   readyHarnessInspectionSchema,
   failedHarnessInspectionSchema,
 ]);
@@ -250,6 +272,7 @@ const externalThreadInspectionSchema = z
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
+    effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

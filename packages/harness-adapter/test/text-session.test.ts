@@ -3,6 +3,8 @@ import {
   harnessIdSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
@@ -515,7 +517,11 @@ describe("minimal Harness text Session", () => {
       status: "ready",
       catalog: adapter.catalog,
       capabilities: {
-        configuration: { selectModel: true, selectThinkingOption: true },
+        configuration: {
+          selectModel: true,
+          selectThinkingOption: true,
+          selectPermissionMode: false,
+        },
         history: { fork: true, forkAcrossCwd: true },
       },
     });
@@ -789,6 +795,62 @@ describe("minimal Harness text Session", () => {
         cwd: "/synthetic",
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await adapter.close();
+  });
+
+  it("exposes and confirms Adapter-owned Permission Modes before command completion", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "auto", label: "Auto" },
+      ],
+      defaultModeId: "default",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("mode-capable"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      permissionModes,
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: auto,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value as FakeHarnessSession;
+    expect(session.initialState.effectivePermissionModeId).toBe(auto);
+
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const selecting = session.execute({
+      type: "permissionMode.select",
+      permissionModeId: defaultMode,
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectivePermissionModeId: defaultMode },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    session.rejectNextPermissionModeSelection(failure);
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: auto }),
+    ).resolves.toEqual({ ok: false, error: failure });
+    expect(session.state.effectivePermissionModeId).toBe(defaultMode);
     await adapter.close();
   });
 

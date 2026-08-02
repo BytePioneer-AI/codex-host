@@ -1,7 +1,9 @@
 import {
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   type HarnessModelRef,
+  type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type JsonRpcRequest,
 } from "@codexhost/shared-contracts";
@@ -35,6 +37,7 @@ export type CreateRoute =
       transportModelId: string;
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
+      permissionModeId?: HarnessPermissionModeId;
     };
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -48,6 +51,7 @@ export function transportModelIdForHarness(harnessId: ExternalHarnessId): string
 export interface ExternalConfigurationSelection {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export function encodePiTransportModel(
@@ -95,10 +99,20 @@ export function decodePiTransportModel(value: unknown): HarnessModelRef | null |
   return selection === null ? null : selection.model;
 }
 
-export function encodeClaudeTransportModel(model?: HarnessModelRef): string {
-  if (!model) return CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID;
-  const parsed = harnessModelRefSchema.parse(model);
-  return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsed.id}`;
+export function encodeClaudeTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId)
+      throw new Error("Claude Code transport Permission Mode requires a Model Ref");
+    return CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
 export function decodeClaudeTransportSelection(
@@ -108,15 +122,40 @@ export function decodeClaudeTransportSelection(
   if (typeof value !== "string" || !value.startsWith(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
     return null;
   }
-  const component = value.slice(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length);
-  if (component.includes("@")) {
+  const components = value.slice(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
     throw new Error("Claude Code transport configuration has an invalid component count");
   }
-  const model = harnessModelRefSchema.safeParse({ id: component });
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Claude Code transport configuration has an empty Permission Mode");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) {
     throw new Error("Claude Code transport Model contains an invalid Model Ref");
   }
-  return { model: model.data };
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Claude Code transport configuration contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
+export function encodeExternalTransportSelection(
+  harnessId: ExternalHarnessId,
+  selection: ExternalConfigurationSelection,
+): string {
+  switch (harnessId) {
+    case "pi":
+      return encodePiTransportModel(selection.model, selection.thinkingOptionId);
+    case "claude-code":
+      return encodeClaudeTransportModel(selection.model, selection.permissionModeId);
+  }
 }
 
 export function decodeExternalTransportSelection(

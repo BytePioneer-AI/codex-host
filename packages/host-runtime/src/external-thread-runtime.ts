@@ -14,6 +14,7 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import type {
+  HarnessPermissionModeId,
   HarnessThinkingOptionId,
   HostInteractionId,
   HostTurnId,
@@ -39,6 +40,7 @@ export interface ExternalThread {
   outputTask: Promise<void>;
   requestedModel?: HarnessModelRef;
   requestedThinkingOptionId?: HarnessThinkingOptionId;
+  requestedPermissionModeId?: HarnessPermissionModeId;
   record: StoredThreadRecordV1;
   sessionId: string;
   stateObserver: SessionStateObserver;
@@ -126,6 +128,7 @@ export class ExternalThreadRuntime {
     turns: JsonObject[];
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
+    requestedPermissionModeId?: HarnessPermissionModeId;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
@@ -134,6 +137,8 @@ export class ExternalThreadRuntime {
     const effectiveModel = input.requestedModel ?? input.session.initialState.effectiveModel;
     const effectiveThinkingOptionId =
       input.requestedThinkingOptionId ?? input.session.initialState.effectiveThinkingOptionId;
+    const effectivePermissionModeId =
+      input.requestedPermissionModeId ?? input.session.initialState.effectivePermissionModeId;
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -143,6 +148,9 @@ export class ExternalThreadRuntime {
       ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
       ...(effectiveThinkingOptionId
         ? { requestedThinkingOptionId: effectiveThinkingOptionId }
+        : {}),
+      ...(effectivePermissionModeId
+        ? { requestedPermissionModeId: effectivePermissionModeId }
         : {}),
       record: input.record,
       sessionId: input.sessionId,

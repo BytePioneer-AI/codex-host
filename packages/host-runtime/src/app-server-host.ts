@@ -13,6 +13,7 @@ import type {
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessInspectParamsSchema,
+  harnessConfigurationStateSchema,
   harnessInspectionSchema,
   harnessModelSelectionStateSchema,
   hostItemIdSchema,
@@ -21,10 +22,12 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadPermissionModeSelectParamsSchema,
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
   type HarnessModelRef,
+  type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
   type HostTurnId,
@@ -65,6 +68,7 @@ import {
   CodexTurnProjector,
   decodeCreateRoute,
   decodeExternalTransportSelection,
+  encodeExternalTransportSelection,
   decodeThreadArchiveRequest,
   decodeThreadForkRequest,
   decodeThreadListRequest,
@@ -432,6 +436,10 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/thinking/select") {
         await this.#selectThreadThinking(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/permission-mode/select") {
+        await this.#selectThreadPermissionMode(request);
         continue;
       }
       if (request.method === "thread/list") {
@@ -877,6 +885,12 @@ export class AppServerHost {
                     resolution.thread.stateObserver.state.availableThinkingOptions,
                 }
               : {}),
+            ...(resolution.thread.stateObserver.state.effectivePermissionModeId
+              ? {
+                  effectivePermissionModeId:
+                    resolution.thread.stateObserver.state.effectivePermissionModeId,
+                }
+              : {}),
             locked: true,
           },
     );
@@ -951,6 +965,9 @@ export class AppServerHost {
         ...(state.availableThinkingOptions
           ? { availableThinkingOptions: state.availableThinkingOptions }
           : {}),
+        ...(state.effectivePermissionModeId
+          ? { effectivePermissionModeId: state.effectivePermissionModeId }
+          : {}),
       });
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
@@ -1009,6 +1026,9 @@ export class AppServerHost {
         ...(state.availableThinkingOptions
           ? { availableThinkingOptions: state.availableThinkingOptions }
           : {}),
+        ...(state.effectivePermissionModeId
+          ? { effectivePermissionModeId: state.effectivePermissionModeId }
+          : {}),
       });
       if (!projected.effectiveThinkingOptionId) {
         throw new Error("Harness Session did not report effective Thinking");
@@ -1017,6 +1037,105 @@ export class AppServerHost {
     } catch (error) {
       await this.#writer.json(
         rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
+      );
+    }
+  }
+
+  async #selectThreadPermissionMode(request: JsonRpcRequest): Promise<void> {
+    const params = threadPermissionModeSelectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Invalid Thread Permission Mode selection params"),
+      );
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (resolution.kind === "error") {
+      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+      return;
+    }
+    const thread = resolution.kind === "external" ? resolution.thread : undefined;
+    if (!thread) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32078,
+          "Permission Mode selection requires a current-process external Thread",
+        ),
+      );
+      return;
+    }
+    if (!thread.session.capabilities.configuration.selectPermissionMode) {
+      await this.#writer.json(
+        rpcError(request, -32078, "External Harness does not support Permission Mode selection"),
+      );
+      return;
+    }
+    const beforeRevision = thread.stateObserver.revision;
+    const result = await thread.session.execute({
+      type: "permissionMode.select",
+      permissionModeId: params.data.permissionModeId,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32078, result.error.message));
+      return;
+    }
+    try {
+      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const projected = harnessConfigurationStateSchema.parse({
+        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+        ...(state.effectiveThinkingOptionId
+          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+          : {}),
+        ...(state.availableThinkingOptions
+          ? { availableThinkingOptions: state.availableThinkingOptions }
+          : {}),
+        ...(state.effectivePermissionModeId
+          ? { effectivePermissionModeId: state.effectivePermissionModeId }
+          : {}),
+      });
+      if (!projected.effectivePermissionModeId) {
+        throw new Error("Harness Session did not report its current Permission Mode");
+      }
+      thread.requestedPermissionModeId = projected.effectivePermissionModeId;
+      const previousSelection = decodeExternalTransportSelection(
+        thread.harnessId,
+        thread.transportModelId,
+      );
+      const effectiveModel =
+        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+      if (effectiveModel) {
+        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+          ...(previousSelection ?? {}),
+          model: effectiveModel,
+          permissionModeId: projected.effectivePermissionModeId,
+        });
+        thread.transportModelId = transportModelId;
+        thread.requestedModel = effectiveModel;
+        try {
+          thread.record = await this.#repository.setTransportModelId(
+            thread.record.hostThreadId,
+            transportModelId,
+          );
+        } catch (error) {
+          this.#diagnose(error);
+        }
+        thread.thread = externalThreadValue({
+          record: { ...thread.record, transportModelId },
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+      }
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32078,
+          `Permission Mode state was not confirmed: ${errorMessage(error)}`,
+        ),
       );
     }
   }
@@ -1035,6 +1154,8 @@ export class AppServerHost {
     const requestedModel = route && route.harnessId !== "codex" ? route.model : undefined;
     const requestedThinkingOptionId =
       route && route.harnessId !== "codex" ? route.thinkingOptionId : undefined;
+    const requestedPermissionModeId =
+      route && route.harnessId !== "codex" ? route.permissionModeId : undefined;
     const transportModelId =
       route && route.harnessId === harnessId
         ? route.transportModelId
@@ -1069,6 +1190,7 @@ export class AppServerHost {
       cwd,
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
+      ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
     });
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
@@ -1098,6 +1220,7 @@ export class AppServerHost {
         turns: [],
         ...(requestedModel ? { requestedModel } : {}),
         ...(requestedThinkingOptionId ? { requestedThinkingOptionId } : {}),
+        ...(requestedPermissionModeId ? { requestedPermissionModeId } : {}),
       });
       this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
       await this.#writer.json(
@@ -1144,6 +1267,7 @@ export class AppServerHost {
     turns: JsonObject[];
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
+    requestedPermissionModeId?: HarnessPermissionModeId;
   }): ExternalThread {
     return this.#externalRuntime.register(input);
   }
@@ -1551,8 +1675,50 @@ export class AppServerHost {
         }
       }
     }
-    if (requestedModel || requestedThinkingOptionId) {
-      thread.transportModelId = params.model as string;
+    const requestedPermissionModeId = requestedSelection?.permissionModeId;
+    if (requestedPermissionModeId) {
+      if (!thread.session.capabilities.configuration.selectPermissionMode) {
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not support Permission Mode selection"),
+        );
+        return;
+      }
+      const current = thread.stateObserver.state.effectivePermissionModeId;
+      const pendingCreateSelection =
+        current === undefined && thread.requestedPermissionModeId === requestedPermissionModeId;
+      if (current !== requestedPermissionModeId && !pendingCreateSelection) {
+        const beforeRevision = thread.stateObserver.revision;
+        const selection = await thread.session.execute({
+          type: "permissionMode.select",
+          permissionModeId: requestedPermissionModeId,
+        });
+        if (!selection.ok) {
+          await this.#writer.json(rpcError(request, -32078, selection.error.message));
+          return;
+        }
+        try {
+          const state = await thread.stateObserver.waitForChange(beforeRevision);
+          if (state.effectivePermissionModeId !== requestedPermissionModeId) {
+            throw new Error("Harness Session activated a different Permission Mode");
+          }
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
+          return;
+        }
+      }
+      thread.requestedPermissionModeId = requestedPermissionModeId;
+    }
+    if (requestedModel || requestedThinkingOptionId || requestedPermissionModeId) {
+      const transportModelId = params.model as string;
+      thread.transportModelId = transportModelId;
+      try {
+        thread.record = await this.#repository.setTransportModelId(
+          thread.record.hostThreadId,
+          transportModelId,
+        );
+      } catch (error) {
+        this.#diagnose(error);
+      }
     }
     let text: string;
     try {

@@ -16,7 +16,13 @@ import {
   type ExternalHarnessId,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import { AppServerHost } from "../src/index.js";
 
@@ -960,6 +966,81 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
     expect(pi.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("routes Permission Mode through the owning capable Session and preserves rejection", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeSeed = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "auto", label: "Auto" },
+        { id: "bypassPermissions", label: "Bypass", dangerous: true },
+      ],
+      defaultModeId: "default",
+    });
+    const claude = new FakeHarnessAdapter(
+      harnessIdSchema.parse("claude-code"),
+      claudeSeed.catalog,
+      false,
+      false,
+      null,
+      permissionModes,
+    );
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    const model = claude.catalog.defaultModel;
+    if (!model) throw new Error("Fake Claude catalog has no default Model");
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const threadId = await startExternalThread(
+      fixture,
+      encodeClaudeTransportModel(model, defaultMode),
+      36,
+    );
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+
+    writeRequest(fixture.desktopInput, {
+      id: 37,
+      method: "codexhost/thread/permission-mode/select",
+      params: { threadId, permissionModeId: auto },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 37)),
+    ).resolves.toMatchObject({
+      result: { effectiveModel: model, effectivePermissionModeId: auto },
+    });
+    expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      transportModelId: encodeClaudeTransportModel(model, auto),
+    });
+    expect(pi.sessions).toHaveLength(0);
+
+    claude.sessions[0]?.rejectNextPermissionModeSelection({
+      code: "nativeFailure",
+      message: "Policy rejected bypass",
+      retryable: false,
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 38,
+      method: "codexhost/thread/permission-mode/select",
+      params: {
+        threadId,
+        permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 38)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: "Policy rejected bypass" },
+    });
+    expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
     await stopFixture(fixture);
   });
 

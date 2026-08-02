@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
@@ -10,6 +11,7 @@ import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter } from "../src/index.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
+import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -27,6 +29,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
   actualModel: string;
+  permissionMode: ClaudePermissionMode;
+  readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   #modelReadPending = true;
   readonly getContextUsage = vi.fn(async (): Promise<ClaudeTransportContextUsage | null> => {
     if (this.#modelReadPending) {
@@ -38,6 +42,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly setModel = vi.fn(async (model?: string) => {
     this.actualModel = model === "sonnet" ? "runtime-custom" : (model ?? "runtime-default");
     this.#modelReadPending = true;
+  });
+  readonly getPermissionMode = vi.fn(() => this.permissionMode);
+  readonly setPermissionMode = vi.fn(async (permissionMode: ClaudePermissionMode) => {
+    this.permissionMode = permissionMode;
   });
   readonly respondToInteraction = vi.fn(async (response: ClaudeInteractionResponse) => {
     this.event({
@@ -56,9 +64,21 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
       }
     | undefined;
 
-  constructor(sessionId: string, model?: string) {
+  constructor(
+    sessionId: string,
+    permissionMode: ClaudePermissionMode,
+    onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void,
+    model?: string,
+  ) {
     this.sessionId = sessionId;
+    this.permissionMode = permissionMode;
+    this.#onPermissionModeChanged = onPermissionModeChanged;
     this.actualModel = model === "sonnet" ? "runtime-custom" : (model ?? "runtime-default");
+  }
+
+  changePermissionMode(permissionMode: ClaudePermissionMode): void {
+    this.permissionMode = permissionMode;
+    this.#onPermissionModeChanged(permissionMode);
   }
 
   runTurn(
@@ -133,6 +153,7 @@ function fixture() {
           ],
           currentModel: "runtime-default",
           canSelectModel: true,
+          canSelectPermissionMode: true,
         })),
       };
       inspectors.push(inspector);
@@ -140,7 +161,12 @@ function fixture() {
     }),
     readSessionMessages: vi.fn(async () => structuredClone(history)),
     createTransport: vi.fn((input) => {
-      const transport = new FakeClaudeTransport(input.sessionId, input.model);
+      const transport = new FakeClaudeTransport(
+        input.sessionId,
+        input.permissionMode,
+        input.onPermissionModeChanged,
+        input.model,
+      );
       transports.push(transport);
       return transport;
     }),
@@ -217,8 +243,22 @@ describe("Claude Code HarnessAdapter", () => {
           { id: "low", label: "low" },
         ],
       },
+      permissionModes: {
+        defaultModeId: "default",
+        modes: [
+          { id: "plan" },
+          { id: "default" },
+          { id: "acceptEdits" },
+          { id: "auto" },
+          { id: "bypassPermissions", dangerous: true },
+        ],
+      },
       capabilities: {
-        configuration: { selectModel: true, selectThinkingOption: false },
+        configuration: {
+          selectModel: true,
+          selectThinkingOption: false,
+          selectPermissionMode: true,
+        },
         history: { fork: false, forkAcrossCwd: false },
       },
     });
@@ -233,7 +273,11 @@ describe("Claude Code HarnessAdapter", () => {
 
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
-      configuration: { selectModel: true, selectThinkingOption: false },
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: false,
+        selectPermissionMode: true,
+      },
       history: { fork: false, forkAcrossCwd: false },
     });
     await expect(
@@ -262,6 +306,7 @@ describe("Claude Code HarnessAdapter", () => {
       models: unknown[];
       currentModel: string;
       canSelectModel: boolean;
+      canSelectPermissionMode: boolean;
     }>();
     const close = vi.fn(async () => undefined);
     vi.mocked(dependencies.createInspector)
@@ -273,11 +318,21 @@ describe("Claude Code HarnessAdapter", () => {
         close,
       })
       .mockReturnValueOnce({
-        inspect: async () => ({ models: [], currentModel: "", canSelectModel: false }),
+        inspect: async () => ({
+          models: [],
+          currentModel: "",
+          canSelectModel: false,
+          canSelectPermissionMode: false,
+        }),
         close,
       })
       .mockReturnValueOnce({
-        inspect: async () => ({ models: [], currentModel: "", canSelectModel: false }),
+        inspect: async () => ({
+          models: [],
+          currentModel: "",
+          canSelectModel: false,
+          canSelectPermissionMode: false,
+        }),
         close,
       });
 
@@ -288,6 +343,7 @@ describe("Claude Code HarnessAdapter", () => {
       models: [{ value: "default", displayName: "Default" }],
       currentModel: "runtime-default",
       canSelectModel: true,
+      canSelectPermissionMode: true,
     });
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
 
@@ -542,6 +598,88 @@ describe("Claude Code HarnessAdapter", () => {
     });
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.setModel).toHaveBeenLastCalledWith(undefined);
+    await session.close();
+  });
+
+  it("initializes, switches, and reads back native Permission Mode state", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const plan = harnessPermissionModeIdSchema.parse("plan");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: plan,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+
+    const selecting = session.execute({
+      type: "permissionMode.select",
+      permissionModeId: auto,
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "plan" }),
+    );
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "plan" },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "auto" },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transports[0]?.setPermissionMode).toHaveBeenCalledWith("auto");
+
+    transports[0]?.changePermissionMode("acceptEdits");
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "acceptEdits" },
+    });
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(new Error("policy rejected"));
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(transports[0]?.permissionMode).toBe("acceptEdits");
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error("Cannot set permission mode to auto: auto mode unavailable for this model"),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: auto }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "Auto mode is unavailable for the current Claude Code Model",
+      },
+    });
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("dontAsk"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.close();
+  });
+
+  it("switches Permission Mode on the current Session while a Turn is active", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    await session.execute(textTurn("permission-active"));
+
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transports[0]?.setPermissionMode).toHaveBeenCalledWith("auto");
+    transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });
 
@@ -1205,7 +1343,12 @@ describe("Claude Code HarnessAdapter", () => {
       randomUUID: () => "claude-id",
       inspectInstallation: () => undefined,
       createInspector: () => ({
-        inspect: async () => ({ models: [], currentModel: "", canSelectModel: false }),
+        inspect: async () => ({
+          models: [],
+          currentModel: "",
+          canSelectModel: false,
+          canSelectPermissionMode: false,
+        }),
         close: async () => undefined,
       }),
       readSessionMessages: async () => [],
@@ -1215,7 +1358,9 @@ describe("Claude Code HarnessAdapter", () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
         getContextUsage: async () => null,
+        getPermissionMode: () => "default",
         setModel: async () => undefined,
+        setPermissionMode: async () => undefined,
         runTurn: async () => ({ status: "succeeded" }),
         respondToInteraction: async () => undefined,
         abort: async () => undefined,
@@ -1240,9 +1385,15 @@ describe("Claude Code HarnessAdapter", () => {
       models: unknown[];
       currentModel: string;
       canSelectModel: boolean;
+      canSelectPermissionMode: boolean;
     }>();
     const close = vi.fn(async () => {
-      pending.resolve({ models: [], currentModel: "", canSelectModel: false });
+      pending.resolve({
+        models: [],
+        currentModel: "",
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      });
     });
     vi.mocked(dependencies.createInspector).mockReturnValueOnce({
       inspect: () => pending.promise,

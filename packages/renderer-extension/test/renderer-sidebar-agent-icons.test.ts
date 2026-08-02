@@ -84,6 +84,7 @@ function clientWith(
     selectPiThreadModel: vi.fn(),
     selectThreadThinking: vi.fn(),
     selectPiThreadThinking: vi.fn(),
+    selectThreadPermissionMode: vi.fn(),
   };
 }
 

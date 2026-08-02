@@ -19,6 +19,7 @@ class FakeQuery {
     model: "runtime-model",
   }));
   readonly setModel = vi.fn(async () => undefined);
+  readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];
   #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
@@ -57,18 +58,22 @@ function fixture(openMode: "create" | "resume" = "create") {
     return fakeQuery as unknown as Query;
   });
   const onFault = vi.fn();
+  const onPermissionModeChanged = vi.fn();
   const transport = new ClaudeSdkTransport({
     command: process.execPath,
     cwd: process.cwd(),
     sessionId: "00000000-0000-4000-8000-000000000001",
     openMode,
+    permissionMode: "default",
     closeTimeoutMs: 100,
+    onPermissionModeChanged,
     onFault,
     queryFactory,
   });
   return {
     fakeQuery,
     onFault,
+    onPermissionModeChanged,
     queryFactory,
     queryInput: () => {
       if (!queryInput) throw new Error("SDK query was not created");
@@ -221,6 +226,50 @@ describe("ClaudeSdkTransport text reconciliation", () => {
   });
 });
 
+describe("ClaudeSdkTransport Permission Mode control", () => {
+  it("passes the initial mode, acknowledges bypass support, and delegates native switching", async () => {
+    const value = fixture();
+
+    await value.transport.start();
+    expect(options(value).permissionMode).toBe("default");
+    expect(options(value).allowDangerouslySkipPermissions).toBe(true);
+    expect(value.fakeQuery.setPermissionMode).toHaveBeenCalledWith("default");
+    expect(value.transport.getPermissionMode()).toBe("default");
+
+    await value.transport.setPermissionMode("auto");
+    expect(value.fakeQuery.setPermissionMode).toHaveBeenLastCalledWith("auto");
+    expect(value.transport.getPermissionMode()).toBe("auto");
+    await value.transport.close();
+  });
+
+  it("publishes supported native status changes and ignores modes outside the catalog", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: null,
+      permissionMode: "acceptEdits",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => {
+      expect(value.onPermissionModeChanged).toHaveBeenCalledWith("acceptEdits");
+    });
+    expect(value.transport.getPermissionMode()).toBe("acceptEdits");
+
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: null,
+      permissionMode: "dontAsk",
+    } as unknown as SDKMessage);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(value.onFault).not.toHaveBeenCalled();
+    expect(value.transport.getPermissionMode()).toBe("acceptEdits");
+    await value.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport Model control", () => {
   it("passes create-time Model and delegates setter without sending input", async () => {
     const value = fixture();
@@ -230,7 +279,9 @@ describe("ClaudeSdkTransport Model control", () => {
       sessionId: "00000000-0000-4000-8000-000000000009",
       openMode: "create",
       model: "custom-model",
+      permissionMode: "default",
       closeTimeoutMs: 100,
+      onPermissionModeChanged: value.onPermissionModeChanged,
       onFault: value.onFault,
       queryFactory: value.queryFactory,
     });
@@ -276,6 +327,7 @@ describe("ClaudeSdkTransport Model control", () => {
       models: [{ value: "default", displayName: "Default", description: "Default" }],
       currentModel: "runtime-model",
       canSelectModel: true,
+      canSelectPermissionMode: true,
     });
     expect(options(value)).toMatchObject({
       persistSession: false,

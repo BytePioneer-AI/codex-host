@@ -11,6 +11,7 @@ import {
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
+  type HarnessPermissionModeId,
   type HarnessOutput,
   type HarnessResult,
   type HarnessSession,
@@ -28,6 +29,8 @@ import {
   type ModelSelectCommand,
   type ModelSelectCompleted,
   type OpenSessionInput,
+  type PermissionModeSelectCommand,
+  type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
@@ -57,6 +60,13 @@ import {
   decodeClaudeModelRef,
   normalizeClaudeModelCatalog,
 } from "./model-catalog.js";
+import {
+  CLAUDE_DEFAULT_PERMISSION_MODE_ID,
+  CLAUDE_PERMISSION_MODE_CATALOG,
+  decodeClaudePermissionModeId,
+  encodeClaudePermissionModeId,
+  type ClaudePermissionMode,
+} from "./permission-modes.js";
 import { ClaudeSdkModelInspector, ClaudeSdkTransport } from "./sdk-transport.js";
 import type {
   ClaudeAdapterDependencies,
@@ -167,7 +177,11 @@ function delay(milliseconds: number): Promise<void> {
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
-    configuration: { selectModel: true, selectThinkingOption: false },
+    configuration: {
+      selectModel: true,
+      selectThinkingOption: false,
+      selectPermissionMode: true,
+    },
     history: { fork: false, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState;
@@ -182,6 +196,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
+  #requestedPermissionModeId: HarnessPermissionModeId;
   readonly #readSessionMessages: ClaudeAdapterDependencies["readSessionMessages"];
   readonly #sessionId: string;
   #acceptingTurn = false;
@@ -204,6 +219,7 @@ class ClaudeHarnessSession implements HarnessSession {
       openMode: "create" | "resume";
       sessionId: string;
       requestedModel?: HarnessModelRef;
+      requestedPermissionModeId: HarnessPermissionModeId;
     },
   ) {
     this.#cwd = cwd;
@@ -214,6 +230,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#onClosed = onClosed;
     this.#openMode = options.openMode;
     this.#requestedModel = options.requestedModel;
+    this.#requestedPermissionModeId = options.requestedPermissionModeId;
     this.#sessionId = options.sessionId;
     this.#nativeRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
@@ -289,6 +306,9 @@ class ClaudeHarnessSession implements HarnessSession {
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
@@ -298,6 +318,7 @@ class ClaudeHarnessSession implements HarnessSession {
       | InteractionRespondAccepted
       | ModelSelectCompleted
       | ThinkingSelectCompleted
+      | PermissionModeSelectCompleted
     >
   > {
     if (this.#phase !== "open") {
@@ -306,6 +327,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (command.type === "thinking.select") {
       return {
         ok: false,
@@ -478,6 +500,76 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
+  async #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    if (this.#configurationTask) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session is already selecting Permission Mode",
+          retryable: true,
+        },
+      };
+    }
+    let permissionMode: ClaudePermissionMode;
+    try {
+      permissionMode = decodeClaudePermissionModeId(command.permissionModeId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Permission Mode is invalid",
+          retryable: false,
+        },
+      };
+    }
+    let resolveConfiguration = (): void => undefined;
+    this.#configurationTask = new Promise<void>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    try {
+      const startingTransport = this.#transport === null;
+      let transport = this.#transport;
+      if (!transport) {
+        try {
+          transport = await this.#ensureTransport();
+          if (startingTransport) this.#publishState();
+        } catch (error) {
+          return { ok: false, error: startupFailure(error) };
+        }
+      }
+      try {
+        await transport.setPermissionMode(permissionMode);
+      } catch (error) {
+        const nativeMessage = error instanceof Error ? error.message.toLowerCase() : "";
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message:
+              permissionMode === "auto" && nativeMessage.includes("auto mode unavailable")
+                ? "Auto mode is unavailable for the current Claude Code Model"
+                : "Claude Code rejected the Permission Mode selection",
+            retryable: true,
+          },
+        };
+      }
+      const effectivePermissionModeId = encodeClaudePermissionModeId(transport.getPermissionMode());
+      this.#requestedPermissionModeId = effectivePermissionModeId;
+      this.#publishState({
+        ...this.#state,
+        effectivePermissionModeId,
+      });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      resolveConfiguration();
+      this.#configurationTask = null;
+    }
+  }
+
   async #respond(
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
@@ -629,11 +721,14 @@ class ClaudeHarnessSession implements HarnessSession {
     const selectedModel =
       this.#openMode === "create" ? (this.#requestedModel ?? CLAUDE_DEFAULT_MODEL_REF) : undefined;
     const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
+    const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
     const transport = this.#createTransport({
       cwd: this.#cwd,
       sessionId: this.#sessionId,
       openMode: this.#openMode,
       ...(model ? { model } : {}),
+      permissionMode,
+      onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
       onFault: () => this.#fault(faultError()),
     });
     try {
@@ -644,6 +739,7 @@ class ClaudeHarnessSession implements HarnessSession {
         nativeRef: this.#nativeRef,
         ...(selectedModel ? { effectiveModel: selectedModel } : {}),
         resolvedModelLabel: harnessResolvedModelLabelSchema.parse(context.model),
+        effectivePermissionModeId: encodeClaudePermissionModeId(transport.getPermissionMode()),
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
@@ -657,6 +753,14 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#state = state;
     this.#statePublished = true;
     this.#event({ type: "session.state.changed", state });
+  }
+
+  #handlePermissionModeChanged(permissionMode: ClaudePermissionMode): void {
+    if (this.#phase !== "open") return;
+    const effectivePermissionModeId = encodeClaudePermissionModeId(permissionMode);
+    if (this.#state.effectivePermissionModeId === effectivePermissionModeId) return;
+    this.#requestedPermissionModeId = effectivePermissionModeId;
+    this.#publishState({ ...this.#state, effectivePermissionModeId });
   }
 
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
@@ -934,8 +1038,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         return {
           status: "ready",
           catalog: { models: [], thinkingOptions: [] },
+          ...(snapshot.canSelectPermissionMode
+            ? { permissionModes: CLAUDE_PERMISSION_MODE_CATALOG }
+            : {}),
           capabilities: {
-            configuration: { selectModel: false, selectThinkingOption: false },
+            configuration: {
+              selectModel: false,
+              selectThinkingOption: false,
+              selectPermissionMode: snapshot.canSelectPermissionMode,
+            },
             history: { fork: false, forkAcrossCwd: false },
           },
         };
@@ -944,8 +1055,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog,
+        ...(snapshot.canSelectPermissionMode
+          ? { permissionModes: CLAUDE_PERMISSION_MODE_CATALOG }
+          : {}),
         capabilities: {
-          configuration: { selectModel: true, selectThinkingOption: false },
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: false,
+            selectPermissionMode: snapshot.canSelectPermissionMode,
+          },
           history: { fork: false, forkAcrossCwd: false },
         },
       };
@@ -1022,6 +1140,22 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
+    const requestedPermissionModeId =
+      input.kind === "create"
+        ? (input.permissionModeId ?? CLAUDE_DEFAULT_PERMISSION_MODE_ID)
+        : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+    try {
+      decodeClaudePermissionModeId(requestedPermissionModeId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code create Permission Mode is invalid",
+          retryable: false,
+        },
+      };
+    }
     const nativeRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;
     if (nativeRef && (!nativeRef.success || nativeRef.data.harnessId !== this.harnessId)) {
@@ -1045,6 +1179,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           ? nativeRef.data.nativeSessionId
           : this.#dependencies.randomUUID(),
         ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
+        requestedPermissionModeId,
       },
     );
     this.#sessions.add(session);

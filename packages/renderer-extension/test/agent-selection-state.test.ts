@@ -1,4 +1,8 @@
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { DraftAgentController } from "../src/index.js";
@@ -252,8 +256,10 @@ describe("Renderer draft Agent controller", () => {
     const agents = controller();
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.fork" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const staleClaudePermissionMode = harnessPermissionModeIdSchema.parse("acceptEdits");
 
     agents.mount(forkComposer, target);
+    agents.setExternalPermissionMode(forkComposer, "claude-code", staleClaudePermissionMode);
     const stale = agents.beginOwnershipRequest(forkComposer);
     const current = agents.beginOwnershipRequest(forkComposer);
     expect(agents.isCurrentOwnershipRequest(forkComposer, stale)).toBe(false);
@@ -276,6 +282,7 @@ describe("Renderer draft Agent controller", () => {
       agent: "claude-code",
       phase: "locked",
     });
+    expect(agents.permissionModeForAgent(replacement, "claude-code")).toBeUndefined();
   });
 
   it("transfers Pi Model state and request generations with logical Composer identity", () => {
@@ -321,19 +328,34 @@ describe("Renderer draft Agent controller", () => {
     const agents = controller();
     const piModel = harnessModelRefSchema.parse({ id: "pi-model-v1.isolated" });
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.isolated" });
+    const claudePermissionMode = harnessPermissionModeIdSchema.parse("acceptEdits");
+    const piPermissionMode = harnessPermissionModeIdSchema.parse("future-pi-mode");
 
     agents.mount(draft, ["default"]);
     agents.setExternalModel(draft, "pi", piModel);
     agents.setExternalModel(draft, "claude-code", claudeModel);
+    agents.setExternalPermissionMode(draft, "pi", piPermissionMode);
+    agents.setExternalPermissionMode(draft, "claude-code", claudePermissionMode);
     expect(agents.modelForAgent(draft, "pi")).toEqual(piModel);
     expect(agents.modelForAgent(draft, "claude-code")).toEqual(claudeModel);
+    expect(agents.permissionModeForAgent(draft, "pi")).toBe(piPermissionMode);
+    expect(agents.permissionModeForAgent(draft, "claude-code")).toBe(claudePermissionMode);
     expect(agents.transfer(draft, conversation, ["conversation", "claude-thread"])).toBe(true);
     agents.mount(revisit, ["conversation", "claude-thread"]);
-    expect(agents.get(revisit)).toMatchObject({ piModel, claudeModel });
+    expect(agents.get(revisit)).toMatchObject({
+      piModel,
+      claudeModel,
+      permissionModeByAgent: {
+        pi: piPermissionMode,
+        "claude-code": claudePermissionMode,
+      },
+    });
 
     agents.mount(newDefault, ["default"]);
     expect(agents.modelForAgent(newDefault, "pi")).toBeUndefined();
     expect(agents.modelForAgent(newDefault, "claude-code")).toBeUndefined();
+    expect(agents.permissionModeForAgent(newDefault, "pi")).toBeUndefined();
+    expect(agents.permissionModeForAgent(newDefault, "claude-code")).toBeUndefined();
   });
 
   it("applies the target Agent before clearing stale prewarm", async () => {

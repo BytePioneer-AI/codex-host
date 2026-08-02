@@ -1,19 +1,23 @@
 import {
+  harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelSelectionStateSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadPermissionModeSelectParamsSchema,
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
+  type ThreadPermissionModeSelectParams,
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
@@ -23,6 +27,7 @@ export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
+export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 
 interface RequestManagerCandidate {
@@ -38,6 +43,9 @@ export interface RendererModelClient {
   selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectPiThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
+  selectThreadPermissionMode(
+    input: ThreadPermissionModeSelectParams,
+  ): Promise<HarnessConfigurationState>;
 }
 
 export function createRendererModelClient(
@@ -69,6 +77,13 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(THREAD_THINKING_SELECT_METHOD, params);
     return harnessModelSelectionStateSchema.parse(result);
   };
+  const selectThreadPermissionMode = async (
+    input: ThreadPermissionModeSelectParams,
+  ): Promise<HarnessConfigurationState> => {
+    const params = threadPermissionModeSelectParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_PERMISSION_MODE_SELECT_METHOD, params);
+    return harnessConfigurationStateSchema.parse(result);
+  };
 
   return Object.freeze({
     inspectHarness,
@@ -96,5 +111,6 @@ export function createRendererModelClient(
     selectPiThreadModel: selectThreadModel,
     selectThreadThinking,
     selectPiThreadThinking: selectThreadThinking,
+    selectThreadPermissionMode,
   });
 }

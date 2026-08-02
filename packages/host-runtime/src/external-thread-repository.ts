@@ -33,6 +33,10 @@ export interface ExternalThreadStore {
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  setTransportModelId(
+    hostThreadId: HostThreadId,
+    transportModelId: string,
+  ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
@@ -100,6 +104,13 @@ export class ExternalThreadRepository {
 
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
     return this.store.setTitle(hostThreadId, title);
+  }
+
+  setTransportModelId(
+    hostThreadId: HostThreadId,
+    transportModelId: string,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setTransportModelId(hostThreadId, transportModelId);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {

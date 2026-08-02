@@ -120,6 +120,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           models: [{ value: "default", displayName: "Default" }],
           currentModel: "hermetic-model",
           canSelectModel: true,
+          canSelectPermissionMode: true,
         }),
         close: async () => undefined,
       }),
@@ -146,6 +147,7 @@ describe("AppServerHost hermetic Claude projection", () => {
       },
       createTransport: (input) => {
         nativeSessionId = input.sessionId;
+        let permissionMode = input.permissionMode;
         return {
           sessionId: input.sessionId,
           start: async () => undefined,
@@ -154,7 +156,11 @@ describe("AppServerHost hermetic Claude projection", () => {
             maxTokens: 200,
             model: "hermetic-model",
           }),
+          getPermissionMode: () => permissionMode,
           setModel: async () => undefined,
+          setPermissionMode: async (mode) => {
+            permissionMode = mode;
+          },
           runTurn: async (_text, userMessageId, onEvent) => {
             nativeTurnKey = userMessageId;
             onEvent({ type: "text.delta", delta: "hermetic response" });

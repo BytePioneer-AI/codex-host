@@ -42,7 +42,11 @@ function readyInspection() {
       defaultThinkingOptionId: "high",
     },
     capabilities: {
-      configuration: { selectModel: true, selectThinkingOption: true },
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: false,
+      },
       history: { fork: true, forkAcrossCwd: true },
     },
   };
@@ -76,7 +80,11 @@ describe("Harness Model runtime contracts", () => {
       harnessInspectionSchema.safeParse({
         ...readyInspection(),
         capabilities: {
-          configuration: { selectModel: true, selectThinkingOption: true },
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: true,
+            selectPermissionMode: false,
+          },
           history: { fork: true },
         },
       }).success,
@@ -85,7 +93,11 @@ describe("Harness Model runtime contracts", () => {
       harnessInspectionSchema.safeParse({
         ...readyInspection(),
         capabilities: {
-          configuration: { selectModel: true, selectThinkingOption: true },
+          configuration: {
+            selectModel: true,
+            selectThinkingOption: true,
+            selectPermissionMode: false,
+          },
           history: { fork: false, forkAcrossCwd: true },
         },
       }).success,

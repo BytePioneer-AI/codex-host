@@ -61,6 +61,7 @@ export {
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeExternalTransportSelection,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";

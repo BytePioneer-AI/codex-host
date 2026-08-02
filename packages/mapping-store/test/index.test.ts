@@ -264,6 +264,25 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("persists the current transport configuration", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.setTransportModelId(
+      threadId,
+      "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
+    );
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({
+      transportModelId: "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
+    });
+    await second.close();
+  });
+
   it("persists archive state atomically and treats matching state as a no-op", async () => {
     const directory = await temporaryStoreDirectory();
     let replacements = 0;

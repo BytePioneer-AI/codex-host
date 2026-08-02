@@ -1,4 +1,5 @@
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
+import type { ClaudePermissionMode } from "./permission-modes.js";
 
 export type ClaudeTransportFailureKind =
   "authentication" | "cancellationUnproven" | "native" | "textConflict";
@@ -66,7 +67,9 @@ export interface ClaudeTurnTransport {
   readonly sessionId: string;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
+  setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
   runTurn(
     text: string,
     userMessageId: string,
@@ -82,6 +85,8 @@ export interface ClaudeTransportFactoryInput {
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;
+  permissionMode: ClaudePermissionMode;
+  onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
 }
 

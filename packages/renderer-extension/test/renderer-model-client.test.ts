@@ -1,6 +1,7 @@
 import {
   harnessIdSchema,
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
@@ -10,6 +11,7 @@ import {
   HARNESS_INSPECT_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
   createRendererModelClient,
@@ -18,6 +20,7 @@ import {
 const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
 const high = harnessThinkingOptionIdSchema.parse("high");
+const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
 const thinkingOptions = [
   { id: harnessThinkingOptionIdSchema.parse("off"), label: "Off" },
   { id: high, label: "High" },
@@ -37,7 +40,11 @@ const inspection = {
     defaultThinkingOptionId: high,
   },
   capabilities: {
-    configuration: { selectModel: true, selectThinkingOption: true },
+    configuration: {
+      selectModel: true,
+      selectThinkingOption: true,
+      selectPermissionMode: false,
+    },
     history: { fork: true, forkAcrossCwd: true },
   },
 };
@@ -71,6 +78,10 @@ describe("Renderer fixed Model request client", () => {
         effectiveModel: model,
         effectiveThinkingOptionId: high,
         availableThinkingOptions: thinkingOptions,
+      })
+      .mockResolvedValueOnce({
+        effectiveModel: model,
+        effectivePermissionModeId: permissionModeId,
       });
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
@@ -82,6 +93,7 @@ describe("Renderer fixed Model request client", () => {
       "selectPiThreadModel",
       "selectPiThreadThinking",
       "selectThreadModel",
+      "selectThreadPermissionMode",
       "selectThreadThinking",
     ]);
 
@@ -133,6 +145,16 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(5, THREAD_THINKING_SELECT_METHOD, {
       threadId: "thread-1",
       thinkingOptionId: high,
+    });
+    await expect(
+      client.selectThreadPermissionMode({
+        threadId: hostThreadIdSchema.parse("thread-1"),
+        permissionModeId,
+      }),
+    ).resolves.toMatchObject({ effectivePermissionModeId: permissionModeId });
+    expect(sendRequest).toHaveBeenNthCalledWith(6, THREAD_PERMISSION_MODE_SELECT_METHOD, {
+      threadId: "thread-1",
+      permissionModeId,
     });
   });
 

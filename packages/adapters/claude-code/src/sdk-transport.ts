@@ -13,6 +13,7 @@ import {
 import { resolveClaudeCodeExecutable } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator } from "./native-message.js";
+import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
@@ -87,7 +88,9 @@ export interface ClaudeSdkTransportOptions {
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;
+  permissionMode: ClaudePermissionMode;
   closeTimeoutMs: number;
+  onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   queryFactory?: typeof query;
 }
@@ -110,6 +113,19 @@ function processExited(child: ChildProcessWithoutNullStreams): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function permissionModeFromMessage(value: unknown): ClaudePermissionMode | undefined {
+  if (
+    !isRecord(value) ||
+    value.type !== "system" ||
+    (value.subtype !== "init" && value.subtype !== "status") ||
+    !("permissionMode" in value) ||
+    value.permissionMode === undefined
+  ) {
+    return undefined;
+  }
+  return isClaudePermissionMode(value.permissionMode) ? value.permissionMode : undefined;
 }
 
 function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
@@ -296,7 +312,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #input = new PushableInput<SDKUserMessage>();
   readonly #model: string | undefined;
   readonly #onFault: (error: unknown) => void;
+  readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly #openMode: "create" | "resume";
+  #permissionMode: ClaudePermissionMode;
   readonly #queryFactory: typeof query;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -313,7 +331,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#environment = options.environment ?? process.env;
     this.#model = options.model;
     this.#onFault = options.onFault;
+    this.#onPermissionModeChanged = options.onPermissionModeChanged;
     this.#openMode = options.openMode;
+    this.#permissionMode = options.permissionMode;
     this.#queryFactory = options.queryFactory ?? query;
   }
 
@@ -334,7 +354,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         ...(this.#model ? { model: this.#model } : {}),
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
-        permissionMode: "default",
+        permissionMode: this.#permissionMode,
+        allowDangerouslySkipPermissions: true,
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,
@@ -348,6 +369,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#query = activeQuery;
     try {
       await activeQuery.initializationResult();
+      await activeQuery.setPermissionMode(this.#permissionMode);
     } catch (error) {
       activeQuery.close();
       this.#query = null;
@@ -363,10 +385,22 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     return parseContextUsage(await activeQuery.getContextUsage());
   }
 
+  getPermissionMode(): ClaudePermissionMode {
+    if (!this.#started || !this.#query) throw new Error("Claude SDK transport is not started");
+    return this.#permissionMode;
+  }
+
   async setModel(model?: string): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     await activeQuery.setModel(model);
+  }
+
+  async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
+    await activeQuery.setPermissionMode(permissionMode);
+    this.#permissionMode = permissionMode;
   }
 
   runTurn(
@@ -602,6 +636,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
+        const permissionMode = permissionModeFromMessage(message);
+        if (permissionMode && permissionMode !== this.#permissionMode) {
+          this.#permissionMode = permissionMode;
+          this.#onPermissionModeChanged(permissionMode);
+        }
         const active = this.#active;
         if (!active) continue;
         const interpreted = active.accumulator.consume(message);
@@ -696,20 +735,41 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
         Array.isArray(initialized.models) &&
         typeof candidate.setModel === "function" &&
         typeof candidate.getContextUsage === "function";
+      const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
       if (!canSelectModel) {
-        return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+        return {
+          models: initialized.models,
+          currentModel: undefined,
+          canSelectModel: false,
+          canSelectPermissionMode,
+        };
       }
       try {
         const rawContext = await activeQuery.getContextUsage();
         if (!isRecord(rawContext) || !("model" in rawContext)) {
-          return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+          return {
+            models: initialized.models,
+            currentModel: undefined,
+            canSelectModel: false,
+            canSelectPermissionMode,
+          };
         }
         const context = parseContextUsage(rawContext);
-        return { models: initialized.models, currentModel: context.model, canSelectModel: true };
+        return {
+          models: initialized.models,
+          currentModel: context.model,
+          canSelectModel: true,
+          canSelectPermissionMode,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message.toLowerCase() : "";
         if (message.includes("unknown") || message.includes("unsupported")) {
-          return { models: initialized.models, currentModel: undefined, canSelectModel: false };
+          return {
+            models: initialized.models,
+            currentModel: undefined,
+            canSelectModel: false,
+            canSelectPermissionMode,
+          };
         }
         throw error;
       }

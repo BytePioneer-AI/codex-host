@@ -4,10 +4,27 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export { codexhostErrorSchema } from "./errors.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH,
+  HARNESS_PERMISSION_MODE_DESCRIPTION_MAX_LENGTH,
+  HARNESS_PERMISSION_MODE_ID_MAX_LENGTH,
+  HARNESS_PERMISSION_MODE_LABEL_MAX_LENGTH,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
+  harnessPermissionModeSchema,
+  threadPermissionModeSelectParamsSchema,
+} from "./harness-permission-modes.js";
+export type {
+  HarnessPermissionMode,
+  HarnessPermissionModeCatalog,
+  HarnessPermissionModeId,
+  ThreadPermissionModeSelectParams,
+} from "./harness-permission-modes.js";
+export {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
   HARNESS_MODEL_REF_MAX_LENGTH,
   HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
+  harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
@@ -28,6 +45,7 @@ export {
   threadOwnershipSchema,
 } from "./harness-models.js";
 export type {
+  HarnessConfigurationState,
   HarnessInspectParams,
   HarnessInspection,
   HarnessModel,

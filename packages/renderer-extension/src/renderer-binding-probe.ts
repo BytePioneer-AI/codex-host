@@ -3,6 +3,8 @@ import {
   type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessModelSelectionState,
+  type HarnessPermissionModeCatalog,
+  type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type ThreadInspection,
 } from "@codexhost/shared-contracts";
@@ -28,10 +30,11 @@ import {
   sendButtonWithin,
   type ComposerAgentControl,
   type ExternalModelControlView,
+  type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
 import {
+  decodeClaudeTransportModelId,
   findComposerModelTarget,
-  isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
@@ -40,6 +43,11 @@ import {
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import {
+  readClaudePermissionModePreference,
+  writeClaudePermissionModePreference,
+} from "./renderer-permission-mode-preference.js";
+import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 
@@ -75,6 +83,7 @@ export interface RendererBindingProbeApi {
       agent: RendererAgent,
       model?: HarnessModelRef,
       thinkingOptionId?: HarnessThinkingOptionId,
+      permissionModeId?: HarnessPermissionModeId,
     ) => boolean,
     applyPiModel?: (model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId) => boolean,
     modelControl?: RendererModelClient | null,
@@ -94,6 +103,7 @@ export interface RestoredThreadOwnership {
   agent: RendererAgent;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 function selectableThinkingOptionId(
@@ -118,6 +128,17 @@ export function draftThinkingOptionForModel(
   );
 }
 
+export function draftPermissionMode(
+  catalog: HarnessPermissionModeCatalog,
+  requested: HarnessPermissionModeId | undefined,
+): HarnessPermissionModeId {
+  return (
+    catalog.modes.find(({ id }) => id === requested)?.id ??
+    catalog.modes.find(({ id }) => id === catalog.defaultModeId)?.id ??
+    catalog.defaultModeId
+  );
+}
+
 export function restoredThreadOwnership(inspection: ThreadInspection): RestoredThreadOwnership {
   if (inspection.owner === "codex") return { agent: "codex" };
   if (inspection.harnessId === "pi") {
@@ -129,15 +150,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       agent: "pi",
       ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
       ...(piThinkingOptionId ? { thinkingOptionId: piThinkingOptionId } : {}),
+      ...(inspection.effectivePermissionModeId
+        ? { permissionModeId: inspection.effectivePermissionModeId }
+        : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {
-    if (!isClaudeTransportModelId(inspection.transportModelId)) {
+    const transportSelection = decodeClaudeTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
       throw new Error("Claude Code Thread reported an incompatible transport Model");
     }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "claude-code",
-      ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
   throw new Error("Thread owner is not a Renderer Agent");
@@ -153,6 +182,7 @@ interface MountedComposer {
   control: ComposerAgentControl;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
+  permissionModeView: ExternalPermissionModeControlView;
   ownershipStatus: ComposerOwnershipStatus;
   threadConfiguration: HarnessModelSelectionState | undefined;
 }
@@ -242,6 +272,7 @@ export function installRendererBindingProbe(
         agent: RendererAgent,
         model?: HarnessModelRef,
         thinkingOptionId?: HarnessThinkingOptionId,
+        permissionModeId?: HarnessPermissionModeId,
       ) => boolean)
     | null = null;
   let applyAdapterPiModel:
@@ -292,6 +323,7 @@ export function installRendererBindingProbe(
       controller.isSwitching(mounted.composer) ||
         isOwnershipSubmissionBlocked(mounted.ownershipStatus),
       mounted.modelView,
+      mounted.permissionModeView,
     );
   };
 
@@ -307,10 +339,11 @@ export function installRendererBindingProbe(
     agent: Exclude<RendererAgent, "codex">,
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
+    permissionModeId?: HarnessPermissionModeId,
   ): boolean =>
     agent === "pi"
       ? (applyAdapterPiModel?.(model, thinkingOptionId) ?? false)
-      : (applyAdapterAgent?.(agent, model) ?? false);
+      : (applyAdapterAgent?.(agent, model, undefined, permissionModeId) ?? false);
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
@@ -331,11 +364,20 @@ export function installRendererBindingProbe(
       ) {
         return;
       }
-      const { agent, model, thinkingOptionId } = restoredThreadOwnership(inspection);
-      const restored = controller.restore(mounted.composer, agent, model, thinkingOptionId);
+      const { agent, model, thinkingOptionId, permissionModeId } =
+        restoredThreadOwnership(inspection);
+      const restored = controller.restore(
+        mounted.composer,
+        agent,
+        model,
+        thinkingOptionId,
+        permissionModeId,
+      );
       if (
         !restored ||
-        !(applyAdapterAgent?.(agent, model, thinkingOptionId) ?? agent === "codex")
+        !(
+          applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? agent === "codex"
+        )
       ) {
         throw new Error("Thread owner could not be applied to the Composer");
       }
@@ -355,12 +397,17 @@ export function installRendererBindingProbe(
           ...(inspection.availableThinkingOptions
             ? { availableThinkingOptions: inspection.availableThinkingOptions }
             : {}),
+          ...(inspection.effectivePermissionModeId
+            ? { effectivePermissionModeId: inspection.effectivePermissionModeId }
+            : {}),
         };
         mounted.modelView = { status: "loading" };
+        mounted.permissionModeView = { status: "loading" };
         void loadExternalCatalog(mounted);
       } else {
         mounted.threadConfiguration = undefined;
         mounted.modelView = { status: "idle" };
+        mounted.permissionModeView = { status: "idle" };
       }
     } catch {
       if (!isCurrentOwnershipRequest(mounted, generation)) return;
@@ -394,9 +441,10 @@ export function installRendererBindingProbe(
     const agent = state.agent;
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = { status: "loading", thinkingSelectionSupported: agent === "pi" };
+    mounted.permissionModeView = { status: "idle" };
     renderMounted(mounted);
     try {
-      if (!modelControl) throw new Error("External Model control is unavailable");
+      if (!modelControl) throw new Error("External configuration control is unavailable");
       const inspection = await modelControl.inspectHarness({
         harnessId: externalHarnessIds[agent],
       });
@@ -407,23 +455,54 @@ export function installRendererBindingProbe(
         return;
       }
       if (inspection.status !== "ready") throw new Error(inspection.error.message);
-      if (!inspection.capabilities.configuration.selectModel) {
+      const current = controller.get(mounted.composer);
+      const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+      let selectedPermissionModeId: HarnessPermissionModeId | undefined;
+      if (inspection.capabilities.configuration.selectPermissionMode) {
+        const permissionModes = inspection.permissionModes;
+        if (!permissionModes) {
+          throw new Error("External Harness omitted its Permission Mode catalog");
+        }
+        mounted.permissionModeView = { status: "loading", catalog: permissionModes };
+        const effectivePermissionModeId =
+          current.phase === "locked"
+            ? mounted.threadConfiguration?.effectivePermissionModeId
+            : undefined;
+        const preferredPermissionModeId =
+          agent === "claude-code" ? readClaudePermissionModePreference(permissionModes) : undefined;
+        selectedPermissionModeId = draftPermissionMode(
+          permissionModes,
+          effectivePermissionModeId ?? previousPermissionModeId ?? preferredPermissionModeId,
+        );
+        mounted.permissionModeView = {
+          status: "loading",
+          catalog: permissionModes,
+          selected: selectedPermissionModeId,
+        };
+      } else {
+        mounted.permissionModeView = { status: "unsupported" };
+      }
+
+      if (
+        !inspection.capabilities.configuration.selectModel ||
+        inspection.catalog.models.length === 0
+      ) {
         mounted.modelView = {
           status: "empty",
           catalog: inspection.catalog,
           thinkingSelectionSupported: false,
         };
+        if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+          controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
+          mounted.permissionModeView = {
+            status: "ready",
+            catalog: mounted.permissionModeView.catalog,
+            selected: selectedPermissionModeId,
+          };
+        }
         return;
       }
-      if (inspection.catalog.models.length === 0) {
-        mounted.modelView = {
-          status: "empty",
-          catalog: inspection.catalog,
-          thinkingSelectionSupported: agent === "pi",
-        };
-        return;
-      }
-      const current = controller.get(mounted.composer);
+
       const previousModel = controller.modelForAgent(mounted.composer, agent);
       const previousModelAvailable =
         previousModel !== undefined &&
@@ -444,10 +523,18 @@ export function installRendererBindingProbe(
       if (
         current.phase === "draft" &&
         (previousModel?.id !== selected.id ||
-          (agent === "pi" && current.piThinkingOptionId !== selectedThinkingOptionId))
+          (agent === "pi" && current.piThinkingOptionId !== selectedThinkingOptionId) ||
+          previousPermissionModeId !== selectedPermissionModeId)
       ) {
-        if (!applyExternalConfiguration(agent, selected, selectedThinkingOptionId)) {
-          throw new Error("External Model configuration could not be applied to the Composer");
+        if (
+          !applyExternalConfiguration(
+            agent,
+            selected,
+            selectedThinkingOptionId,
+            selectedPermissionModeId,
+          )
+        ) {
+          throw new Error("External configuration could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
@@ -457,6 +544,7 @@ export function installRendererBindingProbe(
               agent,
               previousModel,
               agent === "pi" ? current.piThinkingOptionId : undefined,
+              previousPermissionModeId,
             );
           }
           throw error;
@@ -466,6 +554,9 @@ export function installRendererBindingProbe(
       controller.setExternalModel(mounted.composer, agent, selected);
       if (agent === "pi" && selectedThinkingOptionId) {
         controller.setPiThinkingOption(mounted.composer, selectedThinkingOptionId);
+      }
+      if (selectedPermissionModeId) {
+        controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
       }
       mounted.modelView = {
         status: "ready",
@@ -478,10 +569,19 @@ export function installRendererBindingProbe(
         thinkingSelectionSupported:
           agent === "pi" && inspection.capabilities.configuration.selectThinkingOption,
       };
+      if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+        mounted.permissionModeView = {
+          status: "ready",
+          catalog: mounted.permissionModeView.catalog,
+          selected: selectedPermissionModeId,
+        };
+      }
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
       const current = controller.get(mounted.composer);
       const selected = controller.modelForAgent(mounted.composer, agent);
+      const selectedPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+      const message = error instanceof Error ? error.message : String(error);
       mounted.modelView = {
         status: "error",
         ...(mounted.modelView.catalog ? { catalog: mounted.modelView.catalog } : {}),
@@ -490,8 +590,21 @@ export function installRendererBindingProbe(
           ? { selectedThinkingOptionId: current.piThinkingOptionId }
           : {}),
         thinkingSelectionSupported: agent === "pi",
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       };
+      if (
+        mounted.permissionModeView.status !== "unsupported" &&
+        mounted.permissionModeView.status !== "idle"
+      ) {
+        mounted.permissionModeView = {
+          status: "error",
+          ...(mounted.permissionModeView.catalog
+            ? { catalog: mounted.permissionModeView.catalog }
+            : {}),
+          ...(selectedPermissionModeId ? { selected: selectedPermissionModeId } : {}),
+          error: message,
+        };
+      }
     } finally {
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
     }
@@ -506,6 +619,7 @@ export function installRendererBindingProbe(
     if (!catalog || !selected || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
     const previousThinking = agent === "pi" ? current.piThinkingOptionId : undefined;
+    const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = {
       status: "selecting",
@@ -527,14 +641,26 @@ export function installRendererBindingProbe(
             ? draftThinkingOptionForModel(catalog, selected, previousThinking)
             : undefined;
         effectiveCatalog = catalog;
-        if (!applyExternalConfiguration(agent, effectiveModel, effectiveThinkingOptionId)) {
+        if (
+          !applyExternalConfiguration(
+            agent,
+            effectiveModel,
+            effectiveThinkingOptionId,
+            previousPermissionModeId,
+          )
+        ) {
           throw new Error("External Model configuration could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (previousModel && isCurrentModelRequest(mounted, generation)) {
-            applyExternalConfiguration(agent, previousModel, previousThinking);
+            applyExternalConfiguration(
+              agent,
+              previousModel,
+              previousThinking,
+              previousPermissionModeId,
+            );
           }
           throw error;
         }
@@ -562,7 +688,16 @@ export function installRendererBindingProbe(
         effectiveCatalog =
           agent === "pi" ? catalogWithConfigurationState(catalog, effectiveModel, state) : catalog;
         resolvedModelLabel = state.resolvedModelLabel;
-        if (!applyExternalConfiguration(agent, effectiveModel, effectiveThinkingOptionId)) {
+        const effectivePermissionModeId =
+          state.effectivePermissionModeId ?? previousPermissionModeId;
+        if (
+          !applyExternalConfiguration(
+            agent,
+            effectiveModel,
+            effectiveThinkingOptionId,
+            effectivePermissionModeId,
+          )
+        ) {
           throw new Error("Confirmed external Model could not be applied to the Composer");
         }
         mounted.threadConfiguration = state;
@@ -584,13 +719,110 @@ export function installRendererBindingProbe(
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      if (previousModel) applyExternalConfiguration(agent, previousModel, previousThinking);
+      if (previousModel) {
+        applyExternalConfiguration(
+          agent,
+          previousModel,
+          previousThinking,
+          previousPermissionModeId,
+        );
+      }
       mounted.modelView = {
         status: "error",
         catalog,
         ...(previousModel ? { selected: previousModel } : {}),
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: agent === "pi",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
+    }
+  };
+
+  const selectPermissionMode = async (
+    mounted: MountedComposer,
+    permissionModeId: string,
+  ): Promise<void> => {
+    const current = controller.get(mounted.composer);
+    if (current.agent === "codex") return;
+    const agent = current.agent;
+    const catalog = mounted.permissionModeView.catalog;
+    const selectedPermissionModeId = catalog?.modes.find(({ id }) => id === permissionModeId)?.id;
+    const model = controller.modelForAgent(mounted.composer, agent);
+    if (!catalog || !selectedPermissionModeId || !model || !modelControl) return;
+    const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+    if (agent === "claude-code") {
+      writeClaudePermissionModePreference(selectedPermissionModeId);
+    }
+    const thinkingOptionId = agent === "pi" ? current.piThinkingOptionId : undefined;
+    const generation = controller.beginModelRequest(mounted.composer);
+    mounted.permissionModeView = {
+      status: "selecting",
+      catalog,
+      selected: previousPermissionModeId ?? selectedPermissionModeId,
+    };
+    renderMounted(mounted);
+    try {
+      let effectivePermissionModeId = selectedPermissionModeId;
+      if (current.phase === "draft") {
+        if (!applyExternalConfiguration(agent, model, thinkingOptionId, selectedPermissionModeId)) {
+          throw new Error("Permission Mode could not be applied to the Composer");
+        }
+        try {
+          await clearDraftPrewarm();
+        } catch (error) {
+          if (isCurrentModelRequest(mounted, generation)) {
+            applyExternalConfiguration(agent, model, thinkingOptionId, previousPermissionModeId);
+          }
+          throw error;
+        }
+        if (!isCurrentModelRequest(mounted, generation)) return;
+      } else {
+        const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+        if (!threadId) {
+          throw new Error("External Thread identity is unavailable for Permission Mode selection");
+        }
+        const state = await modelControl.selectThreadPermissionMode({
+          threadId,
+          permissionModeId: selectedPermissionModeId,
+        });
+        if (
+          !isCurrentModelRequest(mounted, generation) ||
+          controller.get(mounted.composer).agent !== agent
+        ) {
+          return;
+        }
+        if (
+          !state.effectivePermissionModeId ||
+          !catalog.modes.some(({ id }) => id === state.effectivePermissionModeId)
+        ) {
+          throw new Error("External Harness did not report a selectable Permission Mode");
+        }
+        effectivePermissionModeId = state.effectivePermissionModeId;
+        if (
+          !applyExternalConfiguration(agent, model, thinkingOptionId, effectivePermissionModeId)
+        ) {
+          throw new Error("Confirmed Permission Mode could not be applied to the Composer");
+        }
+        mounted.threadConfiguration = state;
+      }
+      if (!isCurrentModelRequest(mounted, generation)) return;
+      controller.setExternalPermissionMode(mounted.composer, agent, effectivePermissionModeId);
+      mounted.permissionModeView = {
+        status: "ready",
+        catalog,
+        selected: effectivePermissionModeId,
+      };
+    } catch (error) {
+      if (!isCurrentModelRequest(mounted, generation)) return;
+      if (previousPermissionModeId) {
+        applyExternalConfiguration(agent, model, thinkingOptionId, previousPermissionModeId);
+      }
+      mounted.permissionModeView = {
+        status: "error",
+        catalog,
+        ...(previousPermissionModeId ? { selected: previousPermissionModeId } : {}),
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
@@ -708,6 +940,9 @@ export function installRendererBindingProbe(
             nextAgent,
             controller.modelForAgent(mounted.composer, nextAgent),
             nextAgent === "pi" ? nextState.piThinkingOptionId : undefined,
+            nextAgent !== "codex"
+              ? controller.permissionModeForAgent(mounted.composer, nextAgent)
+              : undefined,
           ) ?? nextAgent === "codex"
         );
       },
@@ -720,6 +955,7 @@ export function installRendererBindingProbe(
         void loadExternalCatalog(mounted);
       } else if (controller.get(mounted.composer).agent === "codex") {
         mounted.modelView = { status: "idle" };
+        mounted.permissionModeView = { status: "idle" };
       }
       return switched;
     } catch {
@@ -764,6 +1000,11 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         void selectPiThinking(mounted, thinkingOptionId);
       },
+      (permissionModeId) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void selectPermissionMode(mounted, permissionModeId);
+      },
     );
     const mounted: MountedComposer = {
       composer,
@@ -771,6 +1012,7 @@ export function installRendererBindingProbe(
       control,
       modelTarget,
       modelView: { status: "idle" },
+      permissionModeView: { status: "idle" },
       ownershipStatus: threadIdFromComposerModelTarget(modelTarget) ? "loading" : "not-required",
       threadConfiguration: undefined,
     };
@@ -779,6 +1021,9 @@ export function installRendererBindingProbe(
       state.agent,
       controller.modelForAgent(composer, state.agent),
       state.agent === "pi" ? state.piThinkingOptionId : undefined,
+      state.agent !== "codex"
+        ? controller.permissionModeForAgent(composer, state.agent)
+        : undefined,
     );
     renderMounted(mounted);
     if (threadIdFromComposerModelTarget(modelTarget)) {
@@ -883,6 +1128,9 @@ export function installRendererBindingProbe(
         state.agent,
         controller.modelForAgent(composer, state.agent),
         state.agent === "pi" ? state.piThinkingOptionId : undefined,
+        state.agent !== "codex"
+          ? controller.permissionModeForAgent(composer, state.agent)
+          : undefined,
       ) ?? state.agent === "codex"
     );
   };
@@ -904,7 +1152,9 @@ export function installRendererBindingProbe(
         mounted.modelView.catalog?.models.some(
           (model) => model.ref.id === mounted.modelView.selected?.id,
         ) === true);
-    if (!modelReady) return false;
+    const permissionModeReady =
+      current.agent === "codex" || isPermissionModeControlReady(mounted.permissionModeView);
+    if (!modelReady || !permissionModeReady) return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
     controller.lock(composer);
@@ -1013,6 +1263,10 @@ export function installRendererBindingProbe(
       if (locked.length !== 1 || !entry) return null;
       const { mounted, state: selection } = entry;
       const model = controller.modelForAgent(mounted.composer, selection.agent);
+      const permissionModeId =
+        selection.agent !== "codex"
+          ? controller.permissionModeForAgent(mounted.composer, selection.agent)
+          : undefined;
       return {
         composerId: selection.composerId,
         agent: selection.agent,
@@ -1021,6 +1275,7 @@ export function installRendererBindingProbe(
         ...(selection.agent === "pi" && selection.piThinkingOptionId
           ? { thinkingOptionId: selection.piThinkingOptionId }
           : {}),
+        ...(permissionModeId ? { permissionModeId } : {}),
       };
     },
     setAdapter(status, dispose, applyAgent, applyPiModel, nextModelControl) {
@@ -1040,6 +1295,9 @@ export function installRendererBindingProbe(
             state.agent,
             controller.modelForAgent(mounted.composer, state.agent),
             state.agent === "pi" ? state.piThinkingOptionId : undefined,
+            state.agent !== "codex"
+              ? controller.permissionModeForAgent(mounted.composer, state.agent)
+              : undefined,
           );
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&

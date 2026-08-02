@@ -8,7 +8,7 @@ import {
 } from "../src/model-catalog.js";
 
 function snapshot(models: unknown, currentModel = "runtime-custom") {
-  return { models, currentModel, canSelectModel: true };
+  return { models, currentModel, canSelectModel: true, canSelectPermissionMode: true };
 }
 
 describe("Claude Code runtime Model catalog", () => {
@@ -113,8 +113,18 @@ describe("Claude Code runtime Model catalog", () => {
 
   it("rejects unavailable, empty, malformed, conflicting, and unbounded observations", () => {
     for (const value of [
-      { models: [], currentModel: "runtime", canSelectModel: true },
-      { models: "not-an-array", currentModel: "runtime", canSelectModel: true },
+      {
+        models: [],
+        currentModel: "runtime",
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+      },
+      {
+        models: "not-an-array",
+        currentModel: "runtime",
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+      },
       snapshot([{ value: "", displayName: "Bad" }]),
       snapshot([{ value: "valid", displayName: "" }]),
       snapshot([
@@ -128,7 +138,12 @@ describe("Claude Code runtime Model catalog", () => {
       expect(() => normalizeClaudeModelCatalog(value)).toThrow();
     }
     expect(() =>
-      normalizeClaudeModelCatalog({ models: [], currentModel: undefined, canSelectModel: false }),
+      normalizeClaudeModelCatalog({
+        models: [],
+        currentModel: undefined,
+        canSelectModel: false,
+        canSelectPermissionMode: false,
+      }),
     ).toThrow("unavailable");
   });
 });

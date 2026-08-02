@@ -1,11 +1,14 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  draftPermissionMode,
   draftThinkingOptionForModel,
   isLateConversationTarget,
   isOwnershipSubmissionBlocked,
@@ -94,14 +97,28 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "claude-code",
-        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("acceptEdits"),
         resolvedModelLabel: "runtime-custom",
         locked: true,
       }),
     ).toEqual({
       agent: "claude-code",
       model: { id: "claude-model-v1.c29ubmV0" },
+      permissionModeId: "acceptEdits",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "claude-code",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "claude-code",
+      model: { id: "claude-model-v1.c29ubmV0" },
+      permissionModeId: "acceptEdits",
     });
     expect(() =>
       restoredThreadOwnership({
@@ -153,6 +170,22 @@ describe("Renderer Composer DOM behavior", () => {
       draftThinkingOptionForModel(catalog, plainModel, harnessThinkingOptionIdSchema.parse("max")),
     ).toBe("off");
     expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
+  });
+
+  it("selects only an Adapter-catalog Permission Mode and falls back to its default", () => {
+    const catalog = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "plan", label: "Plan" },
+        { id: "default", label: "Default" },
+      ],
+      defaultModeId: "default",
+    });
+
+    expect(draftPermissionMode(catalog, harnessPermissionModeIdSchema.parse("plan"))).toBe("plan");
+    expect(draftPermissionMode(catalog, harnessPermissionModeIdSchema.parse("foreign"))).toBe(
+      "default",
+    );
+    expect(draftPermissionMode(catalog, undefined)).toBe("default");
   });
 
   it("does not bind readable Thinking when current options are unavailable", () => {

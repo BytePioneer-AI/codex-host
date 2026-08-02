@@ -2,6 +2,7 @@ import type {
   HarnessId,
   HarnessInspection,
   HarnessModelRef,
+  HarnessPermissionModeId,
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -21,6 +22,9 @@ export type {
   HarnessModel,
   HarnessModelCatalog,
   HarnessModelRef,
+  HarnessPermissionMode,
+  HarnessPermissionModeCatalog,
+  HarnessPermissionModeId,
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -60,6 +64,7 @@ export interface CreateSessionInput {
   cwd: string;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export interface ResumeSessionInput {
@@ -84,6 +89,7 @@ export interface HarnessSessionState {
   resolvedModelLabel?: string;
   effectiveThinkingOptionId?: HarnessThinkingOptionId;
   availableThinkingOptions?: HarnessThinkingOption[];
+  effectivePermissionModeId?: HarnessPermissionModeId;
 }
 
 export interface HostTextInput {
@@ -189,12 +195,18 @@ export interface ThinkingSelectCommand {
   thinkingOptionId: HarnessThinkingOptionId;
 }
 
+export interface PermissionModeSelectCommand {
+  type: "permissionMode.select";
+  permissionModeId: HarnessPermissionModeId;
+}
+
 export type HostCommand =
   | TurnStartCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
-  | ThinkingSelectCommand;
+  | ThinkingSelectCommand
+  | PermissionModeSelectCommand;
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
@@ -213,6 +225,10 @@ export interface ModelSelectCompleted {
 }
 
 export interface ThinkingSelectCompleted {
+  completed: true;
+}
+
+export interface PermissionModeSelectCompleted {
   completed: true;
 }
 
@@ -386,6 +402,9 @@ export interface HarnessSession {
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   close(): Promise<void>;
 }
 

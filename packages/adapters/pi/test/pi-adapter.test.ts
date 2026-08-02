@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
@@ -622,6 +623,31 @@ describe("Pi HarnessAdapter Session", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
     await adapter.close();
+  });
+
+  it("does not manufacture a Permission Mode capability", async () => {
+    const { adapter, dependencies } = fixture();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectPermissionMode: false } },
+    });
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    const session = await openSession(adapter);
+    expect(session.capabilities.configuration.selectPermissionMode).toBe(false);
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(dependencies.createTransport).toHaveBeenCalledOnce();
+    await session.close();
   });
 
   it("starts lazily and emits an ordered successful text lifecycle", async () => {

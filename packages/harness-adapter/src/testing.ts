@@ -9,6 +9,8 @@ import type {
   HarnessInspection,
   HarnessModelCatalog,
   HarnessModelRef,
+  HarnessPermissionModeCatalog,
+  HarnessPermissionModeId,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -54,6 +56,8 @@ import type {
   ModelSelectCommand,
   ModelSelectCompleted,
   OpenSessionInput,
+  PermissionModeSelectCommand,
+  PermissionModeSelectCompleted,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCancelAccepted,
@@ -127,6 +131,13 @@ function catalogHasThinkingOption(
   return catalog.thinkingOptions.some(({ id }) => id === thinkingOptionId);
 }
 
+function catalogHasPermissionMode(
+  catalog: HarnessPermissionModeCatalog | undefined,
+  permissionModeId: HarnessPermissionModeId,
+): boolean {
+  return catalog?.modes.some(({ id }) => id === permissionModeId) ?? false;
+}
+
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
@@ -146,6 +157,7 @@ export class FakeHarnessSession implements HarnessSession {
   snapshotReads = 0;
   usageFailures = 0;
   readonly #catalog: HarnessModelCatalog;
+  readonly #permissionModes: HarnessPermissionModeCatalog | undefined;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #active: ActiveFakeTurn | null = null;
   #closed = false;
@@ -154,6 +166,7 @@ export class FakeHarnessSession implements HarnessSession {
   #itemOrdinal = 0;
   #nextModelRejection: HarnessError | null = null;
   #nextThinkingRejection: HarnessError | null = null;
+  #nextPermissionModeRejection: HarnessError | null = null;
   #nextTurnUsage: HostUsage | null | undefined;
   #nextApproval: { title: string; description?: string } | null = null;
   #nextQuestion: {
@@ -180,6 +193,8 @@ export class FakeHarnessSession implements HarnessSession {
     supportsForkAcrossCwd = supportsFork,
     initialThinkingOptionId: HarnessThinkingOptionId | undefined = catalog.defaultThinkingOptionId,
     initialUsage: HostUsage | null = null,
+    permissionModes?: HarnessPermissionModeCatalog,
+    initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -192,11 +207,13 @@ export class FakeHarnessSession implements HarnessSession {
       configuration: {
         selectModel: true,
         selectThinkingOption: catalog.thinkingOptions.length > 0,
+        selectPermissionMode: permissionModes !== undefined,
       },
       history: { fork: supportsFork, forkAcrossCwd: supportsForkAcrossCwd },
     };
     this.cwd = cwd;
     this.#catalog = catalog;
+    this.#permissionModes = permissionModes;
     const resolvedModelLabel = resolvedLabelForModel(catalog, initialModel);
     this.initialState = {
       nativeRef,
@@ -204,6 +221,7 @@ export class FakeHarnessSession implements HarnessSession {
       ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
       ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
       ...(availableThinkingOptions.length > 0 ? { availableThinkingOptions } : {}),
+      ...(initialPermissionModeId ? { effectivePermissionModeId: initialPermissionModeId } : {}),
     };
     this.#state = this.initialState;
     this.initialUsage = initialUsage === null ? null : parseHostUsage(initialUsage);
@@ -262,6 +280,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#nextThinkingRejection = error;
   }
 
+  rejectNextPermissionModeSelection(error: HarnessError): void {
+    this.#nextPermissionModeRejection = error;
+  }
+
   completeCancellationOnRequest(): void {
     this.#completeCancellationDuringRequest = true;
   }
@@ -282,6 +304,9 @@ export class FakeHarnessSession implements HarnessSession {
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
@@ -291,6 +316,7 @@ export class FakeHarnessSession implements HarnessSession {
       | InteractionRespondAccepted
       | ModelSelectCompleted
       | ThinkingSelectCompleted
+      | PermissionModeSelectCompleted
     >
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
@@ -298,6 +324,7 @@ export class FakeHarnessSession implements HarnessSession {
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (this.#nextRejection) {
       const error = this.#nextRejection;
       this.#nextRejection = null;
@@ -668,6 +695,49 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: { completed: true } };
   }
 
+  #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): HarnessResult<PermissionModeSelectCompleted> {
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Fake Harness Session cannot select Permission Mode during an active Turn",
+          retryable: true,
+        },
+      };
+    }
+    if (!this.capabilities.configuration.selectPermissionMode || !this.#permissionModes) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Harness does not support Permission Mode selection",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#nextPermissionModeRejection) {
+      const error = this.#nextPermissionModeRejection;
+      this.#nextPermissionModeRejection = null;
+      return { ok: false, error };
+    }
+    if (!catalogHasPermissionMode(this.#permissionModes, command.permissionModeId)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Harness Permission Mode is not in the current catalog",
+          retryable: false,
+        },
+      };
+    }
+    this.#state = { ...this.#state, effectivePermissionModeId: command.permissionModeId };
+    this.#event({ type: "session.state.changed", state: this.#state });
+    return { ok: true, value: { completed: true } };
+  }
+
   #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -786,6 +856,7 @@ export class FakeHarnessSession implements HarnessSession {
 export class FakeHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly catalog: HarnessModelCatalog;
+  readonly permissionModes: HarnessPermissionModeCatalog | undefined;
   readonly sessions: FakeHarnessSession[] = [];
   readonly initialUsage: HostUsage | null;
   readonly supportsFork: boolean;
@@ -801,9 +872,11 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     supportsFork = true,
     supportsForkAcrossCwd = supportsFork,
     initialUsage: HostUsage | null = null,
+    permissionModes?: HarnessPermissionModeCatalog,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
+    this.permissionModes = permissionModes;
     this.initialUsage = initialUsage === null ? null : parseHostUsage(initialUsage);
     this.supportsFork = supportsFork;
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
@@ -825,10 +898,12 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     return {
       status: "ready",
       catalog: this.catalog,
+      ...(this.permissionModes ? { permissionModes: this.permissionModes } : {}),
       capabilities: {
         configuration: {
           selectModel: true,
           selectThinkingOption: this.catalog.thinkingOptions.length > 0,
+          selectPermissionMode: this.permissionModes !== undefined,
         },
         history: {
           fork: this.supportsFork,
@@ -874,9 +949,28 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           },
         };
       }
+      if (
+        input.permissionModeId &&
+        !catalogHasPermissionMode(this.permissionModes, input.permissionModeId)
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Fake Adapter create Permission Mode is not in the current catalog",
+            retryable: false,
+          },
+        };
+      }
       return {
         ok: true,
-        value: this.#createSession(input.cwd, input.model, [], input.thinkingOptionId),
+        value: this.#createSession(
+          input.cwd,
+          input.model,
+          [],
+          input.thinkingOptionId,
+          input.permissionModeId,
+        ),
       };
     }
     const sourceRef = input.kind === "resume" ? input.nativeRef : input.sourceRef;
@@ -947,6 +1041,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         source.state.effectiveModel,
         snapshot.value.turns.slice(0, checkpointIndex + 1),
         source.state.effectiveThinkingOptionId,
+        source.state.effectivePermissionModeId,
       ),
     };
   }
@@ -956,6 +1051,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     model: HarnessModelRef | undefined,
     sourceTurns: HostTurnSnapshot[] = [],
     thinkingOptionId?: HarnessThinkingOptionId,
+    permissionModeId?: HarnessPermissionModeId,
   ): FakeHarnessSession {
     this.#sessionOrdinal += 1;
     const nativeRef: NativeSessionRef = {
@@ -1000,6 +1096,8 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       this.supportsForkAcrossCwd,
       thinkingOptionId,
       this.initialUsage,
+      this.permissionModes,
+      permissionModeId,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

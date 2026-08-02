@@ -30,6 +30,8 @@ import {
   type ModelSelectCommand,
   type ModelSelectCompleted,
   type OpenSessionInput,
+  type PermissionModeSelectCommand,
+  type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
   type ThinkingSelectCommand,
@@ -371,6 +373,7 @@ class PiHarnessSession implements HarnessSession {
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
+        selectPermissionMode: false,
       },
       history: { fork: true, forkAcrossCwd: true },
     };
@@ -422,6 +425,9 @@ class PiHarnessSession implements HarnessSession {
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(
     command: HostCommand,
   ): Promise<
@@ -431,6 +437,7 @@ class PiHarnessSession implements HarnessSession {
       | InteractionRespondAccepted
       | ModelSelectCompleted
       | ThinkingSelectCompleted
+      | PermissionModeSelectCompleted
     >
   > {
     if (this.#phase !== "open") {
@@ -440,6 +447,16 @@ class PiHarnessSession implements HarnessSession {
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
+    if (command.type === "permissionMode.select") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Pi does not expose a selectable Permission Mode",
+          retryable: false,
+        },
+      };
+    }
     if (this.#acceptingTurn || this.#active || this.#configuring) {
       return {
         ok: false,
@@ -1296,6 +1313,7 @@ export class PiAdapter implements HarnessAdapter {
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
+            selectPermissionMode: false,
           },
           history: { fork: true, forkAcrossCwd: true },
         },
@@ -1327,6 +1345,16 @@ export class PiAdapter implements HarnessAdapter {
       };
     }
     if (input.kind === "create") {
+      if (input.permissionModeId) {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "Pi does not expose a selectable Permission Mode",
+            retryable: false,
+          },
+        };
+      }
       if (input.model) {
         try {
           decodePiModelRef(input.model);

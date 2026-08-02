@@ -1,13 +1,16 @@
 import {
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type HarnessInspectParams,
   type HarnessModelRef,
+  type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostThreadId,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
+  type ThreadPermissionModeSelectParams,
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
 } from "@codexhost/shared-contracts";
@@ -28,6 +31,7 @@ export interface LockedComposerSelection {
   phase: "locked";
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export interface RendererAdapterCandidateShape {
@@ -148,19 +152,48 @@ export function piTransportModelId(
   return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
 }
 
-export function claudeTransportModelId(model?: HarnessModelRef): string {
-  if (!model) return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  const parsed = harnessModelRefSchema.parse(model);
-  return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsed.id}`;
+export function claudeTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("Claude Code transport Permission Mode requires a Model Ref");
+    }
+    return CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
+}
+
+export function decodeClaudeTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === CLAUDE_CODE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
 }
 
 export function isClaudeTransportModelId(value: unknown): value is string {
-  if (value === CLAUDE_CODE_TRANSPORT_MODEL_ID) return true;
-  if (typeof value !== "string" || !value.startsWith(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX)) {
-    return false;
-  }
-  const modelId = value.slice(CLAUDE_CODE_TRANSPORT_MODEL_PREFIX.length);
-  return !modelId.includes("@") && harnessModelRefSchema.safeParse({ id: modelId }).success;
+  return decodeClaudeTransportModelId(value) !== null;
 }
 
 export function isPiTransportModelId(value: unknown): value is string {
@@ -323,7 +356,7 @@ export function decorateThreadStartParams(
     selection.agent === "pi"
       ? piTransportModelId(selection.model, selection.thinkingOptionId)
       : selection.agent === "claude-code"
-        ? claudeTransportModelId(selection.model)
+        ? claudeTransportModelId(selection.model, selection.permissionModeId)
         : transportModelIdForAgent(selection.agent);
   return transportModelId
     ? ({ ...params, model: transportModelId } as ThreadStartParams)
@@ -453,6 +486,19 @@ function isModelSelection(value: unknown): value is ModelPowerSelection | null {
       Object.keys(value).sort().join(",") === "model,reasoningEffort" &&
       "model" in value &&
       "reasoningEffort" in value)
+  );
+}
+
+export function sameModelPowerSelection(
+  left: ModelPowerSelection | null,
+  right: ModelPowerSelection | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.model === right.model &&
+      left.reasoningEffort === right.reasoningEffort)
   );
 }
 
@@ -636,12 +682,13 @@ export function modelSelectionForAgent(
   agent: RendererAgent,
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
   const transportModelId =
     agent === "pi"
       ? piTransportModelId(model, thinkingOptionId)
       : agent === "claude-code"
-        ? claudeTransportModelId(model)
+        ? claudeTransportModelId(model, permissionModeId)
         : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
@@ -653,6 +700,7 @@ export function installCurrentRendererAdapter(): {
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
+    permissionModeId?: HarnessPermissionModeId,
   ): boolean;
   applyPiModel(model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId): boolean;
   dispose(): void;
@@ -706,6 +754,11 @@ export function installCurrentRendererAdapter(): {
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     return client.selectThreadThinking(input);
   };
+  const selectThreadPermissionMode = async (input: ThreadPermissionModeSelectParams) => {
+    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
+    return client.selectThreadPermissionMode(input);
+  };
   const modelControl: RendererModelClient = Object.freeze({
     inspectHarness,
     inspectPi: inspectHarness,
@@ -723,6 +776,7 @@ export function installCurrentRendererAdapter(): {
     selectPiThreadModel: selectThreadModel,
     selectThreadThinking,
     selectPiThreadThinking: selectThreadThinking,
+    selectThreadPermissionMode,
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
@@ -752,6 +806,7 @@ export function installCurrentRendererAdapter(): {
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
+    permissionModeId?: HarnessPermissionModeId,
   ): boolean => {
     if (disposed) return false;
     if (agent === "codex" && !hasOfficialSelection) {
@@ -764,18 +819,20 @@ export function installCurrentRendererAdapter(): {
       return false;
     }
     modelController = controller;
-    controller.apply(
-      modelSelectionForAgent(
-        officialSelection,
-        controller.reasoningEffort,
-        agent,
-        model,
-        thinkingOptionId,
-      ),
+    const selection = modelSelectionForAgent(
+      officialSelection,
+      controller.reasoningEffort,
+      agent,
+      model,
+      thinkingOptionId,
+      permissionModeId,
     );
+    if (!sameModelPowerSelection(controller.current, selection)) {
+      controller.apply(selection);
+      modelUpdates += 1;
+      liveStatus.modelUpdates = modelUpdates;
+    }
     selectedAgent = agent;
-    modelUpdates += 1;
-    liveStatus.modelUpdates = modelUpdates;
     return true;
   };
 

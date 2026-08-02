@@ -16,8 +16,7 @@ import {
 type Scenario =
   | "final-only"
   | "reasoning"
-  | "reasoning-trailing-whitespace"
-  | "reasoning-conflict"
+  | "reasoning-multiple-blocks"
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
@@ -265,39 +264,49 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
-    if (
-      this.#scenario === "reasoning" ||
-      this.#scenario === "reasoning-trailing-whitespace" ||
-      this.#scenario === "reasoning-conflict"
-    ) {
-      const finalThinking =
+    if (this.#scenario === "reasoning" || this.#scenario === "reasoning-multiple-blocks") {
+      const thinkingBlocks =
         this.#scenario === "reasoning"
-          ? "streamed reasoning suffix"
-          : this.#scenario === "reasoning-trailing-whitespace"
-            ? "streamed reasoning"
-            : "conflicting reasoning";
+          ? ["streamed reasoning suffix"]
+          : ["first block", "second block", "third block"];
       const message = {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: finalThinking, thinkingSignature: "ignored" },
+          ...thinkingBlocks.map((thinking) => ({
+            type: "thinking",
+            thinking,
+            thinkingSignature: "ignored",
+          })),
           { type: "text", text: "reasoned answer" },
         ],
       };
       this.#output({ type: "message_start", message });
-      this.#output({
-        type: "message_update",
-        assistantMessageEvent: { type: "thinking_start" },
-        message,
-      });
-      this.#output({
-        type: "message_update",
-        assistantMessageEvent: { type: "thinking_delta", delta: "streamed reasoning" },
-        message,
-      });
-      if (this.#scenario === "reasoning-trailing-whitespace") {
+      const streamedBlocks =
+        this.#scenario === "reasoning"
+          ? ["streamed reasoning"]
+          : ["first block", "second block", "third block"];
+      for (const [contentIndex, thinking] of streamedBlocks.entries()) {
         this.#output({
           type: "message_update",
-          assistantMessageEvent: { type: "thinking_delta", delta: "\n\n" },
+          assistantMessageEvent: { type: "thinking_delta", contentIndex, delta: thinking },
+          message,
+        });
+        if (this.#scenario === "reasoning-multiple-blocks") {
+          this.#output({
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", contentIndex, delta: "\n\n" },
+            message,
+          });
+        }
+      }
+      if (this.#scenario === "reasoning") {
+        this.#output({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            contentIndex: thinkingBlocks.length,
+            delta: "streamed answer",
+          },
           message,
         });
       }
@@ -707,30 +716,31 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("reconciles streamed and complete visible reasoning without exposing signatures", async () => {
+  it("uses streamed Assistant content without replaying the complete message", async () => {
     const rpc = session("reasoning");
     const events: PiTurnEvent[] = [];
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
-      text: "reasoned answer",
+      text: "streamed answer",
       cancelled: false,
     });
     expect(events).toEqual([
       { type: "reasoning.delta", messageId: expect.any(String), delta: "streamed reasoning" },
-      { type: "reasoning.delta", messageId: expect.any(String), delta: " suffix" },
+      { type: "text.delta", messageId: expect.any(String), delta: "streamed answer" },
       { type: "reasoning.completed", messageId: expect.any(String) },
-      { type: "text.delta", messageId: expect.any(String), delta: "reasoned answer" },
     ]);
     expect(
       new Set(events.flatMap((event) => ("messageId" in event ? [event.messageId] : []))).size,
     ).toBe(1);
+    expect(JSON.stringify(events)).not.toContain("suffix");
+    expect(JSON.stringify(events)).not.toContain("reasoned answer");
     expect(JSON.stringify(events)).not.toContain("ignored");
     await rpc.close();
   });
 
-  it("accepts Pi reasoning summaries with a stream-only trailing separator", async () => {
-    const rpc = session("reasoning-trailing-whitespace");
+  it("does not compare streamed and complete content across thinking blocks", async () => {
+    const rpc = session("reasoning-multiple-blocks");
     const events: PiTurnEvent[] = [];
     await rpc.start();
 
@@ -738,29 +748,10 @@ describe("Pi RPC Turn aggregation", () => {
       text: "reasoned answer",
       cancelled: false,
     });
-    expect(events).toContainEqual({
-      type: "reasoning.delta",
-      messageId: expect.any(String),
-      delta: "\n\n",
-    });
+    expect(
+      events.filter((event) => event.type === "reasoning.delta").map(({ delta }) => delta),
+    ).toEqual(["first block", "\n\n", "second block", "\n\n", "third block", "\n\n"]);
     expect(events.some(({ type }) => type === "reasoning.completed")).toBe(true);
-    await rpc.close();
-  });
-
-  it("fails a Turn when complete reasoning conflicts with its streamed prefix", async () => {
-    const rpc = session("reasoning-conflict");
-    const events: PiTurnEvent[] = [];
-    await rpc.start();
-
-    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).rejects.toThrow(
-      "conflicts with streamed reasoning",
-    );
-    expect(events).toContainEqual({
-      type: "reasoning.delta",
-      messageId: expect.any(String),
-      delta: "streamed reasoning",
-    });
-    expect(events.some(({ type }) => type === "reasoning.completed")).toBe(false);
     await rpc.close();
   });
 

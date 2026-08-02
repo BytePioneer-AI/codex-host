@@ -369,7 +369,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#query = activeQuery;
     try {
       await activeQuery.initializationResult();
-      await activeQuery.setPermissionMode(this.#permissionMode);
     } catch (error) {
       activeQuery.close();
       this.#query = null;

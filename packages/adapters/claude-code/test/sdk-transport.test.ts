@@ -50,7 +50,10 @@ class FakeQuery {
 
 type QueryInput = Parameters<NonNullable<ClaudeSdkTransportOptions["queryFactory"]>>[0];
 
-function fixture(openMode: "create" | "resume" = "create") {
+function fixture(
+  openMode: "create" | "resume" = "create",
+  permissionMode: ClaudeSdkTransportOptions["permissionMode"] = "default",
+) {
   const fakeQuery = new FakeQuery();
   let queryInput: QueryInput | undefined;
   const queryFactory: NonNullable<ClaudeSdkTransportOptions["queryFactory"]> = vi.fn((input) => {
@@ -64,7 +67,7 @@ function fixture(openMode: "create" | "resume" = "create") {
     cwd: process.cwd(),
     sessionId: "00000000-0000-4000-8000-000000000001",
     openMode,
-    permissionMode: "default",
+    permissionMode,
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
@@ -243,18 +246,19 @@ describe("ClaudeSdkTransport text reconciliation", () => {
 });
 
 describe("ClaudeSdkTransport Permission Mode control", () => {
-  it("passes the initial mode, acknowledges bypass support, and delegates native switching", async () => {
-    const value = fixture();
+  it("passes the initial mode once, acknowledges bypass support, and delegates later switching", async () => {
+    const value = fixture("create", "auto");
 
     await value.transport.start();
-    expect(options(value).permissionMode).toBe("default");
+    expect(options(value).permissionMode).toBe("auto");
     expect(options(value).allowDangerouslySkipPermissions).toBe(true);
-    expect(value.fakeQuery.setPermissionMode).toHaveBeenCalledWith("default");
-    expect(value.transport.getPermissionMode()).toBe("default");
-
-    await value.transport.setPermissionMode("auto");
-    expect(value.fakeQuery.setPermissionMode).toHaveBeenLastCalledWith("auto");
+    expect(value.fakeQuery.setPermissionMode).not.toHaveBeenCalled();
     expect(value.transport.getPermissionMode()).toBe("auto");
+
+    await value.transport.setPermissionMode("acceptEdits");
+    expect(value.fakeQuery.setPermissionMode).toHaveBeenCalledOnce();
+    expect(value.fakeQuery.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+    expect(value.transport.getPermissionMode()).toBe("acceptEdits");
     await value.transport.close();
   });
 

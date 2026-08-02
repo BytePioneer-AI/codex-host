@@ -160,13 +160,6 @@ function startupFailure(error: unknown): HarnessError {
       retryable: true,
     };
   }
-  if (text.includes("auto mode unavailable")) {
-    return {
-      code: "nativeFailure",
-      message: "Auto mode is unavailable for the current Claude Code Model",
-      retryable: true,
-    };
-  }
   return {
     code: "unavailable",
     message: "Claude Code could not start",

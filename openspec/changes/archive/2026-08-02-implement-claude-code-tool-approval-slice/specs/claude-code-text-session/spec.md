@@ -21,7 +21,7 @@ Every accepted Claude text Turn SHALL emit one Turn start, one Agent Message sta
 - **THEN** the Adapter SHALL reconcile each complete response only with partial text emitted for that response
 - **AND** it SHALL append both responses in order exactly once without reporting a text conflict merely because the later response omits earlier Turn text
 
-#### Scenario: Native response text conflicts
+#### Scenario: Native text conflicts
 
 - **WHEN** a complete Assistant text cannot be reconciled with partial text already emitted for the same open native response
 - **THEN** the Item and Turn SHALL fail exactly once

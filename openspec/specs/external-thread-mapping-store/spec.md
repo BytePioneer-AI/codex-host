@@ -111,3 +111,22 @@ Mapping Store SHALL provide an idempotent archive-state update for an existing E
 #### Scenario: Archive replacement fails
 - **WHEN** temp write, sync, backup, or atomic replacement fails while changing archive state
 - **THEN** the prior archive state, durable record, in-memory record, Revision, and indexes SHALL remain authoritative
+
+### Requirement: Mapping Store updates the transport carrier atomically
+
+Mapping Store SHALL provide an idempotent transport-carrier update for an existing external Thread using the same strict validation, per-Thread serialization, backup, atomic replacement, Revision, and in-memory commit rules as other record updates.
+
+#### Scenario: Thread configuration changes
+
+- **WHEN** Host stores a different valid external transport carrier after native configuration changes
+- **THEN** restart SHALL recover that carrier while preserving ownership, Native identity, Turn mappings, title, archive state, cwd, and history metadata
+
+#### Scenario: Carrier already matches
+
+- **WHEN** Host stores the record's current carrier again
+- **THEN** Mapping Store SHALL return the current record without a durable replacement or Revision increment
+
+#### Scenario: Carrier replacement fails
+
+- **WHEN** durable replacement fails while updating the carrier
+- **THEN** the prior durable carrier and indexes SHALL remain authoritative

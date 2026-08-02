@@ -5,7 +5,7 @@ TBD - created by archiving change implement-claude-code-question-interaction-sli
 ## Requirements
 ### Requirement: Claude Adapter exposes native AskUserQuestion as a Host Question
 
-The Claude Code Adapter SHALL enable Claude Code's native `AskUserQuestion` Tool and SHALL map only validated native invocations of that Tool into `HostQuestionInteraction`. It SHALL NOT register a codexhost Question Tool or classify ordinary Tool permission callbacks as Question.
+The Claude Code Adapter SHALL enable Claude Code's native `AskUserQuestion` Tool and SHALL map only validated native invocations of that Tool into `HostQuestionInteraction`. It SHALL NOT register a codexhost Question Tool or classify ordinary Tool permission callbacks as Question; validated ordinary Tool callbacks SHALL use the separate Claude Approval capability.
 
 #### Scenario: Claude asks one choice Question
 
@@ -21,9 +21,15 @@ The Claude Code Adapter SHALL enable Claude Code's native `AskUserQuestion` Tool
 
 #### Scenario: A non-Question permission callback arrives
 
-- **WHEN** the SDK invokes the permission callback for a Tool other than `AskUserQuestion`
-- **THEN** the Claude transport SHALL deny that unsupported callback without emitting a Host Question
-- **AND** it SHALL NOT automatically allow the Tool or infer Approval from text
+- **WHEN** the SDK invokes a validated permission callback for a Tool other than `AskUserQuestion`
+- **THEN** the Claude transport SHALL route it through the separate bounded Approval capability without emitting a Host Question
+- **AND** it SHALL NOT automatically allow the Tool or infer Question from text
+
+#### Scenario: A malformed non-Question callback arrives
+
+- **WHEN** an ordinary Tool permission callback cannot satisfy the bounded Approval validation
+- **THEN** the Claude transport SHALL deny it without emitting Question or Approval
+- **AND** it SHALL NOT alter another native callback
 
 ### Requirement: Claude Question answers return to the exact native callback
 
@@ -90,13 +96,13 @@ Every exposed Claude Question SHALL appear after `turn.started`, close exactly o
 
 ### Requirement: Claude Question capability remains bounded to native behavior
 
-This slice SHALL expose only Claude Code's native `AskUserQuestion` as a Host Interaction. It SHALL preserve Claude Code's inherited default Tool set, deny unsupported callbacks that require a human permission decision, and SHALL not opt into opaque SDK dialogs or elicitation.
+This slice SHALL expose only Claude Code's native `AskUserQuestion` as a Host Question. It SHALL preserve Claude Code's inherited default Tool set, route validated ordinary permission callbacks only through the separate bounded Approval capability, and SHALL not opt into opaque SDK dialogs or elicitation.
 
 #### Scenario: Claude SDK Query starts
 
 - **WHEN** the Adapter creates its SDK Query
 - **THEN** the Query SHALL omit a codexhost Tool override and inherit Claude Code's native Tool set
-- **AND** the Query SHALL use a permission mode and `canUseTool` callback that permit the native Question callback
+- **AND** the Query SHALL use the existing permission mode and `canUseTool` callback for native Question and bounded Approval routing
 - **AND** no codexhost-owned Tool, `onUserDialog`, or `onElicitation` capability SHALL be registered
 
 #### Scenario: Question data crosses package boundaries

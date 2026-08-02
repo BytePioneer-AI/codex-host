@@ -4,18 +4,18 @@
 TBD - created by archiving change implement-registered-harness-text-vertical-slice. Update Purpose after archive.
 ## Requirements
 ### Requirement: External Harness create routing uses a finite Protocol Core registry
-Protocol Core SHALL decode official Codex Models and the finite native transport carriers for Pi and Claude Code. Each external carrier SHALL identify one external Harness ID and MAY carry only that Harness's bounded opaque Model Ref according to its registered format, without exposing Adapter implementation or native Model configuration.
+Protocol Core SHALL decode official Codex Models and the finite native transport carriers for Pi and Claude Code. Each external carrier SHALL identify one external Harness ID and MAY carry only that Harness's bounded opaque Model Ref and declared configuration components according to its registered format, without exposing Adapter implementation or native SDK configuration.
 
 #### Scenario: Pi transport token is decoded
 - **WHEN** `thread/start.model` is `codexhost/pi-native` or a valid selected Pi carrier
 - **THEN** Protocol Core routes the create to external Harness `pi` and preserves any opaque Pi Model/Thinking selection
 
 #### Scenario: Claude transport token is decoded
-- **WHEN** `thread/start.model` is `codexhost/claude-code-native` or that token plus one valid opaque Claude Model Ref
-- **THEN** Protocol Core routes the create to external Harness `claude-code` and preserves only the optional opaque Model Ref
+- **WHEN** `thread/start.model` is `codexhost/claude-code-native`, that token plus one valid opaque Claude Model Ref, or the Model form plus one valid Permission Mode ID
+- **THEN** Protocol Core routes the create to external Harness `claude-code` and preserves only the optional opaque Model and mode selection
 
 #### Scenario: Malformed Claude carrier is received
-- **WHEN** a Claude-prefixed carrier has an empty, oversized, extra, or invalid Model component
+- **WHEN** a Claude-prefixed carrier has an empty, oversized, extra, invalid, or mode-without-Model component
 - **THEN** Protocol Core rejects the external create explicitly and does not classify it as official Codex traffic
 
 #### Scenario: Official Model is decoded
@@ -98,7 +98,7 @@ Host Runtime SHALL handle the fixed `codexhost/thread/ownership/list` request by
 - **THEN** Host SHALL fail the complete fixed request explicitly rather than return a partial result or forward it to Codex
 
 ### Requirement: Harness controls dispatch through registered ownership
-Host Runtime SHALL dispatch Harness inspection through the requested registered Harness ID and SHALL dispatch Thread Model selection through the owning HarnessSession and its declared Model-selection capability. These control paths MUST NOT require Pi ownership or inspect Harness-native configuration.
+Host Runtime SHALL dispatch Harness inspection through the requested registered Harness ID and SHALL dispatch Thread Model or Permission Mode selection through the owning HarnessSession and its declared structural capability. These control paths MUST NOT require Pi ownership or inspect Harness-native configuration.
 
 #### Scenario: Registered non-Pi Harness is inspected
 - **WHEN** a valid Harness inspection request names a registered non-Pi Harness
@@ -110,10 +110,14 @@ Host Runtime SHALL dispatch Harness inspection through the requested registered 
 - **THEN** Host SHALL execute the existing `model.select` command on that owning Session
 - **AND** it SHALL confirm the effective Model through ordered Session state without a Harness ID branch
 
-#### Scenario: Owning Session does not support Model selection
-- **WHEN** a Model selection request references a Session whose Model-selection capability is false
+#### Scenario: Owning Session supports Permission Mode selection
+- **WHEN** the fixed Permission Mode request references a capable external Thread
+- **THEN** Host SHALL execute `permissionMode.select`, consume the ordered current state, and return that mode without a Harness-specific native payload
+
+#### Scenario: Owning Session does not support a requested control
+- **WHEN** a Model or Permission Mode request references a Session whose corresponding capability is false
 - **THEN** Host SHALL return an explicit unsupported error
-- **AND** it SHALL NOT execute a Model command or invoke another Adapter
+- **AND** it SHALL NOT execute the command or invoke another Adapter
 
 ### Requirement: Protocol Core owns finite transport Model decoding
 Protocol Core SHALL decode Desktop transport Model carriers for each finite external Harness and SHALL return only an opaque Harness Model Ref, optional supported configuration values, no override, or a non-matching result to Host Runtime. Host Runtime MUST NOT parse Pi or Claude Model carrier prefixes.
@@ -124,9 +128,9 @@ Protocol Core SHALL decode Desktop transport Model carriers for each finite exte
 - **AND** generic Host routing applies or verifies that configuration through the owning Session
 
 #### Scenario: Claude selected carrier reaches a Claude Thread
-- **WHEN** an existing Claude Thread receives a valid Claude transport carrier containing one Model Ref
-- **THEN** Protocol Core returns that opaque Ref without decoding the Claude SDK value
-- **AND** generic Host routing applies or verifies it through the owning Claude Session
+- **WHEN** an existing Claude Thread receives a valid Claude transport carrier containing one Model Ref and optional Permission Mode ID
+- **THEN** Protocol Core returns those opaque selections without decoding Claude SDK values
+- **AND** generic Host routing applies them through the owning Claude Session
 
 #### Scenario: Foreign carrier reaches an external Thread
 - **WHEN** an external Thread receives a transport Model carrier that does not belong to its Harness
@@ -199,14 +203,28 @@ Host Runtime MUST 从所属且已注册的 `HarnessSession` 消费规范化 Usag
 - **AND** Host MUST NOT 要求 Harness 专用 Response gate
 
 ### Requirement: Claude create configuration remains request-scoped
-Host Runtime SHALL pass a Claude Model Ref decoded from the exact `thread/start.model` carrier only to that create's `ClaudeCodeAdapter.open(create)` input. It MUST NOT retain a process-level next Model, parse the Ref, or use a failed Claude configuration as a reason to route the request to Codex or Pi.
+Host Runtime SHALL pass Claude Model and Permission Mode selections decoded from the exact `thread/start.model` carrier only to that create's `ClaudeCodeAdapter.open(create)` input. It MUST NOT retain a process-level next configuration, parse Adapter-owned values, or use a failed Claude configuration as a reason to route the request to Codex or Pi.
 
 #### Scenario: Two Claude drafts select different Models
 - **WHEN** two Claude Composer creates carry different valid Model Refs
 - **THEN** Host opens each Claude Session with only its own Ref
 - **AND** neither create consumes or overwrites the other selection
 
-#### Scenario: Claude create Model becomes unavailable
-- **WHEN** Claude Code rejects the selected Model during lazy first-Turn initialization
-- **THEN** the owning Claude Turn fails explicitly
+#### Scenario: Claude create configuration becomes unavailable
+- **WHEN** Claude Code rejects the selected Model or Permission Mode during lazy initialization
+- **THEN** the owning Claude operation fails explicitly
 - **AND** the Thread remains Claude-owned without fallback to another Harness
+
+### Requirement: Host retains the current external transport configuration
+
+After a successful current-Thread Permission Mode selection, Host Runtime SHALL update the Thread's transport carrier and request Mapping Store persistence. A later Claude Turn carrying a valid Permission Mode component SHALL also refresh that stored carrier. Persistence failure SHALL be diagnosed without changing the native Session result into another mode or routing the Thread to Codex.
+
+#### Scenario: Claude Thread changes Permission Mode
+
+- **WHEN** the owning Claude Session reports the current mode after a successful selection
+- **THEN** Host SHALL encode that mode with the Thread's opaque Model Ref and persist the resulting carrier
+
+#### Scenario: Host restores the Thread after restart
+
+- **WHEN** a persisted Claude carrier contains Model and Permission Mode components
+- **THEN** Thread inspection SHALL return that carrier and the next native operation SHALL reapply the stored mode through the owning Session

@@ -16,8 +16,8 @@ The system SHALL provide a concrete Claude Code Adapter that exposes the existin
 - **THEN** Fake Transport tests SHALL exercise the Adapter contract
 - **AND** no test SHALL launch Claude Code, read user authentication, create Native Sessions, or consume model quota
 
-### Requirement: Claude inspection separates installation from Model support
-The Claude Code Adapter SHALL inspect its configured user executable and, when available, start one no-Prompt official Agent SDK Query using the same cwd, environment, and setting sources as production to read the initialization Model list and stable actual-Model state. It SHALL normalize only validated Model control data, close all owned resources before resolving, and SHALL NOT create a persistent Native Session or call a model endpoint. Lack of proven Model operations MUST NOT by itself report an installed Harness as unavailable.
+### Requirement: Claude inspection separates installation from configuration support
+The Claude Code Adapter SHALL inspect its configured user executable and, when available, start one no-Prompt official Agent SDK Query using the same cwd, environment, and setting sources as production to read the initialization Model list, stable actual-Model state, and structural Permission Mode setter support. It SHALL normalize only validated Model and Permission Mode control data, close all owned resources before resolving, and SHALL NOT create a persistent Native Session or call a model endpoint. Lack of proven Model operations MUST NOT by itself report an installed Harness as unavailable.
 
 #### Scenario: Claude executable is resolvable
 - **WHEN** Claude inspection resolves the configured executable
@@ -36,8 +36,9 @@ The Claude Code Adapter SHALL inspect its configured user executable and, when a
 - **AND** missing, unavailable, or failed Claude inspection does not block Codex/Pi startup
 
 #### Scenario: Claude executable lacks required Model operations
-- **WHEN** Claude Code initializes but its compatible SDK surface cannot provide a valid selectable Catalog, setter capability, or stable actual-Model readback
+- **WHEN** Claude Code initializes but its compatible SDK surface cannot provide a valid selectable Catalog, Model setter capability, or stable actual-Model readback
 - **THEN** the Adapter returns ready inspection with an empty Model catalog and `configuration.selectModel=false`
+- **AND** it independently reports Permission Mode capability only when the official Query exposes its setter
 - **AND** it does not infer support from a version string, settings file, Model name, or description
 
 #### Scenario: Claude executable is missing
@@ -51,7 +52,7 @@ The Claude Code Adapter SHALL inspect its configured user executable and, when a
 - **AND** official Session lookup reports no created Native Session
 
 ### Requirement: Claude startup is lazy and Native identity is confirmed
-The first accepted text Turn SHALL resolve the user-installed Claude Code executable, initialize one long-lived Agent SDK Query with an optional Adapter-owned selectable Model Ref, publish one Native Session Ref and confirmed Model state before that Turn lifecycle, and later reuse the same Query and Native Session. Opening a create or resume Session without a Turn SHALL remain process-free even when create carries a Model Ref.
+The first accepted text Turn SHALL resolve the user-installed Claude Code executable, initialize one long-lived Agent SDK Query with an optional Adapter-owned selectable Model Ref and selected Permission Mode, publish one Native Session Ref plus current configuration state before that Turn lifecycle, and later reuse the same Query and Native Session. Opening a create or resume Session without a Turn SHALL remain process-free even when create carries Model or Permission Mode configuration.
 
 #### Scenario: Unused Claude Session closes
 - **WHEN** a Claude HarnessSession closes without a Turn
@@ -119,19 +120,29 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** source history SHALL remain unchanged
 
 ### Requirement: Claude text streaming has one complete ordered lifecycle
-Every accepted Claude text Turn SHALL emit one Turn start, one Agent Message start, ordered non-duplicated text append updates, one Item terminal, and one Turn terminal. Unknown native message types and non-text content MUST NOT cross the HarnessAdapter seam.
+
+Every accepted Claude text Turn SHALL emit one Turn start, one Agent Message start, ordered non-duplicated text append updates, one Item terminal, and one Turn terminal. Partial and complete Assistant text SHALL be reconciled within the native Assistant response that produced them; complete text from a later response in the same Tool loop SHALL NOT be treated as a cumulative snapshot of the Host Turn. Unknown native message types and non-text content MUST NOT cross the HarnessAdapter seam.
 
 #### Scenario: Partial text and full Assistant agree
-- **WHEN** SDK partial events stream a text prefix and the complete Assistant message contains that prefix plus a suffix
+
+- **WHEN** SDK partial events stream a text prefix and the complete Assistant message for that response contains the prefix plus a suffix
 - **THEN** the Adapter SHALL append each character exactly once
 - **AND** it SHALL append only the missing suffix from the complete message
 
 #### Scenario: Streaming is unavailable
+
 - **WHEN** no partial text event is emitted but a complete Assistant text message arrives
 - **THEN** the Adapter SHALL publish that complete text once before the Item terminal
 
+#### Scenario: Tool loop has text before and after a permission decision
+
+- **WHEN** one Host Turn contains an Assistant text response, a Tool permission callback and result, and a later Assistant text response before the native Turn Result
+- **THEN** the Adapter SHALL reconcile each complete response only with partial text emitted for that response
+- **AND** it SHALL append both responses in order exactly once without reporting a text conflict merely because the later response omits earlier Turn text
+
 #### Scenario: Native text conflicts
-- **WHEN** a complete Assistant text cannot be reconciled with text already emitted for the Turn
+
+- **WHEN** a complete Assistant text cannot be reconciled with partial text already emitted for the same open native response
 - **THEN** the Item and Turn SHALL fail exactly once
 - **AND** the Adapter SHALL NOT replay or replace the visible text silently
 
@@ -258,3 +269,42 @@ Claude Adapter SHALL keep `configuration.selectThinkingOption=false` and SHALL r
 #### Scenario: Caller attempts Claude Thinking selection
 - **WHEN** a create input or Session command supplies a Claude Thinking option
 - **THEN** Claude Adapter returns `unsupported` and performs no native configuration write
+
+### Requirement: Claude exposes the reviewed native Permission Modes
+
+Claude Adapter SHALL expose `plan`, `default`, `acceptEdits`, `auto`, and `bypassPermissions` with provider-native semantics and SHALL NOT expose `dontAsk` in the current catalog. Query creation SHALL keep `settingSources: ["user"]`, pass the selected Session mode, and set `allowDangerouslySkipPermissions: true` only as the SDK prerequisite for an explicit later bypass selection.
+
+#### Scenario: First Turn uses the selected Permission Mode
+
+- **WHEN** create input carries a valid Claude mode
+- **THEN** the lazy Query SHALL initialize with that exact mode and publish it in complete Session state before `turn.started`
+
+#### Scenario: Bypass capability is enabled but not selected
+
+- **WHEN** the Query is created in any non-bypass mode
+- **THEN** the dangerous SDK prerequisite SHALL NOT itself select bypass, add a rule, change Sandbox, or suppress an ordinary Approval callback
+
+#### Scenario: SDK reports a catalog mode change
+
+- **WHEN** a supported native init or status message reports a different catalog mode
+- **THEN** Claude Adapter SHALL update the current Session mode through the ordered state stream
+- **AND** a native mode outside the exposed catalog SHALL not fault the Session
+
+### Requirement: Claude Permission Mode selection follows native Session behavior
+
+A valid `permissionMode.select` SHALL call the current Query's official setter and, on success, publish the resulting mode before completing. It MAY run while a Turn is active, as supported by the SDK, and SHALL serialize only concurrent mode selections. Native rejection SHALL remain a normal command failure rather than a Session fault.
+
+#### Scenario: User changes the current Session mode
+
+- **WHEN** the SDK accepts `permissionMode.select`
+- **THEN** later work in the same Session SHALL use the resulting mode without restarting the Native Session
+
+#### Scenario: Auto is unavailable for the current Model
+
+- **WHEN** the SDK rejects `auto` because the current Model is ineligible
+- **THEN** Claude Adapter SHALL return a native failure and retain the prior current mode
+
+#### Scenario: Tool permission is still requested
+
+- **WHEN** Claude invokes `canUseTool` under the selected mode
+- **THEN** the existing ordinary Tool Approval path SHALL remain authoritative for that callback

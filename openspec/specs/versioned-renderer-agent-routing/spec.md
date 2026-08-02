@@ -405,3 +405,57 @@ Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog,
 #### Scenario: Claude result becomes stale
 - **WHEN** an inspection or selection resolves after Agent, Composer, target, request generation, or extension lifetime changed
 - **THEN** Renderer ignores the result and preserves the newer state
+
+### Requirement: Renderer projects provider-native Permission Mode controls
+
+On the supported Desktop build, Renderer SHALL identify the unique official permission trigger by its semantic navigation attribute and bounded Composer ownership. Codex SHALL retain that official trigger unchanged. Pi SHALL hide it without a replacement. Claude Code SHALL hide it and mount a codexhost picker in the same parent and position using only its Adapter catalog.
+
+#### Scenario: User selects Codex
+
+- **WHEN** the current Composer belongs to Codex
+- **THEN** the official Codex permission control SHALL remain visible and codexhost SHALL perform no Permission Mode request
+
+#### Scenario: User selects Pi
+
+- **WHEN** the current Composer belongs to Pi
+- **THEN** the official Codex permission control SHALL be hidden and no replacement mode picker SHALL be shown
+
+#### Scenario: User selects Claude Code
+
+- **WHEN** Claude inspection reports selectable Permission Modes
+- **THEN** the replacement picker SHALL display `plan`, `default`, `acceptEdits`, `auto`, and `bypassPermissions` with provider-native labels
+- **AND** it SHALL visually distinguish the dangerous bypass option without changing its semantics
+
+### Requirement: Claude mode preference supplies provider defaults
+
+Renderer SHALL persist the last user-selected Claude Permission Mode as one provider preference. A new Claude draft, including after Desktop restart, SHALL use that preference when it remains in the current catalog. A persisted Existing Thread carrier SHALL take precedence over the provider preference for that Thread.
+
+#### Scenario: User changes a Claude mode and opens a new Thread
+
+- **WHEN** the user selects a catalog mode in any Claude picker and later opens a new Claude draft
+- **THEN** the new draft SHALL preselect that last user choice and include it in its request-local create carrier
+
+#### Scenario: Existing Thread is revisited after restart
+
+- **WHEN** its persisted carrier contains a valid Claude Model Ref and Permission Mode ID
+- **THEN** Renderer SHALL restore that Thread's own mode instead of replacing it with the provider preference
+
+#### Scenario: Stored preference is no longer in the catalog
+
+- **WHEN** the persisted provider preference is absent from the current Claude catalog
+- **THEN** Renderer SHALL use the catalog default without inventing or translating a mode
+
+### Requirement: Renderer applies Claude mode changes through the owning Session
+
+A Claude draft selection SHALL update the provider preference and its bounded request-local carrier. An Existing Thread selection SHALL call only `codexhost/thread/permission-mode/select`, then apply the current catalog mode returned by Host. Native rejection SHALL leave the Thread on its prior current mode and show an ordinary selection error; it SHALL NOT fault the Renderer or route the Thread to Codex.
+
+#### Scenario: Existing Claude mode changes successfully
+
+- **WHEN** Host returns a selectable current mode after the owning SDK setter completes
+- **THEN** Renderer SHALL update the picker and carrier to that returned mode
+
+#### Scenario: Native mode selection fails
+
+- **WHEN** Host reports an SDK rejection such as model-ineligible `auto`
+- **THEN** the Existing Thread SHALL retain its prior mode and remain usable
+- **AND** the provider preference SHALL remain the user's last selected default for future Claude drafts

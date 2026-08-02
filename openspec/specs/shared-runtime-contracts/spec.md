@@ -197,6 +197,25 @@ Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness
 - **WHEN** a control request includes a Pi RPC method name, native Provider/Model fields, or another undeclared property
 - **THEN** the method-specific schema rejects the request before Host or Renderer consumes it
 
+### Requirement: Shared Permission Mode contracts are browser-safe and strict
+
+Shared Contracts SHALL export bounded opaque Permission Mode IDs, normalized mode entries, a catalog with one valid default ID, structural selection capability, optional effective Session state, optional create input, and strict fixed Thread-selection params. A ready inspection SHALL include a catalog exactly when `configuration.selectPermissionMode=true`.
+
+#### Scenario: Capable Harness inspection is validated
+
+- **WHEN** a ready inspection declares selectable Permission Mode capability and supplies a valid catalog
+- **THEN** the browser-safe Runtime Schema SHALL accept the catalog without importing a Harness SDK or native settings type
+
+#### Scenario: Capability and catalog disagree
+
+- **WHEN** a ready inspection declares selection support without a catalog or supplies a catalog while capability is false
+- **THEN** the Runtime Schema SHALL reject the inspection
+
+#### Scenario: Fixed Thread mode selection is validated
+
+- **WHEN** Renderer supplies one Host Thread ID and one bounded opaque Permission Mode ID
+- **THEN** the method-specific schema SHALL accept only those fields and SHALL reject native methods, rules, settings destinations, or undeclared payloads
+
 ### Requirement: Shared Thread ownership-list contracts are strict and bounded
 Shared Contracts SHALL export browser-safe strict Runtime Schemas for a fixed Thread ownership-list request and response. Request params SHALL contain one to 100 unique Host Thread IDs. Each result entry SHALL identify the requested Host Thread as either Codex-owned or external with a bounded non-empty Harness ID, and SHALL expose no Native Ref, path, Transcript, Model, Provider, credential, or arbitrary payload.
 

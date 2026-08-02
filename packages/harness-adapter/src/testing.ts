@@ -45,6 +45,7 @@ import type {
   HostItemUpdate,
   HostQuestion,
   HostQuestionInteraction,
+  HostReasoningItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
   HostToolOutput,
@@ -367,6 +368,26 @@ export class FakeHarnessSession implements HarnessSession {
     this.#updateItem(item.itemId, { type: "text.append", text });
   }
 
+  startReasoning(text: string): HostItemId {
+    if (text.length === 0) throw new Error("Fake Reasoning must start with non-empty text");
+    const item: HostReasoningItem = {
+      type: "reasoning",
+      itemId: this.#nextItemId(),
+      text: "",
+    };
+    this.#startItem(item);
+    this.appendReasoning(item.itemId, text);
+    return item.itemId;
+  }
+
+  appendReasoning(itemId: HostItemId, text: string): void {
+    const active = this.#requireActive();
+    const item = active.items.get(itemId);
+    if (item?.type !== "reasoning") throw new Error("Fake Harness Item is not Reasoning");
+    active.items.set(itemId, { ...item, text: item.text + text });
+    this.#updateItem(itemId, { type: "text.append", text });
+  }
+
   startCommandExecution(command: string, cwd?: string): HostItemId {
     const item: HostCommandExecutionItem = {
       type: "commandExecution",
@@ -509,7 +530,7 @@ export class FakeHarnessSession implements HarnessSession {
   succeedTurn(): void {
     const active = this.#requireActive();
     const unfinishedTools = [...active.items.values()].filter(
-      (item) => item.type !== "agentMessage",
+      (item) => item.type !== "agentMessage" && item.type !== "reasoning",
     );
     if (unfinishedTools.length > 0) {
       throw new Error("Fake Harness Session cannot succeed with active Tool Items");

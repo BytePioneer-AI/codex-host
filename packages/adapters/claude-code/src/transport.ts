@@ -1,7 +1,7 @@
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 
 export type ClaudeTransportFailureKind =
-  "authentication" | "cancellationUnproven" | "native" | "textConflict";
+  "authentication" | "cancellationUnproven" | "native" | "reasoningConflict" | "textConflict";
 
 export type ClaudeTransportTurnResult =
   | { status: "succeeded" }
@@ -49,6 +49,8 @@ export type ClaudeInteractionResponse =
 
 export type ClaudeTurnEvent =
   | { type: "text.delta"; delta: string }
+  | { type: "reasoning.delta"; messageId: string; delta: string }
+  | { type: "reasoning.completed"; messageId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

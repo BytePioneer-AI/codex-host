@@ -44,6 +44,7 @@ export type {
   HostQuestion,
   HostQuestionInteraction,
   HostQuestionResponse,
+  HostReasoningItem,
   HostThreadSnapshot,
   HostTextInput,
   HostTextQuestion,

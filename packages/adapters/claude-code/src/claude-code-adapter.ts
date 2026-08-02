@@ -22,6 +22,7 @@ import {
   type HostEvent,
   type HostItemOutcome,
   type HostQuestionInteraction,
+  type HostReasoningItem,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -94,6 +95,7 @@ type ActiveInteraction =
 interface ActiveTurn {
   command: TurnStartCommand;
   item: HostAgentMessageItem;
+  reasoningItems: Map<string, HostReasoningItem>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
   nativeTurnRef: NativeTurnRef | null;
@@ -122,10 +124,12 @@ function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
     message:
       kind === "textConflict"
         ? "Claude Code returned inconsistent streamed text"
-        : kind === "cancellationUnproven"
-          ? "Claude Code cancellation could not be proven"
-          : "Claude Code Turn failed",
-    retryable: kind !== "textConflict",
+        : kind === "reasoningConflict"
+          ? "Claude Code returned inconsistent streamed reasoning"
+          : kind === "cancellationUnproven"
+            ? "Claude Code cancellation could not be proven"
+            : "Claude Code Turn failed",
+    retryable: kind !== "textConflict" && kind !== "reasoningConflict",
   };
 }
 
@@ -365,6 +369,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       item,
+      reasoningItems: new Map(),
       interactions: new Map(),
       interactionByRequestId: new Map(),
       nativeTurnRef: null,
@@ -663,6 +668,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     if (event.type === "text.delta") {
       this.#appendText(active, event.delta);
+    } else if (event.type === "reasoning.delta") {
+      this.#appendReasoning(active, event.messageId, event.delta);
+    } else if (event.type === "reasoning.completed") {
+      this.#completeReasoning(active, event.messageId, { status: "succeeded" });
     } else if (event.type === "interaction.requested") {
       this.#startInteraction(active, event.request);
     } else {
@@ -778,6 +787,39 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
+  #appendReasoning(active: ActiveTurn, messageId: string, delta: string): void {
+    if (this.#active !== active || delta.length === 0) return;
+    let item = active.reasoningItems.get(messageId);
+    if (!item) {
+      item = {
+        type: "reasoning",
+        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        text: "",
+      };
+      active.reasoningItems.set(messageId, item);
+      this.#event({ type: "item.started", turnId: active.command.turnId, item });
+    }
+    item = { ...item, text: item.text + delta };
+    active.reasoningItems.set(messageId, item);
+    this.#event({
+      type: "item.updated",
+      turnId: active.command.turnId,
+      itemId: item.itemId,
+      update: { type: "text.append", text: delta },
+    });
+  }
+
+  #completeReasoning(active: ActiveTurn, messageId: string, outcome: HostItemOutcome): void {
+    const item = active.reasoningItems.get(messageId);
+    if (!item) return;
+    active.reasoningItems.delete(messageId);
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
+    });
+  }
+
   #finishResult(active: ActiveTurn, result: ClaudeTransportTurnResult): void {
     if (this.#active !== active) return;
     const transport = this.#transport;
@@ -826,6 +868,9 @@ class ClaudeHarnessSession implements HarnessSession {
       outcome.status === "succeeded" ? "superseded" : "cancelled",
     );
     const itemOutcome: HostItemOutcome = outcome;
+    for (const messageId of [...active.reasoningItems.keys()]) {
+      this.#completeReasoning(active, messageId, itemOutcome);
+    }
     this.#event({
       type: "item.completed",
       turnId: active.command.turnId,

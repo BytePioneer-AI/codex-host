@@ -669,6 +669,92 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("keeps visible reasoning in distinct per-message Item lifecycles", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("reasoning"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    transport.event({ type: "reasoning.delta", delta: "first " });
+    const firstStarted = await nextEvent(iterator);
+    expect(firstStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "first " },
+    });
+    transport.event({ type: "reasoning.delta", delta: "analysis" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "analysis" },
+    });
+    transport.event({ type: "reasoning.completed" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "reasoning", text: "first analysis" } },
+    });
+
+    transport.event({ type: "reasoning.delta", delta: "second analysis" });
+    const secondStarted = await nextEvent(iterator);
+    expect(secondStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
+    expect(
+      firstStarted.type === "item.started" && secondStarted.type === "item.started"
+        ? firstStarted.item.itemId === secondStarted.item.itemId
+        : true,
+    ).toBe(false);
+    await nextEvent(iterator);
+    transport.event({ type: "reasoning.completed" });
+    await nextEvent(iterator);
+    transport.delta("answer");
+    await nextEvent(iterator);
+    transport.succeed("answer");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "answer" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("fails active Reasoning and Agent Items when native reconciliation fails", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("reasoning-conflict"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    transport.event({ type: "reasoning.delta", delta: "visible" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.fail(new Error("reasoning conflict"));
+
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "reasoning" }, outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { message: "reasoning conflict" } },
+    });
+    await session.close();
+  });
+
   it("retains reliable Usage when a later refresh fails", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

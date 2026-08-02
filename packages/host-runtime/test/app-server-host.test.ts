@@ -1111,8 +1111,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId, input: [{ type: "text", text: "synthetic" }] },
     });
     await fixture.collector.waitFor((message) => requestId(message, 2));
-    await fixture.collector.waitFor((message) => method(message, "item/started"));
     session.appendText("fake output");
+    await fixture.collector.waitFor((message) => method(message, "item/started"));
     session.succeedTurn();
     await fixture.collector.waitFor((message) => method(message, "turn/completed"));
 
@@ -1131,6 +1131,91 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const readResponse = await fixture.collector.waitFor((message) => requestId(message, 3));
     expect(readResponse).toMatchObject({
       result: { thread: { turns: [{ status: "completed" }] } },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("projects live and historical Reasoning through the native summary lane", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "reasoning" }] },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 2));
+    const reasoningId = session.startReasoning("visible ");
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/started") &&
+          ((message.params as JsonObject).item as JsonObject | undefined)?.id === reasoningId,
+      ),
+    ).resolves.toMatchObject({
+      params: { item: { type: "reasoning", summary: [], content: [] } },
+    });
+    await fixture.collector.waitFor((message) =>
+      method(message, "item/reasoning/summaryPartAdded"),
+    );
+    session.appendReasoning(reasoningId, "analysis");
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/reasoning/summaryTextDelta") &&
+          (message.params as JsonObject).delta === "analysis",
+      ),
+    ).resolves.toMatchObject({ params: { summaryIndex: 0 } });
+    session.completeItem(reasoningId, { status: "succeeded" });
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id === reasoningId,
+    );
+    session.appendText("answer");
+    session.succeedTurn();
+    const completed = await fixture.collector.waitFor((message) =>
+      method(message, "turn/completed"),
+    );
+    expect(completed).toMatchObject({
+      params: {
+        turn: {
+          items: [
+            { id: reasoningId, type: "reasoning", summary: ["visible analysis"], content: [] },
+            { type: "agentMessage", text: "answer" },
+          ],
+        },
+      },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "thread/read",
+      params: { threadId, includeTurns: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      result: {
+        thread: {
+          turns: [
+            {
+              items: [
+                { type: "userMessage" },
+                {
+                  id: reasoningId,
+                  type: "reasoning",
+                  summary: ["visible analysis"],
+                  content: [],
+                },
+                { type: "agentMessage", text: "answer" },
+              ],
+            },
+          ],
+        },
+      },
     });
     await stopFixture(fixture);
   });
@@ -2166,7 +2251,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "turn/start",
       params: { threadId, input: [{ type: "text", text: "failed" }] },
     });
-    await fixture.collector.waitFor((message) => method(message, "item/started"));
+    await fixture.collector.waitFor((message) => requestId(message, 2));
+    session.startReasoning("visible failure context");
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/started") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.type === "reasoning",
+    );
     session.failTurn({
       code: "nativeFailure",
       message: '503: {"message":"Service temporarily unavailable","type":"api_error"}',
@@ -2219,7 +2310,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await startPiTurn(fixture, threadId);
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Fake Pi Session was not opened");
-    await fixture.collector.waitFor((message) => method(message, "item/started"));
 
     const commandId = session.startCommandExecution("printf done", "/synthetic");
     await fixture.collector.waitFor(
@@ -2667,7 +2757,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const turnId = await startPiTurn(fixture, threadId);
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Fake Pi Session was not opened");
-    await fixture.collector.waitFor((message) => method(message, "item/started"));
     session.startCommandExecution("sleep 10");
     session.askQuestion({
       id: "cancel-decision",
@@ -2760,15 +2849,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId: claudeThreadId, input: [{ type: "text", text: "synthetic" }] },
     });
     await fixture.collector.waitFor((message) => requestId(message, 12));
+    const claudeSession = claudeAdapter.sessions[0];
+    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
+    claudeSession.appendText("claude output");
     const claudeStarted = await fixture.collector.waitFor(
       (message) =>
         method(message, "item/started") &&
         (message.params as JsonObject).threadId === claudeThreadId,
     );
     expect(claudeStarted).toBeDefined();
-    const claudeSession = claudeAdapter.sessions[0];
-    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
-    claudeSession.appendText("claude output");
     claudeSession.succeedTurn();
     await fixture.collector.waitFor(
       (message) =>

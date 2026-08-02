@@ -222,6 +222,12 @@ export interface HostAgentMessageItem {
   text: string;
 }
 
+export interface HostReasoningItem {
+  type: "reasoning";
+  itemId: HostItemId;
+  text: string;
+}
+
 export interface HostCommandExecutionItem {
   type: "commandExecution";
   itemId: HostItemId;
@@ -263,7 +269,11 @@ export interface HostFileChangeItem {
 }
 
 export type HostItem =
-  HostAgentMessageItem | HostCommandExecutionItem | HostToolExecutionItem | HostFileChangeItem;
+  | HostAgentMessageItem
+  | HostReasoningItem
+  | HostCommandExecutionItem
+  | HostToolExecutionItem
+  | HostFileChangeItem;
 
 export type HostItemUpdate =
   | { type: "text.append"; text: string }

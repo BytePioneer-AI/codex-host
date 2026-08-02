@@ -15,6 +15,8 @@ import {
 
 type Scenario =
   | "final-only"
+  | "reasoning"
+  | "reasoning-conflict"
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
@@ -262,6 +264,31 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
+    if (this.#scenario === "reasoning" || this.#scenario === "reasoning-conflict") {
+      const finalThinking =
+        this.#scenario === "reasoning" ? "streamed reasoning suffix" : "conflicting reasoning";
+      const message = {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: finalThinking, thinkingSignature: "ignored" },
+          { type: "text", text: "reasoned answer" },
+        ],
+      };
+      this.#output({ type: "message_start", message });
+      this.#output({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_start" },
+        message,
+      });
+      this.#output({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", delta: "streamed reasoning" },
+        message,
+      });
+      this.#output({ type: "message_end", message });
+      this.#settleAgent();
+      return;
+    }
     if (
       this.#scenario === "final-only" ||
       this.#scenario === "settled-streaming" ||
@@ -648,6 +675,38 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     expect(events).toEqual([{ type: "text.delta", delta: "synthetic final text" }]);
+    await rpc.close();
+  });
+
+  it("reconciles streamed and complete visible reasoning without exposing signatures", async () => {
+    const rpc = session("reasoning");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "reasoned answer",
+      cancelled: false,
+    });
+    expect(events).toEqual([
+      { type: "reasoning.delta", delta: "streamed reasoning" },
+      { type: "reasoning.delta", delta: " suffix" },
+      { type: "reasoning.completed" },
+      { type: "text.delta", delta: "reasoned answer" },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("ignored");
+    await rpc.close();
+  });
+
+  it("fails a Turn when complete reasoning conflicts with its streamed prefix", async () => {
+    const rpc = session("reasoning-conflict");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).rejects.toThrow(
+      "conflicts with streamed reasoning",
+    );
+    expect(events).toContainEqual({ type: "reasoning.delta", delta: "streamed reasoning" });
+    expect(events).not.toContainEqual({ type: "reasoning.completed" });
     await rpc.close();
   });
 

@@ -89,6 +89,14 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     this.event({ type: "text.delta", delta: text });
   }
 
+  reasoning(messageId: string, delta: string): void {
+    this.event({ type: "reasoning.delta", messageId, delta });
+  }
+
+  completeReasoning(messageId: string): void {
+    this.event({ type: "reasoning.completed", messageId });
+  }
+
   finish(result: ClaudeTransportTurnResult): void {
     this.#active?.resolve(result);
     this.#active = undefined;
@@ -480,6 +488,93 @@ describe("Claude Code HarnessAdapter", () => {
         formatVersion: 1,
       },
       outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("projects distinct visible Reasoning lifecycles before final text", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("reasoning"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.reasoning("assistant-1", "first ");
+    const firstStarted = await nextEvent(iterator);
+    expect(firstStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "first " },
+    });
+    transport.reasoning("assistant-1", "analysis");
+    await nextEvent(iterator);
+    transport.completeReasoning("assistant-1");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "reasoning", text: "first analysis" } },
+    });
+
+    transport.reasoning("assistant-2", "second analysis");
+    const secondStarted = await nextEvent(iterator);
+    expect(secondStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
+    if (firstStarted.type !== "item.started" || secondStarted.type !== "item.started") {
+      throw new Error("Expected Reasoning Item starts");
+    }
+    expect(secondStarted.item.itemId).not.toBe(firstStarted.item.itemId);
+    await nextEvent(iterator);
+    transport.completeReasoning("assistant-2");
+    await nextEvent(iterator);
+    transport.delta("answer");
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "answer" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("fails active Reasoning when complete native reasoning conflicts", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("reasoning-conflict"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.reasoning("assistant-conflict", "visible");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.finish({ status: "failed", kind: "reasoningConflict" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "reasoning", text: "visible" },
+        outcome: { status: "failed", error: { retryable: false } },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: {
+        status: "failed",
+        error: { message: "Claude Code returned inconsistent streamed reasoning" },
+      },
     });
     await session.close();
   });

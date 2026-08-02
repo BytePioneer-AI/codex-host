@@ -62,7 +62,9 @@ export interface HistoricalTurnProjectionInput {
 interface ProjectedItem {
   item: HostItem;
   outcome: HostItemOutcome | null;
+  reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
+  wireStarted: boolean;
 }
 
 type ProjectedInteraction =
@@ -99,6 +101,13 @@ function projectItem(
         text: item.text,
         phase: null,
         memoryCitation: null,
+      };
+    case "reasoning":
+      return {
+        id: item.itemId,
+        type: "reasoning",
+        summary: item.text.length > 0 ? [item.text] : [],
+        content: [],
       };
     case "commandExecution":
       return {
@@ -197,7 +206,10 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
 }
 
 function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
-  if (item.type === "agentMessage" && update.type === "text.append") {
+  if (
+    (item.type === "agentMessage" || item.type === "reasoning") &&
+    update.type === "text.append"
+  ) {
     return { ...item, text: item.text + update.text };
   }
   if (item.type === "commandExecution" && update.type === "output.append") {
@@ -221,6 +233,7 @@ export class CodexTurnProjector {
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #itemOrder: HostItemId[] = [];
+  readonly #wireItemOrder: HostItemId[] = [];
   readonly #startedAt: number;
   readonly #startedAtMs: number;
   readonly #threadId: string;
@@ -360,24 +373,23 @@ export class CodexTurnProjector {
   #startItem(event: ItemStartedEvent): CodexTurnProjection {
     this.#requireStarted();
     if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
-    this.#items.set(event.item.itemId, {
+    const projected: ProjectedItem = {
       item: event.item,
       outcome: null,
+      reasoningPartStarted: false,
       streamedCommandOutput: false,
-    });
+      wireStarted: false,
+    };
+    this.#items.set(event.item.itemId, projected);
     this.#itemOrder.push(event.item.itemId);
-    const messages: JsonObject[] = [
-      {
-        method: "item/started",
-        emittedAtMs: this.#startedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          startedAtMs: this.#startedAtMs,
-          item: projectItem(event.item, null, this.#cwd),
-        },
-      },
-    ];
+    if (event.item.type === "agentMessage" && event.item.text.length === 0) {
+      return { messages: [] };
+    }
+    const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
+    const messages = [this.#startWireItem(projected, startedItem)];
+    if (event.item.type === "reasoning" && event.item.text.length > 0) {
+      messages.push(...this.#reasoningDelta(projected, event.item.text, this.#startedAtMs));
+    }
     if (event.item.type === "fileChange") {
       messages.push(...this.#fileChangeUpdates(event.item.itemId, event.item.changes));
     }
@@ -386,20 +398,27 @@ export class CodexTurnProjector {
 
   #updateItem(event: ItemUpdatedEvent, emittedAtMs: number): CodexTurnProjection {
     const projected = this.#activeItem(event.itemId);
-    const next = applyUpdate(projected.item, event.update);
+    const previous = projected.item;
+    const next = applyUpdate(previous, event.update);
     projected.item = next;
     const messages: JsonObject[] = [];
     if (event.update.type === "text.append") {
-      messages.push({
-        method: "item/agentMessage/delta",
-        emittedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          itemId: event.itemId,
-          delta: event.update.text,
-        },
-      });
+      if (event.update.text.length === 0) return { messages };
+      if (next.type === "agentMessage") {
+        if (!projected.wireStarted) messages.push(this.#startWireItem(projected, previous));
+        messages.push({
+          method: "item/agentMessage/delta",
+          emittedAtMs,
+          params: {
+            threadId: this.#threadId,
+            turnId: this.#turnId,
+            itemId: event.itemId,
+            delta: event.update.text,
+          },
+        });
+      } else if (next.type === "reasoning") {
+        messages.push(...this.#reasoningDelta(projected, event.update.text, emittedAtMs));
+      }
     } else if (event.update.type === "output.append") {
       projected.streamedCommandOutput = true;
       messages.push({
@@ -431,8 +450,18 @@ export class CodexTurnProjector {
     if (event.snapshot.item.type !== projected.item.type) {
       throw new Error("Host Item changed type before completion");
     }
+    if (projected.item.type === "agentMessage" || projected.item.type === "reasoning") {
+      const completedItem = event.snapshot.item;
+      if (
+        (completedItem.type !== "agentMessage" && completedItem.type !== "reasoning") ||
+        completedItem.text !== projected.item.text
+      ) {
+        throw new Error("Host textual Item completion does not match its append updates");
+      }
+    }
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
+    if (!projected.wireStarted) return { messages: [] };
     return {
       messages: [
         {
@@ -490,10 +519,11 @@ export class CodexTurnProjector {
       id: this.#turnId,
       status: turnStatus(event.outcome),
       // Current Codex sends Tool/File Change state through Item notifications only.
-      items: this.#itemOrder.flatMap((itemId) => {
+      items: this.#wireItemOrder.flatMap((itemId) => {
         const projected = this.#items.get(itemId);
         if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
-        return projected.item.type === "agentMessage"
+        return projected.wireStarted &&
+          (projected.item.type === "agentMessage" || projected.item.type === "reasoning")
           ? [projectItem(projected.item, projected.outcome, this.#cwd)]
           : [];
       }),
@@ -526,6 +556,54 @@ export class CodexTurnProjector {
         },
       ],
     };
+  }
+
+  #startWireItem(projected: ProjectedItem, item: HostItem): JsonObject {
+    if (projected.wireStarted) throw new Error("Codex Item started more than once");
+    projected.wireStarted = true;
+    this.#wireItemOrder.push(item.itemId);
+    return {
+      method: "item/started",
+      emittedAtMs: this.#startedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs: this.#startedAtMs,
+        item: projectItem(item, null, this.#cwd),
+      },
+    };
+  }
+
+  #reasoningDelta(projected: ProjectedItem, delta: string, emittedAtMs: number): JsonObject[] {
+    if (projected.item.type !== "reasoning" || !projected.wireStarted) {
+      throw new Error("Host Reasoning update precedes its Item start");
+    }
+    const messages: JsonObject[] = [];
+    if (!projected.reasoningPartStarted) {
+      projected.reasoningPartStarted = true;
+      messages.push({
+        method: "item/reasoning/summaryPartAdded",
+        emittedAtMs,
+        params: {
+          threadId: this.#threadId,
+          turnId: this.#turnId,
+          itemId: projected.item.itemId,
+          summaryIndex: 0,
+        },
+      });
+    }
+    messages.push({
+      method: "item/reasoning/summaryTextDelta",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        itemId: projected.item.itemId,
+        delta,
+        summaryIndex: 0,
+      },
+    });
+    return messages;
   }
 
   #fileChangeUpdates(itemId: HostItemId, changes: HostFileChange[]): JsonObject[] {

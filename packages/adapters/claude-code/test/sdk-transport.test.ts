@@ -87,7 +87,11 @@ function completeTurn(fakeQuery: FakeQuery): void {
   } as unknown as SDKMessage);
 }
 
-function pushPartialText(fakeQuery: FakeQuery, text: string): void {
+function pushPartialText(
+  fakeQuery: FakeQuery,
+  text: string,
+  uuid = "00000000-0000-4000-8000-000000000020",
+): void {
   fakeQuery.push({
     type: "stream_event",
     event: {
@@ -96,17 +100,21 @@ function pushPartialText(fakeQuery: FakeQuery, text: string): void {
       delta: { type: "text_delta", text },
     },
     parent_tool_use_id: null,
-    uuid: "00000000-0000-4000-8000-000000000020",
+    uuid,
     session_id: "00000000-0000-4000-8000-000000000001",
   } as unknown as SDKMessage);
 }
 
-function pushAssistantText(fakeQuery: FakeQuery, text: string): void {
+function pushAssistantText(
+  fakeQuery: FakeQuery,
+  text: string,
+  uuid = "00000000-0000-4000-8000-000000000021",
+): void {
   fakeQuery.push({
     type: "assistant",
     message: { content: [{ type: "text", text }] },
     parent_tool_use_id: null,
-    uuid: "00000000-0000-4000-8000-000000000021",
+    uuid,
     session_id: "00000000-0000-4000-8000-000000000001",
   } as unknown as SDKMessage);
 }
@@ -208,8 +216,8 @@ describe("ClaudeSdkTransport text reconciliation", () => {
       decisionClassification: "user_reject",
     });
 
-    pushPartialText(value.fakeQuery, "after");
-    pushAssistantText(value.fakeQuery, "after denial");
+    pushPartialText(value.fakeQuery, "after", "00000000-0000-4000-8000-000000000023");
+    pushAssistantText(value.fakeQuery, "after denial", "00000000-0000-4000-8000-000000000024");
     completeTurn(value.fakeQuery);
 
     await expect(turn).resolves.toEqual({ status: "succeeded" });
@@ -305,6 +313,47 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     });
     expect(options(resumed).sessionId).toBeUndefined();
     await resumed.transport.close();
+  });
+
+  it("forwards ordered visible reasoning and text events from SDK messages", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000002",
+      (event) => events.push(event),
+    );
+    const assistantId = "00000000-0000-4000-8000-000000000003";
+    value.fakeQuery.push({
+      type: "stream_event",
+      uuid: assistantId,
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "visible" },
+      },
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "assistant",
+      uuid: assistantId,
+      message: {
+        content: [
+          { type: "thinking", thinking: "visible reasoning", signature: "ignored" },
+          { type: "text", text: "answer" },
+        ],
+      },
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events).toEqual([
+      { type: "reasoning.delta", messageId: assistantId, delta: "visible" },
+      { type: "reasoning.delta", messageId: assistantId, delta: " reasoning" },
+      { type: "reasoning.completed", messageId: assistantId },
+      { type: "text.delta", delta: "answer" },
+    ]);
+    await value.transport.close();
   });
 
   it("inherits native Tools and returns an exact AskUserQuestion PermissionResult", async () => {

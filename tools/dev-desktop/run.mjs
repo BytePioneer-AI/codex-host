@@ -5,10 +5,134 @@ import { pathToFileURL } from "node:url";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
+const windowsDesktopCleanupScript = String.raw`
+$ErrorActionPreference = 'Stop'
+
+function Test-CodexDesktopProcess($process) {
+  if ($null -eq $process) {
+    return $false
+  }
+
+  $executablePath = ([string]$process.ExecutablePath).Replace([char]47, [char]92).ToLowerInvariant()
+  return (
+    $process.Name -ieq 'ChatGPT.exe' -and
+    $executablePath.Contains('\windowsapps\openai.codex_') -and
+    $executablePath.EndsWith('\app\chatgpt.exe')
+  )
+}
+
+$desktopProcesses = @(
+  Get-CimInstance Win32_Process -ErrorAction Stop |
+    Where-Object { Test-CodexDesktopProcess $_ }
+)
+if ($desktopProcesses.Count -eq 0) {
+  exit 0
+}
+
+$desktopProcessIds = @($desktopProcesses | ForEach-Object { [int]$_.ProcessId })
+foreach ($processId in $desktopProcessIds) {
+  $current = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+  if ($null -eq $current) {
+    continue
+  }
+  if (-not (Test-CodexDesktopProcess $current)) {
+    throw "Refusing to terminate PID $processId because its executable identity changed."
+  }
+  Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+}
+Wait-Process -Id $desktopProcessIds -Timeout 10 -ErrorAction SilentlyContinue
+
+$remainingDesktopProcesses = @(
+  Get-CimInstance Win32_Process -ErrorAction Stop |
+    Where-Object { Test-CodexDesktopProcess $_ }
+)
+if ($remainingDesktopProcesses.Count -ne 0) {
+  throw 'Codex Desktop did not exit before timeout.'
+}
+
+$graceDeadline = [DateTime]::UtcNow.AddSeconds(2)
+do {
+  $runtimeProcesses = @(Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue)
+  if ($runtimeProcesses.Count -eq 0) {
+    break
+  }
+  if ([DateTime]::UtcNow -ge $graceDeadline) {
+    $runtimeProcessIds = @($runtimeProcesses | ForEach-Object { [int]$_.Id })
+    Stop-Process -Id $runtimeProcessIds -Force -ErrorAction SilentlyContinue
+    Wait-Process -Id $runtimeProcessIds -Timeout 10 -ErrorAction SilentlyContinue
+    break
+  }
+  Start-Sleep -Milliseconds 50
+} while ($true)
+
+$remainingRuntimeProcesses = @(
+  Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue
+)
+if ($remainingRuntimeProcesses.Count -ne 0) {
+  throw 'The previous codexhost runtime did not exit before timeout.'
+}
+
+Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop process(es)"
+`;
+
+const macOsDesktopCleanupScript = String.raw`
+set -eu
+
+system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/'
+user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/"
+desktop_running() {
+  /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
+    /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
+}
+
+if ! desktop_running; then
+  exit 0
+fi
+
+/usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
+/usr/bin/pkill -KILL -f "$user_desktop_pattern" >/dev/null 2>&1 || true
+attempt=0
+while desktop_running; do
+  if [ "$attempt" -ge 200 ]; then
+    echo 'Codex Desktop did not exit before timeout.' >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  /bin/sleep 0.05
+done
+
+runtime_running() {
+  /usr/bin/pgrep -x codexhost >/dev/null 2>&1 ||
+    /usr/bin/pgrep -x codexhost-shim >/dev/null 2>&1
+}
+
+attempt=0
+while runtime_running && [ "$attempt" -lt 40 ]; do
+  attempt=$((attempt + 1))
+  /bin/sleep 0.05
+done
+if runtime_running; then
+  /usr/bin/pkill -KILL -x codexhost >/dev/null 2>&1 || true
+  /usr/bin/pkill -KILL -x codexhost-shim >/dev/null 2>&1 || true
+fi
+
+attempt=0
+while runtime_running; do
+  if [ "$attempt" -ge 200 ]; then
+    echo 'The previous codexhost runtime did not exit before timeout.' >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  /bin/sleep 0.05
+done
+
+echo 'codexhost dev: stopped the running Codex Desktop'
+`;
+
 export function usage() {
   return `usage: npm start -- [--agent <codex|pi>] [--no-build]
 
-Build and run the current codexhost worktree through the native Launcher.
+Stop any running Codex Desktop, then build and run the current codexhost worktree.
 
 options:
   --agent <codex|pi>  process-level default Agent (default: pi)
@@ -139,6 +263,25 @@ export function npmBuildInvocation(
     : { command: platform === "win32" ? "npm.cmd" : "npm", arguments: ["run", "build"] };
 }
 
+export function runningDesktopCleanupInvocation(platform = process.platform) {
+  if (platform === "win32") {
+    return {
+      command: "powershell.exe",
+      arguments: [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        windowsDesktopCleanupScript,
+      ],
+    };
+  }
+  if (platform === "darwin") {
+    return { command: "/bin/sh", arguments: ["-c", macOsDesktopCleanupScript] };
+  }
+  return null;
+}
+
 export function launcherInvocation(artifacts, agent, piPath = null) {
   const arguments_ = [
     "launch",
@@ -192,6 +335,18 @@ export async function runDevelopmentDesktop({
     throw new Error(`npm start requires Node.js 24; current version is ${process.versions.node}`);
   }
 
+  const cleanupInvocation = runningDesktopCleanupInvocation(platform);
+  if (cleanupInvocation) {
+    console.log("codexhost dev: stopping any running Codex Desktop");
+    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation);
+    if (cleanupResult.code !== 0) {
+      const reason = cleanupResult.signal
+        ? `signal ${cleanupResult.signal}`
+        : `status ${cleanupResult.code ?? "unknown"}`;
+      throw new Error(`could not stop the running Codex Desktop: ${reason}`);
+    }
+  }
+
   if (options.build) {
     console.log("codexhost dev: building workspace");
     const buildResult = await runChild(
@@ -200,11 +355,6 @@ export async function runDevelopmentDesktop({
       spawnImplementation,
     );
     if (buildResult.code !== 0) {
-      if (platform === "win32") {
-        console.error(
-          "codexhost dev: build failed; close a running codexhost Desktop before rebuilding, or use --no-build to activate existing artifacts",
-        );
-      }
       return buildResult.code ?? 1;
     }
   }

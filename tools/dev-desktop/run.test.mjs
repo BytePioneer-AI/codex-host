@@ -12,6 +12,7 @@ import {
   npmBuildInvocation,
   parseArguments,
   runDevelopmentDesktop,
+  runningDesktopCleanupInvocation,
   usage,
   validateDevelopmentArtifacts,
 } from "./run.mjs";
@@ -63,6 +64,7 @@ describe("development Desktop start", () => {
       help: true,
     });
     expect(usage()).toContain("npm start");
+    expect(usage()).toContain("Stop any running Codex Desktop");
   });
 
   it("rejects unknown, duplicate, and malformed options", () => {
@@ -107,6 +109,30 @@ describe("development Desktop start", () => {
     expect(
       findPathExecutable("pi", { platform: "linux", environment: { PATH: first } }),
     ).toBeNull();
+  });
+
+  it("constructs bounded platform cleanup commands", () => {
+    const windowsInvocation = runningDesktopCleanupInvocation("win32");
+    expect(windowsInvocation?.command).toBe("powershell.exe");
+    expect(windowsInvocation?.arguments).toEqual(
+      expect.arrayContaining(["-NoProfile", "-NonInteractive", "-Command"]),
+    );
+    const windowsScript = windowsInvocation?.arguments.at(-1);
+    expect(windowsScript).toContain("Get-CimInstance Win32_Process");
+    expect(windowsScript).toContain("\\windowsapps\\openai.codex_");
+    expect(windowsScript).toContain("Stop-Process -Id");
+    expect(windowsScript).toContain("'codexhost', 'codexhost-shim'");
+
+    const macOsInvocation = runningDesktopCleanupInvocation("darwin");
+    expect(macOsInvocation?.command).toBe("/bin/sh");
+    expect(macOsInvocation?.arguments.at(-1)).toContain(
+      "^/Applications/(ChatGPT|Codex)\\.app/Contents/",
+    );
+    expect(macOsInvocation?.arguments.at(-1)).toContain(
+      "^$HOME/Applications/(ChatGPT|Codex)\\.app/Contents/",
+    );
+    expect(macOsInvocation?.arguments.at(-1)).toContain("pkill -KILL");
+    expect(runningDesktopCleanupInvocation("linux")).toBeNull();
   });
 
   it("constructs npm and native launcher commands without internal Host environment", () => {
@@ -170,21 +196,44 @@ describe("development Desktop start", () => {
       }),
     ).resolves.toBe(0);
 
-    expect(invocations).toHaveLength(2);
-    expect(invocations[0]).toMatchObject({
+    expect(invocations).toHaveLength(3);
+    expect(invocations[0].command).toBe("powershell.exe");
+    expect(invocations[1]).toMatchObject({
       command: nodePath,
       arguments: [path.join(root, "npm-cli.js"), "run", "build"],
     });
-    expect(invocations[1].command).toBe(path.join(root, "target", "debug", "codexhost.exe"));
-    expect(invocations[1].arguments).toContain(piPath);
-    expect(invocations[1].options).toMatchObject({ cwd: root, stdio: "inherit" });
+    expect(invocations[2].command).toBe(path.join(root, "target", "debug", "codexhost.exe"));
+    expect(invocations[2].arguments).toContain(piPath);
+    expect(invocations[2].options).toMatchObject({ cwd: root, stdio: "inherit" });
+  });
+
+  it("does not build or launch when Desktop cleanup fails", async () => {
+    const root = temporaryDirectory();
+    const spawnImplementation = vi.fn(() => exitingChild(7));
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      runDevelopmentDesktop({
+        root,
+        platform: "win32",
+        nodePath: path.join(root, "node.exe"),
+        environment: {},
+        spawnImplementation,
+      }),
+    ).rejects.toThrow("could not stop the running Codex Desktop: status 7");
+
+    expect(spawnImplementation).toHaveBeenCalledTimes(1);
   });
 
   it("skips builds only when explicitly requested", async () => {
     const root = temporaryDirectory();
-    const nodePath = path.join(root, "node");
-    const artifacts = materializeArtifacts(root, "linux", nodePath);
-    const spawnImplementation = vi.fn(() => exitingChild());
+    const nodePath = path.join(root, "node.exe");
+    const artifacts = materializeArtifacts(root, "win32", nodePath);
+    const invocations = [];
+    const spawnImplementation = vi.fn((command, arguments_, options) => {
+      invocations.push({ command, arguments: arguments_, options });
+      return exitingChild();
+    });
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
@@ -192,18 +241,19 @@ describe("development Desktop start", () => {
       runDevelopmentDesktop({
         arguments_: ["--no-build"],
         root,
-        platform: "linux",
+        platform: "win32",
         nodePath,
         environment: { PATH: path.join(root, "missing") },
         spawnImplementation,
       }),
     ).resolves.toBe(0);
 
-    expect(spawnImplementation).toHaveBeenCalledTimes(1);
-    expect(spawnImplementation).toHaveBeenCalledWith(
-      artifacts.launcher,
-      expect.arrayContaining(["launch", "--agent", "pi"]),
-      expect.objectContaining({ cwd: root, stdio: "inherit" }),
-    );
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0].command).toBe("powershell.exe");
+    expect(invocations[1]).toMatchObject({
+      command: artifacts.launcher,
+      arguments: expect.arrayContaining(["launch", "--agent", "pi"]),
+      options: expect.objectContaining({ cwd: root, stdio: "inherit" }),
+    });
   });
 });

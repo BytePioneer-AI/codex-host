@@ -48,6 +48,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   });
   readonly start = vi.fn(async () => undefined);
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
+  #assistantMessageId: string | null = null;
   #active:
     | {
         onEvent(event: ClaudeTurnEvent): void;
@@ -67,6 +68,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
     this.turns.push({ text, userMessageId });
+    this.#assistantMessageId = null;
     return new Promise((resolve, reject) => {
       this.#active = { onEvent, resolve, reject };
     });
@@ -85,11 +87,13 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     this.event({ type: "interaction.requested", request });
   }
 
-  delta(text: string): void {
-    this.event({ type: "text.delta", delta: text });
+  delta(text: string, messageId = this.#assistantMessageId ?? "synthetic-assistant"): void {
+    this.#assistantMessageId = messageId;
+    this.event({ type: "text.delta", messageId, delta: text });
   }
 
   reasoning(messageId: string, delta: string): void {
+    this.#assistantMessageId = messageId;
     this.event({ type: "reasoning.delta", messageId, delta });
   }
 
@@ -100,11 +104,13 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   finish(result: ClaudeTransportTurnResult): void {
     this.#active?.resolve(result);
     this.#active = undefined;
+    this.#assistantMessageId = null;
   }
 
   fault(error: unknown): void {
     this.#active?.reject(error);
     this.#active = undefined;
+    this.#assistantMessageId = null;
   }
 }
 
@@ -487,6 +493,60 @@ describe("Claude Code HarnessAdapter", () => {
         nativeTurnKey: transports[0]?.turns[0]?.userMessageId,
         formatVersion: 1,
       },
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("keeps native Assistant responses in separate Agent Items", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("message-boundaries"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const firstStarted = await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport || firstStarted.type !== "item.started") {
+      throw new Error("Fake Claude transport or first Agent Item was not created");
+    }
+
+    transport.delta("first", "assistant-1");
+    await nextEvent(iterator);
+    transport.delta("second", "assistant-2");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { itemId: firstStarted.item.itemId, text: "first" } },
+    });
+    const secondStarted = await nextEvent(iterator);
+    expect(secondStarted).toMatchObject({
+      type: "item.started",
+      item: { type: "agentMessage", text: "" },
+    });
+    await nextEvent(iterator);
+
+    transport.delta("third", "assistant-3");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "second" } },
+    });
+    const thirdStarted = await nextEvent(iterator);
+    await nextEvent(iterator);
+    if (secondStarted.type !== "item.started" || thirdStarted.type !== "item.started") {
+      throw new Error("Expected Agent Item starts");
+    }
+    expect(
+      new Set([firstStarted.item.itemId, secondStarted.item.itemId, thirdStarted.item.itemId]).size,
+    ).toBe(3);
+
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { itemId: thirdStarted.item.itemId, text: "third" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
       outcome: { status: "succeeded" },
     });
     await session.close();

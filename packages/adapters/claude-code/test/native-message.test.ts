@@ -55,12 +55,14 @@ describe("Claude native Turn interpretation", () => {
   it("deduplicates partial text and appends only the complete-message suffix", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
-    expect(turn.consume(partial("hello")).events).toEqual([{ type: "text.delta", delta: "hello" }]);
+    expect(turn.consume(partial("hello")).events).toEqual([
+      { type: "text.delta", messageId: "assistant-1", delta: "hello" },
+    ]);
     expect(turn.consume(partial(" world")).events).toEqual([
-      { type: "text.delta", delta: " world" },
+      { type: "text.delta", messageId: "assistant-1", delta: " world" },
     ]);
     expect(turn.consume(assistant("hello world!"))).toEqual({
-      events: [{ type: "text.delta", delta: "!" }],
+      events: [{ type: "text.delta", messageId: "assistant-1", delta: "!" }],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
@@ -69,7 +71,7 @@ describe("Claude native Turn interpretation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(assistant("complete text"))).toEqual({
-      events: [{ type: "text.delta", delta: "complete text" }],
+      events: [{ type: "text.delta", messageId: "assistant-1", delta: "complete text" }],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
@@ -78,17 +80,17 @@ describe("Claude native Turn interpretation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(partial("before"))).toEqual({
-      events: [{ type: "text.delta", delta: "before" }],
+      events: [{ type: "text.delta", messageId: "assistant-1", delta: "before" }],
     });
     expect(turn.consume(assistant("before tool\n"))).toEqual({
-      events: [{ type: "text.delta", delta: " tool\n" }],
+      events: [{ type: "text.delta", messageId: "assistant-1", delta: " tool\n" }],
     });
     expect(turn.consume(toolUse("Edit"))).toEqual({ events: [] });
     expect(turn.consume(partial("after", "assistant-2"))).toEqual({
-      events: [{ type: "text.delta", delta: "after" }],
+      events: [{ type: "text.delta", messageId: "assistant-2", delta: "after" }],
     });
     expect(turn.consume(assistant("after denial", undefined, "assistant-2"))).toEqual({
-      events: [{ type: "text.delta", delta: " denial" }],
+      events: [{ type: "text.delta", messageId: "assistant-2", delta: " denial" }],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
@@ -124,7 +126,7 @@ describe("Claude native Turn interpretation", () => {
     ).toEqual([
       { type: "reasoning.delta", messageId: "assistant-thinking", delta: "reasoning" },
       { type: "reasoning.completed", messageId: "assistant-thinking" },
-      { type: "text.delta", delta: "answer" },
+      { type: "text.delta", messageId: "assistant-thinking", delta: "answer" },
     ]);
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
@@ -150,7 +152,7 @@ describe("Claude native Turn interpretation", () => {
         delta: "displayable",
       },
       { type: "reasoning.completed", messageId: "final-only-thinking" },
-      { type: "text.delta", delta: "answer" },
+      { type: "text.delta", messageId: "final-only-thinking", delta: "answer" },
     ]);
   });
 

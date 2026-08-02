@@ -112,6 +112,8 @@ class FakePiTransport implements PiTurnTransport {
   });
   history: PiSessionHistory = { entries: [], leafId: null };
   onEvent: ((event: PiTurnEvent) => void) | null = null;
+  assistantMessageId: string | null = null;
+  assistantMessageOrdinal = 0;
   options: PiRpcSessionOptions | null = null;
   rejectTurn: ((error: Error) => void) | null = null;
   resolveTurn: ((value: PiTurnResult) => void) | null = null;
@@ -129,12 +131,26 @@ class FakePiTransport implements PiTurnTransport {
     this.onEvent(event);
   }
 
-  delta(text: string): void {
-    this.event({ type: "text.delta", delta: text });
+  delta(text: string, messageId?: string): void {
+    if (messageId) {
+      this.assistantMessageId = messageId;
+    } else if (this.assistantMessageId === null) {
+      this.assistantMessageOrdinal += 1;
+      this.assistantMessageId = `synthetic-message-${this.assistantMessageOrdinal}`;
+    }
+    if (!this.assistantMessageId) throw new Error("No fake Assistant message identity");
+    this.event({ type: "text.delta", messageId: this.assistantMessageId, delta: text });
+  }
+
+  message(text: string): void {
+    this.assistantMessageOrdinal += 1;
+    this.delta(text, `synthetic-message-${this.assistantMessageOrdinal}`);
+    this.assistantMessageId = null;
   }
 
   succeed(text: string, cancelled = false): void {
     if (!this.resolveTurn || this.text === null) throw new Error("No active fake Pi Turn");
+    this.assistantMessageId = null;
     const ordinal = this.history.entries.filter(
       (entry) =>
         entry.type === "message" &&
@@ -187,6 +203,7 @@ class FakePiTransport implements PiTurnTransport {
 
   private resetTurn(): void {
     this.onEvent = null;
+    this.assistantMessageId = null;
     this.rejectTurn = null;
     this.resolveTurn = null;
   }
@@ -669,6 +686,82 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("keeps Assistant messages separate across interleaved Tool calls", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("message-boundaries"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const firstStarted = await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport || firstStarted.type !== "item.started") {
+      throw new Error("Fake transport or first Agent Item was not created");
+    }
+
+    transport.message("first");
+    transport.event({ type: "tool.started", callId: "call-1", toolName: "read", arguments: {} });
+    transport.event({
+      type: "tool.completed",
+      callId: "call-1",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "one" }] },
+      isError: false,
+    });
+    transport.message("second");
+    transport.event({ type: "tool.started", callId: "call-2", toolName: "read", arguments: {} });
+    transport.event({
+      type: "tool.completed",
+      callId: "call-2",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "two" }] },
+      isError: false,
+    });
+    transport.message("third");
+    transport.succeed("firstsecondthird");
+
+    const events = [];
+    for (let index = 0; index < 13; index += 1) events.push(await nextEvent(iterator));
+    expect(
+      events.map((event) => {
+        if (event.type === "item.started") return `start:${event.item.type}`;
+        if (event.type === "item.updated" && event.update.type === "text.append") {
+          return `text:${event.update.text}`;
+        }
+        if (event.type === "item.completed") {
+          const item = event.snapshot.item;
+          return `complete:${item.type}${item.type === "agentMessage" ? `:${item.text}` : ""}`;
+        }
+        return event.type;
+      }),
+    ).toEqual([
+      "text:first",
+      "complete:agentMessage:first",
+      "start:toolExecution",
+      "complete:toolExecution",
+      "start:agentMessage",
+      "text:second",
+      "complete:agentMessage:second",
+      "start:toolExecution",
+      "complete:toolExecution",
+      "start:agentMessage",
+      "text:third",
+      "complete:agentMessage:third",
+      "turn.completed",
+    ]);
+    const agentIds = [
+      firstStarted.item.itemId,
+      ...events.flatMap((event) =>
+        event.type === "item.started" && event.item.type === "agentMessage"
+          ? [event.item.itemId]
+          : [],
+      ),
+    ];
+    expect(new Set(agentIds).size).toBe(3);
+    await session.close();
+  });
+
   it("keeps visible reasoning in distinct per-message Item lifecycles", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -681,25 +774,29 @@ describe("Pi HarnessAdapter Session", () => {
     const transport = transports[0];
     if (!transport) throw new Error("Fake transport was not created");
 
-    transport.event({ type: "reasoning.delta", delta: "first " });
+    transport.event({ type: "reasoning.delta", messageId: "reasoning-1", delta: "first " });
     const firstStarted = await nextEvent(iterator);
     expect(firstStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.updated",
       update: { type: "text.append", text: "first " },
     });
-    transport.event({ type: "reasoning.delta", delta: "analysis" });
+    transport.event({ type: "reasoning.delta", messageId: "reasoning-1", delta: "analysis" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.updated",
       update: { type: "text.append", text: "analysis" },
     });
-    transport.event({ type: "reasoning.completed" });
+    transport.event({ type: "reasoning.completed", messageId: "reasoning-1" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
       snapshot: { item: { type: "reasoning", text: "first analysis" } },
     });
 
-    transport.event({ type: "reasoning.delta", delta: "second analysis" });
+    transport.event({
+      type: "reasoning.delta",
+      messageId: "reasoning-2",
+      delta: "second analysis",
+    });
     const secondStarted = await nextEvent(iterator);
     expect(secondStarted).toMatchObject({ type: "item.started", item: { type: "reasoning" } });
     expect(
@@ -708,9 +805,9 @@ describe("Pi HarnessAdapter Session", () => {
         : true,
     ).toBe(false);
     await nextEvent(iterator);
-    transport.event({ type: "reasoning.completed" });
+    transport.event({ type: "reasoning.completed", messageId: "reasoning-2" });
     await nextEvent(iterator);
-    transport.delta("answer");
+    transport.delta("answer", "reasoning-2");
     await nextEvent(iterator);
     transport.succeed("answer");
     expect(await nextEvent(iterator)).toMatchObject({
@@ -735,7 +832,11 @@ describe("Pi HarnessAdapter Session", () => {
     await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake transport was not created");
-    transport.event({ type: "reasoning.delta", delta: "visible" });
+    transport.event({
+      type: "reasoning.delta",
+      messageId: "reasoning-conflict",
+      delta: "visible",
+    });
     await nextEvent(iterator);
     await nextEvent(iterator);
     transport.fail(new Error("reasoning conflict"));

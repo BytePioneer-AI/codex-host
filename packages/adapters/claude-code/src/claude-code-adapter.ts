@@ -94,7 +94,8 @@ type ActiveInteraction =
 
 interface ActiveTurn {
   command: TurnStartCommand;
-  item: HostAgentMessageItem;
+  item: HostAgentMessageItem | null;
+  assistantMessageId: string | null;
   reasoningItems: Map<string, HostReasoningItem>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
@@ -369,6 +370,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       item,
+      assistantMessageId: null,
       reasoningItems: new Map(),
       interactions: new Map(),
       interactionByRequestId: new Map(),
@@ -667,8 +669,9 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     if (event.type === "text.delta") {
-      this.#appendText(active, event.delta);
+      this.#appendText(active, event.messageId, event.delta);
     } else if (event.type === "reasoning.delta") {
+      this.#activateAssistantMessage(active, event.messageId);
       this.#appendReasoning(active, event.messageId, event.delta);
     } else if (event.type === "reasoning.completed") {
       this.#completeReasoning(active, event.messageId, { status: "succeeded" });
@@ -776,14 +779,45 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
-  #appendText(active: ActiveTurn, delta: string): void {
+  #activateAssistantMessage(active: ActiveTurn, messageId: string): void {
+    if (active.assistantMessageId === messageId) return;
+    if (active.assistantMessageId !== null) {
+      this.#completeReasoning(active, active.assistantMessageId, { status: "succeeded" });
+      this.#completeAgentItem(active, { status: "succeeded" }, false);
+    }
+    if (!active.item) {
+      active.item = {
+        type: "agentMessage",
+        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        text: "",
+      };
+      this.#event({ type: "item.started", turnId: active.command.turnId, item: active.item });
+    }
+    active.assistantMessageId = messageId;
+  }
+
+  #appendText(active: ActiveTurn, messageId: string, delta: string): void {
     if (this.#active !== active || delta.length === 0) return;
+    this.#activateAssistantMessage(active, messageId);
+    if (!active.item) throw new Error("Claude Assistant text has no active Item");
     active.item = { ...active.item, text: active.item.text + delta };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
       itemId: active.item.itemId,
       update: { type: "text.append", text: delta },
+    });
+  }
+
+  #completeAgentItem(active: ActiveTurn, outcome: HostItemOutcome, completeEmpty: boolean): void {
+    active.assistantMessageId = null;
+    const item = active.item;
+    if (!item || (!completeEmpty && item.text.length === 0)) return;
+    active.item = null;
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
     });
   }
 
@@ -871,11 +905,7 @@ class ClaudeHarnessSession implements HarnessSession {
     for (const messageId of [...active.reasoningItems.keys()]) {
       this.#completeReasoning(active, messageId, itemOutcome);
     }
-    this.#event({
-      type: "item.completed",
-      turnId: active.command.turnId,
-      snapshot: { item: active.item, outcome: itemOutcome },
-    });
+    this.#completeAgentItem(active, itemOutcome, true);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,

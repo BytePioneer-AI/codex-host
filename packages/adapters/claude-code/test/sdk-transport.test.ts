@@ -183,8 +183,16 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     pushAssistantText(value.fakeQuery, "before tool\n");
     await vi.waitFor(() => {
       expect(events.filter(({ type }) => type === "text.delta")).toEqual([
-        { type: "text.delta", delta: "before" },
-        { type: "text.delta", delta: " tool\n" },
+        {
+          type: "text.delta",
+          messageId: "00000000-0000-4000-8000-000000000020",
+          delta: "before",
+        },
+        {
+          type: "text.delta",
+          messageId: "00000000-0000-4000-8000-000000000020",
+          delta: " tool\n",
+        },
       ]);
     });
 
@@ -351,7 +359,7 @@ describe("ClaudeSdkTransport Question callbacks", () => {
       { type: "reasoning.delta", messageId: assistantId, delta: "visible" },
       { type: "reasoning.delta", messageId: assistantId, delta: " reasoning" },
       { type: "reasoning.completed", messageId: assistantId },
-      { type: "text.delta", delta: "answer" },
+      { type: "text.delta", messageId: assistantId, delta: "answer" },
     ]);
     await value.transport.close();
   });

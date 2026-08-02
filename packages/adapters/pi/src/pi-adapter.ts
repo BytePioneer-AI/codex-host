@@ -124,7 +124,9 @@ interface ActiveInteraction {
 
 interface ActiveTurn {
   command: TurnStartCommand;
-  agentItem: HostAgentMessageItem;
+  agentItem: HostAgentMessageItem | null;
+  agentMessageId: string | null;
+  sawAssistantMessage: boolean;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -498,6 +500,8 @@ class PiHarnessSession implements HarnessSession {
       const active: ActiveTurn = {
         command,
         agentItem: item,
+        agentMessageId: null,
+        sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -890,9 +894,11 @@ class PiHarnessSession implements HarnessSession {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "text.delta":
+        this.#activateAgentMessage(active, event.messageId);
         this.#appendText(active, event.delta);
         return;
       case "reasoning.delta":
+        this.#activateAgentMessage(active, event.messageId);
         this.#appendReasoning(active, event.delta);
         return;
       case "reasoning.completed":
@@ -906,6 +912,7 @@ class PiHarnessSession implements HarnessSession {
         return;
       case "tool.started":
         this.#completeReasoning(active, { status: "succeeded" });
+        this.#completeAgentItem(active, { status: "succeeded" }, false);
         this.#startTool(active, event);
         return;
       case "tool.updated":
@@ -993,7 +1000,32 @@ class PiHarnessSession implements HarnessSession {
     });
   }
 
+  #activateAgentMessage(active: ActiveTurn, messageId: string): void {
+    if (active.agentMessageId === messageId) return;
+    if (active.agentMessageId !== null) {
+      this.#completeReasoning(active, { status: "succeeded" });
+      this.#completeAgentItem(active, { status: "succeeded" }, false);
+    }
+    if (!active.agentItem) {
+      active.agentItem = {
+        type: "agentMessage",
+        itemId: this.#newItemId(),
+        text: "",
+      };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: active.agentItem,
+      });
+    }
+    active.agentMessageId = messageId;
+    active.sawAssistantMessage = true;
+  }
+
   #appendText(active: ActiveTurn, text: string): void {
+    if (active.agentMessageId === null || !active.agentItem) {
+      throw new Error("Pi Assistant text arrived outside an active message");
+    }
     active.agentItem = { ...active.agentItem, text: active.agentItem.text + text };
     this.#event({
       type: "item.updated",
@@ -1001,6 +1033,14 @@ class PiHarnessSession implements HarnessSession {
       itemId: active.agentItem.itemId,
       update: { type: "text.append", text },
     });
+  }
+
+  #completeAgentItem(active: ActiveTurn, outcome: HostItemOutcome, completeEmpty: boolean): void {
+    active.agentMessageId = null;
+    const item = active.agentItem;
+    if (!item || (!completeEmpty && item.text.length === 0)) return;
+    active.agentItem = null;
+    this.#completeItem(active, item, outcome);
   }
 
   #appendReasoning(active: ActiveTurn, text: string): void {
@@ -1202,8 +1242,10 @@ class PiHarnessSession implements HarnessSession {
     this.#completeReasoning(active, itemOutcome);
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
-    if (finalText !== undefined) active.agentItem = { ...active.agentItem, text: finalText };
-    this.#completeItem(active, active.agentItem, itemOutcome);
+    if (!active.sawAssistantMessage && finalText !== undefined && active.agentItem) {
+      active.agentItem = { ...active.agentItem, text: finalText };
+    }
+    this.#completeAgentItem(active, itemOutcome, true);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,

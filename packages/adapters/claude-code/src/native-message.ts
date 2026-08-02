@@ -150,7 +150,7 @@ export class ClaudeNativeTurnAccumulator {
     if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
       if (event.delta.text.length === 0) return;
       state.text += event.delta.text;
-      events.push({ type: "text.delta", delta: event.delta.text });
+      events.push({ type: "text.delta", messageId, delta: event.delta.text });
       return;
     }
     if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
@@ -190,7 +190,7 @@ export class ClaudeNativeTurnAccumulator {
         const suffix = completeText.slice(state.text.length);
         if (suffix.length > 0) {
           state.text += suffix;
-          events.push({ type: "text.delta", delta: suffix });
+          events.push({ type: "text.delta", messageId, delta: suffix });
         }
       } else if (completeText !== state.text) {
         this.#textConflict = true;

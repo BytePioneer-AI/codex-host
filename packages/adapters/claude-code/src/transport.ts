@@ -48,7 +48,7 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; cancelled: true };
 
 export type ClaudeTurnEvent =
-  | { type: "text.delta"; delta: string }
+  | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }

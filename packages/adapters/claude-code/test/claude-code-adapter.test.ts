@@ -512,6 +512,41 @@ describe("Claude Code HarnessAdapter", () => {
     await resumed.value.close();
   });
 
+  it("preserves an unavailable create-time Auto mode error during lazy startup", async () => {
+    const { adapter, dependencies } = fixture();
+    let failedTransport: FakeClaudeTransport | undefined;
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((input) => {
+      const transport = new FakeClaudeTransport(
+        input.sessionId,
+        input.permissionMode,
+        input.onPermissionModeChanged,
+        input.model,
+      );
+      transport.start.mockRejectedValueOnce(
+        new Error("Cannot set permission mode to auto: auto mode unavailable for this model"),
+      );
+      failedTransport = transport;
+      return transport;
+    });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await expect(opened.value.execute(textTurn("auto-unavailable"))).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "Auto mode is unavailable for the current Claude Code Model",
+        retryable: true,
+      },
+    });
+    expect(failedTransport?.close).toHaveBeenCalledOnce();
+    await opened.value.close();
+  });
+
   it("starts lazily and emits a complete text lifecycle", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

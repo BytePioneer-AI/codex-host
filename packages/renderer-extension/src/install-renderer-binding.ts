@@ -17,7 +17,6 @@ export function installRendererBinding(
       adapter.status,
       adapter.dispose,
       adapter.applyAgent,
-      adapter.applyPiModel,
       adapter.modelControl,
     );
   } catch (error) {

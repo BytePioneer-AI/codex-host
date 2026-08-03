@@ -1510,6 +1510,75 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("routes a fixed Renderer Fork intent through the existing external Fork implementation", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const sourceThreadId = await startPiThread(fixture);
+    const firstTurnId = await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "codexhost/thread/fork",
+      params: { threadId: sourceThreadId, lastTurnId: firstTurnId },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(response).toMatchObject({ result: { threadId: expect.any(String) } });
+    const derivedId = (response.result as JsonObject).threadId;
+    if (typeof derivedId !== "string") throw new Error("Renderer Fork has no derived Thread ID");
+    expect(derivedId).not.toBe(sourceThreadId);
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId)),
+    ).resolves.toMatchObject({
+      forkSource: { hostThreadId: sourceThreadId, hostTurnId: firstTurnId },
+      turnMappings: [{}],
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 10));
+    const notificationIndex = fixture.collector.messages.findIndex(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.id === derivedId,
+    );
+    expect(notificationIndex).toBeGreaterThan(responseIndex);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("acknowledges Desktop unsubscribe without inventing an external subscription", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/unsubscribe",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 10))).resolves.toEqual({
+      id: 10,
+      result: { status: "notSubscribed" },
+    });
+    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}] },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/resume",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [{}] } } });
+    expect(fixture.adapter.sessions).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("realizes Desktop Worktree tail-Fork plus rollback as one exact derived prefix", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

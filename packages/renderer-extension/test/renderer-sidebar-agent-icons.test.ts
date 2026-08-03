@@ -76,6 +76,7 @@ function clientWith(
   listThreadOwnership: (input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>,
 ): RendererModelClient {
   return {
+    forkThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
     listThreadOwnership: vi.fn(listThreadOwnership),

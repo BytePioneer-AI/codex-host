@@ -208,6 +208,59 @@ describe("Renderer Control Session", () => {
     expect(inspector.close).toHaveBeenCalledOnce();
   });
 
+  it("waits for the Composer Model Controller to mount", async () => {
+    const selected = renderer(17, "primary", 100);
+    const readBinding = vi
+      .fn()
+      .mockResolvedValueOnce({
+        version: 2,
+        enabledAgents: ["codex", "pi"],
+        adapter: { state: "unsupported", reason: "model-controller-unavailable" },
+      })
+      .mockResolvedValue(readyBinding());
+    const operations = {
+      async inspect() {
+        return [selected];
+      },
+      async installTitlePolicy() {
+        return {
+          state: "ready" as const,
+          reason: "ready" as const,
+          contextClass: "WindowContext",
+          serviceClass: "ThreadMetadataGenerationService",
+          requiresRendererReload: true as const,
+        };
+      },
+      async markTitlePolicyReady() {
+        return { state: "ready" as const, reason: "owned-metadata-service" as const };
+      },
+      async installDraftPrewarmPolicy() {
+        return { state: "ready" as const, reason: "owned-request-bridge" as const };
+      },
+      async reload() {},
+      async execute() {
+        return null;
+      },
+      readBinding,
+      async readTitlePolicyCounters() {
+        return null;
+      },
+    };
+
+    const session = await createRendererControlSession({
+      inspector: { command: vi.fn(), evaluate: vi.fn(), close: vi.fn() },
+      inspectorEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations,
+    });
+
+    expect(session.snapshot.binding).toEqual(readyBinding());
+    expect(readBinding).toHaveBeenCalledTimes(2);
+    session.close();
+  });
+
   it("fails closed when the injected Adapter is unsupported", async () => {
     const selected = renderer(17, "primary", 100);
     const operations = {

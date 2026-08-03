@@ -137,6 +137,14 @@ function validateBindingStatus(
   return value as unknown as ProductionRendererStatus;
 }
 
+function isTransientBindingReadinessError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message ===
+      "Production Renderer Adapter is unsupported: model-controller-unavailable"
+  );
+}
+
 export function selectRendererWebContents(
   contents: readonly ElectronRendererSummary[],
 ): ElectronRendererSummary | null {
@@ -372,7 +380,11 @@ async function waitForBinding(
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
       lastError = error;
-      if (error instanceof Error && error.message.startsWith("Production Renderer Adapter is")) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Production Renderer Adapter is") &&
+        !isTransientBindingReadinessError(error)
+      ) {
         throw error;
       }
     }

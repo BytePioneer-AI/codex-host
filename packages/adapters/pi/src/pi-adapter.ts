@@ -18,6 +18,7 @@ import {
   type HostAgentMessageItem,
   type HostCommand,
   type HostCommandExecutionItem,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
@@ -128,6 +129,7 @@ interface ActiveTurn {
   command: TurnStartCommand;
   agentItem: HostAgentMessageItem | null;
   agentMessageId: string | null;
+  compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
@@ -519,6 +521,7 @@ class PiHarnessSession implements HarnessSession {
         command,
         agentItem: item,
         agentMessageId: null,
+        compactionItem: null,
         sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
@@ -927,6 +930,12 @@ class PiHarnessSession implements HarnessSession {
       case "message.completed":
         void this.#refreshUsage(active.command.turnId);
         return;
+      case "compaction.started":
+        this.#startCompaction(active);
+        return;
+      case "compaction.completed":
+        this.#completeCompaction(active, event);
+        return;
       case "interaction.requested":
         this.#startInteraction(active, event.request);
         return;
@@ -944,6 +953,40 @@ class PiHarnessSession implements HarnessSession {
       case "tool.completed":
         this.#completeTool(active, event);
     }
+  }
+
+  #startCompaction(active: ActiveTurn): void {
+    if (active.compactionItem) throw new Error("Pi Compaction started more than once");
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: this.#newItemId(),
+    };
+    active.compactionItem = item;
+    this.#event({ type: "item.started", turnId: active.command.turnId, item });
+  }
+
+  #completeCompaction(
+    active: ActiveTurn,
+    event: Extract<PiTurnEvent, { type: "compaction.completed" }>,
+  ): void {
+    const item = active.compactionItem;
+    if (!item) throw new Error("Pi Compaction completed without starting");
+    active.compactionItem = null;
+    const outcome: HostItemOutcome =
+      event.outcome === "succeeded"
+        ? { status: "succeeded" }
+        : event.outcome === "cancelled"
+          ? { status: "cancelled", reason: "Context compaction was cancelled" }
+          : {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: event.errorMessage ?? "Pi context compaction failed",
+                retryable: true,
+              },
+            };
+    this.#completeItem(active, item, outcome);
+    if (event.outcome === "succeeded") void this.#refreshUsage(active.command.turnId);
   }
 
   #startInteraction(active: ActiveTurn, request: PiInteractionRequest): void {
@@ -1263,6 +1306,10 @@ class PiHarnessSession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     this.#completeReasoning(active, itemOutcome);
+    if (active.compactionItem) {
+      this.#completeItem(active, active.compactionItem, itemOutcome);
+      active.compactionItem = null;
+    }
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
     if (!active.sawAssistantMessage && finalText !== undefined && active.agentItem) {

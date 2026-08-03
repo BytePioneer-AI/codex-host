@@ -109,6 +109,8 @@ function projectItem(
         summary: item.text.length > 0 ? [item.text] : [],
         content: [],
       };
+    case "contextCompaction":
+      return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
       return {
         id: item.itemId,

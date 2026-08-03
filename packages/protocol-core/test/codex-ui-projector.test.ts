@@ -203,6 +203,59 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("projects native context compaction before the continued Agent reply", () => {
+    const value = projector();
+    const compactionId = itemId("compaction-1");
+    const agentId = itemId("agent-after-compaction");
+    value.project({ type: "turn.started", turnId });
+
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "contextCompaction", itemId: compactionId },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { id: compactionId, type: "contextCompaction" } },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "contextCompaction", itemId: compactionId },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: { item: { id: compactionId, type: "contextCompaction" } },
+      },
+    ]);
+
+    value.project({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", itemId: agentId, text: "continued" },
+    });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: { type: "agentMessage", itemId: agentId, text: "continued" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn,
+    ).toMatchObject({ items: [{ id: agentId, type: "agentMessage", text: "continued" }] });
+  });
+
   it("projects Reasoning before a deferred Agent Message through one summary part", () => {
     const value = projector();
     const agentId = itemId("deferred-agent");

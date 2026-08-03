@@ -70,6 +70,12 @@ export type PiTurnEvent =
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
   | { type: "message.completed"; messageId: string }
+  | { type: "compaction.started" }
+  | {
+      type: "compaction.completed";
+      outcome: "succeeded" | "cancelled" | "failed";
+      errorMessage?: string;
+    }
   | { type: "interaction.requested"; request: PiInteractionRequest }
   | {
       type: "interaction.closed";
@@ -460,6 +466,7 @@ export class PiRpcSession {
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #compactionActive = false;
+  #compactionTurn: ActiveTurn | null = null;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
@@ -817,6 +824,8 @@ export class PiRpcSession {
     }
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
+      this.#compactionTurn = this.#activeTurn;
+      this.#compactionTurn?.onEvent({ type: "compaction.started" });
       for (const pending of this.#pending.values()) {
         if (pending.command !== "prompt" || !pending.timeout) continue;
         clearTimeout(pending.timeout);
@@ -826,9 +835,17 @@ export class PiRpcSession {
     }
     if (value.type === "compaction_end") {
       this.#compactionActive = false;
+      const compactionTurn = this.#compactionTurn;
+      this.#compactionTurn = null;
       for (const [id, pending] of this.#pending) {
         if (pending.command === "prompt") this.#armCommandTimeout(id, pending);
       }
+      compactionTurn?.onEvent({
+        type: "compaction.completed",
+        outcome:
+          value.aborted === true ? "cancelled" : isRecord(value.result) ? "succeeded" : "failed",
+        ...(nonBlankString(value.errorMessage) ? { errorMessage: value.errorMessage } : {}),
+      });
       return;
     }
     const active = this.#activeTurn;

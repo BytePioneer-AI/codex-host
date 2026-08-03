@@ -712,6 +712,60 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("publishes native context compaction before continuing the Assistant reply", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("compaction"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    transport.event({ type: "compaction.started" });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Context Compaction Item did not start");
+    }
+    expect(started.item).toMatchObject({ type: "contextCompaction" });
+    transport.usage = {
+      totalTokens: 35,
+      contextUsedTokens: 12,
+      contextWindowTokens: 200,
+    };
+    transport.event({ type: "compaction.completed", outcome: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "compaction",
+      usage: { contextUsedTokens: 12, contextWindowTokens: 200 },
+    });
+
+    transport.delta("continued");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "continued" },
+    });
+    transport.succeed("continued");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "continued" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
   it("keeps Assistant messages separate across interleaved Tool calls", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

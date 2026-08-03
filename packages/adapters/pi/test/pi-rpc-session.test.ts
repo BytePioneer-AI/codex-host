@@ -807,10 +807,13 @@ describe("Pi RPC Turn aggregation", () => {
     vi.useFakeTimers();
     const onFault = vi.fn();
     const rpc = session("prompt-preflight-compaction", onFault, { commandTimeoutMs: 10 });
+    const events: PiTurnEvent[] = [];
 
     try {
       await rpc.start();
-      const result = expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+      const result = expect(
+        rpc.runTurn("continue", (event) => events.push(event)),
+      ).resolves.toEqual({
         text: "continued after compaction",
         cancelled: false,
       });
@@ -818,6 +821,10 @@ describe("Pi RPC Turn aggregation", () => {
       await vi.advanceTimersByTimeAsync(20);
 
       await result;
+      expect(events.filter(({ type }) => type.startsWith("compaction."))).toEqual([
+        { type: "compaction.started" },
+        { type: "compaction.completed", outcome: "succeeded" },
+      ]);
       expect(onFault).not.toHaveBeenCalled();
     } finally {
       await rpc.close();

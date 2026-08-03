@@ -8,7 +8,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
-import { ClaudeCodeAdapter } from "../src/index.js";
+import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
 import type { ClaudePermissionMode } from "../src/permission-modes.js";
@@ -134,7 +134,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 }
 
-function fixture() {
+function fixture(options: ClaudeCodeAdapterOptions = {}) {
   const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
   const inspectors: Array<{
@@ -186,7 +186,7 @@ function fixture() {
       return transport;
     }),
   };
-  const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 50 }, dependencies);
+  const adapter = new ClaudeCodeAdapter({ closeTimeoutMs: 50, ...options }, dependencies);
   return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
 }
 
@@ -719,6 +719,293 @@ describe("Claude Code HarnessAdapter", () => {
         status: "failed",
         error: { message: "Claude Code returned inconsistent streamed reasoning" },
       },
+    });
+    await session.close();
+  });
+
+  it("projects bounded Bash and failed Generic Tool lifecycles in native order", async () => {
+    const { adapter, transports } = fixture({ toolOutputLimit: 4 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("tools"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.delta("before", "assistant-before-tool");
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.started",
+      callId: "bash-1",
+      toolName: "Bash",
+      arguments: { command: "printf complete" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "before" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "commandExecution", command: "printf complete", cwd: "/synthetic" },
+    });
+    transport.event({ type: "tool.progress", callId: "bash-1", elapsedMs: 20 });
+    transport.event({
+      type: "tool.completed",
+      callId: "bash-1",
+      toolName: "Bash",
+      outputText: "complete",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "commandExecution",
+          output: "comp",
+          outputTruncated: true,
+          durationMs: expect.any(Number),
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "read-1",
+      toolName: "Read",
+      arguments: { file_path: "sample.txt" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Read" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "read-1",
+      toolName: "Read",
+      outputText: "failed output",
+      isError: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          output: { content: [{ type: "text", text: "fail" }], truncated: true },
+        },
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("emits a reliable File Change immediately after a successful Edit", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("edit"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "tool.started",
+      callId: "edit-1",
+      toolName: "Edit",
+      arguments: { file_path: "/synthetic/sample.txt" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Edit" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "edit-1",
+      toolName: "Edit",
+      outputText: "edited",
+      isError: false,
+      fileChange: {
+        path: "/synthetic/sample.txt",
+        kind: "update",
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ["-old", "+new"],
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution", toolName: "Edit" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "fileChange",
+        changes: [
+          {
+            path: "sample.txt",
+            kind: "update",
+            unifiedDiff: "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
+    });
+
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("keeps successful Edit without native patch evidence Tool-only", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("edit-no-patch"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "tool.started",
+      callId: "edit-1",
+      toolName: "Edit",
+      arguments: { file_path: "sample.txt" },
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.completed",
+      callId: "edit-1",
+      toolName: "Edit",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution" } },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    await session.close();
+  });
+
+  it("closes active Tools before cancellation and continues on the same Session", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("cancel-tool"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "tool.started",
+      callId: "bash-1",
+      toolName: "Bash",
+      arguments: { command: "sleep 10" },
+    });
+    await nextEvent(iterator);
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("cancel-tool") }),
+    ).resolves.toEqual({ ok: true, value: { cancellationRequested: true } });
+    transport.finish({ status: "cancelled", reason: "aborted_tools" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "commandExecution" },
+        outcome: { status: "cancelled" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+
+    await expect(session.execute(textTurn("after-cancel-tool"))).resolves.toMatchObject({
+      ok: true,
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.delta("continued");
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    expect(transports).toHaveLength(1);
+    await session.close();
+  });
+
+  it("fails a successful native result that leaves a Tool unresolved", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("unresolved-tool"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "tool.started",
+      callId: "read-1",
+      toolName: "Read",
+      arguments: {},
+    });
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution" }, outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "failed" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "protocolError" } },
     });
     await session.close();
   });

@@ -1,8 +1,16 @@
+import type { JsonValue } from "@codexhost/shared-contracts";
+
+import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
 
 export type ClaudeTransportFailureKind =
-  "authentication" | "cancellationUnproven" | "native" | "reasoningConflict" | "textConflict";
+  | "authentication"
+  | "cancellationUnproven"
+  | "native"
+  | "protocol"
+  | "reasoningConflict"
+  | "textConflict";
 
 export type ClaudeTransportTurnResult =
   | { status: "succeeded" }
@@ -53,6 +61,16 @@ export type ClaudeTurnEvent =
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
   | { type: "message.completed"; messageId: string }
+  | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
+  | { type: "tool.progress"; callId: string; elapsedMs: number }
+  | {
+      type: "tool.completed";
+      callId: string;
+      toolName: string;
+      outputText?: string;
+      isError: boolean;
+      fileChange?: ClaudeNativeFileChange;
+    }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

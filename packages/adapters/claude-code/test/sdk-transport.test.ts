@@ -252,6 +252,107 @@ describe("ClaudeSdkTransport text reconciliation", () => {
   });
 });
 
+describe("ClaudeSdkTransport Tool interpretation", () => {
+  it("publishes correlated Tool and reliable native file events before the terminal", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000030",
+      (event) => events.push(event),
+    );
+
+    value.fakeQuery.push({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000031",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "edit-1",
+            name: "Edit",
+            input: { file_path: "/synthetic/sample.txt" },
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "tool_progress",
+      tool_use_id: "edit-1",
+      tool_name: "Edit",
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 0.5,
+      uuid: "00000000-0000-4000-8000-000000000032",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as SDKMessage);
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000033",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: "edit-1",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "edit-1", content: "edited", is_error: false },
+        ],
+      },
+      tool_use_result: {
+        filePath: "/synthetic/sample.txt",
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ["-old", "+new"],
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events).toEqual([
+      {
+        type: "tool.started",
+        callId: "edit-1",
+        toolName: "Edit",
+        arguments: { file_path: "/synthetic/sample.txt" },
+      },
+      {
+        type: "message.completed",
+        messageId: "00000000-0000-4000-8000-000000000031",
+      },
+      { type: "tool.progress", callId: "edit-1", elapsedMs: 500 },
+      {
+        type: "tool.completed",
+        callId: "edit-1",
+        toolName: "Edit",
+        outputText: "edited",
+        isError: false,
+        fileChange: {
+          path: "/synthetic/sample.txt",
+          kind: "update",
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ["-old", "+new"],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport Permission Mode control", () => {
   it("passes the initial mode once, acknowledges bypass support, and delegates later switching", async () => {
     const value = fixture("create", "auto");

@@ -69,6 +69,7 @@ import {
   type ClaudePermissionMode,
 } from "./permission-modes.js";
 import { ClaudeSdkModelInspector, ClaudeSdkTransport } from "./sdk-transport.js";
+import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -86,6 +87,7 @@ export interface ClaudeCodeAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   closeTimeoutMs?: number;
+  toolOutputLimit?: number;
 }
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
@@ -107,6 +109,7 @@ interface ActiveTurn {
   item: HostAgentMessageItem | null;
   assistantMessageId: string | null;
   reasoningItems: Map<string, HostReasoningItem>;
+  tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
   nativeTurnRef: NativeTurnRef | null;
@@ -117,6 +120,7 @@ interface ActiveTurn {
 
 const claudeCodeHarnessId = harnessIdSchema.parse("claude-code");
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
+const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -128,6 +132,13 @@ function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
       code: "authenticationRequired",
       message: "Claude Code authentication is required",
       retryable: true,
+    };
+  }
+  if (kind === "protocol") {
+    return {
+      code: "protocolError",
+      message: "Claude Code returned an invalid Tool lifecycle",
+      retryable: false,
     };
   }
   return {
@@ -204,6 +215,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #requestedPermissionModeId: HarnessPermissionModeId;
   readonly #readSessionMessages: ClaudeAdapterDependencies["readSessionMessages"];
   readonly #sessionId: string;
+  readonly #toolOutputLimit: number;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -225,6 +237,7 @@ class ClaudeHarnessSession implements HarnessSession {
       sessionId: string;
       requestedModel?: HarnessModelRef;
       requestedPermissionModeId: HarnessPermissionModeId;
+      toolOutputLimit: number;
     },
   ) {
     this.#cwd = cwd;
@@ -237,6 +250,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#requestedModel = options.requestedModel;
     this.#requestedPermissionModeId = options.requestedPermissionModeId;
     this.#sessionId = options.sessionId;
+    this.#toolOutputLimit = options.toolOutputLimit;
     this.#nativeRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
       nativeSessionId: this.#sessionId,
@@ -394,6 +408,12 @@ class ClaudeHarnessSession implements HarnessSession {
       item,
       assistantMessageId: null,
       reasoningItems: new Map(),
+      tools: new ClaudeToolLifecycle({
+        cwd: this.#cwd,
+        outputLimit: this.#toolOutputLimit,
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
       nativeTurnRef: null,
@@ -772,19 +792,39 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
-    if (event.type === "text.delta") {
-      this.#appendText(active, event.messageId, event.delta);
-    } else if (event.type === "reasoning.delta") {
-      this.#activateAssistantMessage(active, event.messageId);
-      this.#appendReasoning(active, event.messageId, event.delta);
-    } else if (event.type === "reasoning.completed") {
-      this.#completeReasoning(active, event.messageId, { status: "succeeded" });
-    } else if (event.type === "message.completed") {
-      if (this.#transport) this.#refreshUsage(this.#transport, active.command.turnId);
-    } else if (event.type === "interaction.requested") {
-      this.#startInteraction(active, event.request);
-    } else {
-      this.#closeInteraction(active, event.requestId, event.reason);
+    switch (event.type) {
+      case "text.delta":
+        this.#appendText(active, event.messageId, event.delta);
+        return;
+      case "reasoning.delta":
+        this.#activateAssistantMessage(active, event.messageId);
+        this.#appendReasoning(active, event.messageId, event.delta);
+        return;
+      case "reasoning.completed":
+        this.#completeReasoning(active, event.messageId, { status: "succeeded" });
+        return;
+      case "message.completed":
+        if (this.#transport) this.#refreshUsage(this.#transport, active.command.turnId);
+        return;
+      case "tool.started":
+        for (const messageId of [...active.reasoningItems.keys()]) {
+          this.#completeReasoning(active, messageId, { status: "succeeded" });
+        }
+        this.#completeAgentItem(active, { status: "succeeded" }, false);
+        active.tools.start(active.command.turnId, event);
+        return;
+      case "tool.progress":
+        active.tools.progress(event);
+        return;
+      case "tool.completed":
+        active.tools.complete(active.command.turnId, event, active.cancellationRequested);
+        return;
+      case "interaction.requested":
+        this.#startInteraction(active, event.request);
+        return;
+      case "interaction.closed":
+        this.#closeInteraction(active, event.requestId, event.reason);
+        return;
     }
   }
 
@@ -963,7 +1003,9 @@ class ClaudeHarnessSession implements HarnessSession {
   #finishResult(active: ActiveTurn, result: ClaudeTransportTurnResult): void {
     if (this.#active !== active) return;
     const transport = this.#transport;
-    if (result.status === "succeeded") {
+    if (result.status === "succeeded" && active.tools.size > 0) {
+      this.#finishFailed(active, transportFailure("protocol"));
+    } else if (result.status === "succeeded") {
       this.#finish(active, { status: "succeeded" });
     } else if (result.status === "cancelled") {
       this.#finish(active, { status: "cancelled", reason: result.reason });
@@ -1008,6 +1050,7 @@ class ClaudeHarnessSession implements HarnessSession {
       outcome.status === "succeeded" ? "superseded" : "cancelled",
     );
     const itemOutcome: HostItemOutcome = outcome;
+    active.tools.finalize(active.command.turnId, itemOutcome);
     for (const messageId of [...active.reasoningItems.keys()]) {
       this.#completeReasoning(active, messageId, itemOutcome);
     }
@@ -1043,6 +1086,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #toolOutputLimit: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
@@ -1051,6 +1095,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+    if (!Number.isSafeInteger(this.#toolOutputLimit) || this.#toolOutputLimit <= 0) {
+      throw new RangeError("Claude Code Tool output limit must be a positive safe integer");
+    }
     this.#dependencies = dependencies ?? {
       randomUUID,
       inspectInstallation: () => {
@@ -1256,6 +1304,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           : this.#dependencies.randomUUID(),
         ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
         requestedPermissionModeId,
+        toolOutputLimit: this.#toolOutputLimit,
       },
     );
     this.#sessions.add(session);

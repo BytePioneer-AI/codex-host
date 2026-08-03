@@ -57,6 +57,8 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; cancelled: true };
 
 export type ClaudeTurnEvent =
+  | { type: "compaction.started" }
+  | { type: "compaction.completed"; outcome: "succeeded" | "failed" }
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }

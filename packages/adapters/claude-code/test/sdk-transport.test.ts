@@ -250,6 +250,56 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
+
+  it("publishes one automatic Compaction lifecycle before continued text", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000024",
+      (event) => events.push(event),
+    );
+
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: "compacting",
+      uuid: "00000000-0000-4000-8000-000000000025",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: null,
+      compact_result: "success",
+      uuid: "00000000-0000-4000-8000-000000000026",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "auto", pre_tokens: 180, post_tokens: 30 },
+      uuid: "00000000-0000-4000-8000-000000000027",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    pushAssistantText(value.fakeQuery, "continued", "00000000-0000-4000-8000-000000000028");
+    completeTurn(value.fakeQuery);
+
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "succeeded" },
+      {
+        type: "text.delta",
+        messageId: "00000000-0000-4000-8000-000000000028",
+        delta: "continued",
+      },
+      { type: "message.completed", messageId: "00000000-0000-4000-8000-000000000028" },
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
 });
 
 describe("ClaudeSdkTransport Tool interpretation", () => {

@@ -20,6 +20,7 @@ import {
   type HostAgentMessageItem,
   type HostApprovalInteraction,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostItemOutcome,
   type HostQuestionInteraction,
@@ -106,6 +107,7 @@ type ActiveInteraction =
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  compactionItem: HostContextCompactionItem | null;
   item: HostAgentMessageItem | null;
   assistantMessageId: string | null;
   reasoningItems: Map<string, HostReasoningItem>;
@@ -405,6 +407,7 @@ class ClaudeHarnessSession implements HarnessSession {
     };
     const active: ActiveTurn = {
       command,
+      compactionItem: null,
       item,
       assistantMessageId: null,
       reasoningItems: new Map(),
@@ -793,6 +796,12 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
+      case "compaction.started":
+        this.#startCompaction(active);
+        return;
+      case "compaction.completed":
+        this.#completeCompaction(active, event.outcome);
+        return;
       case "text.delta":
         this.#appendText(active, event.messageId, event.delta);
         return;
@@ -826,6 +835,45 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#closeInteraction(active, event.requestId, event.reason);
         return;
     }
+  }
+
+  #startCompaction(active: ActiveTurn): void {
+    if (active.compactionItem) throw new Error("Claude Code Compaction started more than once");
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: hostItemIdSchema.parse(this.#randomUUID()),
+    };
+    active.compactionItem = item;
+    this.#event({ type: "item.started", turnId: active.command.turnId, item });
+  }
+
+  #completeCompaction(active: ActiveTurn, result: "succeeded" | "failed"): void {
+    const outcome: HostItemOutcome =
+      result === "succeeded"
+        ? { status: "succeeded" }
+        : {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Claude Code context compaction failed",
+              retryable: true,
+            },
+          };
+    this.#completeCompactionItem(active, outcome);
+    if (result === "succeeded" && this.#transport) {
+      this.#refreshUsage(this.#transport, active.command.turnId);
+    }
+  }
+
+  #completeCompactionItem(active: ActiveTurn, outcome: HostItemOutcome): void {
+    const item = active.compactionItem;
+    if (!item) throw new Error("Claude Code Compaction completed without starting");
+    active.compactionItem = null;
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item, outcome },
+    });
   }
 
   #startInteraction(active: ActiveTurn, request: ClaudeInteractionRequest): void {
@@ -1050,6 +1098,7 @@ class ClaudeHarnessSession implements HarnessSession {
       outcome.status === "succeeded" ? "superseded" : "cancelled",
     );
     const itemOutcome: HostItemOutcome = outcome;
+    if (active.compactionItem) this.#completeCompactionItem(active, itemOutcome);
     active.tools.finalize(active.command.turnId, itemOutcome);
     for (const messageId of [...active.reasoningItems.keys()]) {
       this.#completeReasoning(active, messageId, itemOutcome);

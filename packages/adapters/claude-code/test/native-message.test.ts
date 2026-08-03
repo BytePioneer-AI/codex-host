@@ -421,6 +421,48 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
+  it("normalizes Compaction status and boundary messages without duplicate terminals", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume({ type: "system", subtype: "status", status: "compacting" }).events,
+    ).toEqual([{ type: "compaction.started" }]);
+    expect(turn.consume({ type: "system", subtype: "compact_boundary" }).events).toEqual([
+      { type: "compaction.completed", outcome: "succeeded" },
+    ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "status",
+        status: null,
+        compact_result: "success",
+      }).events,
+    ).toEqual([]);
+
+    expect(
+      turn.consume({ type: "system", subtype: "status", status: "compacting" }).events,
+    ).toEqual([{ type: "compaction.started" }]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "status",
+        status: null,
+        compact_result: "failed",
+        compact_error: "private native detail",
+      }).events,
+    ).toEqual([{ type: "compaction.completed", outcome: "failed" }]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("synthesizes a complete Compaction lifecycle when only a boundary is available", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(turn.consume({ type: "system", subtype: "compact_boundary" }).events).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "succeeded" },
+    ]);
+  });
+
   it("ignores unknown messages", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     expect(turn.consume({ type: "future_event", native: true })).toEqual({ events: [] });

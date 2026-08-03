@@ -187,9 +187,8 @@ interface MountedComposer {
 }
 
 interface PendingComposerReplacement {
-  source: Element;
+  source: MountedComposer;
   sourceModelTarget: readonly unknown[] | null;
-  target: Element;
 }
 
 type SubmissionTrigger = "click" | "enter" | "submit";
@@ -324,6 +323,18 @@ export function installRendererBindingProbe(
     );
   };
 
+  const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
+    const current = controller.get(mounted.composer);
+    if (current.agent === "codex") return true;
+    return (
+      mounted.modelView.status !== "selecting" &&
+      mounted.modelView.catalog?.models.some(
+        (model) => model.ref.id === mounted.modelView.selected?.id,
+      ) === true &&
+      isPermissionModeControlReady(mounted.permissionModeView)
+    );
+  };
+
   const clearDraftPrewarm = async (): Promise<void> => {
     const policy = window.__codexhostDraftPrewarmPolicyV1;
     if (!isDraftPrewarmPolicyReady(policy)) {
@@ -419,14 +430,13 @@ export function installRendererBindingProbe(
     if (!isLateConversationTarget(mounted.modelTarget, currentTarget)) return false;
 
     mounted.modelTarget = currentTarget;
-    mounted.ownershipStatus = "loading";
     if (!controller.transfer(mounted.composer, mounted.composer, currentTarget)) {
       mounted.ownershipStatus = "error";
       renderMounted(mounted);
       return true;
     }
+    mounted.ownershipStatus = "ready";
     renderMounted(mounted);
-    void loadThreadOwnership(mounted);
     return true;
   };
 
@@ -979,6 +989,7 @@ export function installRendererBindingProbe(
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
     const state = controller.mount(composer, modelTarget);
+    const inherited = pendingReplacements.get(composer)?.source;
     const control = mountComposerAgentControl(
       composer,
       state.composerId,
@@ -1010,10 +1021,14 @@ export function installRendererBindingProbe(
       composerId: state.composerId,
       control,
       modelTarget,
-      modelView: { status: "idle" },
-      permissionModeView: { status: "idle" },
-      ownershipStatus: threadIdFromComposerModelTarget(modelTarget) ? "loading" : "not-required",
-      threadConfiguration: undefined,
+      modelView: inherited?.modelView ?? { status: "idle" },
+      permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
+      ownershipStatus: threadIdFromComposerModelTarget(modelTarget)
+        ? inherited
+          ? "ready"
+          : "loading"
+        : "not-required",
+      threadConfiguration: inherited?.threadConfiguration,
     };
     mountedByComposer.set(composer, mounted);
     applyAdapterAgent?.(
@@ -1025,9 +1040,9 @@ export function installRendererBindingProbe(
         : undefined,
     );
     renderMounted(mounted);
-    if (threadIdFromComposerModelTarget(modelTarget)) {
+    if (threadIdFromComposerModelTarget(modelTarget) && !inherited) {
       void loadThreadOwnership(mounted);
-    } else if (state.agent !== "codex") {
+    } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {
       void loadExternalCatalog(mounted);
     }
   };
@@ -1038,20 +1053,20 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan = false;
     if (disposed) return;
     settingsLifecycle.refresh();
-    for (const replacement of pendingReplacements.values()) {
-      const sourceState = controller.get(replacement.source);
-      const replacementTarget = findComposerModelTarget(replacement.target);
+    for (const [target, replacement] of pendingReplacements) {
+      const sourceState = controller.get(replacement.source.composer);
+      const replacementTarget = findComposerModelTarget(target);
       if (
-        shouldTransferComposerState(
+        !shouldTransferComposerState(
           replacement.sourceModelTarget,
           replacementTarget,
           sourceState.phase,
-        )
+        ) ||
+        !controller.transfer(replacement.source.composer, target, replacementTarget)
       ) {
-        controller.transfer(replacement.source, replacement.target, replacementTarget);
+        pendingReplacements.delete(target);
       }
     }
-    pendingReplacements.clear();
     for (const [composer, mounted] of mountedByComposer) {
       if (!composer.isConnected || !mounted.control.root.isConnected) {
         disposeComposerAgentControl(mounted.control);
@@ -1064,6 +1079,7 @@ export function installRendererBindingProbe(
       const composer = composerForEditor(editor);
       if (composer) mount(composer);
     }
+    pendingReplacements.clear();
   };
 
   const scheduleScan = (refreshTargets = false): void => {
@@ -1112,9 +1128,8 @@ export function installRendererBindingProbe(
       const mounted = mountedByComposer.get(source);
       if (source !== target && mounted) {
         pendingReplacements.set(target, {
-          source,
+          source: mounted,
           sourceModelTarget: mounted.modelTarget,
-          target,
         });
       }
     }
@@ -1145,15 +1160,7 @@ export function installRendererBindingProbe(
     if (controller.isSwitching(composer) || isOwnershipSubmissionBlocked(mounted.ownershipStatus)) {
       return false;
     }
-    const modelReady =
-      current.agent === "codex" ||
-      (mounted.modelView.status !== "selecting" &&
-        mounted.modelView.catalog?.models.some(
-          (model) => model.ref.id === mounted.modelView.selected?.id,
-        ) === true);
-    const permissionModeReady =
-      current.agent === "codex" || isPermissionModeControlReady(mounted.permissionModeView);
-    if (!modelReady || !permissionModeReady) return false;
+    if (!isExternalConfigurationReady(mounted)) return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
     controller.lock(composer);

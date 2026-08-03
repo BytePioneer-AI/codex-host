@@ -78,7 +78,7 @@ export async function buildReleaseHostBundle({ repositoryRoot, outputPath }) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node24",
+    target: "node22",
     packages: "bundle",
     sourcemap: false,
     metafile: true,

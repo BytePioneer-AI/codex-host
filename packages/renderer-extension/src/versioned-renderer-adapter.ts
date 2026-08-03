@@ -3,6 +3,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
+  type ExternalThreadForkParams,
   type HarnessInspectParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
@@ -16,6 +17,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
+import { installRendererForkControl } from "./renderer-fork-control.js";
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
@@ -743,6 +745,7 @@ export function installCurrentRendererAdapter(): {
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
+    forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
     listThreadOwnership: (input: ThreadOwnershipListParams) =>
@@ -762,6 +765,15 @@ export function installCurrentRendererAdapter(): {
     updateStatus("unsupported", "draft-prewarm-policy-unavailable", null);
     return unsupportedResult();
   }
+  const forkControl = installRendererForkControl({
+    getClient: () => modelControl,
+    reportError: (error) => {
+      console.error(
+        "codexhost external Thread Fork failed",
+        error instanceof Error ? error.name : "UnknownError",
+      );
+    },
+  });
 
   const captureController = (): boolean => {
     const discovered = findModelStateController();
@@ -827,6 +839,7 @@ export function installCurrentRendererAdapter(): {
       if (disposed) return;
       disposed = true;
       observer.disconnect();
+      forkControl.dispose();
       modelController = null;
       officialSelection = null;
       hasOfficialSelection = false;

@@ -12,6 +12,8 @@ import type {
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
+  externalThreadForkParamsSchema,
+  externalThreadForkResultSchema,
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
@@ -200,6 +202,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/rollback",
   "thread/turns/list",
   "thread/unarchive",
+  "thread/unsubscribe",
 ]);
 
 function isHostApprovalRequestId(value: unknown): value is HostApprovalRequestId {
@@ -420,6 +423,10 @@ export class AppServerHost {
       const request = requestResult.data;
       if (request.method === "codexhost/harness/inspect") {
         await this.#inspectHarness(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/fork") {
+        await this.#forkExternalThreadFromRenderer(request);
         continue;
       }
       if (request.method === "codexhost/thread/inspect") {
@@ -677,6 +684,25 @@ export class AppServerHost {
             );
           }
           continue;
+        }
+      }
+      if (request.method === "thread/unsubscribe") {
+        const params = requestObject(request);
+        if (typeof params.threadId === "string") {
+          const location = await this.#locateExternalThread(params.threadId);
+          if (await this.#writeResolutionError(request, location)) continue;
+          if (location.kind === "official") {
+            await writeFrame(official.stdin, frame);
+            continue;
+          }
+          if (location.kind === "external") {
+            await this.#writer.json(
+              rpcEnvelope(request, {
+                result: { status: location.thread ? "notSubscribed" : "notLoaded" },
+              }),
+            );
+            continue;
+          }
         }
       }
       if (request.method === "thread/name/set" || request.method === "thread/delete") {
@@ -1300,6 +1326,41 @@ export class AppServerHost {
     return this.#externalRuntime.persistTerminalIdentity(thread, event);
   }
 
+  async #forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void> {
+    const parsed = externalThreadForkParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      await this.#writer.json(rpcError(request, -32602, "External Fork request is invalid"));
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(parsed.data.threadId);
+    if (await this.#writeResolutionError(request, resolution)) return;
+    if (resolution.kind !== "external") {
+      await this.#writer.json(rpcError(request, -32078, "Thread is not externally owned"));
+      return;
+    }
+    const result = await executeExternalThreadFork({
+      source: resolution.thread,
+      fork: {
+        threadId: parsed.data.threadId,
+        lastTurnId: parsed.data.lastTurnId,
+        excludeTurns: true,
+      },
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, result.error.code, result.error.message));
+      return;
+    }
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: externalThreadForkResultSchema.parse({ threadId: result.derived.id }),
+      }),
+    );
+    await this.#notifyExternalThreadStarted(result.thread);
+  }
+
   async #forkExternalThread(
     request: JsonRpcRequest,
     source: ExternalThread,
@@ -1333,10 +1394,14 @@ export class AppServerHost {
         }),
       }),
     );
+    await this.#notifyExternalThreadStarted(result.thread);
+  }
+
+  async #notifyExternalThreadStarted(thread: JsonObject): Promise<void> {
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),
-      params: { thread: { ...result.thread, turns: [] } },
+      params: { thread: { ...thread, turns: [] } },
     });
   }
 

@@ -4,6 +4,11 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export { codexhostErrorSchema } from "./errors.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  externalThreadForkParamsSchema,
+  externalThreadForkResultSchema,
+} from "./external-thread-fork.js";
+export type { ExternalThreadForkParams, ExternalThreadForkResult } from "./external-thread-fork.js";
+export {
   HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH,
   HARNESS_PERMISSION_MODE_DESCRIPTION_MAX_LENGTH,
   HARNESS_PERMISSION_MODE_ID_MAX_LENGTH,

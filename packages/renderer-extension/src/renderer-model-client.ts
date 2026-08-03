@@ -1,4 +1,6 @@
 import {
+  externalThreadForkParamsSchema,
+  externalThreadForkResultSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
@@ -10,6 +12,8 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  type ExternalThreadForkParams,
+  type ExternalThreadForkResult,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
@@ -24,6 +28,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
@@ -35,6 +40,7 @@ interface RequestManagerCandidate {
 }
 
 export interface RendererModelClient {
+  forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
@@ -83,6 +89,11 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
+      const params = externalThreadForkParamsSchema.parse(input);
+      const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
+      return externalThreadForkResultSchema.parse(result);
+    },
     inspectHarness,
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);

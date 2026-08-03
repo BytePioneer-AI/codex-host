@@ -1,0 +1,185 @@
+import {
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+  type ThreadInspection,
+} from "@codexhost/shared-contracts";
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  installRendererForkControl,
+  rendererForkTargetFromButton,
+  type RendererForkDom,
+  type RendererForkTarget,
+} from "../src/renderer-fork-control.js";
+import type { RendererModelClient } from "../src/renderer-model-client.js";
+
+class FakeForkDom implements RendererForkDom {
+  listener: ((target: RendererForkTarget) => boolean) | null = null;
+  readonly openThread = vi.fn(async () => undefined);
+  readonly replay = vi.fn();
+
+  listen(onFork: (target: RendererForkTarget) => boolean): () => void {
+    this.listener = onFork;
+    return () => {
+      this.listener = null;
+    };
+  }
+
+  emit(target: RendererForkTarget): boolean {
+    return this.listener?.(target) ?? false;
+  }
+}
+
+function clientWith(inspection: ThreadInspection): RendererModelClient {
+  return {
+    forkThread: vi.fn(async () => ({ threadId: hostThreadIdSchema.parse("derived-thread") })),
+    inspectHarness: vi.fn(),
+    inspectThread: vi.fn(async () => inspection),
+    listThreadOwnership: vi.fn(),
+    selectThreadModel: vi.fn(),
+    selectThreadThinking: vi.fn(),
+    selectThreadPermissionMode: vi.fn(),
+  };
+}
+
+function target(isProjectlessConversation = true): RendererForkTarget {
+  return {
+    control: {},
+    isProjectlessConversation,
+    threadId: hostThreadIdSchema.parse("source-thread"),
+    turnId: hostTurnIdSchema.parse("source-turn"),
+  };
+}
+
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function forkButton(
+  input: {
+    domThreadId?: string;
+    fiberThreadId?: string;
+    domTurnId?: string;
+    fiberTurnId?: string;
+    forkSignature?: boolean;
+    isProjectlessConversation?: boolean;
+    projectlessSignature?: boolean;
+  } = {},
+): HTMLButtonElement {
+  const domThreadId = input.domThreadId ?? "source-thread";
+  const fiberThreadId = input.fiberThreadId ?? domThreadId;
+  const domTurnId = input.domTurnId ?? "source-turn";
+  const fiberTurnId = input.fiberTurnId ?? domTurnId;
+  const annotation = {
+    getAttribute: (name: string) =>
+      name === "data-response-annotation-conversation" ? domThreadId : null,
+  };
+  const turn = {
+    getAttribute: (name: string) => (name === "data-content-search-turn-key" ? domTurnId : null),
+  };
+  const button = {
+    closest(selector: string) {
+      if (selector === "[data-response-annotation-conversation]") return annotation;
+      if (selector === "[data-content-search-turn-key]") return turn;
+      return null;
+    },
+  } as unknown as HTMLButtonElement;
+  const fiber = {
+    memoizedProps:
+      input.forkSignature === false ? { onClick: vi.fn() } : { "aria-busy": undefined },
+    return: {
+      memoizedProps: {
+        conversationId: fiberThreadId,
+        turnId: fiberTurnId,
+        hostId: "local",
+        onFork: vi.fn(),
+        ...(input.projectlessSignature === false
+          ? {}
+          : { isProjectlessConversation: input.isProjectlessConversation ?? false }),
+      },
+      return: null,
+    },
+  };
+  Object.defineProperty(button, "__reactFiber$test", { value: fiber });
+  return button;
+}
+
+describe("Renderer external Thread Fork control", () => {
+  it("resolves a Fork button only when DOM and Fiber identities agree", () => {
+    expect(rendererForkTargetFromButton(forkButton())).toMatchObject({
+      isProjectlessConversation: false,
+      threadId: "source-thread",
+      turnId: "source-turn",
+    });
+    expect(
+      rendererForkTargetFromButton(forkButton({ fiberThreadId: "different-thread" })),
+    ).toBeNull();
+    expect(rendererForkTargetFromButton(forkButton({ fiberTurnId: "different-turn" }))).toBeNull();
+    expect(rendererForkTargetFromButton(forkButton({ forkSignature: false }))).toBeNull();
+    expect(rendererForkTargetFromButton(forkButton({ projectlessSignature: false }))).toBeNull();
+  });
+
+  it("intercepts a projectless external Fork and opens the derived Thread", async () => {
+    const dom = new FakeForkDom();
+    const client = clientWith({
+      owner: "external",
+      harnessId: "pi",
+      transportModelId: "codexhost/pi-native",
+      locked: true,
+    });
+    const control = installRendererForkControl({ getClient: () => client, dom });
+
+    expect(dom.emit(target())).toBe(true);
+    await settle();
+
+    expect(client.forkThread).toHaveBeenCalledWith({
+      threadId: "source-thread",
+      lastTurnId: "source-turn",
+    });
+    expect(dom.openThread).toHaveBeenCalledWith("derived-thread");
+    expect(dom.replay).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("replays the native destination flow for a project external Thread", async () => {
+    const dom = new FakeForkDom();
+    const client = clientWith({
+      owner: "external",
+      harnessId: "pi",
+      transportModelId: "codexhost/pi-native",
+      locked: true,
+    });
+    const source = target(false);
+    const control = installRendererForkControl({ getClient: () => client, dom });
+
+    expect(dom.emit(source)).toBe(true);
+    await settle();
+
+    expect(dom.replay).toHaveBeenCalledWith(source);
+    expect(client.forkThread).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("replays the native action for a Codex-owned Thread", async () => {
+    const dom = new FakeForkDom();
+    const client = clientWith({ owner: "codex", locked: true });
+    const source = target();
+    const control = installRendererForkControl({ getClient: () => client, dom });
+
+    expect(dom.emit(source)).toBe(true);
+    await settle();
+
+    expect(dom.replay).toHaveBeenCalledWith(source);
+    expect(client.forkThread).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("leaves the native action untouched when the fixed request client is unavailable", () => {
+    const dom = new FakeForkDom();
+    const control = installRendererForkControl({ getClient: () => null, dom });
+
+    expect(dom.emit(target())).toBe(false);
+    control.dispose();
+    expect(dom.listener).toBeNull();
+  });
+});

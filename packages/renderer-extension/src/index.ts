@@ -27,6 +27,7 @@ export type {
 } from "./agent-selection-state.js";
 export {
   HARNESS_INSPECT_METHOD,
+  THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
@@ -35,6 +36,15 @@ export {
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
+export {
+  installRendererForkControl,
+  rendererForkTargetFromButton,
+} from "./renderer-fork-control.js";
+export type {
+  RendererForkControl,
+  RendererForkDom,
+  RendererForkTarget,
+} from "./renderer-fork-control.js";
 export {
   draftPermissionMode,
   installRendererBindingProbe,

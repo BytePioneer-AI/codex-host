@@ -110,6 +110,7 @@ export class ClaudeNativeTurnAccumulator {
   #activeStreamMessageId: string | null = null;
   #assistantErrors: string[] = [];
   #cancelRequested = false;
+  #compactionState: "idle" | "active" | "settled" = "idle";
   #completed = false;
   #completedToolIds = new Set<string>();
   #messageOrdinal = 0;
@@ -127,6 +128,7 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#completed || !isRecord(message)) return { events: [] };
     const events: ClaudeNativeEvent[] = [];
 
+    this.#consumeCompaction(message, events);
     if (message.type === "stream_event" && isRecord(message.event)) {
       this.#consumeStreamEvent(message, events);
     } else if (message.type === "tool_progress") {
@@ -172,6 +174,30 @@ export class ClaudeNativeTurnAccumulator {
       terminal = failure("native");
     }
     return { events, terminal };
+  }
+
+  #consumeCompaction(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system") return;
+    if (message.subtype === "status") {
+      if (message.status === "compacting" && this.#compactionState !== "active") {
+        this.#compactionState = "active";
+        events.push({ type: "compaction.started" });
+      }
+      if (message.compact_result === "success" || message.compact_result === "failed") {
+        if (this.#compactionState === "settled") return;
+        if (this.#compactionState === "idle") events.push({ type: "compaction.started" });
+        this.#compactionState = "settled";
+        events.push({
+          type: "compaction.completed",
+          outcome: message.compact_result === "success" ? "succeeded" : "failed",
+        });
+      }
+      return;
+    }
+    if (message.subtype !== "compact_boundary" || this.#compactionState === "settled") return;
+    if (this.#compactionState === "idle") events.push({ type: "compaction.started" });
+    this.#compactionState = "settled";
+    events.push({ type: "compaction.completed", outcome: "succeeded" });
   }
 
   #consumeStreamEvent(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {

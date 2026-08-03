@@ -582,6 +582,91 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("projects automatic Compaction before continued Assistant output and refreshes Usage", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("automatic-compaction"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({ type: "compaction.started" });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Claude Context Compaction Item did not start");
+    }
+
+    transport.contextUsage = { usedTokens: 30, maxTokens: 200, model: "runtime-default" };
+    transport.event({ type: "compaction.completed", outcome: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledTimes(2));
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "automatic-compaction",
+      usage: { contextUsedTokens: 30, contextWindowTokens: 200 },
+    });
+
+    transport.delta("continued", "assistant-after-compaction");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "continued" },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "continued" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("closes an active Compaction Item when the Turn is cancelled", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("cancel-compaction"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({ type: "compaction.started" });
+    await nextEvent(iterator);
+
+    await session.execute({ type: "turn.cancel", turnId: textTurn("cancel-compaction").turnId });
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction" },
+        outcome: { status: "cancelled" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" }, outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await session.close();
+  });
+
   it("keeps native Assistant responses in separate Agent Items", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

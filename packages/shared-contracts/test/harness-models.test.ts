@@ -274,6 +274,7 @@ describe("Harness Model runtime contracts", () => {
           { id: "off", label: "Off" },
           { id: "high", label: "High" },
         ],
+        history: { fork: true, forkAcrossCwd: true },
         locked: true,
       }),
     ).toMatchObject({ owner: "external", harnessId: "pi", locked: true });
@@ -286,6 +287,7 @@ describe("Harness Model runtime contracts", () => {
         owner: "external",
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
+        history: { fork: true, forkAcrossCwd: true },
         locked: true,
         nativeSessionRef: { nativeSessionId: "secret" },
       }).success,

@@ -1,7 +1,7 @@
 # claude-code-text-session Specification
 
 ## Purpose
-Define the development-gated Claude Code Adapter contract for lazy create and resume, deterministic Native history Snapshot reads, text Turns, cancellation, faults, and bounded close without exposing Claude SDK details outside the Adapter package.
+Define the production Claude Code Adapter contract for lazy create and resume, deterministic Native history Snapshot reads, text Turns, cancellation, exact same-directory Fork, faults, and bounded close without exposing Claude SDK details outside the Adapter package.
 ## Requirements
 ### Requirement: Claude Code implements the existing HarnessAdapter contract
 The system SHALL provide a concrete Claude Code Adapter that exposes the existing UI-independent create, resume, history Snapshot, text Turn, cancel, fault, and close semantics. Claude SDK objects, message types, settings, process handles, and native protocol fields MUST remain inside the Adapter package.
@@ -108,7 +108,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 ### Requirement: Claude resume preserves Native Session identity
 
-`open(resume)` SHALL bind the exact persisted Claude Native Session Ref without starting a Query. It SHALL expose that Ref in initial Session state, read current Native history before Host restoration completes, and start a Query with the official SDK `resume` option only when a later Turn is submitted. Claude Fork SHALL remain explicitly unsupported and both Fork capabilities SHALL remain false.
+`open(resume)` SHALL bind the exact persisted Claude Native Session Ref without starting a Query. It SHALL expose that Ref in initial Session state, read current Native history before Host restoration completes, and start a Query with the official SDK `resume` option only when a later Turn is submitted. Claude Code SHALL report exact Fork capability for the same working directory and SHALL reject cross-directory Fork explicitly.
 
 #### Scenario: Host restores a persisted Claude Thread
 - **WHEN** Host opens a valid Claude Native Session Ref in resume mode and reads its Snapshot
@@ -121,7 +121,12 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** it SHALL NOT start a Query or create a replacement Session
 
 #### Scenario: Caller requests Claude Fork
-- **WHEN** a caller invokes `open(fork)`
+- **WHEN** a caller invokes `open(fork)` with an exact Checkpoint from the same working directory
+- **THEN** the Adapter SHALL create a distinct Native Session whose Snapshot ends at that Checkpoint
+- **AND** source history SHALL remain unchanged
+
+#### Scenario: Caller requests cross-directory Claude Fork
+- **WHEN** a caller invokes `open(fork)` with a different working directory
 - **THEN** the Adapter SHALL return `unsupported`
 - **AND** source history SHALL remain unchanged
 

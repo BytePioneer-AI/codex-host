@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the supported Desktop build contract for Composer-scoped Codex/Pi routing, native create-state adaptation, title isolation, lazy Pi Session ownership, and privacy-preserving end-to-end validation.
+Define the supported Desktop build contract for Composer-scoped Codex, Pi, and Claude Code routing, native create-state adaptation, title isolation, lazy external Session ownership, and privacy-preserving end-to-end validation.
 ## Requirements
 ### Requirement: Composer Agent freezes at submission
 
@@ -180,17 +180,17 @@ The controlled Gate SHALL associate sanitized create and Turn observations befor
 - **WHEN** the Gate records Renderer, Host, title policy, and Session evidence
 - **THEN** it omits Prompt text, input values, Transcript, full DOM, Model values, and complete request or Thread IDs
 
-### Requirement: Development configuration can enable registered Claude routing
-The versioned Renderer Agent control SHALL use an explicit enabled-Agent list. A controlled or production configuration that includes Claude Code SHALL use the same Composer state machine and SHALL support an optional Composer-scoped Claude Model Ref without introducing another request hook or bypassing submit freeze and prewarm invalidation.
+### Requirement: Production configuration enables registered Claude routing
+The versioned Renderer Agent control SHALL use an explicit enabled-Agent list containing Codex, Pi, and Claude Code. Claude Code SHALL use the same Composer state machine and SHALL support an optional Composer-scoped Claude Model Ref without introducing another request hook or bypassing submit freeze and prewarm invalidation.
 
-#### Scenario: Default Renderer Probe installs
-- **WHEN** no Claude development configuration is present
-- **THEN** the Agent control SHALL contain only Codex and Pi
+#### Scenario: Default Renderer installs
+- **WHEN** the production Renderer installs
+- **THEN** the Agent control SHALL contain Codex, Pi, and Claude Code
 - **AND** existing Pi transport selection and Codex restoration SHALL remain unchanged
 
-#### Scenario: Controlled Probe enables Claude
-- **WHEN** the controlled Gate sets the validated Claude development flag before installing the Probe
-- **THEN** the same Agent control SHALL add a `Claude Code` option
+#### Scenario: Controlled Probe verifies Claude
+- **WHEN** the controlled Gate selects Claude Code before installing the Probe
+- **THEN** the same Agent control SHALL retain the `Claude Code` option
 - **AND** selecting it SHALL use the same draft switch, prewarm clear, submit freeze, replacement transfer, and revisit restoration logic
 
 #### Scenario: Renderer configuration excludes Claude
@@ -268,7 +268,7 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 For a supported Desktop build, Renderer Extension SHALL recover each mounted sidebar row's Host Thread ID only from a bounded React Fiber chain where one or more equal `conversationId` props have `dataAttributes` matching that exact DOM row's task-key, host, and row-marker attributes. It SHALL NOT treat the opaque sidebar task key as a Host Thread ID. Renderer SHALL batch validated Host Thread IDs through the fixed ownership-list client and render a compact title-prefix icon for a known external Agent. Codex rows SHALL remain unchanged, and sidebar decoration SHALL NOT alter Thread routing, selection, rename, status, pin, archive, hover, or action behavior.
 
 #### Scenario: Pi and Claude Code rows are mounted
-- **WHEN** mounted sidebar rows belong to Pi and development-gated Claude Code Threads
+- **WHEN** mounted sidebar rows belong to Pi and Claude Code Threads
 - **THEN** Renderer SHALL display the reviewed Pi and Claude Code icons before their respective titles
 - **AND** each icon SHALL provide the Agent label without intercepting pointer input
 

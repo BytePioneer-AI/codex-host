@@ -174,6 +174,9 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
       inspectors.push(inspector);
       return inspector;
     }),
+    deleteSession: vi.fn(async () => undefined),
+    forkSession: vi.fn(async () => ({ sessionId: "derived-session" })),
+    getSessionInfo: vi.fn(async () => ({ cwd: "/synthetic" })),
     readSessionMessages: vi.fn(async () => structuredClone(history)),
     createTransport: vi.fn((input) => {
       const transport = new FakeClaudeTransport(
@@ -274,7 +277,7 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: false,
           selectPermissionMode: true,
         },
-        history: { fork: false, forkAcrossCwd: false },
+        history: { fork: true, forkAcrossCwd: false },
       },
     });
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toEqual(first);
@@ -293,7 +296,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectThinkingOption: false,
         selectPermissionMode: true,
       },
-      history: { fork: false, forkAcrossCwd: false },
+      history: { fork: true, forkAcrossCwd: false },
     });
     await expect(
       session.execute({
@@ -513,7 +516,7 @@ describe("Claude Code HarnessAdapter", () => {
     await opened.value.close();
   });
 
-  it("keeps Fork unsupported and rejects missing resumed history", async () => {
+  it("forks an exact Native prefix while later source history continues", async () => {
     const { adapter, dependencies } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -523,7 +526,113 @@ describe("Claude Code HarnessAdapter", () => {
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: "claude-code",
       nativeSessionId: "source-session",
-      checkpointId: "source-checkpoint",
+      checkpointId: "source-assistant-1",
+      formatVersion: 1,
+    });
+    const histories = new Map<string, unknown[]>([
+      [
+        "source-session",
+        [
+          {
+            type: "user",
+            uuid: "source-user-1",
+            session_id: "source-session",
+            message: { role: "user", content: "first prompt" },
+          },
+          {
+            type: "assistant",
+            uuid: "source-assistant-1",
+            session_id: "source-session",
+            message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+          },
+          {
+            type: "user",
+            uuid: "source-user-2",
+            session_id: "source-session",
+            message: { role: "user", content: "second prompt" },
+          },
+          {
+            type: "assistant",
+            uuid: "source-assistant-2",
+            session_id: "source-session",
+            message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
+          },
+        ],
+      ],
+    ]);
+    vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
+      structuredClone(histories.get(sessionId) ?? []),
+    );
+    vi.mocked(dependencies.forkSession).mockImplementationOnce(async () => {
+      histories.get("source-session")?.push(
+        {
+          type: "user",
+          uuid: "source-user-3",
+          session_id: "source-session",
+          message: { role: "user", content: "active prompt" },
+        },
+        {
+          type: "assistant",
+          uuid: "source-assistant-3",
+          session_id: "source-session",
+          message: { role: "assistant", content: [{ type: "text", text: "active response" }] },
+        },
+      );
+      histories.set("derived-session", [
+        {
+          type: "user",
+          uuid: "derived-user-1",
+          session_id: "derived-session",
+          message: { role: "user", content: "first prompt" },
+        },
+        {
+          type: "assistant",
+          uuid: "derived-assistant-1",
+          session_id: "derived-session",
+          message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+        },
+      ]);
+      return { sessionId: "derived-session" };
+    });
+
+    const opened = await adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "derived-session" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: { nativeTurnKey: "derived-user-1" },
+            checkpoint: { checkpointId: "derived-assistant-1" },
+            input: [{ text: "first prompt" }],
+          },
+        ],
+      },
+    });
+    expect(dependencies.forkSession).toHaveBeenCalledWith({
+      checkpointId: "source-assistant-1",
+      cwd: "/synthetic",
+      sourceSessionId: "source-session",
+    });
+    expect(dependencies.deleteSession).not.toHaveBeenCalled();
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    await opened.value.close();
+  });
+
+  it("rejects missing resumed history and stale Fork Checkpoints without a Native Fork", async () => {
+    const { adapter, dependencies, history } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      checkpointId: "stale-checkpoint",
       formatVersion: 1,
     });
 
@@ -533,11 +642,99 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: { code: "sessionNotFound" },
     });
+    const foreignCheckpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "other-session",
+      checkpointId: "foreign-checkpoint",
+      formatVersion: 1,
+    });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic",
+        sourceRef,
+        checkpoint: foreignCheckpoint,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    vi.mocked(dependencies.getSessionInfo).mockResolvedValueOnce({ cwd: "/other-workspace" });
     await expect(
       adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    history.push(
+      {
+        type: "user",
+        uuid: "source-user",
+        session_id: "source-session",
+        message: { role: "user", content: "source prompt" },
+      },
+      {
+        type: "assistant",
+        uuid: "source-assistant",
+        session_id: "source-session",
+        message: { role: "assistant", content: [{ type: "text", text: "source response" }] },
+      },
+    );
+    await expect(
+      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(dependencies.forkSession).not.toHaveBeenCalled();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await resumed.value.close();
+  });
+
+  it("deletes a Native Fork whose remapped history is not the requested prefix", async () => {
+    const { adapter, dependencies } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      checkpointId: "source-assistant",
+      formatVersion: 1,
+    });
+    const sourceHistory = [
+      {
+        type: "user",
+        uuid: "source-user",
+        session_id: "source-session",
+        message: { role: "user", content: "source prompt" },
+      },
+      {
+        type: "assistant",
+        uuid: "source-assistant",
+        session_id: "source-session",
+        message: { role: "assistant", content: [{ type: "text", text: "source response" }] },
+      },
+    ];
+    const derivedHistory = [
+      {
+        type: "user",
+        uuid: "derived-user",
+        session_id: "derived-session",
+        message: { role: "user", content: "wrong prompt" },
+      },
+      {
+        type: "assistant",
+        uuid: "derived-assistant",
+        session_id: "derived-session",
+        message: { role: "assistant", content: [{ type: "text", text: "wrong response" }] },
+      },
+    ];
+    vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
+      structuredClone(sessionId === "derived-session" ? derivedHistory : sourceHistory),
+    );
+
+    await expect(
+      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(dependencies.deleteSession).toHaveBeenCalledWith({
+      cwd: "/synthetic",
+      sessionId: "derived-session",
+    });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
   it("starts lazily and emits a complete text lifecycle", async () => {
@@ -564,6 +761,11 @@ describe("Claude Code HarnessAdapter", () => {
       type: "item.updated",
       update: { type: "text.append", text: "hello" },
     });
+    transports[0]?.event({
+      type: "message.completed",
+      messageId: "synthetic-assistant",
+      checkpointId: "native-assistant",
+    });
     transports[0]?.finish({ status: "succeeded" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
@@ -577,7 +779,15 @@ describe("Claude Code HarnessAdapter", () => {
         nativeTurnKey: transports[0]?.turns[0]?.userMessageId,
         formatVersion: 1,
       },
-      outcome: { status: "succeeded" },
+      outcome: {
+        status: "succeeded",
+        checkpoint: {
+          harnessId: "claude-code",
+          nativeSessionId: transports[0]?.sessionId,
+          checkpointId: "native-assistant",
+          formatVersion: 1,
+        },
+      },
     });
     await session.close();
   });
@@ -1934,6 +2144,9 @@ describe("Claude Code HarnessAdapter", () => {
         }),
         close: async () => undefined,
       }),
+      deleteSession: async () => undefined,
+      forkSession: async () => ({ sessionId: "derived-session" }),
+      getSessionInfo: async () => ({ cwd: "/synthetic" }),
       readSessionMessages: async () => [],
       createTransport: () => ({
         sessionId: "claude-id",

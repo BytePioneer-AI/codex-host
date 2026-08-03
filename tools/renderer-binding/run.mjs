@@ -104,9 +104,7 @@ function validateProbeStatus(value) {
     !Array.isArray(value.selections) ||
     !isRecord(value.adapter) ||
     !["installing", "ready", "unsupported"].includes(value.adapter.state) ||
-    !Number.isInteger(value.adapter.decoratedRequests) ||
-    !Number.isInteger(value.adapter.modelUpdates) ||
-    !Number.isInteger(value.adapter.candidateCount)
+    !Number.isInteger(value.adapter.modelUpdates)
   ) {
     throw new Error("Renderer binding probe returned an invalid status");
   }

@@ -36,57 +36,25 @@ export interface LockedComposerSelection {
   permissionModeId?: HarnessPermissionModeId;
 }
 
-export interface RendererAdapterCandidateShape {
-  exportNames: string[];
-  ownPrewarmMethod: boolean;
-  hasDispatchMessage: boolean;
-  hasEnqueueRequest: boolean;
-  hasSendRequest: boolean;
-  signatureMatch: boolean;
-}
-
 export interface RendererAdapterStatus {
   state: RendererAdapterState;
   reason:
     | "installing"
     | "ready"
     | "asset-import-failed"
-    | "bridge-unavailable"
+    | "installation-failed"
     | "title-policy-unavailable"
     | "draft-prewarm-policy-unavailable"
     | "draft-prewarm-clear-failed"
-    | "model-controller-unavailable"
-    | "ambiguous-request-client"
-    | "invalid-create-params";
-  decoratedRequests: number;
+    | "model-controller-unavailable";
   modelUpdates: number;
-  candidateCount: number;
-  candidates: RendererAdapterCandidateShape[];
-  hook: "bridge" | "client" | "dispatcher" | "model-state" | null;
+  hook: "model-state" | null;
 }
-
-interface ThreadStartParams {
-  model: string;
-  [key: string]: unknown;
-}
-
-type PrewarmThreadStart = (
-  params: ThreadStartParams,
-  options?: unknown,
-) => Promise<unknown> | unknown;
 
 interface PrewarmTarget {
-  prewarmThreadStart?: PrewarmThreadStart;
+  prewarmThreadStart?: (params: unknown, options?: unknown) => Promise<unknown> | unknown;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
   requestClient?: PrewarmTarget;
-}
-
-interface PrewarmDispatcher {
-  dispatchMessage(type: string, payload: unknown): unknown;
-}
-
-interface ElectronRendererBridge {
-  sendMessageFromView(message: unknown): unknown;
 }
 
 export interface ModelPowerSelection {
@@ -239,22 +207,6 @@ function isActiveRequestManager(value: unknown): value is PrewarmTarget {
   return source.includes("send-cli-request-for-host") && hasPrewarmMethod(value.requestClient);
 }
 
-export function findPrewarmTargets(moduleExports: Record<string, unknown>): PrewarmTarget[] {
-  const targets = new Set<PrewarmTarget>();
-  for (const exported of Object.values(moduleExports)) {
-    if (hasPrewarmMethod(exported)) targets.add(exported);
-    if (typeof exported === "function" && hasPrewarmMethod(exported.prototype)) {
-      targets.add(exported.prototype);
-    }
-  }
-  return [...targets].filter(
-    (candidate) =>
-      ![...targets].some(
-        (other) => other !== candidate && Object.getPrototypeOf(other) === candidate,
-      ),
-  );
-}
-
 function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
   const prewarm = target.prewarmThreadStart ?? target.requestClient?.prewarmThreadStart;
   if (!prewarm) return false;
@@ -320,154 +272,6 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
     fiber = parent as typeof fiber;
   }
   return [...targets];
-}
-
-export function describePrewarmTargets(
-  moduleExports: Record<string, unknown>,
-  targets: PrewarmTarget[],
-): RendererAdapterCandidateShape[] {
-  return targets.map((target) => ({
-    exportNames: Object.entries(moduleExports)
-      .filter(
-        ([, exported]) =>
-          exported === target || (typeof exported === "function" && exported.prototype === target),
-      )
-      .map(([name]) => name)
-      .sort(),
-    ownPrewarmMethod:
-      Object.prototype.hasOwnProperty.call(target, "prewarmThreadStart") ||
-      Object.prototype.hasOwnProperty.call(target.requestClient ?? {}, "prewarmThreadStart"),
-    hasDispatchMessage:
-      typeof (target as { dispatchMessage?: unknown }).dispatchMessage === "function",
-    hasEnqueueRequest:
-      typeof (target as { enqueueRequest?: unknown }).enqueueRequest === "function",
-    hasSendRequest: typeof (target as { sendRequest?: unknown }).sendRequest === "function",
-    signatureMatch: matchesCurrentPrewarmSignature(target),
-  }));
-}
-
-export function decorateThreadStartParams(
-  params: unknown,
-  selection: LockedComposerSelection | null,
-): ThreadStartParams {
-  if (!isRecord(params) || typeof params.model !== "string") {
-    throw new Error("thread/start params must contain a text Model");
-  }
-  if (!selection) return params as ThreadStartParams;
-  const transportModelId =
-    selection.agent === "pi"
-      ? piTransportModelId(selection.model, selection.thinkingOptionId)
-      : selection.agent === "claude-code"
-        ? claudeTransportModelId(selection.model, selection.permissionModeId)
-        : transportModelIdForAgent(selection.agent);
-  return transportModelId
-    ? ({ ...params, model: transportModelId } as ThreadStartParams)
-    : (params as ThreadStartParams);
-}
-
-export function wrapElectronRendererBridge(
-  bridge: ElectronRendererBridge,
-  getSelection: () => LockedComposerSelection | null,
-  onDecorated: () => void,
-): () => void {
-  const original = bridge.sendMessageFromView;
-  const wrapped = function (this: unknown, message: unknown): unknown {
-    const selection = getSelection();
-    if (
-      selection == null ||
-      transportModelIdForAgent(selection.agent) == null ||
-      !isRecord(message) ||
-      !isRecord(message.request) ||
-      message.request.method !== "thread/start"
-    ) {
-      return original.call(this, message);
-    }
-    const request = message.request;
-    const params = decorateThreadStartParams(request.params, selection);
-    const decoratedMessage = { ...message, request: { ...request, params } };
-    onDecorated();
-    return original.call(this, decoratedMessage);
-  };
-  bridge.sendMessageFromView = wrapped;
-  return () => {
-    if (bridge.sendMessageFromView === wrapped) bridge.sendMessageFromView = original;
-  };
-}
-
-export function wrapPrewarmDispatcher(
-  dispatcher: PrewarmDispatcher,
-  getSelection: () => LockedComposerSelection | null,
-  onDecorated: () => void,
-): () => void {
-  const original = dispatcher.dispatchMessage;
-  const wrapped = function (this: unknown, type: string, payload: unknown): unknown {
-    const selection = getSelection();
-    if (!selection || transportModelIdForAgent(selection.agent) == null) {
-      return original.call(this, type, payload);
-    }
-    if (!isRecord(payload) || !isRecord(payload.request)) {
-      if (type === "thread-prewarm-start") {
-        throw new Error("thread-prewarm-start payload must contain a Request");
-      }
-      return original.call(this, type, payload);
-    }
-    const request = payload.request;
-    if (request.method !== "thread/start") return original.call(this, type, payload);
-    const params = decorateThreadStartParams(request.params, selection);
-    const decoratedPayload = { ...payload, request: { ...request, params } };
-    onDecorated();
-    return original.call(this, type, decoratedPayload);
-  };
-  dispatcher.dispatchMessage = wrapped;
-  return () => {
-    if (dispatcher.dispatchMessage === wrapped) dispatcher.dispatchMessage = original;
-  };
-}
-
-export function wrapPrewarmTarget(
-  target: PrewarmTarget,
-  getSelection: () => LockedComposerSelection | null,
-  onDecorated: () => void,
-): () => void {
-  const prewarmTarget = target.prewarmThreadStart ? target : target.requestClient;
-  const originalPrewarm = prewarmTarget?.prewarmThreadStart;
-  const wrappedPrewarm: PrewarmThreadStart | null = originalPrewarm
-    ? function (this: unknown, params, options) {
-        const selection = getSelection();
-        const decorated = decorateThreadStartParams(params, selection);
-        if (decorated !== params) onDecorated();
-        return originalPrewarm.call(this, decorated, options);
-      }
-    : null;
-  if (prewarmTarget && wrappedPrewarm) prewarmTarget.prewarmThreadStart = wrappedPrewarm;
-
-  const originalSendRequest = target.sendRequest;
-  const wrappedSendRequest = originalSendRequest
-    ? function (this: unknown, method: string, params: unknown, options?: unknown): unknown {
-        if (method !== "thread/start") {
-          return originalSendRequest.call(this, method, params, options);
-        }
-        const selection = getSelection();
-        const decorated = decorateThreadStartParams(params, selection);
-        if (decorated !== params) onDecorated();
-        return originalSendRequest.call(this, method, decorated, options);
-      }
-    : null;
-  if (wrappedSendRequest) target.sendRequest = wrappedSendRequest;
-
-  return () => {
-    if (
-      prewarmTarget &&
-      originalPrewarm &&
-      wrappedPrewarm &&
-      prewarmTarget.prewarmThreadStart === wrappedPrewarm
-    ) {
-      prewarmTarget.prewarmThreadStart = originalPrewarm;
-    }
-    if (originalSendRequest && wrappedSendRequest && target.sendRequest === wrappedSendRequest) {
-      target.sendRequest = originalSendRequest;
-    }
-  };
 }
 
 function isModelAtomState(value: unknown): value is ModelAtomState {
@@ -715,10 +519,7 @@ export function installCurrentRendererAdapter(): {
   const liveStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",
-    decoratedRequests: 0,
     modelUpdates: 0,
-    candidateCount: 0,
-    candidates: [],
     hook: null,
   };
   const updateStatus = (

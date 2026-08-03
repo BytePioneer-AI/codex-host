@@ -34,9 +34,6 @@ export async function executeExternalThreadFork(input: {
   runtime: ExternalThreadRuntime;
 }): Promise<ExternalThreadForkResult> {
   const { source, fork, adapters, repository, runtime } = input;
-  if (source.running) {
-    return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
-  }
   const targetCwd = fork.cwd ?? source.cwd;
   const changesCwd = targetCwd !== source.cwd;
   if (
@@ -73,8 +70,10 @@ export async function executeExternalThreadFork(input: {
       error: { code: -32076, message: "External Harness cannot fork into another cwd" },
     };
   }
-  const refreshError = await runtime.refresh(source);
-  if (refreshError) return { ok: false, error: refreshError };
+  if (!source.running) {
+    const refreshError = await runtime.refresh(source);
+    if (refreshError) return { ok: false, error: refreshError };
+  }
 
   const mappings = source.record.turnMappings;
   let boundaryIndex: number;

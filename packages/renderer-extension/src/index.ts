@@ -64,11 +64,8 @@ export {
   CLAUDE_CODE_TRANSPORT_MODEL_PREFIX,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
-  decorateThreadStartParams,
-  describePrewarmTargets,
   findActivePrewarmTargets,
   findComposerModelTarget,
-  findPrewarmTargets,
   installCurrentRendererAdapter,
   isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
@@ -81,9 +78,6 @@ export {
   sameModelPowerSelection,
   selectOptimisticModelAtom,
   threadIdFromComposerModelTarget,
-  wrapElectronRendererBridge,
-  wrapPrewarmDispatcher,
-  wrapPrewarmTarget,
 } from "./versioned-renderer-adapter.js";
 export type {
   LockedComposerSelection,
@@ -92,7 +86,6 @@ export type {
   ModelPowerSelection,
   ModelStateController,
   RendererDraftPrewarmPolicy,
-  RendererAdapterCandidateShape,
   RendererAdapterState,
   RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";

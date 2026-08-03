@@ -56,18 +56,18 @@ The generic external Thread path SHALL retain response-before-notification order
 - **WHEN** Host exits with Pi and Claude Sessions open
 - **THEN** it SHALL close every Session and both Adapters without depending on Harness-specific branches
 
-### Requirement: Claude Host registration is explicitly development-gated
-The production composition root SHALL always register Pi as before and SHALL register Claude Code only when an explicit development environment switch is enabled. The default Agent SHALL remain Codex or Pi.
+### Requirement: Production Host registers Pi and Claude Code
+The production composition root SHALL register both Pi and Claude Code Adapters using the user's installed executable configuration. The default Agent MAY remain Codex or Pi, while the Renderer Agent control exposes all registered production Harnesses.
 
 #### Scenario: Default Host starts
-- **WHEN** the Claude development switch is absent
-- **THEN** Host SHALL not construct a Claude Code Adapter
-- **AND** all existing Codex and Pi routing behavior SHALL remain unchanged
+- **WHEN** the production Host starts
+- **THEN** Host SHALL construct both Pi and Claude Code Adapters
+- **AND** valid Pi and Claude Code transport tokens SHALL become routable
 
-#### Scenario: Development Host starts with Claude
-- **WHEN** the Claude development switch is explicitly enabled
-- **THEN** Host SHALL register one Claude Code Adapter using the user-installed executable configuration
-- **AND** the Claude transport token SHALL become routable
+#### Scenario: One external Harness is unavailable
+- **WHEN** Pi or Claude Code is unavailable on the local machine
+- **THEN** inspection or the owning Thread operation SHALL return its explicit Harness error
+- **AND** routing for Codex and the other registered Harness SHALL remain unchanged
 
 ### Requirement: Validation distinguishes Host proof from Desktop proof
 Hermetic Host tests SHALL use two Fake HarnessAdapters. Real Adapter tests and real Desktop tests SHALL be separately and explicitly enabled, bounded, and privacy-preserving.
@@ -85,7 +85,7 @@ Hermetic Host tests SHALL use two Fake HarnessAdapters. Real Adapter tests and r
 Host Runtime SHALL handle the fixed `codexhost/thread/ownership/list` request by reading external Thread ownership directly from the Mapping Store repository. It SHALL return exactly one ordered ownership entry per requested Thread ID, classify a stored record as its immutable external Harness and an absent record as Codex, and MUST NOT call an Adapter, restore a HarnessSession, read a Snapshot, or forward the request to official Codex.
 
 #### Scenario: Batch contains Codex and external Threads
-- **WHEN** a valid ownership request contains an official Thread ID, a persisted Pi Thread ID, and a persisted development-gated Claude Code Thread ID
+- **WHEN** a valid ownership request contains an official Thread ID, a persisted Pi Thread ID, and a persisted Claude Code Thread ID
 - **THEN** Host SHALL return Codex, Pi, and Claude Code ownership in the same order as requested
 - **AND** it SHALL NOT open either external Adapter
 
@@ -138,7 +138,7 @@ Protocol Core SHALL decode Desktop transport Model carriers for each finite exte
 - **AND** Host does not reinterpret it as a Harness Model Ref
 
 ### Requirement: Composition root exclusively constructs concrete Adapters
-The production composition root SHALL construct concrete Pi and development-gated Claude Adapters and SHALL inject the complete external Adapter registry into AppServerHost. AppServerHost SHALL depend on HarnessAdapter and MUST NOT import or construct PiAdapter or ClaudeCodeAdapter.
+The production composition root SHALL construct concrete Pi and Claude Code Adapters and SHALL inject the complete external Adapter registry into AppServerHost. AppServerHost SHALL depend on HarnessAdapter and MUST NOT import or construct PiAdapter or ClaudeCodeAdapter.
 
 #### Scenario: Production Host starts
 - **WHEN** the Host Runtime entry point creates AppServerHost
@@ -154,16 +154,17 @@ The production composition root SHALL construct concrete Pi and development-gate
 Host Runtime SHALL consult the same external Thread repository for create, turn, interrupt, read, resume, rename, delete, inspect, and Fork routing. A persisted external resource MUST remain external when its Session is not currently loaded and MUST never fall through to official Codex.
 
 #### Scenario: Persisted Thread is not loaded
-- **WHEN** a resource request names a persisted Pi Thread after Host restart
-- **THEN** Host SHALL select PiAdapter and resume or reject explicitly according to the operation
+- **WHEN** a resource request names a persisted Pi or Claude Code Thread after Host restart
+- **THEN** Host SHALL select the owning Adapter and resume or reject explicitly according to the operation
 - **AND** it SHALL NOT forward the request to official Codex
 
 ### Requirement: Generic external Sessions support capability-driven history and Fork
 Host Runtime SHALL use only HarnessAdapter Snapshot, Native Ref, capability, resume, and Fork interfaces for external history operations. It MUST NOT inspect Pi Entry locators, Claude UUIDs, or other native Fork payloads.
 
-#### Scenario: Two Adapters have different Fork support
-- **WHEN** Pi reports exact Fork and development-gated Claude reports unsupported
-- **THEN** the same Host route SHALL execute Pi Fork and return an explicit Claude unsupported error without Harness-specific event mapping
+#### Scenario: Registered Adapter supports exact Fork
+- **WHEN** Pi or Claude Code reports exact Fork for a mapped Thread whose requested Checkpoint is persisted
+- **THEN** the same Host route SHALL execute the owning Adapter Fork without Harness-specific event mapping, whether or not a later source Turn is active
+- **AND** an Adapter that reports no Fork capability SHALL still return an explicit unsupported error
 
 ### Requirement: Generic external routing owns bounded post-Fork rollback
 Host Runtime SHALL use persisted ownership and the same HarnessAdapter Snapshot and Fork interfaces to handle the supported Desktop's post-Fork `thread/rollback` for an untouched derived external prefix. It MUST NOT add Pi Entry, Session file, or native rollback logic to Host, and an unsupported external rollback MUST NOT fall through to Codex.

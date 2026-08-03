@@ -225,7 +225,8 @@ export class ClaudeNativeTurnAccumulator {
   }
 
   #consumeAssistantMessage(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
-    const messageId = this.#activeStreamMessageId ?? nativeUuid(message) ?? this.#nextMessageId();
+    const checkpointId = nativeUuid(message);
+    const messageId = this.#activeStreamMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
     if (state.completed) return;
 
@@ -283,7 +284,11 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (!this.#protocolConflict && !this.#reasoningConflict && !this.#textConflict) {
-      events.push({ type: "message.completed", messageId });
+      events.push({
+        type: "message.completed",
+        messageId,
+        ...(checkpointId ? { checkpointId } : {}),
+      });
     }
     state.completed = true;
     if (this.#activeStreamMessageId === messageId) this.#activeStreamMessageId = null;

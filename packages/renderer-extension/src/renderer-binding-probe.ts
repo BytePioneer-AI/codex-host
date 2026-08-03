@@ -281,10 +281,7 @@ export function installRendererBindingProbe(
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",
-    decoratedRequests: 0,
     modelUpdates: 0,
-    candidateCount: 0,
-    candidates: [],
     hook: null,
   };
 
@@ -348,8 +345,7 @@ export function installRendererBindingProbe(
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-  ): boolean =>
-    applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? false;
+  ): boolean => applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? false;
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);

@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import {
+  deleteSession as deleteClaudeSession,
+  forkSession as forkClaudeNativeSession,
+  getSessionInfo as getClaudeSessionInfo,
+  getSessionMessages,
+} from "@anthropic-ai/claude-agent-sdk";
 import {
   HarnessOutputChannel,
   parseHostUsage,
@@ -47,6 +52,7 @@ import {
   harnessResolvedModelLabelSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
@@ -56,6 +62,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
+import { forkClaudeSession } from "./claude-fork.js";
 import { mapClaudeSnapshot } from "./claude-history.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
@@ -114,6 +121,7 @@ interface ActiveTurn {
   tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
+  checkpointId: string | null;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   completion: Promise<void>;
@@ -200,7 +208,7 @@ class ClaudeHarnessSession implements HarnessSession {
       selectThinkingOption: false,
       selectPermissionMode: true,
     },
-    history: { fork: false, forkAcrossCwd: false },
+    history: { fork: true, forkAcrossCwd: false },
   };
   readonly initialState: HarnessSessionState;
   readonly initialUsage = null;
@@ -419,6 +427,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      checkpointId: null,
       nativeTurnRef: null,
       cancellationRequested: false,
       completion,
@@ -813,6 +822,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeReasoning(active, event.messageId, { status: "succeeded" });
         return;
       case "message.completed":
+        if (event.checkpointId) active.checkpointId = event.checkpointId;
         if (this.#transport) this.#refreshUsage(this.#transport, active.command.turnId);
         return;
       case "tool.started":
@@ -1097,6 +1107,15 @@ class ClaudeHarnessSession implements HarnessSession {
       active,
       outcome.status === "succeeded" ? "superseded" : "cancelled",
     );
+    const checkpoint = active.checkpointId
+      ? nativeCheckpointRefSchema.parse({
+          harnessId: this.harnessId,
+          nativeSessionId: this.#sessionId,
+          checkpointId: active.checkpointId,
+          formatVersion: 1,
+        })
+      : null;
+    const terminalOutcome: TurnOutcome = checkpoint ? { ...outcome, checkpoint } : outcome;
     const itemOutcome: HostItemOutcome = outcome;
     if (active.compactionItem) this.#completeCompactionItem(active, itemOutcome);
     active.tools.finalize(active.command.turnId, itemOutcome);
@@ -1108,7 +1127,7 @@ class ClaudeHarnessSession implements HarnessSession {
       type: "turn.completed",
       turnId: active.command.turnId,
       ...(active.nativeTurnRef ? { nativeTurnRef: active.nativeTurnRef } : {}),
-      outcome,
+      outcome: terminalOutcome,
     });
     this.#active = null;
     active.resolveCompletion();
@@ -1170,6 +1189,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           environment: options.environment ?? process.env,
           closeTimeoutMs: this.#closeTimeoutMs,
         }),
+      deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
+      forkSession: ({ checkpointId, cwd, sourceSessionId }) =>
+        forkClaudeNativeSession(sourceSessionId, { dir: cwd, upToMessageId: checkpointId }),
+      getSessionInfo: async ({ sessionId }) => {
+        const info = await getClaudeSessionInfo(sessionId);
+        if (!info) return undefined;
+        return info.cwd ? { cwd: info.cwd } : {};
+      },
       readSessionMessages: ({ cwd, sessionId }) => getSessionMessages(sessionId, { dir: cwd }),
     };
   }
@@ -1222,7 +1249,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
               selectThinkingOption: false,
               selectPermissionMode: snapshot.canSelectPermissionMode,
             },
-            history: { fork: false, forkAcrossCwd: false },
+            history: { fork: true, forkAcrossCwd: false },
           },
         };
       }
@@ -1237,7 +1264,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             selectThinkingOption: false,
             selectPermissionMode: snapshot.canSelectPermissionMode,
           },
-          history: { fork: false, forkAcrossCwd: false },
+          history: { fork: true, forkAcrossCwd: false },
         },
       };
     } catch (error) {
@@ -1275,16 +1302,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: {
           code: "invalidRequest",
           message: "Claude Code Adapter requires cwd",
-          retryable: false,
-        },
-      };
-    }
-    if (input.kind === "fork") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Claude Code fork is not implemented",
           retryable: false,
         },
       };
@@ -1329,6 +1346,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    const cwd = path.resolve(input.cwd);
     const nativeRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;
     if (nativeRef && (!nativeRef.success || nativeRef.data.harnessId !== this.harnessId)) {
@@ -1341,16 +1359,29 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    const forked =
+      input.kind === "fork"
+        ? await forkClaudeSession({
+            checkpoint: input.checkpoint,
+            cwd,
+            dependencies: this.#dependencies,
+            harnessId: this.harnessId,
+            sourceRef: input.sourceRef,
+          })
+        : null;
+    if (forked && !forked.ok) return forked;
     const session = new ClaudeHarnessSession(
-      input.cwd,
+      cwd,
       this.#dependencies,
       this.#closeTimeoutMs,
       () => this.#sessions.delete(session),
       {
-        openMode: input.kind,
-        sessionId: nativeRef?.success
-          ? nativeRef.data.nativeSessionId
-          : this.#dependencies.randomUUID(),
+        openMode: input.kind === "create" ? "create" : "resume",
+        sessionId: forked?.ok
+          ? forked.value.sessionId
+          : nativeRef?.success
+            ? nativeRef.data.nativeSessionId
+            : this.#dependencies.randomUUID(),
         ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
         requestedPermissionModeId,
         toolOutputLimit: this.#toolOutputLimit,

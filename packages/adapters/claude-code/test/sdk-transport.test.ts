@@ -295,7 +295,11 @@ describe("ClaudeSdkTransport text reconciliation", () => {
         messageId: "00000000-0000-4000-8000-000000000028",
         delta: "continued",
       },
-      { type: "message.completed", messageId: "00000000-0000-4000-8000-000000000028" },
+      {
+        type: "message.completed",
+        messageId: "00000000-0000-4000-8000-000000000028",
+        checkpointId: "00000000-0000-4000-8000-000000000028",
+      },
     ]);
     expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
@@ -375,6 +379,7 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
       {
         type: "message.completed",
         messageId: "00000000-0000-4000-8000-000000000031",
+        checkpointId: "00000000-0000-4000-8000-000000000031",
       },
       { type: "tool.progress", callId: "edit-1", elapsedMs: 500 },
       {
@@ -581,7 +586,7 @@ describe("ClaudeSdkTransport Question callbacks", () => {
       { type: "reasoning.delta", messageId: assistantId, delta: " reasoning" },
       { type: "reasoning.completed", messageId: assistantId },
       { type: "text.delta", messageId: assistantId, delta: "answer" },
-      { type: "message.completed", messageId: assistantId },
+      { type: "message.completed", messageId: assistantId, checkpointId: assistantId },
     ]);
     await value.transport.close();
   });

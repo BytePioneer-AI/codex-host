@@ -62,6 +62,12 @@ describe("Claude history mapping", () => {
             nativeTurnKey: "user-1",
             formatVersion: 1,
           },
+          checkpoint: {
+            harnessId: "claude-code",
+            nativeSessionId: sessionId,
+            checkpointId: "assistant-2",
+            formatVersion: 1,
+          },
           input: [{ type: "text", text: "first" }],
           items: [
             {
@@ -101,6 +107,12 @@ describe("Claude history mapping", () => {
             nativeTurnKey: "user-2",
             formatVersion: 1,
           },
+          checkpoint: {
+            harnessId: "claude-code",
+            nativeSessionId: sessionId,
+            checkpointId: "assistant-3",
+            formatVersion: 1,
+          },
           input: [{ type: "text", text: "second" }],
           items: [
             {
@@ -136,6 +148,7 @@ describe("Claude history mapping", () => {
       turns: [
         {
           nativeTurnRef: { nativeTurnKey: "user-1" },
+          checkpoint: { checkpointId: "assistant-reasoning" },
           items: [{ item: { type: "reasoning", text: "visible but not terminal" } }],
           outcome: { status: "unknown" },
         },

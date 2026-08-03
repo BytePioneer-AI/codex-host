@@ -177,7 +177,11 @@ export function installRendererForkControl(options: {
       .inspectThread({ threadId: target.threadId })
       .then(async (inspection) => {
         if (disposed) return;
-        if (inspection.owner === "codex" || !target.isProjectlessConversation) {
+        if (
+          inspection.owner === "codex" ||
+          !inspection.history.fork ||
+          (!target.isProjectlessConversation && inspection.history.forkAcrossCwd)
+        ) {
           dom.replay(target);
           return;
         }

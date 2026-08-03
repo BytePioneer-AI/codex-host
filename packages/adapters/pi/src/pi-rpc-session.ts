@@ -69,6 +69,7 @@ export type PiTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
+  | { type: "message.completed"; messageId: string }
   | { type: "interaction.requested"; request: PiInteractionRequest }
   | {
       type: "interaction.closed";
@@ -1162,6 +1163,7 @@ export class PiRpcSession {
     active.reasoningMessageOpen = false;
     active.lastFinalizedMessageText = finalText;
     active.lastFinalizedMessageReasoning = finalReasoning;
+    active.onEvent({ type: "message.completed", messageId });
   }
 
   #write(value: Record<string, unknown>): Promise<void> {

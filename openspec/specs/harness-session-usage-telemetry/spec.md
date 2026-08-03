@@ -100,7 +100,13 @@ Pi Adapter MUST 从 Pi 的结构化 `get_session_stats` Response 读取当前 Us
 
 ### Requirement: Pi 必须在权威生命周期边界刷新 Usage
 
-Pi Adapter MUST 在打开 Native Session 进行恢复之后、每个已接受输入到达 Pi 稳定 terminal 条件之后、手动或自动 Compaction 完成之后，以及 Model 选择改变 Native Session 的 effective configuration 之后请求 Usage。刷新 Request 和产生的事件 MUST 串行化，确保较旧观测不能覆盖较新的 Session 或 Model generation。
+Pi Adapter MUST 在打开 Native Session 进行恢复之后、活动 Turn 内每个原生 Assistant Message 完成之后、每个已接受输入到达 Pi 稳定 terminal 条件之后、手动或自动 Compaction 完成之后，以及 Model 选择改变 Native Session 的 effective configuration 之后请求 Usage。刷新 Request 和产生的事件 MUST 串行化，确保较旧观测不能覆盖较新的 Session 或 Model generation。
+
+#### Scenario: Pi 首个 Assistant Message 提供 Usage
+
+- **WHEN** Pi 首个 Turn 的 Assistant Message 已完成并提供可靠 Session Usage，但 Tool 或 Turn 仍在运行
+- **THEN** Pi Adapter MUST 立即请求并发布关联该活动 Turn 的当前 Usage
+- **AND** Pi Adapter MUST NOT 等待 Turn terminal 才首次提供上下文窗口数据
 
 #### Scenario: Pi 首个 Turn 分配 Session
 

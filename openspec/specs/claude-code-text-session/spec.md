@@ -236,7 +236,13 @@ The Claude Code Adapter package root SHALL directly export only the concrete Ada
 
 ### Requirement: Claude Code publishes stable current context Usage
 
-The Claude Code Adapter MUST read current context Usage only from the active official SDK Query's stable structured context operation. It MUST map reliable current used Token and effective maximum Token values into one normalized `HostUsage` context pair after a Turn terminal, and MUST omit unavailable Session aggregate, cost, category, percentage, or Model fields rather than deriving them. It MUST NOT depend on the SDK experimental Session Usage operation or interpret per-Result Usage as a Native Session aggregate.
+The Claude Code Adapter MUST read current context Usage only from the active official SDK Query's stable structured context operation. It MUST map reliable current used Token and effective maximum Token values into one normalized `HostUsage` context pair after each validated complete Assistant message and after the Turn terminal, and MUST omit unavailable Session aggregate, cost, category, percentage, or Model fields rather than deriving them. It MUST NOT depend on the SDK experimental Session Usage operation or interpret per-Result Usage as a Native Session aggregate.
+
+#### Scenario: Claude Assistant message exposes context during an active Turn
+
+- **WHEN** an accepted Claude Turn receives a validated complete Assistant message and the active Query returns valid current context while Tool work or a later Assistant response remains pending
+- **THEN** the Adapter MUST publish a `session.usage.changed` snapshot associated with the active Turn
+- **AND** the Adapter MUST NOT wait for the native Result before first providing the current context pair
 
 #### Scenario: Successful Claude Turn exposes current context
 

@@ -52,6 +52,7 @@ export type ClaudeTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
+  | { type: "message.completed"; messageId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

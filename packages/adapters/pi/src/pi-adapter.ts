@@ -350,6 +350,7 @@ class PiHarnessSession implements HarnessSession {
   #transport: PiTurnTransport | null = null;
   #usage: HostUsage | null;
   #usageGeneration = 0;
+  #usageRefreshSequence = 0;
 
   constructor(
     cwd: string,
@@ -880,6 +881,7 @@ class PiHarnessSession implements HarnessSession {
     const transport = this.#transport;
     if (!transport || this.#phase !== "open") return;
     const generation = this.#usageGeneration;
+    const refreshSequence = ++this.#usageRefreshSequence;
     const sessionId = transport.state.sessionId;
     const model = `${transport.state.provider ?? ""}\u0000${transport.state.modelId ?? ""}`;
     let usage: HostUsage | null;
@@ -893,6 +895,7 @@ class PiHarnessSession implements HarnessSession {
       this.#phase !== "open" ||
       this.#transport !== transport ||
       this.#usageGeneration !== generation ||
+      this.#usageRefreshSequence !== refreshSequence ||
       transport.state.sessionId !== sessionId ||
       `${transport.state.provider ?? ""}\u0000${transport.state.modelId ?? ""}` !== model
     ) {
@@ -920,6 +923,9 @@ class PiHarnessSession implements HarnessSession {
         return;
       case "reasoning.completed":
         this.#completeReasoning(active, { status: "succeeded" });
+        return;
+      case "message.completed":
+        void this.#refreshUsage(active.command.turnId);
         return;
       case "interaction.requested":
         this.#startInteraction(active, event.request);

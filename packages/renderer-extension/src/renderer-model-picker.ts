@@ -145,7 +145,11 @@ function positionModelMenu(control: RendererModelPickerControl): void {
       : Math.max(8, rect.left - width - 4);
   control.modelMenu.style.width = `${width}px`;
   control.modelMenu.style.left = `${left}px`;
-  control.modelMenu.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - 368))}px`;
+  const height = control.modelMenu.getBoundingClientRect().height;
+  control.modelMenu.style.top = `${Math.max(
+    8,
+    Math.min(rect.top, window.innerHeight - height - 8),
+  )}px`;
 }
 
 export function syncRendererModelTriggerClass(
@@ -153,6 +157,7 @@ export function syncRendererModelTriggerClass(
   nativeClassName?: string,
 ): void {
   control.trigger.className = nativeClassName?.trim() || FALLBACK_TRIGGER_CLASSES;
+  control.trigger.style.width = "fit-content";
   control.trigger.style.maxWidth = "min(320px, 38vw)";
 }
 
@@ -210,18 +215,13 @@ export function mountRendererModelPicker(
   const thinkingLabel = document.createElement("span");
   thinkingLabel.className = "shrink-0 truncate text-token-text-tertiary";
   thinkingLabel.style.flex = "none";
-  thinkingLabel.style.maxWidth = "min(96px, 32%)";
+  thinkingLabel.style.maxWidth = "96px";
   thinkingLabel.style.overflow = "hidden";
   thinkingLabel.style.textOverflow = "ellipsis";
   thinkingLabel.style.whiteSpace = "nowrap";
   thinkingLabel.hidden = true;
 
-  const triggerChevron = document.createElement("span");
-  triggerChevron.textContent = "\u2304";
-  triggerChevron.setAttribute("aria-hidden", "true");
-  triggerChevron.className = "shrink-0 text-token-text-tertiary";
-  triggerChevron.style.flex = "none";
-  trigger.append(label, thinkingLabel, triggerChevron);
+  trigger.append(label, thinkingLabel);
 
   const menu = document.createElement("div");
   menu.id = `${composerId}-model-menu`;
@@ -267,8 +267,8 @@ export function mountRendererModelPicker(
   };
   const openModelMenu = (): void => {
     if (!popoverOpen(menu) || popoverOpen(modelMenu)) return;
-    positionModelMenu(control);
     modelMenu.showPopover();
+    positionModelMenu(control);
     modelButton.setAttribute("aria-expanded", "true");
   };
   const open = (): void => {

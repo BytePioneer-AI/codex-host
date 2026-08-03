@@ -779,6 +779,8 @@ class ClaudeHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.messageId, event.delta);
     } else if (event.type === "reasoning.completed") {
       this.#completeReasoning(active, event.messageId, { status: "succeeded" });
+    } else if (event.type === "message.completed") {
+      if (this.#transport) this.#refreshUsage(this.#transport, active.command.turnId);
     } else if (event.type === "interaction.requested") {
       this.#startInteraction(active, event.request);
     } else {

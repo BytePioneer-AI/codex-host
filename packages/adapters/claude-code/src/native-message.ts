@@ -9,7 +9,7 @@ const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_a
 
 type ClaudeNativeContentEvent = Extract<
   ClaudeTurnEvent,
-  { type: "text.delta" | "reasoning.delta" | "reasoning.completed" }
+  { type: "text.delta" | "reasoning.delta" | "reasoning.completed" | "message.completed" }
 >;
 
 interface AssistantMessageState {
@@ -197,6 +197,9 @@ export class ClaudeNativeTurnAccumulator {
       }
     }
 
+    if (!this.#reasoningConflict && !this.#textConflict) {
+      events.push({ type: "message.completed", messageId });
+    }
     state.completed = true;
     if (this.#activeStreamMessageId === messageId) this.#activeStreamMessageId = null;
   }

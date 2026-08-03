@@ -882,6 +882,34 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("publishes Usage after the first Assistant message while the Turn remains active", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-during-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    transport.delta("working", "assistant-usage");
+    await nextEvent(iterator);
+    transport.event({ type: "message.completed", messageId: "assistant-usage" });
+
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledOnce());
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-during-turn",
+      usage: { contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
+    expect(transport.resolveTurn).not.toBeNull();
+
+    transport.succeed("working");
+    await session.close();
+  });
+
   it("retains reliable Usage when a later refresh fails", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -912,6 +940,53 @@ describe("Pi HarnessAdapter Session", () => {
     await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledTimes(2));
     await session.close();
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("drops an older overlapping Usage refresh for the same Session generation", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-overlap"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    let resolveOld!: (usage: HostUsage) => void;
+    transport.getSessionUsage.mockImplementationOnce(
+      () => new Promise<HostUsage>((resolve) => (resolveOld = resolve)),
+    );
+    transport.event({ type: "message.completed", messageId: "assistant-old" });
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledOnce());
+
+    transport.usage = {
+      totalTokens: 50,
+      contextUsedTokens: 45,
+      contextWindowTokens: 200,
+    };
+    transport.event({ type: "message.completed", messageId: "assistant-new" });
+    await vi.waitFor(() => expect(transport.getSessionUsage).toHaveBeenCalledTimes(2));
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 50 },
+    });
+
+    resolveOld({ totalTokens: 999, contextUsedTokens: 199, contextWindowTokens: 200 });
+    await Promise.resolve();
+    await Promise.resolve();
+    transport.succeed("done");
+    await vi.waitFor(() => expect(transport.getEntries).toHaveBeenCalledTimes(2));
+    await session.close();
+
+    const remaining: HarnessOutput[] = [];
+    for (;;) {
+      const result = await iterator.next();
+      if (result.done) break;
+      remaining.push(result.value);
+    }
+    expect(JSON.stringify(remaining)).not.toContain("999");
   });
 
   it("drops an older Usage refresh after the effective Model changes", async () => {

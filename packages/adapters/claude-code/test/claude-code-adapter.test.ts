@@ -906,6 +906,34 @@ describe("Claude Code HarnessAdapter", () => {
     });
   });
 
+  it("publishes context Usage after an Assistant message while the Turn remains active", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-during-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.contextUsage = { usedTokens: 60, maxTokens: 200, model: "runtime-default" };
+    transport.delta("working", "assistant-usage");
+    await nextEvent(iterator);
+    transport.event({ type: "message.completed", messageId: "assistant-usage" });
+
+    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledTimes(2));
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-during-turn",
+      usage: { contextUsedTokens: 60, contextWindowTokens: 200 },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("publishes stable context Usage after the Turn terminal", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

@@ -430,6 +430,7 @@ describe("ClaudeSdkTransport Question callbacks", () => {
       { type: "reasoning.delta", messageId: assistantId, delta: " reasoning" },
       { type: "reasoning.completed", messageId: assistantId },
       { type: "text.delta", messageId: assistantId, delta: "answer" },
+      { type: "message.completed", messageId: assistantId },
     ]);
     await value.transport.close();
   });

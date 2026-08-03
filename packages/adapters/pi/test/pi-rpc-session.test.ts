@@ -712,6 +712,7 @@ describe("Pi RPC Turn aggregation", () => {
     });
     expect(events).toEqual([
       { type: "text.delta", messageId: expect.any(String), delta: "synthetic final text" },
+      { type: "message.completed", messageId: expect.any(String) },
     ]);
     await rpc.close();
   });
@@ -729,6 +730,7 @@ describe("Pi RPC Turn aggregation", () => {
       { type: "reasoning.delta", messageId: expect.any(String), delta: "streamed reasoning" },
       { type: "text.delta", messageId: expect.any(String), delta: "streamed answer" },
       { type: "reasoning.completed", messageId: expect.any(String) },
+      { type: "message.completed", messageId: expect.any(String) },
     ]);
     expect(
       new Set(events.flatMap((event) => ("messageId" in event ? [event.messageId] : []))).size,
@@ -787,7 +789,9 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     expect(events).toEqual([
+      { type: "message.completed", messageId: expect.any(String) },
       { type: "text.delta", messageId: expect.any(String), delta: "recovered" },
+      { type: "message.completed", messageId: expect.any(String) },
     ]);
     await rpc.close();
   });
@@ -813,6 +817,7 @@ describe("Pi RPC Turn aggregation", () => {
     });
     expect(events.map(({ type }) => type)).toEqual([
       "text.delta",
+      "message.completed",
       "tool.started",
       "tool.started",
       "tool.updated",
@@ -821,6 +826,7 @@ describe("Pi RPC Turn aggregation", () => {
       "tool.completed",
       "tool.completed",
       "text.delta",
+      "message.completed",
     ]);
     const textEvents = events.filter((event) => event.type === "text.delta");
     expect(textEvents).toEqual([
@@ -1019,6 +1025,7 @@ describe("Pi RPC Turn aggregation", () => {
       "interaction.requested",
       "interaction.closed",
       "text.delta",
+      "message.completed",
     ]);
     expect(events[1]).toMatchObject({ type: "interaction.closed", reason: "responded" });
     await rpc.close();
@@ -1090,6 +1097,7 @@ describe("Pi RPC Turn aggregation", () => {
         "tool.started",
         "tool.completed",
         "text.delta",
+        "message.completed",
       ]);
       expect(onFault).not.toHaveBeenCalled();
       await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({

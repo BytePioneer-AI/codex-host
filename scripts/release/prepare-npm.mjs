@@ -1,0 +1,672 @@
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
+
+const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+
+export const NPM_PACKAGE_NAME = "@codexhost/cli";
+export const NPM_PACKAGE_DESCRIPTION =
+  "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
+
+const runtimeLicenses = [
+  {
+    packageName: "@anthropic-ai/claude-agent-sdk",
+    license: "SEE LICENSE IN README.md",
+    source: "LICENSE.md",
+    output: "Claude-Agent-SDK-LICENSE.md",
+  },
+  {
+    packageName: "@anthropic-ai/sdk",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Anthropic-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@modelcontextprotocol/sdk",
+    license: "MIT",
+    source: "LICENSE",
+    output: "MCP-SDK-LICENSE.txt",
+  },
+  { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
+  { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
+  { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
+];
+
+export function npmReleaseCommand(
+  args,
+  platform = process.platform,
+  environment = process.env,
+  nodePath = process.execPath,
+) {
+  if (platform !== "win32") return { command: "npm", args };
+  const npmExecPath = environment.npm_execpath;
+  if (!npmExecPath) {
+    throw new Error("Windows release builds must be started through npm so npm_execpath is set");
+  }
+  return { command: nodePath, args: [npmExecPath, ...args] };
+}
+
+export function npmReleaseBuildCommands(
+  target,
+  platform = process.platform,
+  environment = process.env,
+  nodePath = process.execPath,
+) {
+  return [
+    {
+      label: "TypeScript build",
+      ...npmReleaseCommand(["run", "build:typescript"], platform, environment, nodePath),
+    },
+    {
+      label: "Renderer build",
+      ...npmReleaseCommand(["run", "build:renderer"], platform, environment, nodePath),
+    },
+    {
+      label: "Rust release build",
+      command: "cargo",
+      args: [
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        target.rustTarget,
+        "--package",
+        "codexhost-launcher",
+        "--package",
+        "codexhost-shim",
+      ],
+    },
+  ];
+}
+
+async function runCommand({ label, command, args }, cwd = repositoryRoot) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: "inherit", windowsHide: true });
+    child.on("error", (error) => reject(new Error(`${label} could not start: ${error.message}`)));
+    child.on("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else
+        reject(new Error(`${label} failed with ${signal ? `signal ${signal}` : `status ${code}`}`));
+    });
+  });
+}
+
+async function requireRegularFile(filePath, label) {
+  const metadata = await lstat(filePath).catch((error) => {
+    throw new Error(`${label} is unavailable: ${error.message}`);
+  });
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`${label} is not a regular file: ${filePath}`);
+  }
+  return metadata;
+}
+
+async function copyReleaseFile(source, destination, label, executable = false) {
+  await requireRegularFile(source, label);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await copyFile(source, destination);
+  if (executable && process.platform !== "win32") await chmod(destination, 0o755);
+}
+
+function packageManifest(value, packageName) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof value.license !== "string" ||
+    typeof value.version !== "string"
+  ) {
+    throw new Error(`runtime package '${packageName}' has invalid license metadata`);
+  }
+  return value;
+}
+
+export function npmPackageOs(target) {
+  if (target.hostPlatform === "darwin") return ["darwin"];
+  if (target.hostPlatform === "win32") return ["win32"];
+  throw new Error(`unsupported npm package platform: ${target.hostPlatform}`);
+}
+
+export function npmPackageCpu(target) {
+  if (target.installerArchitecture === "arm64") return ["arm64"];
+  if (target.installerArchitecture === "x64") return ["x64"];
+  throw new Error(`unsupported npm package architecture: ${target.installerArchitecture}`);
+}
+
+export function expectedNpmPackagePaths(target) {
+  return [
+    "package.json",
+    "README.md",
+    "bin/codexhost.js",
+    `bin/codexhost${target.executableSuffix}`,
+    `libexec/codexhost-shim${target.executableSuffix}`,
+    "app/desktop-controller.mjs",
+    "app/host-runtime.mjs",
+    "app/renderer-extension.js",
+    "licenses/Anthropic-SDK-LICENSE.txt",
+    "licenses/Claude-Agent-SDK-LICENSE.md",
+    "licenses/MCP-SDK-LICENSE.txt",
+    "licenses/diff-LICENSE.txt",
+    "licenses/lucide-LICENSE.txt",
+    "licenses/zod-LICENSE.txt",
+    "THIRD_PARTY_NOTICES.txt",
+  ].sort();
+}
+
+export function createNpmPackageManifest({ version, target }) {
+  return {
+    name: NPM_PACKAGE_NAME,
+    version,
+    description: NPM_PACKAGE_DESCRIPTION,
+    type: "module",
+    bin: {
+      codexhost: "bin/codexhost.js",
+    },
+    files: [
+      "bin/**",
+      "libexec/**",
+      "app/**",
+      "licenses/**",
+      "README.md",
+      "THIRD_PARTY_NOTICES.txt",
+    ],
+    engines: {
+      node: ">=22",
+    },
+    os: npmPackageOs(target),
+    cpu: npmPackageCpu(target),
+    keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
+    repository: {
+      type: "git",
+      url: "git+https://github.com/BytePioneer-AI/codex-host.git",
+    },
+    bugs: {
+      url: "https://github.com/BytePioneer-AI/codex-host/issues",
+    },
+    homepage: "https://github.com/BytePioneer-AI/codex-host#readme",
+    publishConfig: {
+      access: "public",
+    },
+  };
+}
+
+export function createNpmBinLauncherSource() {
+  return `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const executableSuffix = process.platform === "win32" ? ".exe" : "";
+const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);
+const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuffix}\`);
+const hostRuntime = path.join(packageRoot, "app", "host-runtime.mjs");
+const desktopController = path.join(packageRoot, "app", "desktop-controller.mjs");
+const rendererExtension = path.join(packageRoot, "app", "renderer-extension.js");
+
+function fail(message) {
+  console.error(\`codexhost: \${message}\`);
+  process.exit(1);
+}
+
+for (const [label, filePath] of [
+  ["launcher", launcher],
+  ["shim", shim],
+  ["host runtime", hostRuntime],
+  ["desktop controller", desktopController],
+  ["renderer extension", rendererExtension],
+]) {
+  if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
+}
+
+const userArguments = process.argv.slice(2);
+let launchArguments;
+if (userArguments.length === 0) {
+  launchArguments = ["launch", "--agent", "pi"];
+} else if (userArguments[0] === "launch") {
+  launchArguments = userArguments;
+} else if (userArguments[0] === "inspect") {
+  launchArguments = userArguments;
+} else if (userArguments[0] === "--help" || userArguments[0] === "-h") {
+  console.log(
+    [
+      "usage:",
+      "  codexhost",
+      "  codexhost inspect",
+      "  codexhost launch --agent <codex|pi> [launcher options]",
+      "",
+      "This npm package uses the current Node.js runtime and the packaged",
+      "Rust launcher/shim. Codex Desktop must already be installed.",
+    ].join("\\n"),
+  );
+  process.exit(0);
+} else {
+  fail(
+    \`unknown command '\${userArguments[0]}'. Run 'codexhost --help' for usage.\`,
+  );
+}
+
+if (launchArguments[0] === "launch") {
+  const injected = new Set();
+  for (let index = 1; index < launchArguments.length; index += 1) {
+    const argument = launchArguments[index];
+    if (
+      argument === "--node" ||
+      argument === "--shim" ||
+      argument === "--host-runtime" ||
+      argument === "--desktop-controller" ||
+      argument === "--renderer"
+    ) {
+      injected.add(argument);
+      index += 1;
+    }
+  }
+  const extras = [];
+  if (!injected.has("--node")) extras.push("--node", process.execPath);
+  if (!injected.has("--shim")) extras.push("--shim", shim);
+  if (!injected.has("--host-runtime")) extras.push("--host-runtime", hostRuntime);
+  if (!injected.has("--desktop-controller")) {
+    extras.push("--desktop-controller", desktopController);
+  }
+  if (!injected.has("--renderer")) extras.push("--renderer", rendererExtension);
+  launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
+}
+
+const child = spawn(launcher, launchArguments, {
+  stdio: "inherit",
+  windowsHide: true,
+});
+child.on("error", (error) => fail(error.message));
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 1);
+});
+`;
+}
+
+export function createNpmReadme({ version, target }) {
+  return `# ${NPM_PACKAGE_NAME}
+
+${NPM_PACKAGE_DESCRIPTION}
+
+> Experimental distribution channel. Requires Node.js 22 or 24+, an installed Codex Desktop, and a matching platform binary package built for \`${target.id}\`.
+
+## Install
+
+\`\`\`bash
+npm install -g ${NPM_PACKAGE_NAME}@${version}
+\`\`\`
+
+This package is platform-specific (\`os=${npmPackageOs(target).join(",")}\`, \`cpu=${npmPackageCpu(target).join(",")}\`). Install on the same platform that the package was built for.
+
+## Usage
+
+\`\`\`bash
+codexhost
+codexhost inspect
+codexhost launch --agent pi
+codexhost launch --agent codex
+\`\`\`
+
+The \`codexhost\` command launches the packaged Rust launcher with:
+
+- the current Node.js executable as Host Runtime
+- packaged \`host-runtime\`, Desktop Controller, Renderer, and Shim binaries
+
+## Requirements
+
+- Node.js 22 or 24 (Node 20 and older are not supported)
+- Official Codex Desktop for macOS or Windows
+- Pi on \`PATH\` when using the Pi agent
+- Claude Code installed when using the Claude Code adapter
+
+## Notes
+
+- This npm package does **not** embed a private Node.js runtime.
+- Installer packages (DMG/MSI) remain the zero-dependency desktop distribution path.
+- Prefer \`npm install -g ${NPM_PACKAGE_NAME}\` over installing the monorepo root.
+`;
+}
+
+async function writeThirdPartyNotices(root, packageRoot) {
+  const licensesDirectory = path.join(packageRoot, "licenses");
+  await mkdir(licensesDirectory, { recursive: true });
+  const notices = ["codexhost npm package third-party notices", ""];
+  for (const dependency of runtimeLicenses) {
+    const dependencyRoot = path.join(root, "node_modules", dependency.packageName);
+    const manifest = packageManifest(
+      JSON.parse(await readFile(path.join(dependencyRoot, "package.json"), "utf8")),
+      dependency.packageName,
+    );
+    if (manifest.license !== dependency.license) {
+      throw new Error(
+        `unexpected license metadata for runtime package '${dependency.packageName}'`,
+      );
+    }
+    await copyReleaseFile(
+      path.join(dependencyRoot, dependency.source),
+      path.join(licensesDirectory, dependency.output),
+      `${dependency.packageName} license`,
+    );
+    notices.push(
+      `${dependency.packageName} ${manifest.version}`,
+      `License: ${dependency.license}`,
+      `License text: licenses/${dependency.output}`,
+      "",
+    );
+  }
+  await writeFile(
+    path.join(packageRoot, "THIRD_PARTY_NOTICES.txt"),
+    `${notices.join("\n").trimEnd()}\n`,
+    "utf8",
+  );
+}
+
+async function walkFiles(root, current = root) {
+  const entries = await readdir(current, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  const files = [];
+  for (const entry of entries) {
+    const absolute = path.join(current, entry.name);
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
+    const metadata = await lstat(absolute);
+    if (metadata.isSymbolicLink()) {
+      throw new Error(`npm package contains a symbolic link: ${relative}`);
+    }
+    if (metadata.isDirectory()) files.push(...(await walkFiles(root, absolute)));
+    else if (metadata.isFile()) files.push({ absolute, relative });
+    else throw new Error(`npm package contains a non-file: ${relative}`);
+  }
+  return files;
+}
+
+export async function validateNpmPackage({ packageRoot, target, root }) {
+  const expected = expectedNpmPackagePaths(target);
+  const files = await walkFiles(packageRoot);
+  const actual = files.map((file) => file.relative).sort();
+  const missing = expected.filter((relative) => !actual.includes(relative));
+  const extra = actual.filter((relative) => !expected.includes(relative));
+  if (missing.length > 0) {
+    throw new Error(`npm package is missing files: ${missing.join(", ")}`);
+  }
+  if (extra.length > 0) {
+    throw new Error(`npm package contains non-allowlist files: ${extra.join(", ")}`);
+  }
+
+  for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
+    const text = await readFile(file.absolute, "utf8");
+    const forbiddenReferences = [root];
+    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+      forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
+    }
+    if (file.relative !== "package.json" && text.includes("runtime/node")) {
+      throw new Error(`npm package must not embed a private Node runtime: ${file.relative}`);
+    }
+    if (forbiddenReferences.some((reference) => text.includes(reference))) {
+      throw new Error(`npm package file contains a forbidden reference: ${file.relative}`);
+    }
+  }
+
+  const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+  if (manifest.name !== NPM_PACKAGE_NAME) {
+    throw new Error(`npm package name must be ${NPM_PACKAGE_NAME}`);
+  }
+  if (manifest.bin?.codexhost !== "bin/codexhost.js") {
+    throw new Error("npm package bin.codexhost must point to bin/codexhost.js");
+  }
+  if (manifest.private === true) {
+    throw new Error("npm package must not be private");
+  }
+  return actual;
+}
+
+export function parseNpmReleaseArguments(
+  arguments_,
+  { hostPlatform = process.platform, hostArch = process.arch } = {},
+) {
+  let targetName;
+  let version;
+  let pack = false;
+  let skipBuild = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "--help" || argument === "-h") return { help: true };
+    if (argument === "--pack") {
+      pack = true;
+      continue;
+    }
+    if (argument === "--skip-build") {
+      skipBuild = true;
+      continue;
+    }
+    if (argument === "--target") {
+      if (targetName !== undefined) throw new Error("--target may only be provided once");
+      targetName = arguments_[index + 1];
+      if (!targetName) throw new Error("--target requires a value");
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--target=")) {
+      if (targetName !== undefined) throw new Error("--target may only be provided once");
+      targetName = argument.slice("--target=".length);
+      if (!targetName) throw new Error("--target requires a value");
+      continue;
+    }
+    if (argument === "--version") {
+      if (version !== undefined) throw new Error("--version may only be provided once");
+      version = arguments_[index + 1];
+      if (!version) throw new Error("--version requires a value");
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--version=")) {
+      if (version !== undefined) throw new Error("--version may only be provided once");
+      version = argument.slice("--version=".length);
+      if (!version) throw new Error("--version requires a value");
+      continue;
+    }
+    throw new Error(`unknown npm release option: ${argument}`);
+  }
+
+  const target =
+    targetName === undefined
+      ? hostReleaseTarget(hostPlatform, hostArch)
+      : releaseTargetForHost(targetName, hostPlatform);
+  return { help: false, target, version, pack, skipBuild };
+}
+
+export async function resolveNpmPackageVersion(root, explicitVersion) {
+  if (explicitVersion) {
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(explicitVersion)) {
+      throw new Error(`npm package version '${explicitVersion}' is not valid semver`);
+    }
+    return explicitVersion;
+  }
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+    throw new Error("root package.json must define a release version");
+  }
+  if (manifest.version === "0.0.0") {
+    throw new Error(
+      "root package.json is still 0.0.0; pass --version <semver> for the npm package channel",
+    );
+  }
+  return manifest.version;
+}
+
+export async function prepareNpmPackage({
+  target,
+  version,
+  root = repositoryRoot,
+  skipBuild = false,
+}) {
+  if (target.hostPlatform !== process.platform) {
+    throw new Error(
+      `npm release target '${target.id}' requires host platform '${target.hostPlatform}', current host is '${process.platform}'`,
+    );
+  }
+
+  if (!skipBuild) {
+    for (const command of npmReleaseBuildCommands(target)) await runCommand(command, root);
+  }
+
+  const packageVersion = await resolveNpmPackageVersion(root, version);
+  const outputRoot = path.join(root, "build", "npm", packageVersion, target.id);
+  const packageRoot = path.join(outputRoot, "package");
+  await rm(packageRoot, { recursive: true, force: true });
+  await mkdir(packageRoot, { recursive: true });
+
+  const rustOutput = path.join(root, "target", target.rustTarget, "release");
+  await copyReleaseFile(
+    path.join(rustOutput, `codexhost${target.executableSuffix}`),
+    path.join(packageRoot, "bin", `codexhost${target.executableSuffix}`),
+    "npm Launcher",
+    true,
+  );
+  await copyReleaseFile(
+    path.join(rustOutput, `codexhost-shim${target.executableSuffix}`),
+    path.join(packageRoot, "libexec", `codexhost-shim${target.executableSuffix}`),
+    "npm Shim",
+    true,
+  );
+
+  await runCommand(
+    {
+      label: "production Host Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/host-runtime/scripts/build-release.mjs",
+        "--output",
+        path.join(packageRoot, "app", "host-runtime.mjs"),
+      ],
+    },
+    root,
+  );
+  await runCommand(
+    {
+      label: "Desktop Controller Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/desktop-control/scripts/build-release.mjs",
+        "--output",
+        path.join(packageRoot, "app", "desktop-controller.mjs"),
+      ],
+    },
+    root,
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "production.js"),
+    path.join(packageRoot, "app", "renderer-extension.js"),
+    "production Renderer Bundle",
+  );
+
+  const binLauncherPath = path.join(packageRoot, "bin", "codexhost.js");
+  await writeFile(binLauncherPath, createNpmBinLauncherSource(), "utf8");
+  if (process.platform !== "win32") await chmod(binLauncherPath, 0o755);
+
+  await writeFile(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(createNpmPackageManifest({ version: packageVersion, target }), null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(packageRoot, "README.md"),
+    createNpmReadme({ version: packageVersion, target }),
+    "utf8",
+  );
+  await writeThirdPartyNotices(root, packageRoot);
+  await validateNpmPackage({ packageRoot, target, root });
+
+  return { version: packageVersion, outputRoot, packageRoot, target };
+}
+
+export function npmTarballFileName({ version, target }) {
+  return `codexhost-cli-${version}-${target.id}.tgz`;
+}
+
+export async function packNpmPackage({ packageRoot, outputRoot, version, target }) {
+  const result = spawnSync("npm", ["pack", "--pack-destination", outputRoot], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `npm pack failed with status ${result.status}: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+  const packedName = result.stdout
+    .trim()
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .at(-1);
+  if (!packedName) throw new Error("npm pack did not report an output tarball");
+  const packedPath = path.join(outputRoot, packedName);
+  if (version === undefined || target === undefined) return packedPath;
+
+  const renamedPath = path.join(outputRoot, npmTarballFileName({ version, target }));
+  if (path.resolve(packedPath) !== path.resolve(renamedPath)) {
+    await rm(renamedPath, { force: true });
+    await rename(packedPath, renamedPath);
+  }
+  return renamedPath;
+}
+
+export async function runNpmReleaseCli(arguments_) {
+  const parsed = parseNpmReleaseArguments(arguments_);
+  if (parsed.help) {
+    console.log(npmReleaseUsage());
+    return;
+  }
+  const prepared = await prepareNpmPackage({
+    target: parsed.target,
+    version: parsed.version,
+    skipBuild: parsed.skipBuild,
+  });
+  console.log(`package=${prepared.packageRoot}`);
+  console.log(`version=${prepared.version}`);
+  console.log(`target=${prepared.target.id}`);
+  if (parsed.pack) {
+    const tarball = await packNpmPackage({
+      packageRoot: prepared.packageRoot,
+      outputRoot: prepared.outputRoot,
+      version: prepared.version,
+      target: prepared.target,
+    });
+    console.log(`tarball=${tarball}`);
+  } else {
+    console.log(
+      [
+        "next:",
+        `  npm publish ${prepared.packageRoot} --access public`,
+        "or:",
+        `  npm run release:npm -- --version ${prepared.version} --pack`,
+      ].join("\n"),
+    );
+  }
+}
+
+const invoked = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (invoked === import.meta.url) {
+  runNpmReleaseCli(process.argv.slice(2)).catch((error) => {
+    console.error(`codexhost npm release: ${error instanceof Error ? error.message : error}`);
+    process.exitCode = 1;
+  });
+}

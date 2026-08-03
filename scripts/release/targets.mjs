@@ -75,10 +75,29 @@ export function releaseTargetForHost(name, hostPlatform = process.platform) {
   return target;
 }
 
+export function hostReleaseTargetId(platform = process.platform, arch = process.arch) {
+  if (platform === "darwin" && arch === "arm64") return "macos-arm64";
+  if (platform === "darwin" && arch === "x64") return "macos-x64";
+  if (platform === "win32" && arch === "x64") return "windows-x64";
+  if (platform === "win32" && arch === "arm64") return "windows-arm64";
+  throw new Error(`unsupported npm release host: ${platform}/${arch}`);
+}
+
+export function hostReleaseTarget(platform = process.platform, arch = process.arch) {
+  return releaseTarget(hostReleaseTargetId(platform, arch));
+}
+
 export function releaseUsage() {
   return [
     "usage: npm run release:package -- --target <target>",
     `targets: ${supportedReleaseTargets().join(", ")}`,
+  ].join("\n");
+}
+
+export function npmReleaseUsage() {
+  return [
+    "usage: npm run release:npm -- [--target <target>] [--version <semver>] [--pack] [--skip-build]",
+    `targets: ${supportedReleaseTargets().join(", ")} (default: current host)`,
   ].join("\n");
 }
 

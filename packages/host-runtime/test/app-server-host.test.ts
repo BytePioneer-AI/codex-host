@@ -1562,7 +1562,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 11,
       method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 2 },
+      params: { threadId: derivedId, numTurns: 3 },
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 11)),
@@ -2102,9 +2102,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "thread/fork",
       params: { threadId },
     });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(forkResponse).toMatchObject({ result: { thread: { turns: [{}] } } });
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 1 },
+    });
     await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ result: { thread: { turns: [{}] } } });
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [{}] } } });
     expect(fixture.adapter.sessions).toHaveLength(2);
     expect(officialWrite).not.toHaveBeenCalled();
 

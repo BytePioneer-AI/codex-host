@@ -13,12 +13,7 @@ export function installRendererBinding(
   const binding = installRendererBindingProbe({ enabledAgents, defaultAgent });
   try {
     const adapter = installCurrentRendererAdapter();
-    binding.setAdapter(
-      adapter.status,
-      adapter.dispose,
-      adapter.applyAgent,
-      adapter.modelControl,
-    );
+    binding.setAdapter(adapter.status, adapter.dispose, adapter.applyAgent, adapter.modelControl);
   } catch (error) {
     console.error(
       "codexhost Renderer Adapter installation failed",
@@ -26,11 +21,8 @@ export function installRendererBinding(
     );
     binding.setAdapter({
       state: "unsupported",
-      reason: "bridge-unavailable",
-      decoratedRequests: 0,
+      reason: "installation-failed",
       modelUpdates: 0,
-      candidateCount: 0,
-      candidates: [],
       hook: null,
     });
   }

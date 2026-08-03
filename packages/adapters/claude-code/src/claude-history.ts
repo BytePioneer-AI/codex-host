@@ -6,6 +6,7 @@ import type {
 import {
   harnessIdSchema,
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
 } from "@codexhost/shared-contracts";
@@ -111,6 +112,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
+    const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -118,6 +120,16 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
         nativeTurnKey: user.uuid,
         formatVersion: 1,
       }),
+      ...(checkpointMessage
+        ? {
+            checkpoint: nativeCheckpointRefSchema.parse({
+              harnessId: claudeCodeHarnessId,
+              nativeSessionId: sessionId,
+              checkpointId: checkpointMessage.uuid,
+              formatVersion: 1,
+            }),
+          }
+        : {}),
       input: textParts(user.message.content).map((text) => ({ type: "text", text })),
       items: turnMessages.flatMap((message) => {
         if (message.type !== "assistant") return [];

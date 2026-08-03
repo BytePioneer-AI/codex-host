@@ -42,6 +42,11 @@ When the supported Desktop sends an unbounded `thread/fork` followed by `thread/
 - **AND** its `forkSource.hostTurnId` SHALL identify the source first Turn
 - **AND** the temporary tail-Fork Session SHALL be closed without changing the source Session
 
+#### Scenario: Earlier message action rolls back while a later source Turn is active
+- **WHEN** Desktop tail-Forks only the source's completed persisted Turns and requests rollback for the untouched derived Thread while a later source Turn remains active
+- **THEN** Host SHALL resolve the retained source Checkpoint from persisted mappings without refreshing or changing the active source Session
+- **AND** the final derived history SHALL contain exactly the completed prefix selected by Desktop
+
 #### Scenario: Retained derived Turn identity stays stable
 - **WHEN** post-Fork rollback retains a prefix of an already returned derived Thread
 - **THEN** each retained Host Turn ID SHALL remain unchanged
@@ -57,11 +62,16 @@ When the supported Desktop sends an unbounded `thread/fork` followed by `thread/
 - **THEN** the original request frame SHALL be forwarded unchanged to the official app-server
 
 ### Requirement: External Fork parameters fail closed
-External Fork SHALL reject a non-empty source path, mismatched cwd, an incompatible Harness transport carrier, an active source Turn, unsupported Adapter capability, missing NativeSessionRef, or malformed boundary without creating an official shadow Thread.
+External Fork SHALL reject a non-empty source path, mismatched cwd, an incompatible Harness transport carrier, unsupported Adapter capability, missing NativeSessionRef, or malformed or unpersisted boundary without creating an official shadow Thread.
 
-#### Scenario: Source Turn is active
+#### Scenario: A completed boundary is Forked while a later source Turn is active
 - **WHEN** Desktop requests Fork while the external source has an active Turn
-- **THEN** Host SHALL return a busy error and leave source and Store unchanged
+- **AND** the requested inclusive, exclusive, or latest-completed tail boundary resolves from the ordered persisted Turn mappings
+- **THEN** Host SHALL Fork from that persisted Checkpoint without refreshing or changing the active source Session
+
+#### Scenario: No completed boundary is available while a source Turn is active
+- **WHEN** Desktop requests Fork while the external source has an active Turn but no requested boundary resolves to a persisted Checkpoint
+- **THEN** Host SHALL reject the request explicitly and leave source and Store unchanged
 
 #### Scenario: Request carries another Harness
 - **WHEN** an external Pi source Fork carries a Codex or Claude transport Model override
@@ -89,6 +99,11 @@ A successful external Fork SHALL return a new Host Thread ID, source `forkedFrom
 - **WHEN** Pi creates a distinct derived Native Session
 - **THEN** Desktop SHALL receive a distinct Pi-owned Thread that can accept a later Turn
 - **AND** source continuation SHALL still target the original Pi Native Session
+
+#### Scenario: Claude Code Fork succeeds
+- **WHEN** Claude Code creates a distinct derived Native Session in the same working directory
+- **THEN** Desktop SHALL receive a distinct Claude Code-owned Thread that can accept a later Turn
+- **AND** source continuation SHALL still target the original Claude Code Native Session
 
 ### Requirement: Known persisted external Threads resume on demand
 `thread/read`, `thread/resume`, and `thread/fork` SHALL recognize a persisted external Thread even when it is not loaded in the current Host process, open its exact Native Session through resume or Fork, and never fall through to Codex.

@@ -52,12 +52,6 @@ export async function executeExternalThreadRollback(input: {
     };
   }
   const source = sourceResolution.thread;
-  if (source.running) {
-    return {
-      ok: false,
-      error: { code: -32072, message: "External Fork source has an active Turn" },
-    };
-  }
   if (
     source.id === derived.id ||
     source.harnessId !== derived.harnessId ||
@@ -69,8 +63,10 @@ export async function executeExternalThreadRollback(input: {
       error: { code: -32076, message: "External rollback source lineage is unsupported" },
     };
   }
-  const sourceRefreshError = await runtime.refresh(source);
-  if (sourceRefreshError) return { ok: false, error: sourceRefreshError };
+  if (!source.running) {
+    const sourceRefreshError = await runtime.refresh(source);
+    if (sourceRefreshError) return { ok: false, error: sourceRefreshError };
+  }
 
   const sourceBoundaryIndex = source.record.turnMappings.findIndex(
     ({ hostTurnId }) => hostTurnId === forkSource.hostTurnId,

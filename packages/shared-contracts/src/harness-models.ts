@@ -133,6 +133,17 @@ export const harnessModelCatalogSchema = z
 
 export type HarnessModelCatalog = z.infer<typeof harnessModelCatalogSchema>;
 
+const harnessHistoryCapabilitiesSchema = z
+  .object({
+    fork: z.boolean(),
+    forkAcrossCwd: z.boolean(),
+  })
+  .strict()
+  .refine((history) => history.fork || !history.forkAcrossCwd, {
+    path: ["forkAcrossCwd"],
+    message: "Cross-cwd Fork requires exact history Fork support",
+  });
+
 export const harnessSessionCapabilitiesSchema = z
   .object({
     configuration: z
@@ -142,16 +153,7 @@ export const harnessSessionCapabilitiesSchema = z
         selectPermissionMode: z.boolean(),
       })
       .strict(),
-    history: z
-      .object({
-        fork: z.boolean(),
-        forkAcrossCwd: z.boolean(),
-      })
-      .strict()
-      .refine((history) => history.fork || !history.forkAcrossCwd, {
-        path: ["forkAcrossCwd"],
-        message: "Cross-cwd Fork requires exact history Fork support",
-      }),
+    history: harnessHistoryCapabilitiesSchema,
   })
   .strict();
 
@@ -273,6 +275,7 @@ const externalThreadInspectionSchema = z
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
+    history: harnessHistoryCapabilitiesSchema,
     locked: z.literal(true),
   })
   .strict();

@@ -81,6 +81,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
+        history: { fork: true, forkAcrossCwd: true },
         effectiveModel: model,
         effectiveThinkingOptionId: thinkingOptionId,
         availableThinkingOptions: [
@@ -98,6 +99,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "claude-code",
         transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
+        history: { fork: true, forkAcrossCwd: false },
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" }),
         effectivePermissionModeId: harnessPermissionModeIdSchema.parse("acceptEdits"),
         resolvedModelLabel: "runtime-custom",
@@ -113,6 +115,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "claude-code",
         transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
+        history: { fork: true, forkAcrossCwd: false },
         locked: true,
       }),
     ).toEqual({
@@ -125,6 +128,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "pi",
         transportModelId: "official/model",
+        history: { fork: true, forkAcrossCwd: true },
         locked: true,
       }),
     ).toThrow("incompatible transport Model");
@@ -195,6 +199,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "pi",
         transportModelId: `codexhost/pi-native@${model.id}`,
+        history: { fork: true, forkAcrossCwd: true },
         effectiveModel: model,
         effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
         locked: true,

@@ -917,6 +917,7 @@ export class AppServerHost {
                     resolution.thread.stateObserver.state.effectivePermissionModeId,
                 }
               : {}),
+            history: resolution.thread.session.capabilities.history,
             locked: true,
           },
     );

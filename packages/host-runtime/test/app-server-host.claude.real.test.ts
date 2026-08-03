@@ -124,6 +124,9 @@ describe("AppServerHost hermetic Claude projection", () => {
         }),
         close: async () => undefined,
       }),
+      deleteSession: async () => undefined,
+      forkSession: async () => ({ sessionId: "claude-hermetic-derived" }),
+      getSessionInfo: async () => ({ cwd: "/synthetic" }),
       readSessionMessages: async ({ sessionId }) => {
         if (sessionId !== nativeSessionId || !nativeTurnKey) return [];
         return [
@@ -167,6 +170,11 @@ describe("AppServerHost hermetic Claude projection", () => {
               type: "text.delta",
               messageId: "hermetic-assistant",
               delta: "hermetic response",
+            });
+            onEvent({
+              type: "message.completed",
+              messageId: "hermetic-assistant",
+              checkpointId: "claude-hermetic-assistant",
             });
             return { status: "succeeded" };
           },
@@ -240,6 +248,11 @@ describe("AppServerHost hermetic Claude projection", () => {
               harnessId: "claude-code",
               nativeSessionId,
               nativeTurnKey,
+            },
+            nativeCheckpointRef: {
+              harnessId: "claude-code",
+              nativeSessionId,
+              checkpointId: "claude-hermetic-assistant",
             },
           },
         ],

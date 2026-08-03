@@ -325,6 +325,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: { id: "fake-model-v1.primary" },
+        history: { fork: true, forkAcrossCwd: true },
         locked: true,
       },
     });
@@ -1510,6 +1511,103 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("forks a completed boundary while a later source Turn is still running", async () => {
+    const fixture = createFixture();
+    const sourceThreadId = await startPiThread(fixture);
+    const completedTurnId = await completePiTurn(fixture, sourceThreadId, 2);
+    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 3);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId, lastTurnId: completedTurnId },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(response).toMatchObject({ result: { thread: { turns: [{}] } } });
+    expect(fixture.adapter.sessions).toHaveLength(2);
+
+    const sourceSession = fixture.adapter.sessions[0];
+    if (!sourceSession) throw new Error("Fake source Session was not opened");
+    sourceSession.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", activeTurnId),
+    );
+    await expect(sourceSession.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("uses only completed source Turns for tail Fork and Desktop rollback while running", async () => {
+    const fixture = createFixture();
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    await completePiTurn(fixture, sourceThreadId, 4);
+    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 5);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(forkResponse).toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 2 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [{}] } } });
+
+    const sourceSession = fixture.adapter.sessions[0];
+    if (!sourceSession) throw new Error("Fake source Session was not opened");
+    sourceSession.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", activeTurnId),
+    );
+    await expect(sourceSession.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}, {}, {}] },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("rejects a running source that has no completed Fork Checkpoint", async () => {
+    const fixture = createFixture();
+    const sourceThreadId = await startPiThread(fixture);
+    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 2);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({
+      error: { code: -32080, message: "External Fork Checkpoint is unavailable" },
+    });
+    expect(fixture.adapter.sessions).toHaveLength(1);
+
+    const sourceSession = fixture.adapter.sessions[0];
+    if (!sourceSession) throw new Error("Fake source Session was not opened");
+    sourceSession.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", activeTurnId),
+    );
+    await stopFixture(fixture);
+  });
+
   it("routes a fixed Renderer Fork intent through the existing external Fork implementation", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -1991,7 +2089,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects Fork while the external source Turn is active", async () => {
+  it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
@@ -2006,8 +2104,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32072 } });
-    expect(fixture.adapter.sessions).toHaveLength(1);
+    ).resolves.toMatchObject({ result: { thread: { turns: [{}] } } });
+    expect(fixture.adapter.sessions).toHaveLength(2);
     expect(officialWrite).not.toHaveBeenCalled();
 
     const source = fixture.adapter.sessions[0];

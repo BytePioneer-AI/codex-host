@@ -125,6 +125,7 @@ describe("Renderer external Thread Fork control", () => {
       owner: "external",
       harnessId: "pi",
       transportModelId: "codexhost/pi-native",
+      history: { fork: true, forkAcrossCwd: true },
       locked: true,
     });
     const control = installRendererForkControl({ getClient: () => client, dom });
@@ -147,6 +148,7 @@ describe("Renderer external Thread Fork control", () => {
       owner: "external",
       harnessId: "pi",
       transportModelId: "codexhost/pi-native",
+      history: { fork: true, forkAcrossCwd: true },
       locked: true,
     });
     const source = target(false);
@@ -157,6 +159,30 @@ describe("Renderer external Thread Fork control", () => {
 
     expect(dom.replay).toHaveBeenCalledWith(source);
     expect(client.forkThread).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("uses same-cwd Fork for a project Thread without cross-cwd capability", async () => {
+    const dom = new FakeForkDom();
+    const client = clientWith({
+      owner: "external",
+      harnessId: "claude-code",
+      transportModelId: "codexhost/claude-code-native",
+      history: { fork: true, forkAcrossCwd: false },
+      locked: true,
+    });
+    const source = target(false);
+    const control = installRendererForkControl({ getClient: () => client, dom });
+
+    expect(dom.emit(source)).toBe(true);
+    await settle();
+
+    expect(client.forkThread).toHaveBeenCalledWith({
+      threadId: "source-thread",
+      lastTurnId: "source-turn",
+    });
+    expect(dom.openThread).toHaveBeenCalledWith("derived-thread");
+    expect(dom.replay).not.toHaveBeenCalled();
     control.dispose();
   });
 

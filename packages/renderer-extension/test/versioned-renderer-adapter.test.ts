@@ -9,8 +9,7 @@ import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
-  decorateThreadStartParams,
-  findPrewarmTargets,
+  findActivePrewarmTargets,
   isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
@@ -19,26 +18,52 @@ import {
   piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   sameModelPowerSelection,
-  threadIdFromComposerModelTarget,
   selectOptimisticModelAtom,
-  wrapElectronRendererBridge,
-  wrapPrewarmDispatcher,
-  wrapPrewarmTarget,
+  threadIdFromComposerModelTarget,
 } from "../src/index.js";
 
-const lockedPi = {
-  agent: "pi",
-  composerId: "composer-1",
-  phase: "locked",
-} as const;
-
-const lockedClaudeCode = {
-  agent: "claude-code",
-  composerId: "composer-1",
-  phase: "locked",
-} as const;
-
 describe("versioned Renderer Agent adapter", () => {
+  it("finds only current-build request clients from the active Composer Fiber", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const nestedClient = {
+      prewarmThreadStart: function prewarmThreadStart() {
+        return "prewarm-thread-start-for-host";
+      },
+    };
+    const manager = {
+      requestClient: nestedClient,
+      sendRequest: function sendRequest() {
+        return "send-cli-request-for-host";
+      },
+    };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: { memoizedState: { memoizedState: manager, next: null }, return: null },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+
+    const directClient = {
+      prewarmThreadStart: function prewarmThreadStart() {
+        const enqueueRequest = "enqueueRequest";
+        return `${enqueueRequest}:thread-prewarm-start`;
+      },
+    };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        memoizedState: { memoizedState: { requestClient: directClient }, next: null },
+        return: null,
+      },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([directClient]);
+  });
+
   it("selects one optimistic Model atom from equivalent Fiber cache copies", () => {
     const optimistic = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
     const committed = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
@@ -110,12 +135,6 @@ describe("versioned Renderer Agent adapter", () => {
       model: selected,
       reasoningEffort: "high",
     });
-    expect(
-      decorateThreadStartParams(
-        { model: "official/model" },
-        { ...lockedPi, model, thinkingOptionId },
-      ),
-    ).toEqual({ model: selected });
   });
 
   it("encodes a selected Claude Model and optional Permission Mode", () => {
@@ -140,12 +159,6 @@ describe("versioned Renderer Agent adapter", () => {
       model: configured,
       reasoningEffort: "high",
     });
-    expect(
-      decorateThreadStartParams(
-        { model: "official/model" },
-        { ...lockedClaudeCode, model, permissionModeId },
-      ),
-    ).toEqual({ model: configured });
   });
 
   it("extracts only a validated conversation Thread identity", () => {
@@ -153,207 +166,5 @@ describe("versioned Renderer Agent adapter", () => {
     expect(threadIdFromComposerModelTarget(["default", "thread-1"])).toBeNull();
     expect(threadIdFromComposerModelTarget(["conversation", ""])).toBeNull();
     expect(threadIdFromComposerModelTarget(["conversation", {}])).toBeNull();
-  });
-
-  it("clones external create params and leaves Codex params unchanged", () => {
-    const original = { model: "official/model", cwd: "<workspace>" };
-
-    expect(decorateThreadStartParams(original, lockedPi)).toEqual({
-      model: PI_TRANSPORT_MODEL_ID,
-      cwd: "<workspace>",
-    });
-    expect(decorateThreadStartParams(original, lockedClaudeCode)).toEqual({
-      model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
-      cwd: "<workspace>",
-    });
-    expect(decorateThreadStartParams(original, lockedPi)).not.toBe(original);
-    expect(decorateThreadStartParams(original, null)).toBe(original);
-    expect(original.model).toBe("official/model");
-  });
-
-  it("prefers an exported instance over its exported prototype", () => {
-    class RequestClient {
-      prewarmThreadStart(): void {}
-    }
-    const instance = new RequestClient();
-
-    expect(
-      findPrewarmTargets({ instance, RequestClient, unrelated: { sendRequest: vi.fn() } }),
-    ).toEqual([instance]);
-  });
-
-  it("keeps independent request clients ambiguous", () => {
-    const first = { prewarmThreadStart: vi.fn() };
-    const second = { prewarmThreadStart: vi.fn() };
-
-    expect(findPrewarmTargets({ first, second })).toEqual([first, second]);
-  });
-
-  it("decorates only the active bridge message clone", () => {
-    const sendMessageFromView = vi.fn();
-    const bridge = { sendMessageFromView };
-    const request = {
-      id: 7,
-      method: "thread/start",
-      params: { model: "official/model", cwd: "<workspace>" },
-    };
-    const message = { type: "send-cli-request-for-host", request };
-    const decorated = vi.fn();
-    const dispose = wrapElectronRendererBridge(bridge, () => lockedPi, decorated);
-
-    bridge.sendMessageFromView(message);
-
-    expect(sendMessageFromView).toHaveBeenCalledWith({
-      type: "send-cli-request-for-host",
-      request: {
-        id: 7,
-        method: "thread/start",
-        params: { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
-      },
-    });
-    expect(message.request.params.model).toBe("official/model");
-    expect(decorated).toHaveBeenCalledOnce();
-
-    dispose();
-    expect(bridge.sendMessageFromView).toBe(sendMessageFromView);
-  });
-
-  it("decorates only the outbound dispatcher clone", () => {
-    const dispatchMessage = vi.fn();
-    const dispatcher = { dispatchMessage };
-    const request = {
-      id: 7,
-      method: "thread/start",
-      params: { model: "official/model", cwd: "<workspace>" },
-    };
-    const payload = { request, hostId: "local" };
-    const decorated = vi.fn();
-    const dispose = wrapPrewarmDispatcher(dispatcher, () => lockedPi, decorated);
-
-    dispatcher.dispatchMessage("thread-prewarm-start", payload);
-
-    expect(dispatchMessage).toHaveBeenCalledWith("thread-prewarm-start", {
-      request: {
-        id: 7,
-        method: "thread/start",
-        params: { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
-      },
-      hostId: "local",
-    });
-    expect(payload.request.params.model).toBe("official/model");
-    expect(decorated).toHaveBeenCalledOnce();
-
-    dispose();
-    expect(dispatcher.dispatchMessage).toBe(dispatchMessage);
-  });
-
-  it("decorates thread/start sent through the generic dispatcher", () => {
-    const dispatchMessage = vi.fn();
-    const dispatcher = { dispatchMessage };
-    const dispose = wrapPrewarmDispatcher(dispatcher, () => lockedPi, vi.fn());
-
-    dispatcher.dispatchMessage("send-cli-request-for-host", {
-      request: { method: "thread/start", params: { model: "official/model" } },
-    });
-
-    expect(dispatchMessage).toHaveBeenCalledWith("send-cli-request-for-host", {
-      request: { method: "thread/start", params: { model: PI_TRANSPORT_MODEL_ID } },
-    });
-    dispose();
-  });
-
-  it("leaves non-create dispatcher messages transparent", () => {
-    const dispatchMessage = vi.fn();
-    const dispatcher = { dispatchMessage };
-    const dispose = wrapPrewarmDispatcher(dispatcher, () => lockedPi, vi.fn());
-    const payload = { method: "turn/start" };
-
-    dispatcher.dispatchMessage("send-cli-request-for-host", payload);
-
-    expect(dispatchMessage).toHaveBeenCalledWith("send-cli-request-for-host", payload);
-    dispose();
-  });
-
-  it("wraps the current call, preserves this, and restores the target", () => {
-    const original = vi.fn(function (this: { marker: string }, params: unknown) {
-      return { marker: this.marker, params };
-    });
-    const target = { marker: "client", prewarmThreadStart: original };
-    const decorated = vi.fn();
-    const dispose = wrapPrewarmTarget(target, () => lockedPi, decorated);
-
-    expect(target.prewarmThreadStart({ model: "official/model", cwd: "<workspace>" })).toEqual({
-      marker: "client",
-      params: { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
-    });
-    expect(decorated).toHaveBeenCalledOnce();
-
-    dispose();
-    expect(target.prewarmThreadStart).toBe(original);
-  });
-
-  it("decorates thread/start sent through the active request client", () => {
-    const sendRequest = vi.fn();
-    const target = { prewarmThreadStart: vi.fn(), sendRequest };
-    const params = { model: "official/model", cwd: "<workspace>" };
-    const decorated = vi.fn();
-    const dispose = wrapPrewarmTarget(target, () => lockedPi, decorated);
-
-    target.sendRequest("thread/start", params, { priority: "critical" });
-    target.sendRequest("thread/read", { threadId: "thread-1" });
-
-    expect(sendRequest).toHaveBeenNthCalledWith(
-      1,
-      "thread/start",
-      { model: PI_TRANSPORT_MODEL_ID, cwd: "<workspace>" },
-      { priority: "critical" },
-    );
-    expect(sendRequest).toHaveBeenNthCalledWith(
-      2,
-      "thread/read",
-      { threadId: "thread-1" },
-      undefined,
-    );
-    expect(params.model).toBe("official/model");
-    expect(decorated).toHaveBeenCalledOnce();
-
-    dispose();
-    expect(target.sendRequest).toBe(sendRequest);
-  });
-
-  it("passes Codex calls through with the original params object", () => {
-    const original = vi.fn();
-    const target = { prewarmThreadStart: original };
-    const params = { model: "official/model", cwd: "<workspace>" };
-    const decorated = vi.fn();
-    const dispose = wrapPrewarmTarget(
-      target,
-      () => ({ agent: "codex", composerId: "composer-1", phase: "locked" }),
-      decorated,
-    );
-
-    target.prewarmThreadStart(params);
-
-    expect(original).toHaveBeenCalledWith(params, undefined);
-    expect(decorated).not.toHaveBeenCalled();
-    dispose();
-  });
-
-  it("does not decorate when the Composer association is ambiguous", () => {
-    const original = vi.fn();
-    const target = { prewarmThreadStart: original };
-    const params = { model: "official/model" };
-    const dispose = wrapPrewarmTarget(target, () => null, vi.fn());
-
-    target.prewarmThreadStart(params);
-
-    expect(original).toHaveBeenCalledWith(params, undefined);
-    dispose();
-  });
-
-  it("fails closed on an invalid create shape", () => {
-    expect(() => decorateThreadStartParams({ cwd: "<workspace>" }, lockedPi)).toThrow(
-      "thread/start params must contain a text Model",
-    );
   });
 });

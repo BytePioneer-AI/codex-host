@@ -269,6 +269,10 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: cloneJson(this.#snapshot) };
   }
 
+  persistedSnapshot(): HostThreadSnapshot {
+    return cloneJson(this.#snapshot);
+  }
+
   rejectNextTurn(error: HarnessError): void {
     this.#nextRejection = error;
   }
@@ -1017,8 +1021,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       };
     }
     if (input.kind === "resume") return { ok: true, value: source };
-    const snapshot = await source.readSnapshot();
-    if (!snapshot.ok) return snapshot;
+    const snapshot = source.persistedSnapshot();
     if (!this.supportsFork || (!this.supportsForkAcrossCwd && input.cwd !== source.cwd)) {
       return {
         ok: false,
@@ -1042,7 +1045,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    const checkpointIndex = snapshot.value.turns.findIndex(
+    const checkpointIndex = snapshot.turns.findIndex(
       (turn) => turn.checkpoint?.checkpointId === input.checkpoint.checkpointId,
     );
     if (checkpointIndex < 0) {
@@ -1060,7 +1063,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       value: this.#createSession(
         input.cwd,
         source.state.effectiveModel,
-        snapshot.value.turns.slice(0, checkpointIndex + 1),
+        snapshot.turns.slice(0, checkpointIndex + 1),
         source.state.effectiveThinkingOptionId,
         source.state.effectivePermissionModeId,
       ),

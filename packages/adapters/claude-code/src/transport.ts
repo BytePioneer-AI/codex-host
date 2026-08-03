@@ -62,7 +62,7 @@ export type ClaudeTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
-  | { type: "message.completed"; messageId: string }
+  | { type: "message.completed"; messageId: string; checkpointId?: string }
   | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
   | { type: "tool.progress"; callId: string; elapsedMs: number }
   | {
@@ -125,6 +125,13 @@ export interface ClaudeModelInspectorFactoryInput {
 export interface ClaudeAdapterDependencies {
   createInspector(input: ClaudeModelInspectorFactoryInput): ClaudeModelInspector;
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
+  deleteSession(input: { cwd: string; sessionId: string }): Promise<void>;
+  forkSession(input: {
+    checkpointId: string;
+    cwd: string;
+    sourceSessionId: string;
+  }): Promise<{ sessionId: string }>;
+  getSessionInfo(input: { sessionId: string }): Promise<{ cwd?: string } | undefined>;
   inspectInstallation(): void;
   readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
   randomUUID(): string;

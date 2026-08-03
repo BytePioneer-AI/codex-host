@@ -63,6 +63,7 @@ describe("Renderer fixed Model request client", () => {
         effectiveModel: model,
         effectiveThinkingOptionId: high,
         availableThinkingOptions: thinkingOptions,
+        history: { fork: true, forkAcrossCwd: true },
         locked: true,
       })
       .mockResolvedValueOnce({ threadId: "forked-thread" })
@@ -103,7 +104,12 @@ describe("Renderer fixed Model request client", () => {
     );
     await expect(
       client.inspectThread({ threadId: hostThreadIdSchema.parse("thread-1") }),
-    ).resolves.toMatchObject({ owner: "external", harnessId: "pi", locked: true });
+    ).resolves.toMatchObject({
+      owner: "external",
+      harnessId: "pi",
+      history: { fork: true, forkAcrossCwd: true },
+      locked: true,
+    });
     await expect(
       client.forkThread({
         threadId: hostThreadIdSchema.parse("thread-1"),

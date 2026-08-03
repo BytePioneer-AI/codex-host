@@ -215,7 +215,7 @@ describe("Renderer Control Session", () => {
       .mockResolvedValueOnce({
         version: 2,
         enabledAgents: ["codex", "pi"],
-        adapter: { state: "unsupported", reason: "model-controller-unavailable" },
+        adapter: { state: "installing", reason: "model-controller-unavailable" },
       })
       .mockResolvedValue(readyBinding());
     const operations = {

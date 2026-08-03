@@ -193,12 +193,15 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
   });
 
   it("uses stable loading and unsupported presentation without inventing options", () => {
-    expect(rendererModelPickerPresentation({ status: "loading" })).toEqual({
-      modelLabel: "Loading models...",
-      thinkingOptions: [],
-      showThinkingSection: false,
-      thinkingSelectionEnabled: false,
-    });
+    for (const status of ["waitingForAdapter", "loading"] as const) {
+      expect(isRendererModelPickerDisabled({ status })).toBe(true);
+      expect(rendererModelPickerPresentation({ status })).toEqual({
+        modelLabel: "Loading models...",
+        thinkingOptions: [],
+        showThinkingSection: false,
+        thinkingSelectionEnabled: false,
+      });
+    }
     expect(
       rendererModelPickerPresentation({
         status: "ready",

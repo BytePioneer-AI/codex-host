@@ -702,7 +702,6 @@ export function installCurrentRendererAdapter(): {
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
   ): boolean;
-  applyPiModel(model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId): boolean;
   dispose(): void;
 } {
   let disposed = false;
@@ -736,47 +735,24 @@ export function installCurrentRendererAdapter(): {
     status: liveStatus,
     modelControl: null,
     applyAgent: () => false,
-    applyPiModel: () => false,
     dispose() {},
   });
-  const inspectHarness = async (input: HarnessInspectParams) => {
+  const currentModelClient = (): RendererModelClient => {
     const client = createRendererModelClient(findActivePrewarmTargets(document));
     if (!client) throw new Error("Renderer Model request manager is unavailable");
-    return client.inspectHarness(input);
-  };
-  const selectThreadModel = async (input: ThreadModelSelectParams) => {
-    const client = createRendererModelClient(findActivePrewarmTargets(document));
-    if (!client) throw new Error("Renderer Model request manager is unavailable");
-    return client.selectThreadModel(input);
-  };
-  const selectThreadThinking = async (input: ThreadThinkingSelectParams) => {
-    const client = createRendererModelClient(findActivePrewarmTargets(document));
-    if (!client) throw new Error("Renderer Model request manager is unavailable");
-    return client.selectThreadThinking(input);
-  };
-  const selectThreadPermissionMode = async (input: ThreadPermissionModeSelectParams) => {
-    const client = createRendererModelClient(findActivePrewarmTargets(document));
-    if (!client) throw new Error("Renderer Model request manager is unavailable");
-    return client.selectThreadPermissionMode(input);
+    return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    inspectHarness,
-    inspectPi: inspectHarness,
-    async inspectThread(input: ThreadInspectionParams) {
-      const client = createRendererModelClient(findActivePrewarmTargets(document));
-      if (!client) throw new Error("Renderer Model request manager is unavailable");
-      return client.inspectThread(input);
-    },
-    async listThreadOwnership(input: ThreadOwnershipListParams) {
-      const client = createRendererModelClient(findActivePrewarmTargets(document));
-      if (!client) throw new Error("Renderer Model request manager is unavailable");
-      return client.listThreadOwnership(input);
-    },
-    selectThreadModel,
-    selectPiThreadModel: selectThreadModel,
-    selectThreadThinking,
-    selectPiThreadThinking: selectThreadThinking,
-    selectThreadPermissionMode,
+    inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
+    inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    listThreadOwnership: (input: ThreadOwnershipListParams) =>
+      currentModelClient().listThreadOwnership(input),
+    selectThreadModel: (input: ThreadModelSelectParams) =>
+      currentModelClient().selectThreadModel(input),
+    selectThreadThinking: (input: ThreadThinkingSelectParams) =>
+      currentModelClient().selectThreadThinking(input),
+    selectThreadPermissionMode: (input: ThreadPermissionModeSelectParams) =>
+      currentModelClient().selectThreadPermissionMode(input),
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
@@ -847,10 +823,6 @@ export function installCurrentRendererAdapter(): {
     status: liveStatus,
     modelControl,
     applyAgent,
-    applyPiModel(model, thinkingOptionId) {
-      if (selectedAgent !== "pi") return false;
-      return applyAgent("pi", model, thinkingOptionId);
-    },
     dispose() {
       if (disposed) return;
       disposed = true;

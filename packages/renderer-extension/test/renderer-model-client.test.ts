@@ -87,11 +87,8 @@ describe("Renderer fixed Model request client", () => {
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
       "inspectHarness",
-      "inspectPi",
       "inspectThread",
       "listThreadOwnership",
-      "selectPiThreadModel",
-      "selectPiThreadThinking",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
@@ -216,6 +213,6 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
 
-    await expect(client.inspectPi({ harnessId: piHarnessId })).rejects.toThrow();
+    await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow();
   });
 });

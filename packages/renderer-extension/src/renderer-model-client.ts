@@ -36,13 +36,10 @@ interface RequestManagerCandidate {
 
 export interface RendererModelClient {
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
-  inspectPi(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
-  selectPiThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
-  selectPiThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
@@ -87,7 +84,6 @@ export function createRendererModelClient(
 
   return Object.freeze({
     inspectHarness,
-    inspectPi: inspectHarness,
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
@@ -108,9 +104,7 @@ export function createRendererModelClient(
       return result;
     },
     selectThreadModel,
-    selectPiThreadModel: selectThreadModel,
     selectThreadThinking,
-    selectPiThreadThinking: selectThreadThinking,
     selectThreadPermissionMode,
   });
 }

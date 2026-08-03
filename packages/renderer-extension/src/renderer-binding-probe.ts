@@ -85,7 +85,6 @@ export interface RendererBindingProbeApi {
       thinkingOptionId?: HarnessThinkingOptionId,
       permissionModeId?: HarnessPermissionModeId,
     ) => boolean,
-    applyPiModel?: (model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId) => boolean,
     modelControl?: RendererModelClient | null,
   ): void;
   dispose(): void;
@@ -275,8 +274,6 @@ export function installRendererBindingProbe(
         permissionModeId?: HarnessPermissionModeId,
       ) => boolean)
     | null = null;
-  let applyAdapterPiModel:
-    ((model: HarnessModelRef, thinkingOptionId?: HarnessThinkingOptionId) => boolean) | null = null;
   let modelControl: RendererModelClient | null = null;
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
@@ -341,9 +338,7 @@ export function installRendererBindingProbe(
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
   ): boolean =>
-    agent === "pi"
-      ? (applyAdapterPiModel?.(model, thinkingOptionId) ?? false)
-      : (applyAdapterAgent?.(agent, model, undefined, permissionModeId) ?? false);
+    applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? false;
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
@@ -867,14 +862,14 @@ export function installRendererBindingProbe(
       let effectiveThinkingOptionId = selectedThinkingOptionId;
       let effectiveCatalog = catalog;
       if (current.phase === "draft") {
-        if (!(applyAdapterPiModel?.(model, selectedThinkingOptionId) ?? false)) {
+        if (!applyExternalConfiguration("pi", model, selectedThinkingOptionId)) {
           throw new Error("Pi Thinking could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
-            applyAdapterPiModel?.(model, previousThinking);
+            applyExternalConfiguration("pi", model, previousThinking);
           }
           throw error;
         }
@@ -902,7 +897,7 @@ export function installRendererBindingProbe(
         }
         effectiveThinkingOptionId = state.effectiveThinkingOptionId;
         effectiveCatalog = catalogWithConfigurationState(catalog, model, state);
-        if (!(applyAdapterPiModel?.(model, effectiveThinkingOptionId) ?? false)) {
+        if (!applyExternalConfiguration("pi", model, effectiveThinkingOptionId)) {
           throw new Error("Confirmed Pi Thinking could not be applied to the Composer");
         }
         mounted.threadConfiguration = state;
@@ -917,7 +912,7 @@ export function installRendererBindingProbe(
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      applyAdapterPiModel?.(model, previousThinking);
+      applyExternalConfiguration("pi", model, previousThinking);
       mounted.modelView = {
         status: "error",
         catalog,
@@ -1293,11 +1288,10 @@ export function installRendererBindingProbe(
         ...(permissionModeId ? { permissionModeId } : {}),
       };
     },
-    setAdapter(status, dispose, applyAgent, applyPiModel, nextModelControl) {
+    setAdapter(status, dispose, applyAgent, nextModelControl) {
       adapterDispose?.();
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
-      applyAdapterPiModel = applyPiModel ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
       sidebarAgentIcons.refresh();
@@ -1332,7 +1326,6 @@ export function installRendererBindingProbe(
       adapterDispose?.();
       adapterDispose = null;
       applyAdapterAgent = null;
-      applyAdapterPiModel = null;
       modelControl = null;
       mutationObserver.disconnect();
       sidebarAgentIcons.dispose();

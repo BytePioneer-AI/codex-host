@@ -90,6 +90,8 @@ The Adapter buffers no-Agent-loop notices and maps displayable Extension notific
 
 A missing, contradictory, or uncorrelated prompt result cannot be guessed into success. The Adapter performs a bounded state check and returns a normalized failure or faults the Session when ordering can no longer be proven.
 
+Pi may run threshold or overflow compaction during Prompt preflight before it emits the correlated Prompt response. `compaction_start` suspends only that pending Prompt response deadline while preserving its request ID; `compaction_end` restarts the ordinary bounded response interval. This does not impose a wall-clock limit on a valid compaction or Agent Turn. If the Prompt remains unconfirmed after compaction, the transport faults and closes before the Host exposes failure so a late response cannot execute behind a terminal Turn.
+
 ### 6. Reuse one fixed draft inspection method and add one fixed live catalog method
 
 Drafts extend the existing fixed `codexhost/harness/inspect` request with command-catalog inclusion and exact cwd/configuration fields. Existing consumers can omit the new optional fields and retain current Model inspection behavior.

@@ -71,6 +71,16 @@ PiAdapter SHALL correlate the Pi Prompt response to the active accepted Host Tur
 - **THEN** the normal Agent settlement path SHALL own the Turn terminal
 - **AND** PiAdapter SHALL NOT emit an early or duplicate terminal
 
+#### Scenario: Prompt preflight runs automatic compaction
+- **WHEN** Pi emits `compaction_start` before returning the correlated Prompt response
+- **THEN** PiAdapter SHALL preserve the pending Prompt correlation without applying the ordinary command-response timeout while compaction remains active
+- **AND** after `compaction_end` it SHALL restart bounded Prompt-response supervision and continue through the normal Agent settlement path
+
+#### Scenario: Prompt remains unconfirmed after automatic compaction
+- **WHEN** automatic compaction ends but the correlated Prompt response does not arrive within its bounded response interval
+- **THEN** PiAdapter SHALL fault and close the native transport before exposing the Turn failure
+- **AND** a late native response or execution SHALL NOT continue in a reusable Session
+
 #### Scenario: Prompt result cannot be correlated
 - **WHEN** Pi returns a missing, contradictory, or uncorrelated Prompt result and idle completion cannot be proven
 - **THEN** PiAdapter SHALL fail the accepted Turn or fault the Session explicitly

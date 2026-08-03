@@ -20,6 +20,8 @@ type Scenario =
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
+  | "prompt-preflight-compaction"
+  | "prompt-preflight-compaction-timeout"
   | "empty"
   | "tools"
   | "long-running"
@@ -229,6 +231,38 @@ class FakePiRpcProcess extends EventEmitter {
         ? String(command.level)
         : "high";
       this.#respond(command);
+      return;
+    }
+    if (
+      command.type === "prompt" &&
+      (this.#scenario === "prompt-preflight-compaction" ||
+        this.#scenario === "prompt-preflight-compaction-timeout")
+    ) {
+      this.#output({ type: "compaction_start", reason: "threshold" });
+      setTimeout(() => {
+        this.#output({
+          type: "compaction_end",
+          reason: "threshold",
+          result: {
+            summary: "Synthetic summary",
+            firstKeptEntryId: "user-1",
+            tokensBefore: 275_729,
+            estimatedTokensAfter: 32_000,
+          },
+          aborted: false,
+          willRetry: false,
+        });
+        if (this.#scenario === "prompt-preflight-compaction-timeout") return;
+        this.#isStreaming = true;
+        this.#respond(command);
+        const message = {
+          role: "assistant",
+          content: [{ type: "text", text: "continued after compaction" }],
+        };
+        this.#output({ type: "message_start", message });
+        this.#output({ type: "message_end", message });
+        this.#settleAgent();
+      }, 20);
       return;
     }
     if (command.type === "prompt") this.#isStreaming = true;
@@ -767,6 +801,59 @@ describe("Pi RPC Turn aggregation", () => {
     );
     expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await rpc.close();
+  });
+
+  it("keeps Prompt correlation alive while preflight auto-compaction exceeds the command timeout", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("prompt-preflight-compaction", onFault, { commandTimeoutMs: 10 });
+
+    try {
+      await rpc.start();
+      const result = expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+        text: "continued after compaction",
+        cancelled: false,
+      });
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      await result;
+      expect(onFault).not.toHaveBeenCalled();
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the Prompt response timeout after preflight auto-compaction ends", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("prompt-preflight-compaction-timeout", onFault, {
+      commandTimeoutMs: 10,
+    });
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("continue", () => undefined);
+      const rejected = expect(turn).rejects.toThrow("'prompt' command timed out");
+
+      await vi.advanceTimersByTimeAsync(29);
+      expect(onFault).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      await rejected;
+      expect(onFault).toHaveBeenCalledOnce();
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "protocolError",
+          message: "Pi RPC 'prompt' command timed out",
+        }),
+      );
+      await expect(rpc.runTurn("late", () => undefined)).rejects.toThrow("unavailable");
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
   });
 
   it("preserves a settled Assistant error from the final Pi message", async () => {

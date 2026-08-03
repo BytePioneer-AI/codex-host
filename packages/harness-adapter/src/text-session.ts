@@ -244,6 +244,11 @@ export interface HostReasoningItem {
   text: string;
 }
 
+export interface HostContextCompactionItem {
+  type: "contextCompaction";
+  itemId: HostItemId;
+}
+
 export interface HostCommandExecutionItem {
   type: "commandExecution";
   itemId: HostItemId;
@@ -287,6 +292,7 @@ export interface HostFileChangeItem {
 export type HostItem =
   | HostAgentMessageItem
   | HostReasoningItem
+  | HostContextCompactionItem
   | HostCommandExecutionItem
   | HostToolExecutionItem
   | HostFileChangeItem;

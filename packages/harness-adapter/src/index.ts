@@ -34,6 +34,7 @@ export type {
   HostChoiceQuestion,
   HostCommand,
   HostCommandExecutionItem,
+  HostContextCompactionItem,
   HostEvent,
   HostFileChange,
   HostFileChangeItem,

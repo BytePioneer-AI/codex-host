@@ -140,7 +140,7 @@ interface PendingCommand {
   command: string;
   resolve(value: Record<string, unknown>): void;
   reject(error: Error): void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
 }
 
 interface ActiveTurn {
@@ -459,6 +459,7 @@ export class PiRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #compactionActive = false;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
@@ -766,6 +767,10 @@ export class PiRpcSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#rejectAll(new Error("Pi RPC Session closed"));
+    await this.#stopProcess();
+  }
+
+  async #stopProcess(): Promise<void> {
     const child = this.#child;
     if (!child) return;
     if (child.stdin.writable) child.stdin.end();
@@ -805,8 +810,25 @@ export class PiRpcSession {
   }
 
   #handle(value: Record<string, unknown>): void {
+    if (this.#closed || this.#failed) return;
     if (value.type === "response") {
       this.#handleResponse(value);
+      return;
+    }
+    if (value.type === "compaction_start") {
+      this.#compactionActive = true;
+      for (const pending of this.#pending.values()) {
+        if (pending.command !== "prompt" || !pending.timeout) continue;
+        clearTimeout(pending.timeout);
+        pending.timeout = null;
+      }
+      return;
+    }
+    if (value.type === "compaction_end") {
+      this.#compactionActive = false;
+      for (const [id, pending] of this.#pending) {
+        if (pending.command === "prompt") this.#armCommandTimeout(id, pending);
+      }
       return;
     }
     const active = this.#activeTurn;
@@ -985,7 +1007,7 @@ export class PiRpcSession {
       this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
       return;
     }
-    clearTimeout(pending.timeout);
+    if (pending.timeout) clearTimeout(pending.timeout);
     this.#pending.delete(id);
     if (value.success === true) pending.resolve(value);
     else {
@@ -1184,20 +1206,66 @@ export class PiRpcSession {
     }
     const id = `codexhost-${randomUUID()}`;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(new Error(`Pi RPC '${type}' command timed out`));
-      }, this.#options.commandTimeoutMs);
-      this.#pending.set(id, { command: type, resolve, reject, timeout });
+      const pending: PendingCommand = {
+        command: type,
+        resolve,
+        reject,
+        timeout: null,
+      };
+      this.#pending.set(id, pending);
+      this.#armCommandTimeout(id, pending);
       const frame = Buffer.from(`${JSON.stringify({ id, type, ...payload })}\n`, "utf8");
       child.stdin.write(frame, (error) => {
         if (error) {
-          clearTimeout(timeout);
+          if (pending.timeout) clearTimeout(pending.timeout);
           this.#pending.delete(id);
           reject(error);
         }
       });
     });
+  }
+
+  #armCommandTimeout(id: string, pending: PendingCommand): void {
+    if (
+      pending.timeout ||
+      this.#pending.get(id) !== pending ||
+      (pending.command === "prompt" && this.#compactionActive)
+    ) {
+      return;
+    }
+    pending.timeout = setTimeout(() => {
+      if (this.#pending.get(id) !== pending) return;
+      pending.timeout = null;
+      const error = new Error(`Pi RPC '${pending.command}' command timed out`);
+      if (pending.command !== "prompt") {
+        this.#pending.delete(id);
+        pending.reject(error);
+        return;
+      }
+      const fault = new PiRpcFaultError("protocolError", error.message);
+      void this.#terminateTimedOutPrompt(fault);
+    }, this.#options.commandTimeoutMs);
+  }
+
+  async #terminateTimedOutPrompt(fault: PiRpcFaultError): Promise<void> {
+    if (this.#closed || this.#failed) return;
+    this.#failed = true;
+    this.#closed = true;
+    for (const pending of this.#pending.values()) {
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.timeout = null;
+    }
+    let finalFault = fault;
+    try {
+      await this.#stopProcess();
+    } catch (error) {
+      finalFault = new PiRpcFaultError(
+        "processExited",
+        `Pi RPC timed-out Prompt cleanup failed: ${message(error)}`,
+      );
+    }
+    this.#rejectAll(finalFault);
+    this.#options.onFault?.(finalFault);
   }
 
   #closeInteractions(active: ActiveTurn, reason: "cancelled" | "expired" | "superseded"): void {
@@ -1223,7 +1291,7 @@ export class PiRpcSession {
 
   #rejectAll(error: Error): void {
     for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
+      if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(error);
     }
     this.#pending.clear();

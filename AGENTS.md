@@ -6,8 +6,7 @@ This repository contains the product and technical baselines for `codexhost` and
 
 - `docs/产品需求文档.md` is the current product baseline: scope, MVP requirements, and acceptance criteria.
 - `docs/领域术语表.md` defines the shared domain language, including Harness, Model, Provider, Thread, and Native Session.
-- `docs/技术架构设计文档.md` is the formal technical architecture baseline.
-- `docs/数据持久化设计文档.md` defines the Mapping Store implementation, atomic persistence, recovery, and migration baseline.
+
 - `docs/工程落地文档.md` defines the toolchain, workspace layout, module dependencies, and build outputs.
 - `docs/开发步骤清单.md` defines implementation priority, technical gates, development batches, and completion criteria.
 
@@ -38,6 +37,7 @@ Before implementing a planned change, follow `docs/开发步骤清单.md` sectio
 
 - Inspect related implementations, tests, contracts, and documentation before making changes. Prefer established repository patterns and public APIs over parallel implementations.
 - Reuse code only when semantics and ownership are aligned. Do not introduce a generic abstraction for a single speculative caller.
+- Use as few concepts, states, entry points, and runtime actions as possible to express the real business flow directly.
 - Keep changes narrowly scoped. Avoid unrelated refactors, renames, dependency upgrades, or formatting churn.
 - Preserve the package and crate ownership boundaries described above. Prefer explicit data flow and typed contracts over hidden global state, stringly typed protocols, or implicit cross-module coupling.
 

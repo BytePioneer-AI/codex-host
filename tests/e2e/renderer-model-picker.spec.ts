@@ -100,7 +100,7 @@ const { outputFiles } = await build({
         };
         const control = mountRendererModelPicker(
           "claude-composer",
-          undefined,
+          "native-model-trigger",
           () => {},
           () => {},
         );
@@ -165,9 +165,18 @@ test("selecting a Model keeps the main menu open and refreshes Thinking options"
 });
 
 test("Claude aliases show actual runtime Model without exposing Thinking", async ({ page }) => {
-  await page.setContent(
-    '<!doctype html><body style="display:flex;align-items:flex-end;min-height:100vh;margin:0"></body>',
-  );
+  await page.setContent(`
+    <!doctype html>
+    <style>
+      .native-model-trigger {
+        display: flex;
+        width: 100%;
+        gap: 4px;
+        padding: 4px 8px;
+      }
+    </style>
+    <body style="display:flex;align-items:flex-end;min-height:100vh;margin:0"></body>
+  `);
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
     const setup = Reflect.get(globalThis, "setupClaudeRendererModelPicker");
@@ -179,11 +188,32 @@ test("Claude aliases show actual runtime Model without exposing Thinking", async
   const trigger = root.locator(':scope > button[aria-haspopup="menu"]');
   await expect(trigger).toContainText("Family alias");
   await expect(trigger).toContainText("Runtime custom");
+  await expect(trigger).not.toContainText("\u2304");
   await expect(trigger).toHaveAttribute("aria-label", /Family alias, Runtime custom/u);
+  const secondaryLabel = trigger.locator("span").last();
+  const [triggerBox, secondaryLabelBox] = await Promise.all([
+    trigger.boundingBox(),
+    secondaryLabel.boundingBox(),
+  ]);
+  if (!triggerBox || !secondaryLabelBox) throw new Error("Model trigger geometry is unavailable");
+  const trailingSpace =
+    triggerBox.x + triggerBox.width - (secondaryLabelBox.x + secondaryLabelBox.width);
+  expect(trailingSpace).toBeLessThanOrEqual(16);
 
   await trigger.click();
   await expect(root.locator("button[data-thinking-option-id]")).toHaveCount(0);
   await root.locator("button[data-open-model-menu]").click();
-  await expect(root.locator("button[data-model-id]")).toHaveCount(2);
+  const mainMenu = root.locator('[aria-label="Model and Thinking"]');
+  const modelMenu = root.locator('[aria-label="Model"]');
+  await expect(modelMenu.locator("button[data-model-id]")).toHaveCount(2);
+  const geometry = await Promise.all([
+    mainMenu.boundingBox(),
+    modelMenu.boundingBox(),
+    page.evaluate(() => window.innerHeight),
+  ]);
+  const [mainBox, modelBox, viewportHeight] = geometry;
+  if (!mainBox || !modelBox) throw new Error("Model picker geometry is unavailable");
+  const expectedTop = Math.max(8, Math.min(mainBox.y, viewportHeight - modelBox.height - 8));
+  expect(modelBox.y).toBeCloseTo(expectedTop, 0);
   await expect(root).not.toContainText("claude-model-v1");
 });

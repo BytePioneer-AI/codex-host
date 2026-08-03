@@ -34,10 +34,41 @@ function assistantBlocks(content: unknown[], uuid: string, error?: string) {
   };
 }
 
-function toolUse(name: string) {
+function toolUse(name: string, id = "synthetic-tool", input: unknown = {}) {
   return {
     type: "assistant",
-    message: { content: [{ type: "tool_use", name, id: "synthetic-tool", input: {} }] },
+    uuid: `assistant-${id}`,
+    message: { content: [{ type: "tool_use", name, id, input }] },
+  };
+}
+
+function toolUses(...blocks: Array<{ id: string; name: string; input: unknown }>) {
+  return {
+    type: "assistant",
+    uuid: "assistant-tools",
+    message: {
+      content: blocks.map(({ id, name, input }) => ({ type: "tool_use", id, name, input })),
+    },
+  };
+}
+
+function toolResult(
+  id: string,
+  input: { content?: unknown; isError?: boolean; nativeResult?: unknown } = {},
+) {
+  return {
+    type: "user",
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: id,
+          content: input.content ?? "complete",
+          ...(input.isError ? { is_error: true } : {}),
+        },
+      ],
+    },
+    ...(input.nativeResult === undefined ? {} : { tool_use_result: input.nativeResult }),
   };
 }
 
@@ -95,7 +126,28 @@ describe("Claude native Turn interpretation", () => {
       ],
     });
     expect(turn.consume(toolUse("Edit"))).toEqual({
-      events: [{ type: "message.completed", messageId: "claude-assistant-1" }],
+      events: [
+        {
+          type: "tool.started",
+          callId: "synthetic-tool",
+          toolName: "Edit",
+          arguments: {},
+        },
+        { type: "message.completed", messageId: "assistant-synthetic-tool" },
+      ],
+    });
+    expect(
+      turn.consume(toolResult("synthetic-tool", { content: "denied", isError: true })),
+    ).toEqual({
+      events: [
+        {
+          type: "tool.completed",
+          callId: "synthetic-tool",
+          toolName: "Edit",
+          outputText: "denied",
+          isError: true,
+        },
+      ],
     });
     expect(turn.consume(partial("after", "assistant-2"))).toEqual({
       events: [{ type: "text.delta", messageId: "assistant-2", delta: "after" }],
@@ -107,6 +159,126 @@ describe("Claude native Turn interpretation", () => {
       ],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("correlates interleaved Tool results and preserves native file evidence", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume(
+        toolUses(
+          { id: "read-1", name: "Read", input: { file_path: "sample.txt" } },
+          { id: "edit-1", name: "Edit", input: { file_path: "sample.txt" } },
+        ),
+      ).events,
+    ).toEqual([
+      {
+        type: "tool.started",
+        callId: "read-1",
+        toolName: "Read",
+        arguments: { file_path: "sample.txt" },
+      },
+      {
+        type: "tool.started",
+        callId: "edit-1",
+        toolName: "Edit",
+        arguments: { file_path: "sample.txt" },
+      },
+      { type: "message.completed", messageId: "assistant-tools" },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("edit-1", {
+          content: [{ type: "text", text: "edited" }],
+          nativeResult: {
+            filePath: "/workspace/sample.txt",
+            structuredPatch: [
+              {
+                oldStart: 1,
+                oldLines: 1,
+                newStart: 1,
+                newLines: 1,
+                lines: ["-old", "+new"],
+              },
+            ],
+          },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "tool.completed",
+        callId: "edit-1",
+        toolName: "Edit",
+        outputText: "edited",
+        isError: false,
+        fileChange: {
+          path: "/workspace/sample.txt",
+          kind: "update",
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ["-old", "+new"],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(turn.consume(toolResult("read-1", { content: "contents" })).events).toEqual([
+      {
+        type: "tool.completed",
+        callId: "read-1",
+        toolName: "Read",
+        outputText: "contents",
+        isError: false,
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("accepts optional correlated Tool Progress without manufacturing output", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    turn.consume(toolUse("Bash", "bash-1", { command: "sleep 1" }));
+    expect(
+      turn.consume({
+        type: "tool_progress",
+        tool_use_id: "bash-1",
+        elapsed_time_seconds: 1.25,
+      }).events,
+    ).toEqual([{ type: "tool.progress", callId: "bash-1", elapsedMs: 1_250 }]);
+    expect(
+      turn.consume(
+        toolResult("bash-1", {
+          content: [],
+          nativeResult: { stdout: "done\n", stderr: "" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "tool.completed",
+        callId: "bash-1",
+        toolName: "Bash",
+        outputText: "done\n",
+        isError: false,
+      },
+    ]);
+  });
+
+  it("fails a successful Turn with malformed or unresolved Tool correlation", () => {
+    const unresolved = new ClaudeNativeTurnAccumulator();
+    unresolved.consume(toolUse("Read", "read-1"));
+    expect(unresolved.consume(result()).terminal).toEqual({ status: "failed", kind: "protocol" });
+
+    const unknown = new ClaudeNativeTurnAccumulator();
+    unknown.consume(toolResult("missing"));
+    expect(unknown.consume(result()).terminal).toEqual({ status: "failed", kind: "protocol" });
+
+    const malformed = new ClaudeNativeTurnAccumulator();
+    malformed.consume(toolUse("Read", "read-1", { invalid: undefined }));
+    expect(malformed.consume(result()).terminal).toEqual({ status: "failed", kind: "protocol" });
   });
 
   it("fails rather than replaying conflicting native text", () => {

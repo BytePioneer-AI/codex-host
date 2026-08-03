@@ -1,3 +1,6 @@
+import { jsonValueSchema } from "@codexhost/shared-contracts";
+
+import { parseClaudeNativeFileChange } from "./file-change.js";
 import type {
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
@@ -7,9 +10,9 @@ import type {
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
 
-type ClaudeNativeContentEvent = Extract<
+type ClaudeNativeEvent = Exclude<
   ClaudeTurnEvent,
-  { type: "text.delta" | "reasoning.delta" | "reasoning.completed" | "message.completed" }
+  { type: "interaction.requested" | "interaction.closed" }
 >;
 
 interface AssistantMessageState {
@@ -26,10 +29,14 @@ function nativeUuid(message: Record<string, unknown>): string | null {
   return typeof message.uuid === "string" && message.uuid.length > 0 ? message.uuid : null;
 }
 
-function assistantText(message: Record<string, unknown>): string | null {
+function assistantContent(message: Record<string, unknown>): unknown[] | null {
   if (message.type !== "assistant" || !isRecord(message.message)) return null;
-  const content = message.message.content;
-  if (!Array.isArray(content)) return null;
+  return Array.isArray(message.message.content) ? message.message.content : null;
+}
+
+function assistantText(message: Record<string, unknown>): string | null {
+  const content = assistantContent(message);
+  if (!content) return null;
   return content
     .flatMap((block) =>
       isRecord(block) && block.type === "text" && typeof block.text === "string"
@@ -40,9 +47,8 @@ function assistantText(message: Record<string, unknown>): string | null {
 }
 
 function assistantReasoning(message: Record<string, unknown>): string | null {
-  if (message.type !== "assistant" || !isRecord(message.message)) return null;
-  const content = message.message.content;
-  if (!Array.isArray(content)) return null;
+  const content = assistantContent(message);
+  if (!content) return null;
   const blocks = content.filter(
     (block): block is Record<string, unknown> =>
       isRecord(block) && block.type === "thinking" && typeof block.thinking === "string",
@@ -74,8 +80,29 @@ function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
   return { status: "failed", kind };
 }
 
+function resultText(content: unknown, nativeResult: unknown): string | undefined {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .flatMap((block) =>
+        isRecord(block) && block.type === "text" && typeof block.text === "string"
+          ? [block.text]
+          : [],
+      )
+      .join("");
+  }
+  if (text.length > 0) return text;
+  if (!isRecord(nativeResult)) return undefined;
+  const stdout = typeof nativeResult.stdout === "string" ? nativeResult.stdout : "";
+  const stderr = typeof nativeResult.stderr === "string" ? nativeResult.stderr : "";
+  const combined = stdout + stderr;
+  return combined.length > 0 ? combined : undefined;
+}
+
 export interface ClaudeNativeMessageResult {
-  events: ClaudeNativeContentEvent[];
+  events: ClaudeNativeEvent[];
   terminal?: ClaudeTransportTurnResult;
 }
 
@@ -84,10 +111,13 @@ export class ClaudeNativeTurnAccumulator {
   #assistantErrors: string[] = [];
   #cancelRequested = false;
   #completed = false;
+  #completedToolIds = new Set<string>();
   #messageOrdinal = 0;
   #messages = new Map<string, AssistantMessageState>();
+  #protocolConflict = false;
   #reasoningConflict = false;
   #textConflict = false;
+  #tools = new Map<string, string>();
 
   requestCancel(): void {
     this.#cancelRequested = true;
@@ -95,10 +125,12 @@ export class ClaudeNativeTurnAccumulator {
 
   consume(message: unknown): ClaudeNativeMessageResult {
     if (this.#completed || !isRecord(message)) return { events: [] };
-    const events: ClaudeNativeContentEvent[] = [];
+    const events: ClaudeNativeEvent[] = [];
 
     if (message.type === "stream_event" && isRecord(message.event)) {
       this.#consumeStreamEvent(message, events);
+    } else if (message.type === "tool_progress") {
+      this.#consumeToolProgress(message, events);
     }
 
     const error = assistantError(message);
@@ -106,14 +138,25 @@ export class ClaudeNativeTurnAccumulator {
 
     if (message.type === "assistant") {
       this.#consumeAssistantMessage(message, events);
+    } else if (message.type === "user") {
+      this.#consumeToolResults(message, events);
     }
 
     if (message.type !== "result") return { events };
     this.#completed = true;
     const terminalReason =
       typeof message.terminal_reason === "string" ? message.terminal_reason : "missing";
+    const nativeSuccess =
+      message.subtype === "success" &&
+      message.is_error === false &&
+      (terminalReason === "completed" || terminalReason === "missing") &&
+      this.#assistantErrors.length === 0;
+    if (nativeSuccess && this.#tools.size > 0) this.#protocolConflict = true;
+
     let terminal: ClaudeTransportTurnResult;
-    if (this.#reasoningConflict) {
+    if (this.#protocolConflict) {
+      terminal = failure("protocol");
+    } else if (this.#reasoningConflict) {
       terminal = failure("reasoningConflict");
     } else if (this.#textConflict) {
       terminal = failure("textConflict");
@@ -123,12 +166,7 @@ export class ClaudeNativeTurnAccumulator {
       terminal = { status: "cancelled", reason: terminalReason };
     } else if (this.#cancelRequested) {
       terminal = failure("cancellationUnproven");
-    } else if (
-      message.subtype === "success" &&
-      message.is_error === false &&
-      (terminalReason === "completed" || terminalReason === "missing") &&
-      this.#assistantErrors.length === 0
-    ) {
+    } else if (nativeSuccess) {
       terminal = { status: "succeeded" };
     } else {
       terminal = failure("native");
@@ -136,7 +174,7 @@ export class ClaudeNativeTurnAccumulator {
     return { events, terminal };
   }
 
-  #consumeStreamEvent(message: Record<string, unknown>, events: ClaudeNativeContentEvent[]): void {
+  #consumeStreamEvent(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     const event = message.event;
     if (!isRecord(event)) return;
     const messageId = this.#streamMessageId(message, event);
@@ -160,10 +198,7 @@ export class ClaudeNativeTurnAccumulator {
     }
   }
 
-  #consumeAssistantMessage(
-    message: Record<string, unknown>,
-    events: ClaudeNativeContentEvent[],
-  ): void {
+  #consumeAssistantMessage(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     const messageId = this.#activeStreamMessageId ?? nativeUuid(message) ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
     if (state.completed) return;
@@ -197,11 +232,92 @@ export class ClaudeNativeTurnAccumulator {
       }
     }
 
-    if (!this.#reasoningConflict && !this.#textConflict) {
+    for (const block of assistantContent(message) ?? []) {
+      if (!isRecord(block) || block.type !== "tool_use") continue;
+      const argumentsResult = jsonValueSchema.safeParse(block.input);
+      if (
+        typeof block.id !== "string" ||
+        block.id.length === 0 ||
+        typeof block.name !== "string" ||
+        block.name.length === 0 ||
+        !argumentsResult.success ||
+        this.#tools.has(block.id) ||
+        this.#completedToolIds.has(block.id)
+      ) {
+        this.#protocolConflict = true;
+        continue;
+      }
+      this.#tools.set(block.id, block.name);
+      events.push({
+        type: "tool.started",
+        callId: block.id,
+        toolName: block.name,
+        arguments: argumentsResult.data,
+      });
+    }
+
+    if (!this.#protocolConflict && !this.#reasoningConflict && !this.#textConflict) {
       events.push({ type: "message.completed", messageId });
     }
     state.completed = true;
     if (this.#activeStreamMessageId === messageId) this.#activeStreamMessageId = null;
+  }
+
+  #consumeToolProgress(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    const callId = message.tool_use_id;
+    const elapsedSeconds = message.elapsed_time_seconds;
+    if (
+      typeof callId !== "string" ||
+      !this.#tools.has(callId) ||
+      typeof elapsedSeconds !== "number" ||
+      !Number.isFinite(elapsedSeconds) ||
+      elapsedSeconds < 0
+    ) {
+      this.#protocolConflict = true;
+      return;
+    }
+    events.push({ type: "tool.progress", callId, elapsedMs: Math.round(elapsedSeconds * 1_000) });
+  }
+
+  #consumeToolResults(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (!isRecord(message.message) || !Array.isArray(message.message.content)) return;
+    const resultBlocks = message.message.content.filter(
+      (block): block is Record<string, unknown> => isRecord(block) && block.type === "tool_result",
+    );
+    if (resultBlocks.length === 0) return;
+    if (resultBlocks.length > 1 && message.tool_use_result !== undefined) {
+      this.#protocolConflict = true;
+    }
+    for (const block of resultBlocks) {
+      const callId = block.tool_use_id;
+      if (typeof callId !== "string" || callId.length === 0) {
+        this.#protocolConflict = true;
+        continue;
+      }
+      const toolName = this.#tools.get(callId);
+      if (!toolName || this.#completedToolIds.has(callId)) {
+        this.#protocolConflict = true;
+        continue;
+      }
+      if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
+        this.#protocolConflict = true;
+        continue;
+      }
+      this.#tools.delete(callId);
+      this.#completedToolIds.add(callId);
+      const isError = block.is_error === true;
+      const nativeResult = resultBlocks.length === 1 ? message.tool_use_result : undefined;
+      const outputText = resultText(block.content, nativeResult);
+      const fileChange = isError ? null : parseClaudeNativeFileChange(toolName, nativeResult);
+      events.push({
+        type: "tool.completed",
+        callId,
+        toolName,
+        ...(outputText ? { outputText } : {}),
+        isError,
+        ...(fileChange ? { fileChange } : {}),
+      });
+    }
   }
 
   #streamMessageId(message: Record<string, unknown>, event: Record<string, unknown>): string {

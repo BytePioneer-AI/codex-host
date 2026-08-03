@@ -815,7 +815,7 @@ export function installCurrentRendererAdapter(): {
     }
     const controller = modelController ?? findModelStateController();
     if (!controller || !hasOfficialSelection) {
-      updateStatus("unsupported", "model-controller-unavailable", null);
+      updateStatus("installing", "model-controller-unavailable", null);
       return false;
     }
     modelController = controller;
@@ -837,7 +837,7 @@ export function installCurrentRendererAdapter(): {
   };
 
   if (!captureController()) {
-    updateStatus("unsupported", "model-controller-unavailable", null);
+    updateStatus("installing", "model-controller-unavailable", null);
   }
   const observer = new MutationObserver(() => {
     captureController();

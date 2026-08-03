@@ -17,7 +17,14 @@ const OPTION_CLASSES =
 const HEADING_CLASSES = "px-2 pb-1 pt-1.5 text-sm text-token-text-tertiary";
 
 export interface RendererModelControlView {
-  status: "idle" | "loading" | "ready" | "selecting" | "empty" | "error";
+  status:
+    | "idle"
+    | "waitingForAdapter"
+    | "loading"
+    | "ready"
+    | "selecting"
+    | "empty"
+    | "error";
   catalog?: HarnessModelCatalog;
   selected?: HarnessModelRef;
   selectedThinkingOptionId?: HarnessThinkingOptionId;
@@ -76,6 +83,7 @@ export function thinkingOptionsForModel(
 
 export function isRendererModelPickerDisabled(view: RendererModelControlView): boolean {
   return (
+    view.status === "waitingForAdapter" ||
     view.status === "loading" ||
     view.status === "selecting" ||
     view.status === "empty" ||
@@ -102,7 +110,9 @@ export function rendererModelPickerPresentation(
   const resolvedModelLabel = view.resolvedModelLabel ?? selectedModel?.resolvedModelLabel;
   let modelLabel = "Select model";
   if (selectedModel) modelLabel = selectedModel.label;
-  else if (view.status === "loading") modelLabel = "Loading models...";
+  else if (view.status === "waitingForAdapter" || view.status === "loading") {
+    modelLabel = "Loading models...";
+  }
   else if (view.status === "selecting") modelLabel = "Selecting...";
   else if (view.status === "empty") modelLabel = "No models";
   else if (view.status === "error") modelLabel = "Models unavailable";

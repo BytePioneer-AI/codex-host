@@ -115,6 +115,16 @@ function sameAgents(actual: readonly string[], expected: readonly string[]): boo
   );
 }
 
+class RendererAdapterReadinessError extends Error {
+  constructor(
+    readonly state: string,
+    readonly reason: string,
+  ) {
+    super(`Production Renderer Adapter is ${state}: ${reason}`);
+    this.name = "RendererAdapterReadinessError";
+  }
+}
+
 function validateBindingStatus(
   value: unknown,
   expectedAgents: readonly string[],
@@ -132,17 +142,9 @@ function validateBindingStatus(
   if (value.adapter.state !== "ready" || typeof value.adapter.reason !== "string") {
     const state = typeof value.adapter.state === "string" ? value.adapter.state : "invalid";
     const reason = typeof value.adapter.reason === "string" ? value.adapter.reason : "unknown";
-    throw new Error(`Production Renderer Adapter is ${state}: ${reason}`);
+    throw new RendererAdapterReadinessError(state, reason);
   }
   return value as unknown as ProductionRendererStatus;
-}
-
-function isTransientBindingReadinessError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message ===
-      "Production Renderer Adapter is unsupported: model-controller-unavailable"
-  );
 }
 
 export function selectRendererWebContents(
@@ -380,11 +382,7 @@ async function waitForBinding(
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
       lastError = error;
-      if (
-        error instanceof Error &&
-        error.message.startsWith("Production Renderer Adapter is") &&
-        !isTransientBindingReadinessError(error)
-      ) {
+      if (error instanceof RendererAdapterReadinessError && error.state !== "installing") {
         throw error;
       }
     }

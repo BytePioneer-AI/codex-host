@@ -263,7 +263,6 @@ export function installRendererBindingProbe(
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
-  const deferredCatalogLoads = new Set<MountedComposer>();
   let disposed = false;
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
@@ -438,19 +437,15 @@ export function installRendererBindingProbe(
 
   const loadExternalCatalog = async (mounted: MountedComposer): Promise<void> => {
     const state = controller.get(mounted.composer);
-    if (state.agent === "codex") {
-      deferredCatalogLoads.delete(mounted);
-      return;
-    }
+    if (state.agent === "codex") return;
     const agent = state.agent;
-    mounted.modelView = { status: "loading", thinkingSelectionSupported: agent === "pi" };
+    mounted.modelView = {
+      status: adapterStatus.state === "ready" ? "loading" : "waitingForAdapter",
+      thinkingSelectionSupported: agent === "pi",
+    };
     mounted.permissionModeView = { status: "idle" };
     renderMounted(mounted);
-    if (adapterStatus.state !== "ready") {
-      deferredCatalogLoads.add(mounted);
-      return;
-    }
-    deferredCatalogLoads.delete(mounted);
+    if (adapterStatus.state !== "ready") return;
     const generation = controller.beginModelRequest(mounted.composer);
     try {
       if (!modelControl) throw new Error("External configuration control is unavailable");
@@ -963,7 +958,6 @@ export function installRendererBindingProbe(
       if (switched && controller.get(mounted.composer).agent !== "codex") {
         void loadExternalCatalog(mounted);
       } else if (controller.get(mounted.composer).agent === "codex") {
-        deferredCatalogLoads.delete(mounted);
         mounted.modelView = { status: "idle" };
         mounted.permissionModeView = { status: "idle" };
       }
@@ -1065,7 +1059,6 @@ export function installRendererBindingProbe(
     pendingReplacements.clear();
     for (const [composer, mounted] of mountedByComposer) {
       if (!composer.isConnected || !mounted.control.root.isConnected) {
-        deferredCatalogLoads.delete(mounted);
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -1238,16 +1231,13 @@ export function installRendererBindingProbe(
   });
   const onAdapterStatus = () => {
     if (adapterStatus.state === "ready") {
-      for (const mounted of [...deferredCatalogLoads]) {
+      for (const mounted of mountedByComposer.values()) {
         if (
+          mounted.modelView.status === "waitingForAdapter" &&
           mounted.composer.isConnected &&
-          mountedByComposer.get(mounted.composer) === mounted &&
-          controller.get(mounted.composer).agent !== "codex" &&
           applyComposerAgent(mounted.composer)
         ) {
           void loadExternalCatalog(mounted);
-        } else {
-          deferredCatalogLoads.delete(mounted);
         }
       }
     }
@@ -1356,7 +1346,6 @@ export function installRendererBindingProbe(
         disposeComposerAgentControl(mounted.control);
       mountedByComposer.clear();
       pendingReplacements.clear();
-      deferredCatalogLoads.clear();
       delete window.__codexhostRendererBindingProbeV1;
     },
   };

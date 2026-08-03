@@ -44,8 +44,10 @@ When the supported Desktop sends an unbounded `thread/fork` followed by `thread/
 
 #### Scenario: Earlier message action rolls back while a later source Turn is active
 - **WHEN** Desktop tail-Forks only the source's completed persisted Turns and requests rollback for the untouched derived Thread while a later source Turn remains active
-- **THEN** Host SHALL resolve the retained source Checkpoint from persisted mappings without refreshing or changing the active source Session
+- **AND** `numTurns` includes that active source Turn even though it is absent from the derived history
+- **THEN** Host SHALL discount the excluded active Turn and resolve the retained source Checkpoint from persisted mappings without refreshing or changing the active source Session
 - **AND** the final derived history SHALL contain exactly the completed prefix selected by Desktop
+- **AND** Host SHALL return the existing derived Thread unchanged when discounting the active Turn leaves no completed derived Turns to remove
 
 #### Scenario: Retained derived Turn identity stays stable
 - **WHEN** post-Fork rollback retains a prefix of an already returned derived Thread

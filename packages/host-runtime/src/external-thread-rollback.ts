@@ -80,7 +80,15 @@ export async function executeExternalThreadRollback(input: {
       },
     };
   }
-  const retainedCount = derived.record.turnMappings.length - rollback.numTurns;
+  const excludedActiveTurnCount =
+    source.running || source.record.turnMappings.length > derived.record.turnMappings.length
+      ? 1
+      : 0;
+  const retainedCount =
+    derived.record.turnMappings.length - rollback.numTurns + excludedActiveTurnCount;
+  if (retainedCount === derived.record.turnMappings.length) {
+    return { ok: true, thread: derived.thread };
+  }
   const boundary = source.record.turnMappings[retainedCount - 1];
   if (retainedCount < 1 || !boundary?.nativeCheckpointRef) {
     return {

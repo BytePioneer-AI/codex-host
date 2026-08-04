@@ -73,18 +73,21 @@ export interface RendererBindingProbeOptions {
   defaultAgent?: RendererAgent;
 }
 
+type ApplyAdapterAgent = (
+  agent: RendererAgent,
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
+  composer?: Element,
+) => boolean;
+
 export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
   lockedSelection(): LockedComposerSelection | null;
   setAdapter(
     status: RendererAdapterStatus,
     dispose?: () => void,
-    applyAgent?: (
-      agent: RendererAgent,
-      model?: HarnessModelRef,
-      thinkingOptionId?: HarnessThinkingOptionId,
-      permissionModeId?: HarnessPermissionModeId,
-    ) => boolean,
+    applyAgent?: ApplyAdapterAgent,
     modelControl?: RendererModelClient | null,
   ): void;
   dispose(): void;
@@ -204,7 +207,7 @@ export function shouldTransferComposerState(
   if (!sourceTarget || !replacementTarget) return false;
   if (sourceTarget === replacementTarget) return true;
   return (
-    (sourcePhase === "draft" || sourcePhase === "locked") &&
+    sourcePhase === "locked" &&
     sourceTarget[0] === "default" &&
     replacementTarget[0] === "conversation"
   );
@@ -221,9 +224,9 @@ export function lateConversationTargetResolution(
   mountedTarget: readonly unknown[] | null,
   currentTarget: readonly unknown[] | null,
   sourcePhase: ComposerAgentPhase,
-): "none" | "transfer" {
-  void sourcePhase;
-  return isLateConversationTarget(mountedTarget, currentTarget) ? "transfer" : "none";
+): "none" | "transfer" | "inspect" {
+  if (!isLateConversationTarget(mountedTarget, currentTarget)) return "none";
+  return sourcePhase === "locked" ? "transfer" : "inspect";
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -277,14 +280,7 @@ export function installRendererBindingProbe(
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
-  let applyAdapterAgent:
-    | ((
-        agent: RendererAgent,
-        model?: HarnessModelRef,
-        thinkingOptionId?: HarnessThinkingOptionId,
-        permissionModeId?: HarnessPermissionModeId,
-      ) => boolean)
-    | null = null;
+  let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
@@ -353,11 +349,14 @@ export function installRendererBindingProbe(
   };
 
   const applyExternalConfiguration = (
+    mounted: MountedComposer,
     agent: Exclude<RendererAgent, "codex">,
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-  ): boolean => applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? false;
+  ): boolean =>
+    applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId, mounted.composer) ??
+    false;
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
@@ -390,7 +389,8 @@ export function installRendererBindingProbe(
       if (
         !restored ||
         !(
-          applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId) ?? agent === "codex"
+          applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId, mounted.composer) ??
+          agent === "codex"
         )
       ) {
         throw new Error("Thread owner could not be applied to the Composer");
@@ -448,8 +448,12 @@ export function installRendererBindingProbe(
       renderMounted(mounted);
       return true;
     }
-    mounted.ownershipStatus = "ready";
-    renderMounted(mounted);
+    if (resolution === "transfer") {
+      mounted.ownershipStatus = "ready";
+      renderMounted(mounted);
+    } else {
+      void loadThreadOwnership(mounted);
+    }
     return true;
   };
 
@@ -550,6 +554,7 @@ export function installRendererBindingProbe(
       ) {
         if (
           !applyExternalConfiguration(
+            mounted,
             agent,
             selected,
             selectedThinkingOptionId,
@@ -567,6 +572,7 @@ export function installRendererBindingProbe(
               previousModel,
               previousThinkingOptionId,
               previousPermissionModeId,
+              mounted.composer,
             );
           }
           throw error;
@@ -662,6 +668,7 @@ export function installRendererBindingProbe(
         effectiveCatalog = catalog;
         if (
           !applyExternalConfiguration(
+            mounted,
             agent,
             effectiveModel,
             effectiveThinkingOptionId,
@@ -675,6 +682,7 @@ export function installRendererBindingProbe(
         } catch (error) {
           if (previousModel && isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(
+              mounted,
               agent,
               previousModel,
               previousThinking,
@@ -714,6 +722,7 @@ export function installRendererBindingProbe(
           state.effectivePermissionModeId ?? previousPermissionModeId;
         if (
           !applyExternalConfiguration(
+            mounted,
             agent,
             effectiveModel,
             effectiveThinkingOptionId,
@@ -743,6 +752,7 @@ export function installRendererBindingProbe(
       if (!isCurrentModelRequest(mounted, generation)) return;
       if (previousModel) {
         applyExternalConfiguration(
+          mounted,
           agent,
           previousModel,
           previousThinking,
@@ -788,14 +798,28 @@ export function installRendererBindingProbe(
     try {
       let effectivePermissionModeId = selectedPermissionModeId;
       if (current.phase === "draft") {
-        if (!applyExternalConfiguration(agent, model, thinkingOptionId, selectedPermissionModeId)) {
+        if (
+          !applyExternalConfiguration(
+            mounted,
+            agent,
+            model,
+            thinkingOptionId,
+            selectedPermissionModeId,
+          )
+        ) {
           throw new Error("Permission Mode could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
-            applyExternalConfiguration(agent, model, thinkingOptionId, previousPermissionModeId);
+            applyExternalConfiguration(
+              mounted,
+              agent,
+              model,
+              thinkingOptionId,
+              previousPermissionModeId,
+            );
           }
           throw error;
         }
@@ -823,7 +847,13 @@ export function installRendererBindingProbe(
         }
         effectivePermissionModeId = state.effectivePermissionModeId;
         if (
-          !applyExternalConfiguration(agent, model, thinkingOptionId, effectivePermissionModeId)
+          !applyExternalConfiguration(
+            mounted,
+            agent,
+            model,
+            thinkingOptionId,
+            effectivePermissionModeId,
+          )
         ) {
           throw new Error("Confirmed Permission Mode could not be applied to the Composer");
         }
@@ -839,7 +869,13 @@ export function installRendererBindingProbe(
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
       if (previousPermissionModeId) {
-        applyExternalConfiguration(agent, model, thinkingOptionId, previousPermissionModeId);
+        applyExternalConfiguration(
+          mounted,
+          agent,
+          model,
+          thinkingOptionId,
+          previousPermissionModeId,
+        );
       }
       mounted.permissionModeView = {
         status: "error",
@@ -889,14 +925,22 @@ export function installRendererBindingProbe(
       let effectiveThinkingOptionId = selectedThinkingOptionId;
       let effectiveCatalog = catalog;
       if (current.phase === "draft") {
-        if (!applyExternalConfiguration(agent, model, selectedThinkingOptionId, permissionModeId)) {
+        if (
+          !applyExternalConfiguration(
+            mounted,
+            agent,
+            model,
+            selectedThinkingOptionId,
+            permissionModeId,
+          )
+        ) {
           throw new Error("External Thinking could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
-            applyExternalConfiguration(agent, model, previousThinking, permissionModeId);
+            applyExternalConfiguration(mounted, agent, model, previousThinking, permissionModeId);
           }
           throw error;
         }
@@ -926,6 +970,7 @@ export function installRendererBindingProbe(
         effectiveCatalog = catalogWithConfigurationState(catalog, model, state);
         if (
           !applyExternalConfiguration(
+            mounted,
             agent,
             model,
             effectiveThinkingOptionId,
@@ -947,7 +992,7 @@ export function installRendererBindingProbe(
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      applyExternalConfiguration(agent, model, previousThinking, permissionModeId);
+      applyExternalConfiguration(mounted, agent, model, previousThinking, permissionModeId);
       mounted.modelView = {
         status: "error",
         catalog,
@@ -979,6 +1024,7 @@ export function installRendererBindingProbe(
             nextAgent !== "codex"
               ? controller.permissionModeForAgent(mounted.composer, nextAgent)
               : undefined,
+            mounted.composer,
           ) ?? nextAgent === "codex"
         );
       },
@@ -1067,6 +1113,7 @@ export function installRendererBindingProbe(
       state.agent !== "codex"
         ? controller.permissionModeForAgent(composer, state.agent)
         : undefined,
+      composer,
     );
     renderMounted(mounted);
     if (threadIdFromComposerModelTarget(modelTarget) && !inherited) {
@@ -1176,6 +1223,7 @@ export function installRendererBindingProbe(
         state.agent !== "codex"
           ? controller.permissionModeForAgent(composer, state.agent)
           : undefined,
+        composer,
       ) ?? state.agent === "codex"
     );
   };
@@ -1349,6 +1397,7 @@ export function installRendererBindingProbe(
             state.agent !== "codex"
               ? controller.permissionModeForAgent(mounted.composer, state.agent)
               : undefined,
+            mounted.composer,
           );
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&

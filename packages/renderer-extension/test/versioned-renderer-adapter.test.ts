@@ -65,22 +65,63 @@ describe("versioned Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([directClient]);
   });
 
-  it("finds the compact Model atom pair used with custom Model catalogs", () => {
-    const state = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
-    const optimistic = { atom: {}, get: vi.fn(() => state), set: vi.fn() };
-    const committed = { atom: {}, get: vi.fn(() => state), set: vi.fn() };
-    const composer = {
-      matches: () => true,
-      parentElement: null,
-    } as unknown as Element;
+  it("prefers a legacy conversation target over a compact null target", () => {
+    const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
+    const compact = { atom: {}, get: vi.fn(() => wrapper), set: vi.fn() };
+    const target = ["conversation", "thread-1"];
+    const optimistic = {
+      atom: {},
+      get: vi.fn(() => ({ model: "official/model", reasoningEffort: "medium" })),
+      set: vi.fn(),
+    };
+    const committed = {
+      atom: {},
+      get: vi.fn(() => ({ model: "official/model", reasoningEffort: "medium" })),
+      set: vi.fn(),
+    };
+    const composer = { matches: () => true, parentElement: null } as unknown as Element;
     Object.defineProperty(composer, "__reactFiber$test", {
       configurable: true,
       value: {
         updateQueue: {
           memoCache: {
             data: [
-              [undefined, optimistic, optimistic],
-              [{}, {}, null, committed],
+              [undefined, compact, compact],
+              [{}, {}, null, compact],
+            ],
+          },
+        },
+        return: {
+          updateQueue: {
+            memoCache: {
+              data: [
+                [undefined, {}, {}],
+                [{}, {}, target, optimistic],
+                [undefined, {}, {}],
+                [{}, {}, target, committed],
+              ],
+            },
+          },
+          return: null,
+        },
+      },
+    });
+
+    expect(findComposerModelTarget(composer)).toEqual(target);
+  });
+
+  it("uses a compact Model wrapper when no legacy pair exists", () => {
+    const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
+    const modelAtom = { atom: {}, get: vi.fn(() => wrapper), set: vi.fn() };
+    const composer = { matches: () => true, parentElement: null } as unknown as Element;
+    Object.defineProperty(composer, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        updateQueue: {
+          memoCache: {
+            data: [
+              [undefined, modelAtom, modelAtom],
+              [{}, {}, null, modelAtom],
             ],
           },
         },
@@ -89,9 +130,14 @@ describe("versioned Renderer Agent adapter", () => {
     });
 
     expect(findComposerModelTarget(composer)).toEqual(["default", null]);
+    expect(
+      selectOptimisticModelAtom([
+        { optimistic: modelAtom, committed: modelAtom, target: ["default", null] },
+      ]),
+    ).toBe(modelAtom);
   });
 
-  it("selects the first optimistic Model atom without validating cache copies", () => {
+  it("selects one optimistic Model atom from equivalent Fiber cache copies", () => {
     const optimistic = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
     const committed = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
     const firstTarget = ["conversation", "opaque-id"];
@@ -112,7 +158,7 @@ describe("versioned Renderer Agent adapter", () => {
           target: secondTarget,
         },
       ]),
-    ).toBe(optimistic);
+    ).toBeNull();
   });
 
   it("requires both version policy readiness markers", () => {

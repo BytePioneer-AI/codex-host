@@ -211,13 +211,13 @@ describe("Renderer Composer DOM behavior", () => {
     ).toEqual({ agent: "pi", model });
   });
 
-  it("transfers an in-place conversation transition without rechecking ownership", () => {
+  it("inspects an in-place conversation transition unless the source was submitted", () => {
     const defaultTarget = ["default"];
     const conversationTarget = ["conversation", "opaque-1"];
 
     expect(isLateConversationTarget(defaultTarget, conversationTarget)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "draft")).toBe(
-      "transfer",
+      "inspect",
     );
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
@@ -228,13 +228,15 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isLateConversationTarget(null, conversationTarget)).toBe(false);
   });
 
-  it("transfers a default Composer when Codex assigns its conversation target", () => {
+  it("does not transfer an unsubmitted default draft when an existing conversation opens", () => {
     const defaultTarget = ["default"];
     const firstConversationTarget = ["conversation", "opaque-1"];
     const otherConversationTarget = ["conversation", "opaque-2"];
 
     expect(shouldTransferComposerState(defaultTarget, defaultTarget, "draft")).toBe(true);
-    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(true);
+    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(
+      false,
+    );
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "locked")).toBe(
       true,
     );

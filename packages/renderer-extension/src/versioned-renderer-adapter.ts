@@ -67,6 +67,7 @@ export interface ModelStateController {
   apply(selection: ModelPowerSelection | null): void;
   codexSelection: ModelPowerSelection | null;
   current: ModelPowerSelection | null;
+  format: "legacy" | "compact";
   reasoningEffort: unknown;
 }
 
@@ -299,6 +300,16 @@ function isModelAtomState(value: unknown): value is ModelAtomState {
   );
 }
 
+function isModelSelection(value: unknown): value is ModelPowerSelection | null {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      Object.keys(value).sort().join(",") === "model,reasoningEffort" &&
+      "model" in value &&
+      "reasoningEffort" in value)
+  );
+}
+
 export function sameModelPowerSelection(
   left: ModelPowerSelection | null,
   right: ModelPowerSelection | null,
@@ -312,8 +323,27 @@ export function sameModelPowerSelection(
   );
 }
 
+function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function selectOptimisticModelAtom(pairs: readonly ModelAtomPair[]): ModelAtomState | null {
-  return pairs[0]?.optimistic ?? null;
+  const first = pairs[0];
+  if (!first) return null;
+  const value = first.optimistic.get();
+  if (isRecord(value) && "modelSettings" in value) return first.optimistic;
+  if (first.optimistic.atom === first.committed.atom) return null;
+  if (
+    !pairs.every(
+      (pair) =>
+        pair.optimistic.atom === first.optimistic.atom &&
+        pair.committed.atom === first.committed.atom &&
+        sameTarget(pair.target, first.target),
+    )
+  ) {
+    return null;
+  }
+  return first.optimistic;
 }
 
 function findComposerFiber(composer?: Element): { return?: unknown; updateQueue?: unknown } | null {
@@ -339,17 +369,8 @@ function findComposerFiber(composer?: Element): { return?: unknown; updateQueue?
     : null;
 }
 
-function findModelPickerControl(): {
-  codexSelection: ModelPowerSelection | null;
-  found: boolean;
-  selection: ModelPowerSelection;
-} {
-  let control:
-    | {
-        codexSelection: ModelPowerSelection | null;
-        selection: ModelPowerSelection;
-      }
-    | undefined;
+function findReasoningEffort(): { found: boolean; value: unknown } {
+  const matches: Array<{ callback: unknown; value: unknown }> = [];
   for (const button of document.querySelectorAll<HTMLButtonElement>(
     '[data-codex-composer-root] button[aria-haspopup="menu"]',
   )) {
@@ -364,17 +385,75 @@ function findModelPickerControl(): {
       : null;
     for (let depth = 0; fiber && depth < 60; depth += 1) {
       const props = fiber.memoizedProps;
-      if (!control && isRecord(props) && "model" in props && "reasoningEffort" in props) {
+      if (
+        isRecord(props) &&
+        typeof props.onSelectModel === "function" &&
+        typeof props.onSelectReasoningEffort === "function" &&
+        "reasoningEffort" in props &&
+        isRecord(props.fallbackPowerSelection)
+      ) {
+        matches.push({ callback: props.onSelectModel, value: props.reasoningEffort });
+      }
+      const parent = fiber.return;
+      fiber =
+        (typeof parent === "object" || typeof parent === "function") && parent !== null
+          ? (parent as typeof fiber)
+          : null;
+    }
+  }
+  const uniqueCallbacks = new Set(matches.map((match) => match.callback));
+  const first = matches[0];
+  return {
+    found:
+      first !== undefined &&
+      uniqueCallbacks.size === 1 &&
+      matches.every((match) => match.value === first.value),
+    value: first?.value,
+  };
+}
+
+function findModelPickerControl(composer?: Element): {
+  codexSelection: ModelPowerSelection | null;
+  found: boolean;
+  selection: ModelPowerSelection;
+  selectModel(model: unknown, reasoningEffort: unknown): void;
+} {
+  let control:
+    | {
+        codexSelection: ModelPowerSelection | null;
+        selection: ModelPowerSelection;
+        selectModel(model: unknown, reasoningEffort: unknown): void;
+      }
+    | undefined;
+  for (const button of (composer ?? document).querySelectorAll<HTMLButtonElement>(
+    'button[aria-haspopup="menu"]',
+  )) {
+    const fiberName = Object.getOwnPropertyNames(button).find((name) =>
+      name.startsWith("__reactFiber$"),
+    );
+    let fiber = fiberName
+      ? (Object.getOwnPropertyDescriptor(button, fiberName)?.value as {
+          return?: unknown;
+          memoizedProps?: unknown;
+        } | null)
+      : null;
+    for (let depth = 0; fiber && depth < 60; depth += 1) {
+      const props = fiber.memoizedProps;
+      if (
+        !control &&
+        isRecord(props) &&
+        "model" in props &&
+        "reasoningEffort" in props &&
+        typeof props.onSelectModel === "function"
+      ) {
         const selection = { model: props.model, reasoningEffort: props.reasoningEffort };
         const fallbackSelection = isRecord(props.fallbackPowerSelection)
           ? (props.fallbackPowerSelection as ModelPowerSelection)
           : null;
         control = {
-          codexSelection:
-            isTransportModelId(selection.model) && fallbackSelection
-              ? fallbackSelection
-              : selection,
+          codexSelection: isTransportModelId(selection.model) ? fallbackSelection : selection,
           selection,
+          selectModel: props.onSelectModel as (model: unknown, reasoningEffort: unknown) => void,
         };
       }
       const parent = fiber.return;
@@ -388,11 +467,15 @@ function findModelPickerControl(): {
     codexSelection: control?.codexSelection ?? null,
     found: control !== undefined,
     selection: control?.selection ?? { model: undefined, reasoningEffort: undefined },
+    selectModel(model, reasoningEffort) {
+      control?.selectModel(model, reasoningEffort);
+    },
   };
 }
 
 function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
   const pairs: ModelAtomPair[] = [];
+  const compactPairs: ModelAtomPair[] = [];
   let fiber = findComposerFiber(composer);
   for (let depth = 0; fiber && depth < 120; depth += 1) {
     const updateQueue = fiber.updateQueue;
@@ -402,25 +485,26 @@ function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
       const compact = data[index];
       const resolved = data[index + 1];
       if (
-        Array.isArray(compact) &&
-        isModelAtomState(compact[1]) &&
-        Array.isArray(resolved) &&
-        isModelAtomState(resolved[3]) &&
-        (resolved[2] === null || typeof resolved[2] === "string")
+        !Array.isArray(compact) ||
+        !isModelAtomState(compact[1]) ||
+        !Array.isArray(resolved) ||
+        !isModelAtomState(resolved[3]) ||
+        (resolved[2] !== null && typeof resolved[2] !== "string")
       ) {
-        let value: unknown;
-        try {
-          value = compact[1].get();
-        } catch {
-          continue;
-        }
-        if (!isRecord(value) || !("modelSettings" in value)) continue;
-        const target =
-          resolved[2] === null || resolved[2].startsWith("client-new-thread:")
-            ? ["default", resolved[2]]
-            : ["conversation", resolved[2]];
-        pairs.push({ optimistic: compact[1], committed: resolved[3], target });
+        continue;
       }
+      let value: unknown;
+      try {
+        value = compact[1].get();
+      } catch {
+        continue;
+      }
+      if (!isRecord(value) || !("modelSettings" in value)) continue;
+      const target =
+        resolved[2] === null || resolved[2].startsWith("client-new-thread:")
+          ? ["default", resolved[2]]
+          : ["conversation", resolved[2]];
+      compactPairs.push({ optimistic: compact[1], committed: resolved[3], target });
     }
     for (let index = 0; index + 3 < data.length; index += 1) {
       const first = data[index];
@@ -446,11 +530,22 @@ function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
       if (
         !Array.isArray(target) ||
         !Array.isArray(secondTarget) ||
+        target !== secondTarget ||
+        (target[0] !== "default" && target[0] !== "conversation") ||
         !isModelAtomState(optimistic) ||
         !isModelAtomState(committed)
       ) {
         continue;
       }
+      let optimisticValue: unknown;
+      let committedValue: unknown;
+      try {
+        optimisticValue = optimistic.get();
+        committedValue = committed.get();
+      } catch {
+        continue;
+      }
+      if (!isModelSelection(optimisticValue) || !isModelSelection(committedValue)) continue;
       pairs.push({ optimistic, committed, target });
     }
     const parent = fiber.return;
@@ -459,7 +554,7 @@ function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
         ? (parent as typeof fiber)
         : null;
   }
-  return pairs;
+  return pairs.length > 0 ? pairs : compactPairs;
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
@@ -468,22 +563,44 @@ export function findComposerModelTarget(composer: Element): readonly unknown[] |
   return pairs[0]?.target ?? null;
 }
 
-function findModelStateController(): ModelStateController | null {
-  const pairs = findModelAtomPairs();
+function findModelStateController(composer?: Element): ModelStateController | null {
+  const pairs = findModelAtomPairs(composer);
   const optimistic = selectOptimisticModelAtom(pairs);
-  const picker = findModelPickerControl();
-  if (!optimistic || !picker.found) return null;
+  if (!optimistic) return null;
+  const current = optimistic.get();
+  if (isModelSelection(current)) {
+    const reasoningEffort = findReasoningEffort();
+    const picker = findModelPickerControl(composer);
+    if (!reasoningEffort.found) return null;
+    return {
+      apply(selection) {
+        optimistic.set(selection);
+      },
+      codexSelection:
+        current === null
+          ? picker.codexSelection
+          : !isTransportModelId(current.model)
+            ? current
+            : picker.codexSelection,
+      get current() {
+        const value = optimistic.get();
+        return isModelSelection(value) ? value : null;
+      },
+      format: "legacy",
+      reasoningEffort: reasoningEffort.value,
+    };
+  }
+  if (!isRecord(current) || !("modelSettings" in current)) return null;
+  const picker = findModelPickerControl(composer);
+  if (!picker.found) return null;
   return {
     apply(selection) {
-      const value = optimistic.get();
-      optimistic.set(
-        isRecord(value) && "modelSettings" in value
-          ? { ...value, isManuallyChanged: true, modelSettings: selection }
-          : selection,
-      );
+      if (selection) picker.selectModel(selection.model, selection.reasoningEffort);
+      else optimistic.set({ ...current, isManuallyChanged: true, modelSettings: null });
     },
     codexSelection: picker.codexSelection,
     current: picker.selection,
+    format: "compact",
     reasoningEffort: picker.selection.reasoningEffort,
   };
 }
@@ -521,12 +638,14 @@ export function installCurrentRendererAdapter(): {
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
+    composer?: Element,
   ): boolean;
   dispose(): void;
 } {
   let disposed = false;
   let modelController: ModelStateController | null = null;
   let officialSelection: ModelPowerSelection | null = null;
+  let hasOfficialSelection = false;
   let selectedAgent: RendererAgent = "codex";
   let modelUpdates = 0;
   const liveStatus: RendererAdapterStatus = {
@@ -593,9 +712,14 @@ export function installCurrentRendererAdapter(): {
     const discovered = findModelStateController();
     if (!discovered) return false;
     modelController = discovered;
-    if (selectedAgent === "codex") {
+    if (selectedAgent === "codex" && discovered.codexSelection !== null) {
       officialSelection = discovered.codexSelection;
+      hasOfficialSelection = true;
+    } else if (selectedAgent === "codex" && discovered.current === null) {
+      officialSelection = null;
+      hasOfficialSelection = true;
     }
+    if (!hasOfficialSelection) return false;
     updateStatus("ready", "ready", "model-state");
     return true;
   };
@@ -604,13 +728,22 @@ export function installCurrentRendererAdapter(): {
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
+    composer?: Element,
   ): boolean => {
     if (disposed) return false;
-    const controller = modelController ?? findModelStateController();
-    if (!controller) {
-      updateStatus("installing", "model-controller-unavailable", null);
-      return false;
+    if (agent === "codex" && !hasOfficialSelection) {
+      selectedAgent = "codex";
+      return true;
     }
+    const scopedController = composer ? findModelStateController(composer) : null;
+    const controller =
+      scopedController ??
+      (modelController?.format === "legacy"
+        ? modelController
+        : composer
+          ? null
+          : (modelController ?? findModelStateController()));
+    if (!controller || !hasOfficialSelection) return false;
     modelController = controller;
     const selection = modelSelectionForAgent(
       officialSelection,
@@ -647,6 +780,7 @@ export function installCurrentRendererAdapter(): {
       forkControl.dispose();
       modelController = null;
       officialSelection = null;
+      hasOfficialSelection = false;
     },
   };
 }

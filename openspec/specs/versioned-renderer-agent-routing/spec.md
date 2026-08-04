@@ -25,8 +25,8 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 
 #### Scenario: First creation replaces the Composer DOM
 
-- **WHEN** a draft or locked new-Thread Composer transitions from its opaque `default` Model target to a `conversation` target
-- **THEN** the replacement Composer retains the same logical Composer identity, selected Agent, and phase
+- **WHEN** a submitted and locked new-Thread Composer transitions from its opaque `default` Model target to a `conversation` target
+- **THEN** the replacement Composer retains the same logical Composer identity, selected Agent, and locked phase
 
 #### Scenario: User opens a new Thread
 
@@ -36,8 +36,10 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 
 #### Scenario: User only opens an existing Thread
 
-- **WHEN** the user opens or revisits a Thread without submitting a Turn
-- **THEN** that Thread's Agent does not replace the most recently submitted Agent used for later new-Thread drafts
+- **WHEN** an unsubmitted default Composer transitions to a conversation because the user opens or revisits an existing Thread
+- **THEN** the Renderer does not transfer the default Composer's Agent or configuration to that conversation
+- **AND** it resolves and locks the conversation's immutable Agent through fixed Host ownership inspection
+- **AND** that Thread's Agent does not replace the most recently submitted Agent used for later new-Thread drafts
 
 #### Scenario: User revisits a submitted Thread
 
@@ -244,8 +246,8 @@ Renderer binding tooling SHALL require an explicit CLI option to enable Claude a
 ### Requirement: Pi Model state follows the logical Composer lifecycle
 The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control state scoped to the same logical Composer identity used for Agent routing while allowing Model selection for an existing Pi Thread only through its validated current-process Thread identity.
 
-#### Scenario: Draft replacement retains Model
-- **WHEN** a Pi draft or locked new-Thread Composer transitions from its opaque default target to the created conversation target
+#### Scenario: Submitted Pi creation retains Model
+- **WHEN** a submitted and locked Pi new-Thread Composer transitions from its opaque default target to the created conversation target
 - **THEN** the replacement retains the selected Pi Model Ref and control state
 
 #### Scenario: Same-process conversation revisit
@@ -386,8 +388,8 @@ For a supported Desktop build, Renderer SHALL use the fixed Harness inspection a
 ### Requirement: Claude Model state follows the logical Composer lifecycle
 Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog, and asynchronous request generation to the same logical Composer identity used for Agent routing. Draft creation SHALL use the request-local carrier, while an existing Claude Thread SHALL change Model only through its validated Host Thread identity and confirmed Session state.
 
-#### Scenario: Claude draft replacement retains Model
-- **WHEN** a Claude draft transitions from the default target to its created conversation target
+#### Scenario: Submitted Claude creation retains Model
+- **WHEN** a submitted and locked Claude new-Thread Composer transitions from the default target to its created conversation target
 - **THEN** the replacement retains the selected Claude Ref and locked Agent state for that exact create
 
 #### Scenario: New task resets Claude Model

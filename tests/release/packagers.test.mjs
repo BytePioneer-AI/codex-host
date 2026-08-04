@@ -20,13 +20,25 @@ describe("platform packagers", () => {
     expect(source).not.toContain("cargo-packager");
   });
 
-  it("produces and uploads installers and per-target npm packages from one matrix", async () => {
+  it("publishes one tag-bound four-platform installer and npm release", async () => {
     const [workflow, releaseBuilder] = await Promise.all([
       readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
     ]);
+    expect(workflow).toContain('tags:\n      - "v*"');
+    expect(workflow).not.toContain("types: [published]");
+    expect(workflow).toContain("Resolve release metadata");
+    expect(workflow).toContain("does not match package.json version");
+    expect(workflow).toContain("does not match Cargo workspace version");
+    expect(workflow).toContain("must be an annotated tag with release notes");
+    expect(workflow).toContain("%(contents:body)");
+    expect(workflow).toContain("npm_tag=test");
+    expect(workflow).toContain("npm_tag=next");
+    expect(workflow).toContain("npm_tag=latest");
+
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");
+    expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("--skip-build");
     expect(workflow).toContain("--pack");
@@ -35,8 +47,18 @@ describe("platform packagers", () => {
     expect(workflow).toContain("Build npm package");
     expect(workflow).toContain("release:npm:meta");
     expect(workflow).toContain("release:npm:publish");
+    expect(workflow).toContain('--tag "$NPM_TAG"');
     expect(workflow).toContain("secrets.NPM_TOKEN");
     expect(workflow).toContain("id-token: write");
+
+    expect(workflow).toContain("smoke-npm:");
+    expect(workflow).toContain('"@codexhost/cli@$env:RELEASE_VERSION"');
+    expect(workflow).toContain('codexhost.cmd" --help');
+    expect(workflow).toContain("publish-release:");
+    expect(workflow).toContain("gh release create");
+    expect(workflow).toContain('"codexhost-${VERSION}-windows-x64.exe"');
+    expect(workflow).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
+    expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(releaseBuilder).not.toContain("checksumPath");
     expect(releaseBuilder).not.toContain("sha256=${result.checksum}");
@@ -55,6 +77,5 @@ describe("platform packagers", () => {
     expect(installer).toContain("DisableProgramGroupPage=yes");
     expect(installer).toContain("ArchitecturesAllowed=x64compatible");
     expect(installer).toContain("ArchitecturesAllowed=arm64");
-
   });
 });

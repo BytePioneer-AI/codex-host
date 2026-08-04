@@ -1,21 +1,121 @@
 name: Release packages
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "npm package version when root package.json is still 0.0.0 (optional)"
-        required: false
+      tag:
+        description: "Existing annotated tag to release (for example, v0.1.0)"
+        required: true
         type: string
-  release:
-    types: [published]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
+  prepare:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      npm_tag: ${{ steps.release.outputs.npm_tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_TAG }}
+
+      - name: Validate tag, version, and release notes
+        id: release
+        shell: bash
+        env:
+          TAG: ${{ env.SOURCE_TAG }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$ ]]; then
+            echo "release tag must be v<semver>, got ${TAG}" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          root_version="$(node --input-type=module -e "import manifest from './package.json' with { type: 'json' }; process.stdout.write(manifest.version);")"
+          if [[ "$root_version" != "$version" ]]; then
+            echo "release tag ${TAG} does not match package.json version ${root_version}" >&2
+            exit 1
+          fi
+          cargo_version="$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_section = 1; next }
+            in_section && /^\[/ { exit }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/"[[:space:]]*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)"
+          if [[ "$cargo_version" != "$version" ]]; then
+            echo "release tag ${TAG} does not match Cargo workspace version ${cargo_version}" >&2
+            exit 1
+          fi
+          if [[ "$version" == "0.0.0" ]]; then
+            echo "release version must not be 0.0.0" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]]; then
+            echo "release tag ${TAG} must be an annotated tag with release notes" >&2
+            exit 1
+          fi
+
+          git for-each-ref --format='%(contents:body)' "refs/tags/${TAG}" > release-notes.md
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            if (readFileSync('release-notes.md', 'utf8').trim().length === 0) {
+              throw new Error('annotated tag body must contain release notes');
+            }
+          "
+
+          prerelease=false
+          npm_tag=latest
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+            prerelease_id="${version#*-}"
+            prerelease_id="${prerelease_id%%+*}"
+            if [[ "$prerelease_id" == "test" || "$prerelease_id" == test.* ]]; then
+              npm_tag=test
+            else
+              npm_tag=next
+            fi
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=${npm_tag}" >> "$GITHUB_OUTPUT"
+          echo "Release ${TAG}: npm tag ${npm_tag}, prerelease=${prerelease}"
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
   package:
-    name: ${{ matrix.target }}
+    name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -35,14 +135,19 @@ jobs:
             rustTarget: aarch64-pc-windows-msvc
 
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -53,48 +158,7 @@ jobs:
       - name: Setup Inno Setup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: winget install --id JRSoftware.InnoSetup --exact --accept-source-agreements --accept-package-agreements
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          set -euo pipefail
-          root_version="$(node --input-type=module -e "import manifest from './package.json' with { type: 'json' }; process.stdout.write(manifest.version);")"
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            expected="v${root_version}"
-            if [[ "$RELEASE_TAG" != "$expected" ]]; then
-              echo "release tag must be ${expected}, got ${RELEASE_TAG}" >&2
-              exit 1
-            fi
-            if [[ "$root_version" == "0.0.0" ]]; then
-              echo "root package.json version must not be 0.0.0 for a published release" >&2
-              exit 1
-            fi
-            version="$root_version"
-          else
-            version="${INPUT_VERSION:-}"
-            if [[ -z "$version" || "$version" == "0.0.0" ]]; then
-              if [[ "$root_version" != "0.0.0" ]]; then
-                version="$root_version"
-              else
-                version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
-              fi
-            fi
-          fi
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "invalid release version: ${version}" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Using release version ${version}"
-
-      - name: Setup npm
-        run: npm install --global npm@11.8.0
+        run: choco install innosetup --no-progress -y
 
       - name: Install dependencies
         run: npm ci
@@ -107,7 +171,7 @@ jobs:
         run: >
           npm run release:npm --
           --target ${{ matrix.target }}
-          --version ${{ steps.version.outputs.version }}
+          --version ${{ needs.prepare.outputs.version }}
           --pack
           --skip-build
 
@@ -116,48 +180,42 @@ jobs:
         shell: bash
         run: >
           npm run release:npm:meta --
-          --version ${{ steps.version.outputs.version }}
+          --version ${{ needs.prepare.outputs.version }}
           --pack
 
-      - name: Upload workflow artifacts
+      - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
           name: codexhost-${{ matrix.target }}
           path: |
-            build/release/*/${{ matrix.target }}/codexhost-*.dmg
-            build/release/*/${{ matrix.target }}/codexhost-*.exe
-            build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
-            build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe
+            build/npm/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
+            build/npm/${{ needs.prepare.outputs.version }}/meta/codexhost-cli-${{ needs.prepare.outputs.version }}.tgz
           if-no-files-found: error
-
-      - name: Upload GitHub Release assets
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: |
-            build/release/*/${{ matrix.target }}/codexhost-*.dmg
-            build/release/*/${{ matrix.target }}/codexhost-*.exe
-            build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
-            build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
+          retention-days: 7
 
   publish-npm:
     name: Publish npm registry packages
-    if: github.event_name == 'release'
-    needs: package
+    needs: [prepare, package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
 
       - name: Download npm artifacts
         uses: actions/download-artifact@v4
@@ -169,9 +227,141 @@ jobs:
       - name: Publish platform packages and meta package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          NPM_TAG: ${{ needs.prepare.outputs.npm_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: >
           npm run release:npm:publish --
           --artifacts build/npm-publish
-          --version "${RELEASE_TAG#v}"
+          --version "$RELEASE_VERSION"
+          --tag "$NPM_TAG"
           --provenance
+
+  smoke-npm:
+    name: Verify npm registry installation
+    needs: [prepare, publish-npm]
+    runs-on: windows-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Wait for all packages and install from the registry
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packages = @(
+            "@codexhost/cli-darwin-arm64",
+            "@codexhost/cli-darwin-x64",
+            "@codexhost/cli-win32-x64",
+            "@codexhost/cli-win32-arm64",
+            "@codexhost/cli"
+          )
+          foreach ($package in $packages) {
+            $available = $false
+            for ($attempt = 1; $attempt -le 12; $attempt += 1) {
+              $published = & npm view "$package@$env:RELEASE_VERSION" version --registry=https://registry.npmjs.org 2>$null
+              if ($LASTEXITCODE -eq 0 -and "$published".Trim() -eq $env:RELEASE_VERSION) {
+                $available = $true
+                break
+              }
+              Start-Sleep -Seconds 10
+            }
+            if (-not $available) {
+              throw "$package@$env:RELEASE_VERSION did not become available in the npm registry"
+            }
+          }
+
+          npm install --prefix smoke "@codexhost/cli@$env:RELEASE_VERSION" --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw "npm registry smoke installation failed" }
+          if (-not (Test-Path "smoke/node_modules/@codexhost/cli-win32-x64/package.json")) {
+            throw "npm did not install the Windows x64 platform package"
+          }
+          & "./smoke/node_modules/.bin/codexhost.cmd" --help
+          if ($LASTEXITCODE -ne 0) { throw "codexhost --help failed after registry installation" }
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [prepare, package, publish-npm, smoke-npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codexhost-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release-metadata
+
+      - name: Validate artifacts and publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "codexhost-${VERSION}-macos-arm64.dmg"
+            "codexhost-${VERSION}-macos-x64.dmg"
+            "codexhost-${VERSION}-windows-x64.exe"
+            "codexhost-${VERSION}-windows-arm64.exe"
+            "codexhost-cli-${VERSION}-macos-arm64.tgz"
+            "codexhost-cli-${VERSION}-macos-x64.tgz"
+            "codexhost-cli-${VERSION}-windows-x64.tgz"
+            "codexhost-cli-${VERSION}-windows-arm64.tgz"
+            "codexhost-cli-${VERSION}.tgz"
+          )
+          files=()
+          for name in "${expected[@]}"; do
+            mapfile -d '' matches < <(find release-assets -type f -name "$name" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "expected exactly one release artifact named ${name}, found ${#matches[@]}" >&2
+              exit 1
+            fi
+            if [[ ! -s "${matches[0]}" ]]; then
+              echo "release artifact is empty: ${matches[0]}" >&2
+              exit 1
+            fi
+            files+=("${matches[0]}")
+          done
+          if [[ ! -s release-metadata/release-notes.md ]]; then
+            echo "release notes are missing or empty" >&2
+            exit 1
+          fi
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber --repo "${{ github.repository }}"
+          else
+            flags=(
+              --repo "${{ github.repository }}"
+              --verify-tag
+              --title "codexhost ${VERSION}"
+              --notes-file release-metadata/release-notes.md
+            )
+            if [[ "$PRERELEASE" == "true" ]]; then
+              flags+=(--prerelease)
+            else
+              flags+=(--latest)
+            fi
+            gh release create "$TAG" "${files[@]}" "${flags[@]}"
+          fi

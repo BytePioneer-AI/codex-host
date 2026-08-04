@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.0.0",
+  "version": "0.1.0-test.1",
   "private": true,
   "type": "module",
   "packageManager": "npm@11.8.0",
@@ -28,6 +28,7 @@
     "build:typescript": "tsc -b",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim",
+    "release:prepare": "node scripts/release/prepare-version.mjs",
     "release:package": "node scripts/release/prepare-payload.mjs",
     "release:npm": "node scripts/release/prepare-npm.mjs",
     "release:npm:pack": "node scripts/release/prepare-npm.mjs --pack",

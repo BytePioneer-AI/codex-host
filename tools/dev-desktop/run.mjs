@@ -85,26 +85,59 @@ desktop_running() {
     /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
 }
 
-if ! desktop_running; then
-  exit 0
+if desktop_running; then
+  /usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
+  /usr/bin/pkill -KILL -f "$user_desktop_pattern" >/dev/null 2>&1 || true
+  attempt=0
+  while desktop_running; do
+    if [ "$attempt" -ge 200 ]; then
+      echo 'Codex Desktop did not exit before timeout.' >&2
+      exit 1
+    fi
+    attempt=$((attempt + 1))
+    /bin/sleep 0.05
+  done
 fi
 
-/usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
-/usr/bin/pkill -KILL -f "$user_desktop_pattern" >/dev/null 2>&1 || true
-attempt=0
-while desktop_running; do
-  if [ "$attempt" -ge 200 ]; then
-    echo 'Codex Desktop did not exit before timeout.' >&2
-    exit 1
+runtime_descriptor="$HOME/Library/Application Support/codexhost/desktop-runtime-v1.json"
+descriptor_value() {
+  if [ ! -f "$runtime_descriptor" ]; then
+    return 0
   fi
-  attempt=$((attempt + 1))
-  /bin/sleep 0.05
-done
+  /usr/bin/sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p" "$runtime_descriptor" |
+    /usr/bin/head -n 1
+}
+
+controller_pid() {
+  control_port="$(descriptor_value control_port)"
+  if [ -z "$control_port" ]; then
+    return 0
+  fi
+  candidate="$(
+    /usr/sbin/lsof -nP -t -iTCP:"$control_port" -sTCP:LISTEN 2>/dev/null |
+      /usr/bin/head -n 1
+  )"
+  if [ -z "$candidate" ]; then
+    return 0
+  fi
+  command_line="$(/bin/ps -p "$candidate" -o command= 2>/dev/null || true)"
+  case "$command_line" in
+    *"packages/desktop-control/dist/release-main.js"*)
+      printf '%s\n' "$candidate"
+      ;;
+  esac
+}
 
 runtime_running() {
   /usr/bin/pgrep -x codexhost >/dev/null 2>&1 ||
-    /usr/bin/pgrep -x codexhost-shim >/dev/null 2>&1
+    /usr/bin/pgrep -x codexhost-shim >/dev/null 2>&1 ||
+    [ -n "$(controller_pid)" ]
 }
+
+controller="$(controller_pid)"
+if [ -n "$controller" ]; then
+  /bin/kill -TERM "$controller" >/dev/null 2>&1 || true
+fi
 
 attempt=0
 while runtime_running && [ "$attempt" -lt 40 ]; do
@@ -112,6 +145,10 @@ while runtime_running && [ "$attempt" -lt 40 ]; do
   /bin/sleep 0.05
 done
 if runtime_running; then
+  controller="$(controller_pid)"
+  if [ -n "$controller" ]; then
+    /bin/kill -KILL "$controller" >/dev/null 2>&1 || true
+  fi
   /usr/bin/pkill -KILL -x codexhost >/dev/null 2>&1 || true
   /usr/bin/pkill -KILL -x codexhost-shim >/dev/null 2>&1 || true
 fi

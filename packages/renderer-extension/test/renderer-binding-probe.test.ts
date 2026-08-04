@@ -234,9 +234,7 @@ describe("Renderer Composer DOM behavior", () => {
     const otherConversationTarget = ["conversation", "opaque-2"];
 
     expect(shouldTransferComposerState(defaultTarget, defaultTarget, "draft")).toBe(true);
-    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(
-      true,
-    );
+    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(true);
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "locked")).toBe(
       true,
     );

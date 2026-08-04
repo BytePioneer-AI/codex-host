@@ -220,8 +220,9 @@ export function isLateConversationTarget(
 export function lateConversationTargetResolution(
   mountedTarget: readonly unknown[] | null,
   currentTarget: readonly unknown[] | null,
-  _sourcePhase: ComposerAgentPhase,
+  sourcePhase: ComposerAgentPhase,
 ): "none" | "transfer" {
+  void sourcePhase;
   return isLateConversationTarget(mountedTarget, currentTarget) ? "transfer" : "none";
 }
 

@@ -12,6 +12,7 @@ import {
   expectedNpmPackagePaths,
   npmPackageCpu,
   npmPackageOs,
+  npmPackCommand,
   npmPlatformPackageName,
   npmReleaseBuildCommands,
   npmTarballFileName,
@@ -112,6 +113,19 @@ describe("npm package release", () => {
     expect(commands.at(-1).args).toContain("codexhost-launcher");
     expect(commands.at(-1).args).toContain("codexhost-shim");
     expect(commands.at(-1).args).not.toContain("codexhost-platform");
+  });
+
+  it("runs npm pack through npm_execpath on Windows", () => {
+    expect(
+      npmPackCommand("win32", { npm_execpath: "C:\\npm\\npm-cli.js" }, "C:\\node.exe"),
+    ).toEqual({
+      command: "C:\\node.exe",
+      args: ["C:\\npm\\npm-cli.js", "pack"],
+    });
+    expect(npmPackCommand("darwin", {}, "/usr/bin/node")).toEqual({
+      command: "npm",
+      args: ["pack"],
+    });
   });
 
   it("publishes a scoped platform package with platform constraints", () => {

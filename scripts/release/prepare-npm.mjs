@@ -110,6 +110,14 @@ export function npmReleaseBuildCommands(
   ];
 }
 
+export function npmPackCommand(
+  platform = process.platform,
+  environment = process.env,
+  nodePath = process.execPath,
+) {
+  return npmReleaseCommand(["pack"], platform, environment, nodePath);
+}
+
 async function runCommand({ label, command, args }, cwd = repositoryRoot) {
   await new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: "inherit", windowsHide: true });
@@ -629,11 +637,16 @@ export function npmTarballFileName({ version, target }) {
 }
 
 export async function packNpmPackage({ packageRoot, outputRoot, version, target }) {
-  const result = spawnSync("npm", ["pack", "--pack-destination", outputRoot], {
-    cwd: packageRoot,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const packCommand = npmPackCommand();
+  const result = spawnSync(
+    packCommand.command,
+    [...packCommand.args, "--pack-destination", outputRoot],
+    {
+      cwd: packageRoot,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(

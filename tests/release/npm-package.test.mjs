@@ -12,6 +12,7 @@ import {
   npmPackageCpu,
   npmPackageOs,
   npmReleaseBuildCommands,
+  npmTarballFileName,
   parseNpmReleaseArguments,
   validateNpmPackage,
 } from "../../scripts/release/prepare-npm.mjs";
@@ -171,5 +172,14 @@ describe("npm package release", () => {
     expect(source).toContain('NPM_PACKAGE_NAME = "@codexhost/cli"');
     expect(source).toContain("publishConfig");
     expect(source).toContain('access: "public"');
+  });
+
+  it("names npm tarballs with the release target so four matrix jobs do not collide", () => {
+    expect(npmTarballFileName({ version: "0.1.0", target: releaseTarget("macos-arm64") })).toBe(
+      "codexhost-cli-0.1.0-macos-arm64.tgz",
+    );
+    expect(npmTarballFileName({ version: "0.1.0", target: releaseTarget("windows-x64") })).toBe(
+      "codexhost-cli-0.1.0-windows-x64.tgz",
+    );
   });
 });

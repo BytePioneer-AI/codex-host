@@ -21,6 +21,11 @@ ClaudeCodeAdapter SHALL correlate complete native Tool Use and Tool Result messa
 - **THEN** the Tool Item SHALL still complete from the Tool Result
 - **AND** no synthetic progress output SHALL be manufactured
 
+#### Scenario: Tool Progress is unusable
+- **WHEN** Claude emits late, uncorrelated, or malformed `tool_progress` metadata
+- **THEN** ClaudeCodeAdapter SHALL ignore that metadata
+- **AND** valid Tool Use, Tool Result, and Turn terminal evidence SHALL remain authoritative
+
 ### Requirement: Claude Tool lifecycles remain correlated and terminally complete
 Every valid Claude Tool Use SHALL map to one Host Item whose start precedes completion and whose completion precedes the Turn terminal. Duplicate starts, unknown completions, ambiguous result association, or successful Turn settlement with unresolved Tools MUST fail closed rather than attach output to another Tool or claim success.
 

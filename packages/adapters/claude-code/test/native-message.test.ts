@@ -291,6 +291,43 @@ describe("Claude native Turn interpretation", () => {
     ]);
   });
 
+  it("ignores unusable Tool Progress without invalidating correlated Tool evidence", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume({
+        type: "tool_progress",
+        tool_use_id: "unknown",
+        elapsed_time_seconds: 1,
+      }).events,
+    ).toEqual([]);
+    turn.consume(toolUse("Bash", "bash-1", { command: "printf done" }));
+    expect(
+      turn.consume({
+        type: "tool_progress",
+        tool_use_id: "bash-1",
+        elapsed_time_seconds: "invalid",
+      }).events,
+    ).toEqual([]);
+    expect(turn.consume(toolResult("bash-1", { content: "done" })).events).toEqual([
+      {
+        type: "tool.completed",
+        callId: "bash-1",
+        toolName: "Bash",
+        outputText: "done",
+        isError: false,
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "tool_progress",
+        tool_use_id: "bash-1",
+        elapsed_time_seconds: 1.25,
+      }).events,
+    ).toEqual([]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
   it("fails a successful Turn with malformed or unresolved Tool correlation", () => {
     const unresolved = new ClaudeNativeTurnAccumulator();
     unresolved.consume(toolUse("Read", "read-1"));

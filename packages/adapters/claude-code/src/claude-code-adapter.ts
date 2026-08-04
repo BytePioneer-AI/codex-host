@@ -870,7 +870,6 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "message.completed":
         if (event.checkpointId) active.checkpointId = event.checkpointId;
-        if (this.#transport) this.#refreshUsage(this.#transport, active.command.turnId);
         return;
       case "tool.started":
         for (const messageId of [...active.reasoningItems.keys()]) {
@@ -917,9 +916,6 @@ class ClaudeHarnessSession implements HarnessSession {
             },
           };
     this.#completeCompactionItem(active, outcome);
-    if (result === "succeeded" && this.#transport) {
-      this.#refreshUsage(this.#transport, active.command.turnId);
-    }
   }
 
   #completeCompactionItem(active: ActiveTurn, outcome: HostItemOutcome): void {

@@ -156,7 +156,6 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
               supportedEffortLevels: ["low", "adaptive-v2", "high"],
             },
           ],
-          currentModel: "runtime-default",
           canSelectModel: true,
           canSelectPermissionMode: true,
         })),
@@ -331,7 +330,6 @@ describe("Claude Code HarnessAdapter", () => {
     vi.mocked(dependencies.createInspector).mockReturnValueOnce({
       inspect: vi.fn(async () => ({
         models: [{ value: "default", displayName: "Custom Model" }],
-        currentModel: "runtime-custom",
         canSelectModel: true,
         canSelectPermissionMode: true,
       })),
@@ -357,7 +355,6 @@ describe("Claude Code HarnessAdapter", () => {
     const { adapter, dependencies } = fixture();
     const pending = deferred<{
       models: unknown[];
-      currentModel: string;
       canSelectModel: boolean;
       canSelectPermissionMode: boolean;
     }>();
@@ -373,7 +370,6 @@ describe("Claude Code HarnessAdapter", () => {
       .mockReturnValueOnce({
         inspect: async () => ({
           models: [],
-          currentModel: "",
           canSelectModel: false,
           canSelectPermissionMode: false,
         }),
@@ -382,7 +378,6 @@ describe("Claude Code HarnessAdapter", () => {
       .mockReturnValueOnce({
         inspect: async () => ({
           models: [],
-          currentModel: "",
           canSelectModel: false,
           canSelectPermissionMode: false,
         }),
@@ -394,7 +389,6 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createInspector).toHaveBeenCalledOnce();
     pending.resolve({
       models: [{ value: "default", displayName: "Default" }],
-      currentModel: "runtime-default",
       canSelectModel: true,
       canSelectPermissionMode: true,
     });
@@ -796,7 +790,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("projects automatic Compaction before continued Assistant output and refreshes Usage", async () => {
+  it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -823,12 +817,7 @@ describe("Claude Code HarnessAdapter", () => {
         outcome: { status: "succeeded" },
       },
     });
-    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledOnce());
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "automatic-compaction",
-      usage: { contextUsedTokens: 30, contextWindowTokens: 200 },
-    });
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
 
     transport.delta("continued", "assistant-after-compaction");
     expect(await nextEvent(iterator)).toMatchObject({
@@ -844,6 +833,12 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "automatic-compaction",
+      usage: { contextUsedTokens: 30, contextWindowTokens: 200 },
+    });
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
     await session.close();
   });
 
@@ -1512,7 +1507,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("publishes context Usage after an Assistant message while the Turn remains active", async () => {
+  it("does not query context Usage for an intermediate Assistant message", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1528,15 +1523,17 @@ describe("Claude Code HarnessAdapter", () => {
     transport.delta("working", "assistant-usage");
     await nextEvent(iterator);
     transport.event({ type: "message.completed", messageId: "assistant-usage" });
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
 
-    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledOnce());
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
       observedForTurnId: "usage-during-turn",
       usage: { contextUsedTokens: 60, contextWindowTokens: 200 },
     });
-
-    transport.finish({ status: "succeeded" });
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
     await session.close();
   });
 
@@ -2162,7 +2159,6 @@ describe("Claude Code HarnessAdapter", () => {
       createInspector: () => ({
         inspect: async () => ({
           models: [],
-          currentModel: "",
           canSelectModel: false,
           canSelectPermissionMode: false,
         }),
@@ -2204,14 +2200,12 @@ describe("Claude Code HarnessAdapter", () => {
     const { adapter, dependencies } = fixture();
     const pending = deferred<{
       models: unknown[];
-      currentModel: string;
       canSelectModel: boolean;
       canSelectPermissionMode: boolean;
     }>();
     const close = vi.fn(async () => {
       pending.resolve({
         models: [],
-        currentModel: "",
         canSelectModel: false,
         canSelectPermissionMode: false,
       });

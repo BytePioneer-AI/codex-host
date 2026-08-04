@@ -29,7 +29,6 @@ const modelInfoSchema = z.object({
 
 export interface ClaudeModelInspectionSnapshot {
   models: unknown;
-  currentModel: unknown;
   canSelectModel: boolean;
   canSelectPermissionMode: boolean;
 }
@@ -37,7 +36,6 @@ export interface ClaudeModelInspectionSnapshot {
 export interface NormalizedClaudeModelCatalog {
   catalog: HarnessModelCatalog;
   defaultModel: HarnessModelRef;
-  currentModelLabel: string;
 }
 
 export const CLAUDE_DEFAULT_MODEL_REF = encodeClaudeModelRef("default");
@@ -121,18 +119,13 @@ export function normalizeClaudeModelCatalog(
   snapshot: ClaudeModelInspectionSnapshot,
 ): NormalizedClaudeModelCatalog {
   if (!snapshot.canSelectModel) throw new Error("Claude Code Model selection is unavailable");
-  const currentModelLabel = harnessResolvedModelLabelSchema.parse(snapshot.currentModel);
   const rows = normalizeRows(snapshot.models);
   const labels = uniqueDisplayLabels(rows);
   const models: HarnessModel[] = rows.map((row) => {
     return {
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
-      ...(row.value === "default"
-        ? { resolvedModelLabel: currentModelLabel }
-        : row.resolvedModel
-          ? { resolvedModelLabel: row.resolvedModel }
-          : {}),
+      ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
       supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
     };
   });
@@ -147,5 +140,5 @@ export function normalizeClaudeModelCatalog(
     thinkingOptions: [...CLAUDE_THINKING_OPTIONS],
     defaultThinkingOptionId: CLAUDE_DEFAULT_THINKING_OPTION_ID,
   });
-  return { catalog, defaultModel: CLAUDE_DEFAULT_MODEL_REF, currentModelLabel };
+  return { catalog, defaultModel: CLAUDE_DEFAULT_MODEL_REF };
 }

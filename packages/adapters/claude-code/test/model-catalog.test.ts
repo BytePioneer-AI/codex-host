@@ -7,8 +7,8 @@ import {
   normalizeClaudeModelCatalog,
 } from "../src/model-catalog.js";
 
-function snapshot(models: unknown, currentModel = "runtime-custom") {
-  return { models, currentModel, canSelectModel: true, canSelectPermissionMode: true };
+function snapshot(models: unknown) {
+  return { models, canSelectModel: true, canSelectPermissionMode: true };
 }
 
 describe("Claude Code runtime Model catalog", () => {
@@ -110,10 +110,8 @@ describe("Claude Code runtime Model catalog", () => {
       undefined,
       "custom-model",
     ]);
-    expect(normalized.catalog.models[0]).toMatchObject({
-      label: "Default",
-      resolvedModelLabel: "runtime-custom",
-    });
+    expect(normalized.catalog.models[0]).toMatchObject({ label: "Default" });
+    expect(normalized.catalog.models[0]).not.toHaveProperty("resolvedModelLabel");
     expect(normalized.catalog.models[1]).not.toHaveProperty("resolvedModelLabel");
   });
 
@@ -121,13 +119,11 @@ describe("Claude Code runtime Model catalog", () => {
     for (const value of [
       {
         models: [],
-        currentModel: "runtime",
         canSelectModel: true,
         canSelectPermissionMode: true,
       },
       {
         models: "not-an-array",
-        currentModel: "runtime",
         canSelectModel: true,
         canSelectPermissionMode: true,
       },
@@ -137,15 +133,12 @@ describe("Claude Code runtime Model catalog", () => {
         { value: "same", displayName: "First" },
         { value: "same", displayName: "Second" },
       ]),
-      snapshot([{ value: "valid", displayName: "Valid" }], " "),
-      snapshot([{ value: "valid", displayName: "Valid" }], "x".repeat(257)),
     ]) {
       expect(() => normalizeClaudeModelCatalog(value)).toThrow();
     }
     expect(() =>
       normalizeClaudeModelCatalog({
         models: [],
-        currentModel: undefined,
         canSelectModel: false,
         canSelectPermissionMode: false,
       }),

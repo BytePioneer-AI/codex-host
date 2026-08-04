@@ -66,8 +66,9 @@ describe("versioned Renderer Agent adapter", () => {
   });
 
   it("finds the compact Model atom pair used with custom Model catalogs", () => {
-    const optimistic = { atom: {}, get: vi.fn(() => ({})), set: vi.fn() };
-    const committed = { atom: {}, get: vi.fn(() => ({})), set: vi.fn() };
+    const state = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
+    const optimistic = { atom: {}, get: vi.fn(() => state), set: vi.fn() };
+    const committed = { atom: {}, get: vi.fn(() => state), set: vi.fn() };
     const composer = {
       matches: () => true,
       parentElement: null,

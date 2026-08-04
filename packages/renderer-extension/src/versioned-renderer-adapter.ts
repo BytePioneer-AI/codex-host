@@ -343,13 +343,11 @@ function findModelPickerControl(): {
   codexSelection: ModelPowerSelection | null;
   found: boolean;
   selection: ModelPowerSelection;
-  selectModel(model: unknown, reasoningEffort: unknown): void;
 } {
   let control:
     | {
         codexSelection: ModelPowerSelection | null;
         selection: ModelPowerSelection;
-        selectModel(model: unknown, reasoningEffort: unknown): void;
       }
     | undefined;
   for (const button of document.querySelectorAll<HTMLButtonElement>(
@@ -366,13 +364,7 @@ function findModelPickerControl(): {
       : null;
     for (let depth = 0; fiber && depth < 60; depth += 1) {
       const props = fiber.memoizedProps;
-      if (
-        !control &&
-        isRecord(props) &&
-        "model" in props &&
-        "reasoningEffort" in props &&
-        typeof props.onSelectModel === "function"
-      ) {
+      if (!control && isRecord(props) && "model" in props && "reasoningEffort" in props) {
         const selection = { model: props.model, reasoningEffort: props.reasoningEffort };
         const fallbackSelection = isRecord(props.fallbackPowerSelection)
           ? (props.fallbackPowerSelection as ModelPowerSelection)
@@ -383,7 +375,6 @@ function findModelPickerControl(): {
               ? fallbackSelection
               : selection,
           selection,
-          selectModel: props.onSelectModel as (model: unknown, reasoningEffort: unknown) => void,
         };
       }
       const parent = fiber.return;
@@ -397,9 +388,6 @@ function findModelPickerControl(): {
     codexSelection: control?.codexSelection ?? null,
     found: control !== undefined,
     selection: control?.selection ?? { model: undefined, reasoningEffort: undefined },
-    selectModel(model, reasoningEffort) {
-      control?.selectModel(model, reasoningEffort);
-    },
   };
 }
 
@@ -420,6 +408,13 @@ function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
         isModelAtomState(resolved[3]) &&
         (resolved[2] === null || typeof resolved[2] === "string")
       ) {
+        let value: unknown;
+        try {
+          value = compact[1].get();
+        } catch {
+          continue;
+        }
+        if (!isRecord(value) || !("modelSettings" in value)) continue;
         const target =
           resolved[2] === null || resolved[2].startsWith("client-new-thread:")
             ? ["default", resolved[2]]
@@ -480,8 +475,12 @@ function findModelStateController(): ModelStateController | null {
   if (!optimistic || !picker.found) return null;
   return {
     apply(selection) {
-      if (selection) picker.selectModel(selection.model, selection.reasoningEffort);
-      else optimistic.set(null);
+      const value = optimistic.get();
+      optimistic.set(
+        isRecord(value) && "modelSettings" in value
+          ? { ...value, isManuallyChanged: true, modelSettings: selection }
+          : selection,
+      );
     },
     codexSelection: picker.codexSelection,
     current: picker.selection,

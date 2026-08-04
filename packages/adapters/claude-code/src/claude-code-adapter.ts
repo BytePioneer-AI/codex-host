@@ -491,30 +491,23 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveConfiguration = resolve;
     });
     try {
-      let transport = this.#transport;
-      if (!transport) {
+      const transport = this.#transport;
+      if (transport) {
         try {
-          transport = await this.#ensureTransport();
-        } catch (error) {
-          return { ok: false, error: startupFailure(error) };
+          await transport.setModel(model);
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "Claude Code rejected the Model selection",
+              retryable: true,
+            },
+          };
         }
       }
-      try {
-        await transport.setModel(model);
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "nativeFailure",
-            message: "Claude Code rejected the Model selection",
-            retryable: true,
-          },
-        };
-      }
       this.#requestedModel = command.model;
-      const state = { ...this.#state };
-      delete state.resolvedModelLabel;
-      this.#publishState({ ...state, effectiveModel: command.model });
+      this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
       resolveConfiguration();
@@ -553,32 +546,23 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveConfiguration = resolve;
     });
     try {
-      let transport = this.#transport;
-      if (!transport) {
+      const transport = this.#transport;
+      if (transport) {
         try {
-          transport = await this.#ensureTransport();
-        } catch (error) {
-          return { ok: false, error: startupFailure(error) };
+          await transport.setThinkingOption(thinkingOptionId);
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "Claude Code rejected the Thinking selection",
+              retryable: true,
+            },
+          };
         }
       }
-      try {
-        await transport.setThinkingOption(thinkingOptionId);
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "nativeFailure",
-            message: "Claude Code rejected the Thinking selection",
-            retryable: true,
-          },
-        };
-      }
       this.#requestedThinkingOptionId = thinkingOptionId;
-      this.#publishState({
-        ...this.#state,
-        effectiveThinkingOptionId: thinkingOptionId,
-        availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
-      });
+      this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
       resolveConfiguration();
@@ -617,38 +601,29 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveConfiguration = resolve;
     });
     try {
-      const startingTransport = this.#transport === null;
-      let transport = this.#transport;
-      if (!transport) {
+      const transport = this.#transport;
+      if (transport) {
         try {
-          transport = await this.#ensureTransport();
-          if (startingTransport) this.#publishState();
+          await transport.setPermissionMode(permissionMode);
         } catch (error) {
-          return { ok: false, error: startupFailure(error) };
+          const nativeMessage = error instanceof Error ? error.message.toLowerCase() : "";
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message:
+                permissionMode === "auto" && nativeMessage.includes("auto mode unavailable")
+                  ? "Auto mode is unavailable for the current Claude Code Model"
+                  : "Claude Code rejected the Permission Mode selection",
+              retryable: true,
+            },
+          };
         }
       }
-      try {
-        await transport.setPermissionMode(permissionMode);
-      } catch (error) {
-        const nativeMessage = error instanceof Error ? error.message.toLowerCase() : "";
-        return {
-          ok: false,
-          error: {
-            code: "nativeFailure",
-            message:
-              permissionMode === "auto" && nativeMessage.includes("auto mode unavailable")
-                ? "Auto mode is unavailable for the current Claude Code Model"
-                : "Claude Code rejected the Permission Mode selection",
-            retryable: true,
-          },
-        };
-      }
-      const effectivePermissionModeId = encodeClaudePermissionModeId(transport.getPermissionMode());
-      this.#requestedPermissionModeId = effectivePermissionModeId;
-      this.#publishState({
-        ...this.#state,
-        effectivePermissionModeId,
-      });
+      this.#requestedPermissionModeId = transport
+        ? encodeClaudePermissionModeId(transport.getPermissionMode())
+        : command.permissionModeId;
+      this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
       resolveConfiguration();
@@ -805,7 +780,7 @@ class ClaudeHarnessSession implements HarnessSession {
   async #ensureTransport(): Promise<ClaudeTurnTransport> {
     if (this.#transport) return this.#transport;
     const selectedModel =
-      this.#openMode === "create" ? (this.#requestedModel ?? CLAUDE_DEFAULT_MODEL_REF) : undefined;
+      this.#requestedModel ?? (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined);
     const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
     const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
     const transport = this.#createTransport({
@@ -821,10 +796,7 @@ class ClaudeHarnessSession implements HarnessSession {
     try {
       await transport.start();
       this.#state = {
-        nativeRef: this.#nativeRef,
-        ...(selectedModel ? { effectiveModel: selectedModel } : {}),
-        effectiveThinkingOptionId: this.#requestedThinkingOptionId,
-        availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
+        ...this.#configuredState(true),
         effectivePermissionModeId: encodeClaudePermissionModeId(transport.getPermissionMode()),
       };
     } catch (error) {
@@ -833,6 +805,19 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     this.#transport = transport;
     return transport;
+  }
+
+  #configuredState(nativeReady = this.#state.nativeRef !== undefined): HarnessSessionState {
+    const effectiveModel =
+      this.#requestedModel ??
+      (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : this.#state.effectiveModel);
+    return {
+      ...(nativeReady ? { nativeRef: this.#nativeRef } : {}),
+      ...(effectiveModel ? { effectiveModel } : {}),
+      effectiveThinkingOptionId: this.#requestedThinkingOptionId,
+      availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
+      effectivePermissionModeId: this.#requestedPermissionModeId,
+    };
   }
 
   #publishState(state: HarnessSessionState = this.#state): void {

@@ -12,6 +12,7 @@ import {
   draftThinkingOptionForModel,
   isLateConversationTarget,
   isOwnershipSubmissionBlocked,
+  lateConversationTargetResolution,
   restoredThreadOwnership,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
@@ -210,24 +211,32 @@ describe("Renderer Composer DOM behavior", () => {
     ).toEqual({ agent: "pi", model });
   });
 
-  it("detects a conversation target that arrives after the Composer mounted", () => {
+  it("inspects an in-place conversation transition unless the source was submitted", () => {
     const defaultTarget = ["default"];
     const conversationTarget = ["conversation", "opaque-1"];
 
     expect(isLateConversationTarget(defaultTarget, conversationTarget)).toBe(true);
-    expect(isLateConversationTarget(defaultTarget, defaultTarget)).toBe(false);
+    expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "draft")).toBe(
+      "inspect",
+    );
+    expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
+      "transfer",
+    );
+    expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
     expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(false);
     expect(isLateConversationTarget(null, conversationTarget)).toBe(false);
   });
 
-  it("transfers only the same Model target or a first-create transition", () => {
+  it("does not transfer an unsubmitted default draft when an existing conversation opens", () => {
     const defaultTarget = ["default"];
     const firstConversationTarget = ["conversation", "opaque-1"];
     const otherConversationTarget = ["conversation", "opaque-2"];
 
     expect(shouldTransferComposerState(defaultTarget, defaultTarget, "draft")).toBe(true);
-    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(true);
+    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(
+      false,
+    );
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "locked")).toBe(
       true,
     );

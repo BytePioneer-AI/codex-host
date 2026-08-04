@@ -204,7 +204,7 @@ export function shouldTransferComposerState(
   if (!sourceTarget || !replacementTarget) return false;
   if (sourceTarget === replacementTarget) return true;
   return (
-    (sourcePhase === "draft" || sourcePhase === "locked") &&
+    sourcePhase === "locked" &&
     sourceTarget[0] === "default" &&
     replacementTarget[0] === "conversation"
   );
@@ -215,6 +215,15 @@ export function isLateConversationTarget(
   currentTarget: readonly unknown[] | null,
 ): boolean {
   return mountedTarget?.[0] === "default" && currentTarget?.[0] === "conversation";
+}
+
+export function lateConversationTargetResolution(
+  mountedTarget: readonly unknown[] | null,
+  currentTarget: readonly unknown[] | null,
+  sourcePhase: ComposerAgentPhase,
+): "none" | "transfer" | "inspect" {
+  if (!isLateConversationTarget(mountedTarget, currentTarget)) return "none";
+  return sourcePhase === "locked" ? "transfer" : "inspect";
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -426,7 +435,12 @@ export function installRendererBindingProbe(
 
   const refreshMountedConversationTarget = (mounted: MountedComposer): boolean => {
     const currentTarget = findComposerModelTarget(mounted.composer);
-    if (!isLateConversationTarget(mounted.modelTarget, currentTarget)) return false;
+    const resolution = lateConversationTargetResolution(
+      mounted.modelTarget,
+      currentTarget,
+      controller.get(mounted.composer).phase,
+    );
+    if (resolution === "none") return false;
 
     mounted.modelTarget = currentTarget;
     if (!controller.transfer(mounted.composer, mounted.composer, currentTarget)) {
@@ -434,8 +448,12 @@ export function installRendererBindingProbe(
       renderMounted(mounted);
       return true;
     }
-    mounted.ownershipStatus = "ready";
-    renderMounted(mounted);
+    if (resolution === "transfer") {
+      mounted.ownershipStatus = "ready";
+      renderMounted(mounted);
+    } else {
+      void loadThreadOwnership(mounted);
+    }
     return true;
   };
 

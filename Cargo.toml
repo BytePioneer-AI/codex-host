@@ -13,7 +13,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0-test.1"
+version = "0.1.0-test.2"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false

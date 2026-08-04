@@ -50,11 +50,10 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.rustTarget }}
 
-      - name: Setup .NET for WiX
+      - name: Setup Inno Setup
         if: runner.os == 'Windows'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 6.0.x
+        shell: pwsh
+        run: winget install --id JRSoftware.InnoSetup --exact --accept-source-agreements --accept-package-agreements
 
       - name: Resolve release version
         id: version
@@ -126,7 +125,7 @@ jobs:
           name: codexhost-${{ matrix.target }}
           path: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
-            build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/release/*/${{ matrix.target }}/codexhost-*.exe
             build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
             build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
           if-no-files-found: error
@@ -138,7 +137,7 @@ jobs:
           tag_name: ${{ github.event.release.tag_name }}
           files: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
-            build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/release/*/${{ matrix.target }}/codexhost-*.exe
             build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
             build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
 

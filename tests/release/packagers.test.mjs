@@ -26,7 +26,7 @@ describe("platform packagers", () => {
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
     ]);
     expect(workflow).toContain("codexhost-*.dmg");
-    expect(workflow).toContain("codexhost-*.msi");
+    expect(workflow).toContain("codexhost-*.exe");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("--skip-build");
     expect(workflow).toContain("--pack");
@@ -42,47 +42,19 @@ describe("platform packagers", () => {
     expect(releaseBuilder).not.toContain("sha256=${result.checksum}");
   });
 
-  it("pins WiX 4 and maps both Windows installer architectures", async () => {
-    const [manifest, script, wix, installUi] = await Promise.all([
-      readFile(path.join(root, "scripts/release/windows/.config/dotnet-tools.json"), "utf8"),
+  it("builds a standard Inno Setup installer for both Windows architectures", async () => {
+    const [script, installer] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),
-      readFile(path.join(root, "scripts/release/windows/Product.wxs"), "utf8"),
-      readFile(path.join(root, "scripts/release/windows/InstallUI.wxs"), "utf8"),
+      readFile(path.join(root, "scripts/release/windows/Installer.iss"), "utf8"),
     ]);
-    expect(JSON.parse(manifest).tools.wix.version).toMatch(/^4\./u);
     expect(script).toContain('ValidateSet("x64", "arm64")');
-    expect(script).toContain("dotnet tool run wix -- --version");
-    expect(script).toContain("dotnet tool run wix -- build");
-    expect(script).toContain("WixToolset.UI.wixext/$ExpectedWixVersion");
-    expect(script).toContain("extension add --global $WixUiExtension");
-    expect(script).toContain("-ext WixToolset.UI.wixext");
-    expect(wix).toContain('Scope="perUser"');
-    expect(wix).toContain('<UIRef Id="CodexhostInstallUI" />');
-    expect(wix).toContain('Target="[BinFolder]codexhost-start.exe"');
-    expect(wix).toContain('<ComponentRef Id="LucideLicenseComponent" />');
-    expect(installUi).toContain('<DialogRef Id="WelcomeDlg" />');
-    expect(installUi).toContain('<DialogRef Id="ProgressDlg" />');
-    expect(installUi).toContain('Dialog="MaintenanceTypeDlg"');
-    expect(installUi).not.toContain("LicenseAgreementDlg");
-    const componentBodies = [...wix.matchAll(/<Component\b[^>]*>([\s\S]*?)<\/Component>/gu)].map(
-      (match) => match[1],
-    );
-    expect(componentBodies.length).toBeGreaterThan(0);
-    expect(componentBodies.every((body) => (body.match(/<File\b/gu) ?? []).length <= 1)).toBe(true);
-    for (const relative of [
-      "bin\\codexhost.exe",
-      "bin\\codexhost-start.exe",
-      "libexec\\codexhost-shim.exe",
-      "runtime\\node.exe",
-      "app\\desktop-controller.mjs",
-      "app\\host-runtime.mjs",
-      "app\\renderer-extension.js",
-      "licenses\\Claude-Agent-SDK-LICENSE.md",
-      "licenses\\Anthropic-SDK-LICENSE.txt",
-      "licenses\\MCP-SDK-LICENSE.txt",
-      "licenses\\lucide-LICENSE.txt",
-    ]) {
-      expect(wix).toContain(relative);
-    }
+    expect(script).toContain("Inno Setup 6\\ISCC.exe");
+    expect(script).toContain("Inno Setup build");
+    expect(installer).toContain("DefaultDirName={localappdata}\\Programs\\codexhost");
+    expect(installer).toContain("PrivilegesRequired=lowest");
+    expect(installer).toContain("DisableProgramGroupPage=yes");
+    expect(installer).toContain("ArchitecturesAllowed=x64compatible");
+    expect(installer).toContain("ArchitecturesAllowed=arm64");
+
   });
 });

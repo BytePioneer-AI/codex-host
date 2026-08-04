@@ -6,10 +6,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$WixSource = Join-Path $PSScriptRoot "Product.wxs"
-$WixUiSource = Join-Path $PSScriptRoot "InstallUI.wxs"
-$ExpectedWixVersion = "4.0.6"
-$WixUiExtension = "WixToolset.UI.wixext/$ExpectedWixVersion"
+$InnoSource = Join-Path $PSScriptRoot "Installer.iss"
+$InnoCompilerCandidates = @(
+  (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+  (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+  (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+)
+$InnoCompiler = $InnoCompilerCandidates | Where-Object { Test-Path -PathType Leaf $_ } | Select-Object -First 1
+if (-not (Test-Path -PathType Leaf $InnoCompiler)) {
+  throw "Inno Setup compiler was not found. Install Inno Setup 6 before packaging."
+}
 $ResolvedPayload = (Resolve-Path $PayloadRoot).Path
 $OutputDirectory = Split-Path -Parent $OutputPath
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
@@ -17,30 +23,18 @@ Remove-Item -Force -ErrorAction SilentlyContinue $OutputPath
 
 Push-Location $PSScriptRoot
 try {
-  & dotnet tool restore
-  if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore failed with status $LASTEXITCODE" }
-
-  $ActualWixVersion = (& dotnet tool run wix -- --version).Trim()
-  if ($LASTEXITCODE -ne 0) { throw "wix --version failed with status $LASTEXITCODE" }
-  if (-not $ActualWixVersion.StartsWith($ExpectedWixVersion)) {
-    throw "WiX version mismatch: expected $ExpectedWixVersion, got $ActualWixVersion"
-  }
-
-  & dotnet tool run wix -- extension add --global $WixUiExtension
-  if ($LASTEXITCODE -ne 0) { throw "WixUI extension restore failed with status $LASTEXITCODE" }
-
-  & dotnet tool run wix -- build $WixSource $WixUiSource `
-    -ext WixToolset.UI.wixext `
-    -culture en-US `
-    -arch $Architecture `
-    -d "PayloadRoot=$ResolvedPayload" `
-    -d "ProductVersion=$Version" `
-    -o $OutputPath
-  if ($LASTEXITCODE -ne 0) { throw "wix build failed with status $LASTEXITCODE" }
+  $OutputBaseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputPath)
+  & $InnoCompiler $InnoSource `
+    "/DPayloadRoot=$ResolvedPayload" `
+    "/DOutputDir=$OutputDirectory" `
+    "/DOutputBaseFilename=$OutputBaseName" `
+    "/DProductVersion=$Version" `
+    "/DArchitecture=$Architecture"
+  if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed with status $LASTEXITCODE" }
 } finally {
   Pop-Location
 }
 
 if (-not (Test-Path -PathType Leaf $OutputPath)) {
-  throw "WiX did not create the MSI: $OutputPath"
+  throw "Inno Setup did not create the installer: $OutputPath"
 }

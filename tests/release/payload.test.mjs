@@ -111,7 +111,7 @@ describe("release Payload", () => {
     }
   });
 
-  it("normalizes semantic versions for Apple and MSI metadata", () => {
+  it("normalizes semantic versions for Apple and Windows installer metadata", () => {
     expect(numericPackageVersion("1.2.3")).toBe("1.2.3");
     expect(numericPackageVersion("1.2.3-preview.4")).toBe("1.2.3");
     expect(() => numericPackageVersion("preview")).toThrow("major.minor.patch");

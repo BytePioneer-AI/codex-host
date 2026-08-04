@@ -378,7 +378,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 ## Notes
 
 - This npm package does **not** embed a private Node.js runtime.
-- Installer packages (DMG/MSI) remain the zero-dependency desktop distribution path.
+- Installer packages (DMG/EXE) remain the zero-dependency desktop distribution path.
 - Prefer \`npm install -g ${NPM_PACKAGE_NAME}\` over installing the monorepo root.
 `;
 }

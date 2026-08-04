@@ -204,7 +204,7 @@ export function shouldTransferComposerState(
   if (!sourceTarget || !replacementTarget) return false;
   if (sourceTarget === replacementTarget) return true;
   return (
-    sourcePhase === "locked" &&
+    (sourcePhase === "draft" || sourcePhase === "locked") &&
     sourceTarget[0] === "default" &&
     replacementTarget[0] === "conversation"
   );
@@ -220,10 +220,9 @@ export function isLateConversationTarget(
 export function lateConversationTargetResolution(
   mountedTarget: readonly unknown[] | null,
   currentTarget: readonly unknown[] | null,
-  sourcePhase: ComposerAgentPhase,
-): "none" | "transfer" | "inspect" {
-  if (!isLateConversationTarget(mountedTarget, currentTarget)) return "none";
-  return sourcePhase === "locked" ? "transfer" : "inspect";
+  _sourcePhase: ComposerAgentPhase,
+): "none" | "transfer" {
+  return isLateConversationTarget(mountedTarget, currentTarget) ? "transfer" : "none";
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -448,12 +447,8 @@ export function installRendererBindingProbe(
       renderMounted(mounted);
       return true;
     }
-    if (resolution === "transfer") {
-      mounted.ownershipStatus = "ready";
-      renderMounted(mounted);
-    } else {
-      void loadThreadOwnership(mounted);
-    }
+    mounted.ownershipStatus = "ready";
+    renderMounted(mounted);
     return true;
   };
 

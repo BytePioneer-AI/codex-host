@@ -10,6 +10,7 @@ import {
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   findActivePrewarmTargets,
+  findComposerModelTarget,
   isClaudeTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
@@ -64,7 +65,32 @@ describe("versioned Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([directClient]);
   });
 
-  it("selects one optimistic Model atom from equivalent Fiber cache copies", () => {
+  it("finds the compact Model atom pair used with custom Model catalogs", () => {
+    const optimistic = { atom: {}, get: vi.fn(() => ({})), set: vi.fn() };
+    const committed = { atom: {}, get: vi.fn(() => ({})), set: vi.fn() };
+    const composer = {
+      matches: () => true,
+      parentElement: null,
+    } as unknown as Element;
+    Object.defineProperty(composer, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        updateQueue: {
+          memoCache: {
+            data: [
+              [undefined, optimistic, optimistic],
+              [{}, {}, null, committed],
+            ],
+          },
+        },
+        return: null,
+      },
+    });
+
+    expect(findComposerModelTarget(composer)).toEqual(["default", null]);
+  });
+
+  it("selects the first optimistic Model atom without validating cache copies", () => {
     const optimistic = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
     const committed = { atom: {}, get: vi.fn(() => null), set: vi.fn() };
     const firstTarget = ["conversation", "opaque-id"];
@@ -85,7 +111,7 @@ describe("versioned Renderer Agent adapter", () => {
           target: secondTarget,
         },
       ]),
-    ).toBeNull();
+    ).toBe(optimistic);
   });
 
   it("requires both version policy readiness markers", () => {

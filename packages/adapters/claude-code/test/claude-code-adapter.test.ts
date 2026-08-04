@@ -228,7 +228,7 @@ describe("Claude Code HarnessAdapter", () => {
   });
 
   it("inspects the runtime Model catalog and publishes Claude Code Thinking control", async () => {
-    const { adapter, dependencies, inspectors, transports } = fixture();
+    const { adapter, dependencies, inspectors } = fixture();
 
     const first = await adapter.inspect({ cwd: "/synthetic" });
     expect(first).toMatchObject({
@@ -313,7 +313,7 @@ describe("Claude Code HarnessAdapter", () => {
         ],
       },
     });
-    expect(transports[0]?.setThinkingOption).toHaveBeenCalledWith("high");
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
     const configured = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -321,7 +321,7 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(configured.ok).toBe(true);
     if (configured.ok) await configured.value.close();
-    expect(dependencies.createTransport).toHaveBeenCalledOnce();
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
   });
 
@@ -488,7 +488,7 @@ describe("Claude Code HarnessAdapter", () => {
     await opened.value.close();
   });
 
-  it("starts a resumed Query only when Existing Thread Model selection is explicit", async () => {
+  it("defers resumed Query startup until the next Turn and applies the final configuration", async () => {
     const { adapter, dependencies, transports } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -497,24 +497,54 @@ describe("Claude Code HarnessAdapter", () => {
     });
     const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
     if (!opened.ok) throw new Error(opened.error.message);
-    const iterator = opened.value.outputs[Symbol.asyncIterator]();
-    expect(dependencies.createTransport).not.toHaveBeenCalled();
-
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
     const alias = encodeClaudeModelRef("sonnet");
-    const selecting = opened.value.execute({ type: "model.select", model: alias });
-    const selectedState = await nextEvent(iterator);
-    expect(selectedState).toMatchObject({
+
+    await expect(session.execute({ type: "model.select", model: alias })).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
       type: "session.state.changed",
       state: { nativeRef: sourceRef, effectiveModel: alias },
     });
-    expect(selectedState).not.toHaveProperty("state.resolvedModelLabel");
-    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await nextEvent(iterator);
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await nextEvent(iterator);
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    await expect(session.execute(textTurn("configured-turn"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ openMode: "resume", sessionId: "resume-for-selection" }),
+      expect.objectContaining({
+        model: "sonnet",
+        openMode: "resume",
+        sessionId: "resume-for-selection",
+        thinkingOptionId: "high",
+        permissionMode: "auto",
+      }),
     );
-    expect(transports[0]?.setModel).toHaveBeenCalledWith("sonnet");
-    expect(transports[0]?.getContextUsage).not.toHaveBeenCalled();
-    await opened.value.close();
+    expect(transports[0]?.setModel).not.toHaveBeenCalled();
+    expect(transports[0]?.setThinkingOption).not.toHaveBeenCalled();
+    expect(transports[0]?.setPermissionMode).not.toHaveBeenCalled();
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
   });
 
   it("forks an exact Native prefix while later source history continues", async () => {
@@ -1381,7 +1411,35 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("initializes, switches, and reads back native Permission Mode state", async () => {
+  it("dynamically switches Thinking on an Idle Query", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("initialize-thinking"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveThinkingOptionId: "high" },
+    });
+    expect(transport.setThinkingOption).toHaveBeenCalledWith("high");
+    await session.close();
+  });
+
+  it("defers cold Permission Mode selection and dynamically switches a started Query", async () => {
     const { adapter, dependencies, transports } = fixture();
     const plan = harnessPermissionModeIdSchema.parse("plan");
     const opened = await adapter.open({
@@ -1394,23 +1452,26 @@ describe("Claude Code HarnessAdapter", () => {
     const iterator = session.outputs[Symbol.asyncIterator]();
     const auto = harnessPermissionModeIdSchema.parse("auto");
 
-    const selecting = session.execute({
-      type: "permissionMode.select",
-      permissionModeId: auto,
-    });
-    expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ permissionMode: "plan" }),
-    );
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
-      type: "session.state.changed",
-      state: { effectivePermissionModeId: "plan" },
-    });
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: auto }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
     await expect(nextEvent(iterator)).resolves.toMatchObject({
       type: "session.state.changed",
       state: { effectivePermissionModeId: "auto" },
     });
-    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(transports[0]?.setPermissionMode).toHaveBeenCalledWith("auto");
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    await session.execute(textTurn("permission-start"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "auto" }),
+    );
+    expect(transports[0]?.setPermissionMode).not.toHaveBeenCalled();
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
 
     transports[0]?.changePermissionMode("acceptEdits");
     await expect(nextEvent(iterator)).resolves.toMatchObject({

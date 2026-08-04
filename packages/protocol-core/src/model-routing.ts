@@ -102,16 +102,24 @@ export function decodePiTransportModel(value: unknown): HarnessModelRef | null |
 export function encodeClaudeTransportModel(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (permissionModeId)
-      throw new Error("Claude Code transport Permission Mode requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Claude Code transport configuration requires a Model Ref");
+    }
     return CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
   const parsedPermissionModeId = permissionModeId
     ? harnessPermissionModeIdSchema.parse(permissionModeId)
     : undefined;
+  const parsedThinkingOptionId = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinkingOptionId) {
+    return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionModeId ?? ""}@${parsedThinkingOptionId}`;
+  }
   return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
@@ -123,12 +131,15 @@ export function decodeClaudeTransportSelection(
     return null;
   }
   const components = value.slice(CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) {
+  if (components.length < 1 || components.length > 3) {
     throw new Error("Claude Code transport configuration has an invalid component count");
   }
-  const [modelId, permissionModeId] = components;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
   if (components.length === 2 && !permissionModeId) {
     throw new Error("Claude Code transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Claude Code transport configuration has an empty Thinking option");
   }
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) {
@@ -140,9 +151,16 @@ export function decodeClaudeTransportSelection(
   if (permissionMode && !permissionMode.success) {
     throw new Error("Claude Code transport configuration contains an invalid Permission Mode");
   }
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Claude Code transport configuration contains an invalid Thinking option");
+  }
   return {
     model: model.data,
     ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
 
@@ -154,7 +172,11 @@ export function encodeExternalTransportSelection(
     case "pi":
       return encodePiTransportModel(selection.model, selection.thinkingOptionId);
     case "claude-code":
-      return encodeClaudeTransportModel(selection.model, selection.permissionModeId);
+      return encodeClaudeTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
   }
 }
 

@@ -137,24 +137,36 @@ describe("versioned Renderer Agent adapter", () => {
     });
   });
 
-  it("encodes a selected Claude Model and optional Permission Mode", () => {
+  it("encodes selected Claude Model, Thinking, and optional Permission Mode", () => {
     const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
     const permissionModeId = harnessPermissionModeIdSchema.parse("acceptEdits");
     const selected = claudeTransportModelId(model);
-    const configured = claudeTransportModelId(model, permissionModeId);
+    const permissionOnly = claudeTransportModelId(model, permissionModeId);
+    const configured = claudeTransportModelId(model, permissionModeId, thinkingOptionId);
 
     expect(selected).toBe(`${CLAUDE_CODE_TRANSPORT_MODEL_ID}@${model.id}`);
-    expect(configured).toBe(`${selected}@${permissionModeId}`);
+    expect(permissionOnly).toBe(`${selected}@${permissionModeId}`);
+    expect(configured).toBe(`${permissionOnly}@${thinkingOptionId}`);
     expect(isClaudeTransportModelId(selected)).toBe(true);
+    expect(isClaudeTransportModelId(permissionOnly)).toBe(true);
     expect(isClaudeTransportModelId(configured)).toBe(true);
     expect(decodeClaudeTransportModelId(configured)).toEqual({
       model,
+      thinkingOptionId,
       permissionModeId,
     });
     expect(isClaudeTransportModelId(`${configured}@extra`)).toBe(false);
     expect(isClaudeTransportModelId(`${selected}@provider/mode`)).toBe(false);
     expect(
-      modelSelectionForAgent(null, "high", "claude-code", model, undefined, permissionModeId),
+      modelSelectionForAgent(
+        null,
+        "high",
+        "claude-code",
+        model,
+        thinkingOptionId,
+        permissionModeId,
+      ),
     ).toEqual({
       model: configured,
       reasoningEffort: "high",

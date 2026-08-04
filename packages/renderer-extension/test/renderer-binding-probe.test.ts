@@ -98,9 +98,11 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "claude-code",
-        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits@high",
         history: { fork: true, forkAcrossCwd: false },
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" }),
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
         effectivePermissionModeId: harnessPermissionModeIdSchema.parse("acceptEdits"),
         resolvedModelLabel: "runtime-custom",
         locked: true,
@@ -108,6 +110,7 @@ describe("Renderer Composer DOM behavior", () => {
     ).toEqual({
       agent: "claude-code",
       model: { id: "claude-model-v1.c29ubmV0" },
+      thinkingOptionId: "high",
       permissionModeId: "acceptEdits",
     });
     expect(

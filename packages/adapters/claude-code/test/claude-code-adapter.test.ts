@@ -28,21 +28,13 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
-  actualModel: string;
   permissionMode: ClaudePermissionMode;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
-  #modelReadPending = true;
-  readonly getContextUsage = vi.fn(async (): Promise<ClaudeTransportContextUsage | null> => {
-    if (this.#modelReadPending) {
-      this.#modelReadPending = false;
-      return { usedTokens: 0, maxTokens: 200, model: this.actualModel };
-    }
-    return this.contextUsage;
-  });
-  readonly setModel = vi.fn(async (model?: string) => {
-    this.actualModel = model === "sonnet" ? "runtime-custom" : (model ?? "runtime-default");
-    this.#modelReadPending = true;
-  });
+  readonly getContextUsage = vi.fn(
+    async (): Promise<ClaudeTransportContextUsage | null> => this.contextUsage,
+  );
+  readonly setModel = vi.fn(async () => undefined);
+  readonly setThinkingOption = vi.fn(async () => undefined);
   readonly getPermissionMode = vi.fn(() => this.permissionMode);
   readonly setPermissionMode = vi.fn(async (permissionMode: ClaudePermissionMode) => {
     this.permissionMode = permissionMode;
@@ -69,12 +61,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     sessionId: string,
     permissionMode: ClaudePermissionMode,
     onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void,
-    model?: string,
   ) {
     this.sessionId = sessionId;
     this.permissionMode = permissionMode;
     this.#onPermissionModeChanged = onPermissionModeChanged;
-    this.actualModel = model === "sonnet" ? "runtime-custom" : (model ?? "runtime-default");
   }
 
   changePermissionMode(permissionMode: ClaudePermissionMode): void {
@@ -183,7 +173,6 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
         input.sessionId,
         input.permissionMode,
         input.onPermissionModeChanged,
-        input.model,
       );
       transports.push(transport);
       return transport;
@@ -239,8 +228,8 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("inspects the official runtime Catalog, caches success, and keeps Thinking disabled", async () => {
-    const { adapter, dependencies, inspectors } = fixture();
+  it("inspects the runtime Model catalog and publishes Claude Code Thinking control", async () => {
+    const { adapter, dependencies, inspectors, transports } = fixture();
 
     const first = await adapter.inspect({ cwd: "/synthetic" });
     expect(first).toMatchObject({
@@ -256,10 +245,15 @@ describe("Claude Code HarnessAdapter", () => {
         ],
         defaultModel: CLAUDE_DEFAULT_MODEL_REF,
         thinkingOptions: [
-          { id: "adaptive-v2", label: "adaptive-v2" },
-          { id: "high", label: "high" },
-          { id: "low", label: "low" },
+          { id: "off", label: "Off" },
+          { id: "auto", label: "Auto" },
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
         ],
+        defaultThinkingOptionId: "auto",
       },
       permissionModes: {
         defaultModeId: "default",
@@ -274,7 +268,7 @@ describe("Claude Code HarnessAdapter", () => {
       capabilities: {
         configuration: {
           selectModel: true,
-          selectThinkingOption: false,
+          selectThinkingOption: true,
           selectPermissionMode: true,
         },
         history: { fork: true, forkAcrossCwd: false },
@@ -293,20 +287,34 @@ describe("Claude Code HarnessAdapter", () => {
     expect(session.capabilities).toEqual({
       configuration: {
         selectModel: true,
-        selectThinkingOption: false,
+        selectThinkingOption: true,
         selectPermissionMode: true,
       },
       history: { fork: true, forkAcrossCwd: false },
     });
+    const iterator = session.outputs[Symbol.asyncIterator]();
     await expect(
       session.execute({
         type: "thinking.select",
         thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
       }),
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported", retryable: false },
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: [
+          { id: "off" },
+          { id: "auto" },
+          { id: "low" },
+          { id: "medium" },
+          { id: "high" },
+          { id: "xhigh" },
+          { id: "max" },
+        ],
+      },
     });
+    expect(transports[0]?.setThinkingOption).toHaveBeenCalledWith("high");
     const configured = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -314,7 +322,7 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(configured.ok).toBe(true);
     if (configured.ok) await configured.value.close();
-    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    expect(dependencies.createTransport).toHaveBeenCalledOnce();
     await session.close();
   });
 
@@ -476,7 +484,7 @@ describe("Claude Code HarnessAdapter", () => {
     );
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { nativeRef: sourceRef, resolvedModelLabel: "runtime-default" },
+      state: { nativeRef: sourceRef },
     });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     expect((await nextEvent(iterator)).type).toBe("item.started");
@@ -500,19 +508,18 @@ describe("Claude Code HarnessAdapter", () => {
 
     const alias = encodeClaudeModelRef("sonnet");
     const selecting = opened.value.execute({ type: "model.select", model: alias });
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
+    const selectedState = await nextEvent(iterator);
+    expect(selectedState).toMatchObject({
       type: "session.state.changed",
-      state: {
-        nativeRef: sourceRef,
-        effectiveModel: alias,
-        resolvedModelLabel: "runtime-custom",
-      },
+      state: { nativeRef: sourceRef, effectiveModel: alias },
     });
+    expect(selectedState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({ openMode: "resume", sessionId: "resume-for-selection" }),
     );
     expect(transports[0]?.setModel).toHaveBeenCalledWith("sonnet");
+    expect(transports[0]?.getContextUsage).not.toHaveBeenCalled();
     await opened.value.close();
   });
 
@@ -749,10 +756,7 @@ describe("Claude Code HarnessAdapter", () => {
     expect(transports[0]?.start).toHaveBeenCalledOnce();
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: {
-        effectiveModel: CLAUDE_DEFAULT_MODEL_REF,
-        resolvedModelLabel: "runtime-default",
-      },
+      state: { effectiveModel: CLAUDE_DEFAULT_MODEL_REF },
     });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     expect((await nextEvent(iterator)).type).toBe("item.started");
@@ -819,7 +823,7 @@ describe("Claude Code HarnessAdapter", () => {
         outcome: { status: "succeeded" },
       },
     });
-    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledOnce());
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
       observedForTurnId: "automatic-compaction",
@@ -1305,10 +1309,16 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("applies a create-time alias lazily and publishes actual Model before the Turn", async () => {
+  it("applies a create-time alias lazily and publishes the configured Model before the Turn", async () => {
     const { adapter, dependencies, transports } = fixture();
     const selected = encodeClaudeModelRef("sonnet");
-    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model: selected });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("max");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: selected,
+      thinkingOptionId,
+    });
     if (!opened.ok) throw new Error(opened.error.message);
     const session = opened.value;
     expect(dependencies.createTransport).not.toHaveBeenCalled();
@@ -1316,11 +1326,18 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "sonnet", openMode: "create" }),
+      expect.objectContaining({
+        model: "sonnet",
+        openMode: "create",
+        thinkingOptionId: "max",
+      }),
     );
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: selected, resolvedModelLabel: "runtime-custom" },
+      state: {
+        effectiveModel: selected,
+        effectiveThinkingOptionId: "max",
+      },
     });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     expect((await nextEvent(iterator)).type).toBe("item.started");
@@ -1330,7 +1347,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("selects an Idle alias and restores default using setter plus actual readback", async () => {
+  it("selects an Idle alias and restores default without Model readback", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1344,25 +1361,28 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
 
+    const contextReadsBeforeSelection = transport.getContextUsage.mock.calls.length;
     const alias = encodeClaudeModelRef("sonnet");
     const selectingAlias = session.execute({ type: "model.select", model: alias });
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
+    const aliasState = await nextEvent(iterator);
+    expect(aliasState).toMatchObject({
       type: "session.state.changed",
-      state: { effectiveModel: alias, resolvedModelLabel: "runtime-custom" },
+      state: { effectiveModel: alias },
     });
+    expect(aliasState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(selectingAlias).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.setModel).toHaveBeenLastCalledWith("sonnet");
 
     const resetting = session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF });
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
+    const defaultState = await nextEvent(iterator);
+    expect(defaultState).toMatchObject({
       type: "session.state.changed",
-      state: {
-        effectiveModel: CLAUDE_DEFAULT_MODEL_REF,
-        resolvedModelLabel: "runtime-default",
-      },
+      state: { effectiveModel: CLAUDE_DEFAULT_MODEL_REF },
     });
+    expect(defaultState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.setModel).toHaveBeenLastCalledWith(undefined);
+    expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
     await session.close();
   });
 
@@ -1448,7 +1468,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("serializes selection, preserves definite rejection, and faults uncertain readback", async () => {
+  it("serializes selection and preserves definite Model rejection", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1463,6 +1483,12 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
       error: { code: "sessionBusy" },
     });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     transport.finish({ status: "succeeded" });
     await nextEvent(iterator);
     await nextEvent(iterator);
@@ -1473,19 +1499,17 @@ describe("Claude Code HarnessAdapter", () => {
       error: { code: "nativeFailure" },
     });
 
-    transport.getContextUsage.mockRejectedValueOnce(new Error("readback unavailable"));
-    await expect(session.execute({ type: "model.select", model: alias })).resolves.toMatchObject({
-      ok: false,
-      error: { code: "protocolError" },
+    const contextReadsBeforeSelection = transport.getContextUsage.mock.calls.length;
+    await expect(session.execute({ type: "model.select", model: alias })).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
     });
     await expect(nextEvent(iterator)).resolves.toMatchObject({
-      type: "session.faulted",
-      error: { code: "protocolError" },
+      type: "session.state.changed",
+      state: { effectiveModel: alias },
     });
-    await expect(session.execute(textTurn("after-fault"))).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
+    expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
+    await session.close();
   });
 
   it("publishes context Usage after an Assistant message while the Turn remains active", async () => {
@@ -1505,7 +1529,7 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     transport.event({ type: "message.completed", messageId: "assistant-usage" });
 
-    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(transport.getContextUsage).toHaveBeenCalledOnce());
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
       observedForTurnId: "usage-during-turn",
@@ -2156,6 +2180,7 @@ describe("Claude Code HarnessAdapter", () => {
         getContextUsage: async () => null,
         getPermissionMode: () => "default",
         setModel: async () => undefined,
+        setThinkingOption: async () => undefined,
         setPermissionMode: async () => undefined,
         runTurn: async () => ({ status: "succeeded" }),
         respondToInteraction: async () => undefined,

@@ -17,6 +17,7 @@ export interface DraftComposerState {
   piModel?: HarnessModelRef;
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
+  claudeThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -147,6 +148,11 @@ export class DraftAgentController<Composer extends object> {
     } else if (agent === "pi") {
       delete state.piThinkingOptionId;
     }
+    if (agent === "claude-code" && thinkingOptionId) {
+      state.claudeThinkingOptionId = thinkingOptionId;
+    } else if (agent === "claude-code") {
+      delete state.claudeThinkingOptionId;
+    }
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of ["pi", "claude-code"] as const) {
@@ -166,6 +172,14 @@ export class DraftAgentController<Composer extends object> {
   modelForAgent(composer: Composer, agent: RendererAgent): HarnessModelRef | undefined {
     const state = this.#state(composer);
     return agent === "pi" ? state.piModel : agent === "claude-code" ? state.claudeModel : undefined;
+  }
+
+  thinkingOptionForAgent(
+    composer: Composer,
+    agent: ExternalRendererAgent,
+  ): HarnessThinkingOptionId | undefined {
+    const state = this.#state(composer);
+    return agent === "pi" ? state.piThinkingOptionId : state.claudeThinkingOptionId;
   }
 
   permissionModeForAgent(
@@ -215,13 +229,22 @@ export class DraftAgentController<Composer extends object> {
     return this.setExternalModel(composer, "pi", model);
   }
 
+  setExternalThinkingOption(
+    composer: Composer,
+    agent: ExternalRendererAgent,
+    thinkingOptionId: HarnessThinkingOptionId,
+  ): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    if (agent === "pi") state.piThinkingOptionId = thinkingOptionId;
+    else state.claudeThinkingOptionId = thinkingOptionId;
+    return state;
+  }
+
   setPiThinkingOption(
     composer: Composer,
     thinkingOptionId: HarnessThinkingOptionId,
   ): Readonly<DraftComposerState> {
-    const state = this.#state(composer);
-    state.piThinkingOptionId = thinkingOptionId;
-    return state;
+    return this.setExternalThinkingOption(composer, "pi", thinkingOptionId);
   }
 
   lock(composer: Composer): Readonly<DraftComposerState> {

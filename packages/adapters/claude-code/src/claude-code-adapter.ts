@@ -49,13 +49,13 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
-  harnessResolvedModelLabelSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HarnessThinkingOptionId,
   type HostInteractionId,
   type NativeSessionRef,
   type NativeTurnRef,
@@ -77,6 +77,11 @@ import {
   type ClaudePermissionMode,
 } from "./permission-modes.js";
 import { ClaudeSdkModelInspector, ClaudeSdkTransport } from "./sdk-transport.js";
+import {
+  CLAUDE_DEFAULT_THINKING_OPTION_ID,
+  CLAUDE_THINKING_OPTIONS,
+  parseClaudeThinkingOptionId,
+} from "./thinking-options.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import type {
   ClaudeAdapterDependencies,
@@ -205,7 +210,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: {
       selectModel: true,
-      selectThinkingOption: false,
+      selectThinkingOption: true,
       selectPermissionMode: true,
     },
     history: { fork: true, forkAcrossCwd: false },
@@ -223,6 +228,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
   #requestedPermissionModeId: HarnessPermissionModeId;
+  #requestedThinkingOptionId: HarnessThinkingOptionId;
   readonly #readSessionMessages: ClaudeAdapterDependencies["readSessionMessages"];
   readonly #sessionId: string;
   readonly #toolOutputLimit: number;
@@ -247,6 +253,7 @@ class ClaudeHarnessSession implements HarnessSession {
       sessionId: string;
       requestedModel?: HarnessModelRef;
       requestedPermissionModeId: HarnessPermissionModeId;
+      requestedThinkingOptionId: HarnessThinkingOptionId;
       toolOutputLimit: number;
     },
   ) {
@@ -259,6 +266,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#openMode = options.openMode;
     this.#requestedModel = options.requestedModel;
     this.#requestedPermissionModeId = options.requestedPermissionModeId;
+    this.#requestedThinkingOptionId = options.requestedThinkingOptionId;
     this.#sessionId = options.sessionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#nativeRef = nativeSessionRefSchema.parse({
@@ -357,16 +365,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
-    if (command.type === "thinking.select") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Claude Code Thinking selection is not supported",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "thinking.select") return this.#selectThinking(command);
     if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
@@ -512,25 +511,73 @@ class ClaudeHarnessSession implements HarnessSession {
           },
         };
       }
-      let resolvedModelLabel: string;
-      try {
-        const context = await transport.getContextUsage();
-        if (!context) throw new Error("Claude Code Model readback is unavailable");
-        resolvedModelLabel = harnessResolvedModelLabelSchema.parse(context.model);
-      } catch {
-        const error: HarnessError = {
-          code: "protocolError",
-          message: "Claude Code Model state could not be confirmed",
-          retryable: false,
-        };
-        this.#fault(error);
-        return { ok: false, error };
-      }
       this.#requestedModel = command.model;
+      const state = { ...this.#state };
+      delete state.resolvedModelLabel;
+      this.#publishState({ ...state, effectiveModel: command.model });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      resolveConfiguration();
+      this.#configurationTask = null;
+    }
+  }
+
+  async #selectThinking(
+    command: ThinkingSelectCommand,
+  ): Promise<HarnessResult<ThinkingSelectCompleted>> {
+    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session cannot select Thinking during another operation",
+          retryable: true,
+        },
+      };
+    }
+    let thinkingOptionId: HarnessThinkingOptionId;
+    try {
+      thinkingOptionId = parseClaudeThinkingOptionId(command.thinkingOptionId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Thinking option is invalid",
+          retryable: false,
+        },
+      };
+    }
+    let resolveConfiguration = (): void => undefined;
+    this.#configurationTask = new Promise<void>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    try {
+      let transport = this.#transport;
+      if (!transport) {
+        try {
+          transport = await this.#ensureTransport();
+        } catch (error) {
+          return { ok: false, error: startupFailure(error) };
+        }
+      }
+      try {
+        await transport.setThinkingOption(thinkingOptionId);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Claude Code rejected the Thinking selection",
+            retryable: true,
+          },
+        };
+      }
+      this.#requestedThinkingOptionId = thinkingOptionId;
       this.#publishState({
         ...this.#state,
-        effectiveModel: command.model,
-        resolvedModelLabel,
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
       });
       return { ok: true, value: { completed: true } };
     } finally {
@@ -766,18 +813,18 @@ class ClaudeHarnessSession implements HarnessSession {
       sessionId: this.#sessionId,
       openMode: this.#openMode,
       ...(model ? { model } : {}),
+      thinkingOptionId: this.#requestedThinkingOptionId,
       permissionMode,
       onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
       onFault: () => this.#fault(faultError()),
     });
     try {
       await transport.start();
-      const context = await transport.getContextUsage();
-      if (!context) throw new Error("Claude Code Model readback is unavailable");
       this.#state = {
         nativeRef: this.#nativeRef,
         ...(selectedModel ? { effectiveModel: selectedModel } : {}),
-        resolvedModelLabel: harnessResolvedModelLabelSchema.parse(context.model),
+        effectiveThinkingOptionId: this.#requestedThinkingOptionId,
+        availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
         effectivePermissionModeId: encodeClaudePermissionModeId(transport.getPermissionMode()),
       };
     } catch (error) {
@@ -1261,7 +1308,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         capabilities: {
           configuration: {
             selectModel: true,
-            selectThinkingOption: false,
+            selectThinkingOption: true,
             selectPermissionMode: snapshot.canSelectPermissionMode,
           },
           history: { fork: true, forkAcrossCwd: false },
@@ -1306,15 +1353,20 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    let requestedThinkingOptionId = CLAUDE_DEFAULT_THINKING_OPTION_ID;
     if (input.kind === "create" && input.thinkingOptionId) {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Claude Code Thinking selection is not supported",
-          retryable: false,
-        },
-      };
+      try {
+        requestedThinkingOptionId = parseClaudeThinkingOptionId(input.thinkingOptionId);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code create Thinking option is invalid",
+            retryable: false,
+          },
+        };
+      }
     }
     if (input.kind === "create" && input.model) {
       try {
@@ -1384,6 +1436,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             : this.#dependencies.randomUUID(),
         ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
         requestedPermissionModeId,
+        requestedThinkingOptionId,
         toolOutputLimit: this.#toolOutputLimit,
       },
     );

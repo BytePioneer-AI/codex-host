@@ -60,14 +60,19 @@ describe("Claude Code runtime Model catalog", () => {
     ).toHaveLength(3);
     expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
     expect(normalized.catalog.thinkingOptions).toEqual([
-      { id: "adaptive-v2", label: "adaptive-v2" },
-      { id: "high", label: "high" },
-      { id: "low", label: "low" },
+      { id: "off", label: "Off" },
+      { id: "auto", label: "Auto" },
+      { id: "low", label: "Low" },
+      { id: "medium", label: "Medium" },
+      { id: "high", label: "High" },
+      { id: "xhigh", label: "Extra High" },
+      { id: "max", label: "Max" },
     ]);
+    expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
     expect(
       normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
         ?.supportedThinkingOptionIds,
-    ).toEqual(["low", "adaptive-v2", "high"]);
+    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max"]);
     expect(JSON.stringify(normalized.catalog)).not.toMatch(/private|apiKey|price|supportsEffort/u);
   });
 
@@ -96,6 +101,7 @@ describe("Claude Code runtime Model catalog", () => {
           value: "custom-model",
           displayName: "Custom",
           description: "ignored",
+          supportedEffortLevels: [{ future: true }],
         },
       ]),
     );
@@ -133,7 +139,6 @@ describe("Claude Code runtime Model catalog", () => {
       ]),
       snapshot([{ value: "valid", displayName: "Valid" }], " "),
       snapshot([{ value: "valid", displayName: "Valid" }], "x".repeat(257)),
-      snapshot([{ value: "valid", displayName: "Valid", supportedEffortLevels: ["low", {}] }]),
     ]) {
       expect(() => normalizeClaudeModelCatalog(value)).toThrow();
     }

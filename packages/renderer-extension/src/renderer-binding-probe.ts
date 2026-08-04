@@ -160,11 +160,14 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       throw new Error("Claude Code Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
     const permissionModeId =
       inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "claude-code",
       ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
@@ -442,7 +445,7 @@ export function installRendererBindingProbe(
     const agent = state.agent;
     mounted.modelView = {
       status: adapterStatus.state === "ready" ? "loading" : "waitingForAdapter",
-      thinkingSelectionSupported: agent === "pi",
+      thinkingSelectionSupported: false,
     };
     mounted.permissionModeView = { status: "idle" };
     renderMounted(mounted);
@@ -518,17 +521,17 @@ export function installRendererBindingProbe(
       const selected = previousModelAvailable ? previousModel : inspection.catalog.defaultModel;
       if (!selected) throw new Error("External Harness did not report its default Model");
       const effectiveCatalog =
-        agent === "pi" && current.phase === "locked" && mounted.threadConfiguration
+        current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
           : inspection.catalog;
-      const selectedThinkingOptionId =
-        agent === "pi" && inspection.capabilities.configuration.selectThinkingOption
-          ? draftThinkingOptionForModel(effectiveCatalog, selected, current.piThinkingOptionId)
-          : undefined;
+      const previousThinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
+      const selectedThinkingOptionId = inspection.capabilities.configuration.selectThinkingOption
+        ? draftThinkingOptionForModel(effectiveCatalog, selected, previousThinkingOptionId)
+        : undefined;
       if (
         current.phase === "draft" &&
         (previousModel?.id !== selected.id ||
-          (agent === "pi" && current.piThinkingOptionId !== selectedThinkingOptionId) ||
+          previousThinkingOptionId !== selectedThinkingOptionId ||
           previousPermissionModeId !== selectedPermissionModeId)
       ) {
         if (
@@ -548,7 +551,7 @@ export function installRendererBindingProbe(
             applyAdapterAgent?.(
               agent,
               previousModel,
-              agent === "pi" ? current.piThinkingOptionId : undefined,
+              previousThinkingOptionId,
               previousPermissionModeId,
             );
           }
@@ -557,8 +560,8 @@ export function installRendererBindingProbe(
         if (!isCurrentModelRequest(mounted, generation)) return;
       }
       controller.setExternalModel(mounted.composer, agent, selected);
-      if (agent === "pi" && selectedThinkingOptionId) {
-        controller.setPiThinkingOption(mounted.composer, selectedThinkingOptionId);
+      if (selectedThinkingOptionId) {
+        controller.setExternalThinkingOption(mounted.composer, agent, selectedThinkingOptionId);
       }
       if (selectedPermissionModeId) {
         controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
@@ -571,8 +574,7 @@ export function installRendererBindingProbe(
         ...(mounted.threadConfiguration?.resolvedModelLabel
           ? { resolvedModelLabel: mounted.threadConfiguration.resolvedModelLabel }
           : {}),
-        thinkingSelectionSupported:
-          agent === "pi" && inspection.capabilities.configuration.selectThinkingOption,
+        thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
       };
       if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
         mounted.permissionModeView = {
@@ -583,18 +585,16 @@ export function installRendererBindingProbe(
       }
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      const current = controller.get(mounted.composer);
       const selected = controller.modelForAgent(mounted.composer, agent);
+      const selectedThinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
       const selectedPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
       const message = error instanceof Error ? error.message : String(error);
       mounted.modelView = {
         status: "error",
         ...(mounted.modelView.catalog ? { catalog: mounted.modelView.catalog } : {}),
         ...(selected ? { selected } : {}),
-        ...(agent === "pi" && current.piThinkingOptionId
-          ? { selectedThinkingOptionId: current.piThinkingOptionId }
-          : {}),
-        thinkingSelectionSupported: agent === "pi",
+        ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
+        thinkingSelectionSupported: false,
         error: message,
       };
       if (
@@ -623,15 +623,16 @@ export function installRendererBindingProbe(
     const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
     if (!catalog || !selected || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
-    const previousThinking = agent === "pi" ? current.piThinkingOptionId : undefined;
+    const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+    const supportsThinkingSelection = mounted.modelView.thinkingSelectionSupported === true;
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = {
       status: "selecting",
       catalog,
       selected: previousModel ?? selected,
       ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
-      thinkingSelectionSupported: agent === "pi",
+      thinkingSelectionSupported: supportsThinkingSelection,
     };
     renderMounted(mounted);
     try {
@@ -641,10 +642,9 @@ export function installRendererBindingProbe(
       let resolvedModelLabel: string | undefined;
       if (current.phase === "draft") {
         effectiveModel = selected;
-        effectiveThinkingOptionId =
-          agent === "pi"
-            ? draftThinkingOptionForModel(catalog, selected, previousThinking)
-            : undefined;
+        effectiveThinkingOptionId = supportsThinkingSelection
+          ? draftThinkingOptionForModel(catalog, selected, previousThinking)
+          : undefined;
         effectiveCatalog = catalog;
         if (
           !applyExternalConfiguration(
@@ -689,9 +689,12 @@ export function installRendererBindingProbe(
         if (!catalog.models.some((model) => model.ref.id === effectiveModel.id)) {
           throw new Error("External Harness activated a Model outside the current catalog");
         }
-        effectiveThinkingOptionId = agent === "pi" ? selectableThinkingOptionId(state) : undefined;
-        effectiveCatalog =
-          agent === "pi" ? catalogWithConfigurationState(catalog, effectiveModel, state) : catalog;
+        effectiveThinkingOptionId = supportsThinkingSelection
+          ? selectableThinkingOptionId(state)
+          : undefined;
+        effectiveCatalog = supportsThinkingSelection
+          ? catalogWithConfigurationState(catalog, effectiveModel, state)
+          : catalog;
         resolvedModelLabel = state.resolvedModelLabel;
         const effectivePermissionModeId =
           state.effectivePermissionModeId ?? previousPermissionModeId;
@@ -709,8 +712,8 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalModel(mounted.composer, agent, effectiveModel);
-      if (agent === "pi" && effectiveThinkingOptionId) {
-        controller.setPiThinkingOption(mounted.composer, effectiveThinkingOptionId);
+      if (effectiveThinkingOptionId) {
+        controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
       }
       mounted.modelView = {
         status: "ready",
@@ -720,7 +723,7 @@ export function installRendererBindingProbe(
           ? { selectedThinkingOptionId: effectiveThinkingOptionId }
           : {}),
         ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
-        thinkingSelectionSupported: agent === "pi",
+        thinkingSelectionSupported: supportsThinkingSelection,
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
@@ -737,7 +740,7 @@ export function installRendererBindingProbe(
         catalog,
         ...(previousModel ? { selected: previousModel } : {}),
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
-        thinkingSelectionSupported: agent === "pi",
+        thinkingSelectionSupported: supportsThinkingSelection,
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
@@ -760,7 +763,7 @@ export function installRendererBindingProbe(
     if (agent === "claude-code") {
       writeClaudePermissionModePreference(selectedPermissionModeId);
     }
-    const thinkingOptionId = agent === "pi" ? current.piThinkingOptionId : undefined;
+    const thinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.permissionModeView = {
       status: "selecting",
@@ -835,19 +838,22 @@ export function installRendererBindingProbe(
     }
   };
 
-  const selectPiThinking = async (
+  const selectExternalThinking = async (
     mounted: MountedComposer,
     thinkingOptionId: string,
   ): Promise<void> => {
     const current = controller.get(mounted.composer);
+    if (current.agent === "codex") return;
+    const agent = current.agent;
     const catalog = mounted.modelView.catalog;
-    const model = current.piModel;
+    const model = controller.modelForAgent(mounted.composer, agent);
+    const permissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const selectedThinkingOptionId = catalog?.thinkingOptions.find(
       ({ id }) => id === thinkingOptionId,
     )?.id;
     const catalogModel = catalog?.models.find((candidate) => candidate.ref.id === model?.id);
     if (
-      current.agent !== "pi" ||
+      !mounted.modelView.thinkingSelectionSupported ||
       !catalog ||
       !model ||
       !selectedThinkingOptionId ||
@@ -855,27 +861,28 @@ export function installRendererBindingProbe(
     ) {
       return;
     }
-    const previousThinking = current.piThinkingOptionId;
+    const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = {
       status: "selecting",
       catalog,
       selected: model,
       ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
+      thinkingSelectionSupported: true,
     };
     renderMounted(mounted);
     try {
       let effectiveThinkingOptionId = selectedThinkingOptionId;
       let effectiveCatalog = catalog;
       if (current.phase === "draft") {
-        if (!applyExternalConfiguration("pi", model, selectedThinkingOptionId)) {
-          throw new Error("Pi Thinking could not be applied to the Composer");
+        if (!applyExternalConfiguration(agent, model, selectedThinkingOptionId, permissionModeId)) {
+          throw new Error("External Thinking could not be applied to the Composer");
         }
         try {
           await clearDraftPrewarm();
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
-            applyExternalConfiguration("pi", model, previousThinking);
+            applyExternalConfiguration(agent, model, previousThinking, permissionModeId);
           }
           throw error;
         }
@@ -883,7 +890,7 @@ export function installRendererBindingProbe(
       } else {
         const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
         if (!threadId || !modelControl) {
-          throw new Error("Pi Thread identity is unavailable for Thinking selection");
+          throw new Error("External Thread identity is unavailable for Thinking selection");
         }
         const state = await modelControl.selectThreadThinking({
           threadId,
@@ -891,39 +898,48 @@ export function installRendererBindingProbe(
         });
         if (
           !isCurrentModelRequest(mounted, generation) ||
-          controller.get(mounted.composer).agent !== "pi"
+          controller.get(mounted.composer).agent !== agent
         ) {
           return;
         }
         if (state.effectiveModel && state.effectiveModel.id !== model.id) {
-          throw new Error("Pi changed Model during Thinking selection");
+          throw new Error("External Harness changed Model during Thinking selection");
         }
         if (!state.effectiveThinkingOptionId) {
-          throw new Error("Pi did not confirm effective Thinking");
+          throw new Error("External Harness did not confirm effective Thinking");
         }
         effectiveThinkingOptionId = state.effectiveThinkingOptionId;
         effectiveCatalog = catalogWithConfigurationState(catalog, model, state);
-        if (!applyExternalConfiguration("pi", model, effectiveThinkingOptionId)) {
-          throw new Error("Confirmed Pi Thinking could not be applied to the Composer");
+        if (
+          !applyExternalConfiguration(
+            agent,
+            model,
+            effectiveThinkingOptionId,
+            state.effectivePermissionModeId ?? permissionModeId,
+          )
+        ) {
+          throw new Error("Confirmed external Thinking could not be applied to the Composer");
         }
         mounted.threadConfiguration = state;
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
-      controller.setPiThinkingOption(mounted.composer, effectiveThinkingOptionId);
+      controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
         selected: model,
         selectedThinkingOptionId: effectiveThinkingOptionId,
+        thinkingSelectionSupported: true,
       };
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
-      applyExternalConfiguration("pi", model, previousThinking);
+      applyExternalConfiguration(agent, model, previousThinking, permissionModeId);
       mounted.modelView = {
         status: "error",
         catalog,
         selected: model,
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
+        thinkingSelectionSupported: true,
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
@@ -939,12 +955,13 @@ export function installRendererBindingProbe(
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
       applyAgent(nextAgent) {
-        const nextState = controller.get(mounted.composer);
         return (
           applyAdapterAgent?.(
             nextAgent,
             controller.modelForAgent(mounted.composer, nextAgent),
-            nextAgent === "pi" ? nextState.piThinkingOptionId : undefined,
+            nextAgent !== "codex"
+              ? controller.thinkingOptionForAgent(mounted.composer, nextAgent)
+              : undefined,
             nextAgent !== "codex"
               ? controller.permissionModeForAgent(mounted.composer, nextAgent)
               : undefined,
@@ -1004,7 +1021,7 @@ export function installRendererBindingProbe(
       (thinkingOptionId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
-        void selectPiThinking(mounted, thinkingOptionId);
+        void selectExternalThinking(mounted, thinkingOptionId);
       },
       (permissionModeId) => {
         const mounted = mountedByComposer.get(composer);
@@ -1030,7 +1047,9 @@ export function installRendererBindingProbe(
     applyAdapterAgent?.(
       state.agent,
       controller.modelForAgent(composer, state.agent),
-      state.agent === "pi" ? state.piThinkingOptionId : undefined,
+      state.agent !== "codex"
+        ? controller.thinkingOptionForAgent(composer, state.agent)
+        : undefined,
       state.agent !== "codex"
         ? controller.permissionModeForAgent(composer, state.agent)
         : undefined,
@@ -1137,7 +1156,9 @@ export function installRendererBindingProbe(
       applyAdapterAgent?.(
         state.agent,
         controller.modelForAgent(composer, state.agent),
-        state.agent === "pi" ? state.piThinkingOptionId : undefined,
+        state.agent !== "codex"
+          ? controller.thinkingOptionForAgent(composer, state.agent)
+          : undefined,
         state.agent !== "codex"
           ? controller.permissionModeForAgent(composer, state.agent)
           : undefined,
@@ -1276,6 +1297,10 @@ export function installRendererBindingProbe(
       if (locked.length !== 1 || !entry) return null;
       const { mounted, state: selection } = entry;
       const model = controller.modelForAgent(mounted.composer, selection.agent);
+      const thinkingOptionId =
+        selection.agent !== "codex"
+          ? controller.thinkingOptionForAgent(mounted.composer, selection.agent)
+          : undefined;
       const permissionModeId =
         selection.agent !== "codex"
           ? controller.permissionModeForAgent(mounted.composer, selection.agent)
@@ -1285,9 +1310,7 @@ export function installRendererBindingProbe(
         agent: selection.agent,
         phase: "locked",
         ...(model ? { model } : {}),
-        ...(selection.agent === "pi" && selection.piThinkingOptionId
-          ? { thinkingOptionId: selection.piThinkingOptionId }
-          : {}),
+        ...(thinkingOptionId ? { thinkingOptionId } : {}),
         ...(permissionModeId ? { permissionModeId } : {}),
       };
     },
@@ -1306,7 +1329,9 @@ export function installRendererBindingProbe(
           applyAdapterAgent?.(
             state.agent,
             controller.modelForAgent(mounted.composer, state.agent),
-            state.agent === "pi" ? state.piThinkingOptionId : undefined,
+            state.agent !== "codex"
+              ? controller.thinkingOptionForAgent(mounted.composer, state.agent)
+              : undefined,
             state.agent !== "codex"
               ? controller.permissionModeForAgent(mounted.composer, state.agent)
               : undefined,

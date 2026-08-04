@@ -1072,6 +1072,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     expect(fixture.adapter.sessions[0]?.state.effectiveThinkingOptionId).toBe("off");
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      transportModelId: encodePiTransportModel(fixture.adapter.catalog.defaultModel, off),
+    });
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });

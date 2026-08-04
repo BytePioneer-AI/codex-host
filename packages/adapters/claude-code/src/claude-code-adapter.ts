@@ -136,6 +136,7 @@ interface ActiveTurn {
 const claudeCodeHarnessId = harnessIdSchema.parse("claude-code");
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
+const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -486,6 +487,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
+    this.#usageGeneration += 1;
     let resolveConfiguration = (): void => undefined;
     this.#configurationTask = new Promise<void>((resolve) => {
       resolveConfiguration = resolve;
@@ -541,6 +543,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
+    this.#usageGeneration += 1;
     let resolveConfiguration = (): void => undefined;
     this.#configurationTask = new Promise<void>((resolve) => {
       resolveConfiguration = resolve;
@@ -596,6 +599,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
+    this.#usageGeneration += 1;
     let resolveConfiguration = (): void => undefined;
     this.#configurationTask = new Promise<void>((resolve) => {
       resolveConfiguration = resolve;
@@ -1105,24 +1109,43 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #refreshUsage(transport: ClaudeTurnTransport, turnId: TurnStartCommand["turnId"]): void {
     const generation = ++this.#usageGeneration;
-    void transport
-      .getContextUsage()
-      .then((context) => {
+    void this.#refreshUsageWithRetry(transport, turnId, generation);
+  }
+
+  async #refreshUsageWithRetry(
+    transport: ClaudeTurnTransport,
+    turnId: TurnStartCommand["turnId"],
+    generation: number,
+  ): Promise<void> {
+    for (const retryDelayMs of CONTEXT_USAGE_RETRY_DELAYS_MS) {
+      if (retryDelayMs > 0) await delay(retryDelayMs);
+      if (
+        this.#phase !== "open" ||
+        this.#transport !== transport ||
+        this.#usageGeneration !== generation
+      ) {
+        return;
+      }
+      try {
+        const context = await transport.getContextUsage();
         if (
-          context === null ||
           this.#phase !== "open" ||
           this.#transport !== transport ||
           this.#usageGeneration !== generation
         ) {
           return;
         }
+        if (context === null) continue;
         const usage = parseHostUsage({
           contextUsedTokens: context.usedTokens,
           contextWindowTokens: context.maxTokens,
         });
         this.#event({ type: "session.usage.changed", observedForTurnId: turnId, usage });
-      })
-      .catch(() => undefined);
+        return;
+      } catch {
+        // Context Usage is an independent, best-effort projection.
+      }
+    }
   }
 
   #finishFailed(active: ActiveTurn, error: HarnessError): void {

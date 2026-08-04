@@ -1623,6 +1623,70 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("retries failed and empty context reads before publishing Usage", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("usage-retry"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.getContextUsage
+        .mockRejectedValueOnce(new Error("context unavailable"))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ usedTokens: 75, maxTokens: 250, model: "runtime-default" });
+      transport.finish({ status: "succeeded" });
+
+      expect((await nextEvent(iterator)).type).toBe("item.completed");
+      expect((await nextEvent(iterator)).type).toBe("turn.completed");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await nextEvent(iterator)).toEqual({
+        type: "session.usage.changed",
+        observedForTurnId: "usage-retry",
+        usage: { contextUsedTokens: 75, contextWindowTokens: 250 },
+      });
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying Context Usage after three failed attempts", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("usage-retry-limit"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.getContextUsage.mockResolvedValue(null);
+      transport.finish({ status: "succeeded" });
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("isolates failed context reads and discards a read invalidated by the next Turn", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

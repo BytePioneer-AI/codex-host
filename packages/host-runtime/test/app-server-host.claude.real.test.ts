@@ -161,6 +161,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           }),
           getPermissionMode: () => permissionMode,
           setModel: async () => undefined,
+          setThinkingOption: async () => undefined,
           setPermissionMode: async (mode) => {
             permissionMode = mode;
           },

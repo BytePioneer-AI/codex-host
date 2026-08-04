@@ -6,13 +6,17 @@ import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessResolvedModelLabelSchema,
-  harnessThinkingOptionIdSchema,
   type HarnessModel,
   type HarnessModelCatalog,
   type HarnessModelRef,
-  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
+
+import {
+  CLAUDE_DEFAULT_THINKING_OPTION_ID,
+  CLAUDE_THINKING_OPTION_IDS,
+  CLAUDE_THINKING_OPTIONS,
+} from "./thinking-options.js";
 
 const CLAUDE_MODEL_REF_PREFIX = "claude-model-v1.";
 const CLAUDE_MODEL_VALUE_MAX_LENGTH = 512;
@@ -21,7 +25,6 @@ const modelInfoSchema = z.object({
   value: z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH),
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
-  supportedEffortLevels: z.array(harnessThinkingOptionIdSchema).optional(),
 });
 
 export interface ClaudeModelInspectionSnapshot {
@@ -121,10 +124,7 @@ export function normalizeClaudeModelCatalog(
   const currentModelLabel = harnessResolvedModelLabelSchema.parse(snapshot.currentModel);
   const rows = normalizeRows(snapshot.models);
   const labels = uniqueDisplayLabels(rows);
-  const effortIds = new Set<HarnessThinkingOptionId>();
   const models: HarnessModel[] = rows.map((row) => {
-    const supportedThinkingOptionIds = [...new Set(row.supportedEffortLevels ?? [])];
-    for (const id of supportedThinkingOptionIds) effortIds.add(id);
     return {
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
@@ -133,7 +133,7 @@ export function normalizeClaudeModelCatalog(
         : row.resolvedModel
           ? { resolvedModelLabel: row.resolvedModel }
           : {}),
-      ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
+      supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
     };
   });
   models.sort((left, right) => {
@@ -141,13 +141,11 @@ export function normalizeClaudeModelCatalog(
     if (right.ref.id === CLAUDE_DEFAULT_MODEL_REF.id) return 1;
     return left.label.localeCompare(right.label) || left.ref.id.localeCompare(right.ref.id);
   });
-  const thinkingOptions = [...effortIds]
-    .sort((left, right) => left.localeCompare(right))
-    .map((id) => ({ id, label: id }));
   const catalog = harnessModelCatalogSchema.parse({
     models,
     defaultModel: CLAUDE_DEFAULT_MODEL_REF,
-    thinkingOptions,
+    thinkingOptions: [...CLAUDE_THINKING_OPTIONS],
+    defaultThinkingOptionId: CLAUDE_DEFAULT_THINKING_OPTION_ID,
   });
   return { catalog, defaultModel: CLAUDE_DEFAULT_MODEL_REF, currentModelLabel };
 }

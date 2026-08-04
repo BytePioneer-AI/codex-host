@@ -330,21 +330,29 @@ describe("Renderer draft Agent controller", () => {
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.isolated" });
     const claudePermissionMode = harnessPermissionModeIdSchema.parse("acceptEdits");
     const piPermissionMode = harnessPermissionModeIdSchema.parse("future-pi-mode");
+    const piThinking = harnessThinkingOptionIdSchema.parse("max");
+    const claudeThinking = harnessThinkingOptionIdSchema.parse("auto");
 
     agents.mount(draft, ["default"]);
     agents.setExternalModel(draft, "pi", piModel);
     agents.setExternalModel(draft, "claude-code", claudeModel);
     agents.setExternalPermissionMode(draft, "pi", piPermissionMode);
     agents.setExternalPermissionMode(draft, "claude-code", claudePermissionMode);
+    agents.setExternalThinkingOption(draft, "pi", piThinking);
+    agents.setExternalThinkingOption(draft, "claude-code", claudeThinking);
     expect(agents.modelForAgent(draft, "pi")).toEqual(piModel);
     expect(agents.modelForAgent(draft, "claude-code")).toEqual(claudeModel);
     expect(agents.permissionModeForAgent(draft, "pi")).toBe(piPermissionMode);
     expect(agents.permissionModeForAgent(draft, "claude-code")).toBe(claudePermissionMode);
+    expect(agents.thinkingOptionForAgent(draft, "pi")).toBe(piThinking);
+    expect(agents.thinkingOptionForAgent(draft, "claude-code")).toBe(claudeThinking);
     expect(agents.transfer(draft, conversation, ["conversation", "claude-thread"])).toBe(true);
     agents.mount(revisit, ["conversation", "claude-thread"]);
     expect(agents.get(revisit)).toMatchObject({
       piModel,
+      piThinkingOptionId: piThinking,
       claudeModel,
+      claudeThinkingOptionId: claudeThinking,
       permissionModeByAgent: {
         pi: piPermissionMode,
         "claude-code": claudePermissionMode,
@@ -356,6 +364,8 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.modelForAgent(newDefault, "claude-code")).toBeUndefined();
     expect(agents.permissionModeForAgent(newDefault, "pi")).toBeUndefined();
     expect(agents.permissionModeForAgent(newDefault, "claude-code")).toBeUndefined();
+    expect(agents.thinkingOptionForAgent(newDefault, "pi")).toBeUndefined();
+    expect(agents.thinkingOptionForAgent(newDefault, "claude-code")).toBeUndefined();
   });
 
   it("applies the target Agent before clearing stale prewarm", async () => {

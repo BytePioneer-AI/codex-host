@@ -1060,6 +1060,36 @@ export class AppServerHost {
       if (!projected.effectiveThinkingOptionId) {
         throw new Error("Harness Session did not report effective Thinking");
       }
+      thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      const previousSelection = decodeExternalTransportSelection(
+        thread.harnessId,
+        thread.transportModelId,
+      );
+      const effectiveModel =
+        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+      if (effectiveModel) {
+        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+          ...(previousSelection ?? {}),
+          model: effectiveModel,
+          thinkingOptionId: projected.effectiveThinkingOptionId,
+        });
+        thread.transportModelId = transportModelId;
+        thread.requestedModel = effectiveModel;
+        try {
+          thread.record = await this.#repository.setTransportModelId(
+            thread.record.hostThreadId,
+            transportModelId,
+          );
+        } catch (error) {
+          this.#diagnose(error);
+        }
+        thread.thread = externalThreadValue({
+          record: { ...thread.record, transportModelId },
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+      }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
       await this.#writer.json(

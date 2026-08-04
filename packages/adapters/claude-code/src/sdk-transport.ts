@@ -9,11 +9,13 @@ import {
   type SDKUserMessage,
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { resolveClaudeCodeExecutable } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
+import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
@@ -88,6 +90,7 @@ export interface ClaudeSdkTransportOptions {
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;
+  thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
   closeTimeoutMs: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
@@ -316,6 +319,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #openMode: "create" | "resume";
   #permissionMode: ClaudePermissionMode;
   readonly #queryFactory: typeof query;
+  #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
@@ -335,6 +339,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#openMode = options.openMode;
     this.#permissionMode = options.permissionMode;
     this.#queryFactory = options.queryFactory ?? query;
+    this.#thinkingOptionId = parseClaudeThinkingOptionId(options.thinkingOptionId);
   }
 
   async start(): Promise<void> {
@@ -344,6 +349,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       ...(this.#command ? { command: this.#command } : {}),
       environment: this.#environment,
     });
+    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
     const activeQuery = this.#queryFactory({
       prompt: this.#input,
       options: {
@@ -352,6 +358,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           ? { resume: this.sessionId }
           : { sessionId: this.sessionId }),
         ...(this.#model ? { model: this.#model } : {}),
+        thinking: thinking.enabled ? { type: "adaptive" } : { type: "disabled" },
+        ...(thinking.effort ? { effort: thinking.effort } : {}),
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
         permissionMode: this.#permissionMode,
@@ -393,6 +401,19 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     await activeQuery.setModel(model);
+  }
+
+  async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
+    const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const thinking = claudeThinkingConfiguration(id);
+    await activeQuery.applyFlagSettings(
+      thinking.enabled
+        ? { alwaysThinkingEnabled: true, effortLevel: thinking.effort ?? null }
+        : { alwaysThinkingEnabled: false },
+    );
+    this.#thinkingOptionId = id;
   }
 
   async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {

@@ -1,4 +1,4 @@
-import type { JsonValue } from "@codexhost/shared-contracts";
+import type { HarnessThinkingOptionId, JsonValue } from "@codexhost/shared-contracts";
 
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -92,6 +92,7 @@ export interface ClaudeTurnTransport {
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
+  setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
   setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
   runTurn(
     text: string,
@@ -108,6 +109,7 @@ export interface ClaudeTransportFactoryInput {
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;
+  thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
   ClaudeSdkModelInspector,
@@ -26,6 +27,7 @@ class FakeQuery {
     model: "runtime-model",
   }));
   readonly setModel = vi.fn(async () => undefined);
+  readonly applyFlagSettings = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -60,6 +62,7 @@ type QueryInput = Parameters<NonNullable<ClaudeSdkTransportOptions["queryFactory
 function fixture(
   openMode: "create" | "resume" = "create",
   permissionMode: ClaudeSdkTransportOptions["permissionMode"] = "default",
+  thinkingOptionId = harnessThinkingOptionIdSchema.parse("auto"),
 ) {
   const fakeQuery = new FakeQuery();
   let queryInput: QueryInput | undefined;
@@ -75,6 +78,7 @@ function fixture(
     sessionId: "00000000-0000-4000-8000-000000000001",
     openMode,
     permissionMode,
+    thinkingOptionId,
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
@@ -453,6 +457,46 @@ describe("ClaudeSdkTransport Permission Mode control", () => {
   });
 });
 
+describe("ClaudeSdkTransport Thinking control", () => {
+  it("maps Auto, explicit effort, and Off through structured SDK settings", async () => {
+    const value = fixture();
+
+    await value.transport.start();
+    expect(options(value).thinking).toEqual({ type: "adaptive" });
+    expect(options(value).effort).toBeUndefined();
+
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("auto"));
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(1, {
+      alwaysThinkingEnabled: true,
+      effortLevel: "high",
+    });
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(2, {
+      alwaysThinkingEnabled: false,
+    });
+    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(3, {
+      alwaysThinkingEnabled: true,
+      effortLevel: null,
+    });
+    await value.transport.close();
+  });
+
+  it("passes explicit and disabled Thinking when creating the Query", async () => {
+    const explicit = fixture("create", "default", harnessThinkingOptionIdSchema.parse("xhigh"));
+    await explicit.transport.start();
+    expect(options(explicit).thinking).toEqual({ type: "adaptive" });
+    expect(options(explicit).effort).toBe("xhigh");
+    await explicit.transport.close();
+
+    const disabled = fixture("create", "default", harnessThinkingOptionIdSchema.parse("off"));
+    await disabled.transport.start();
+    expect(options(disabled).thinking).toEqual({ type: "disabled" });
+    expect(options(disabled).effort).toBeUndefined();
+    await disabled.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport Model control", () => {
   it("passes create-time Model and delegates setter without sending input", async () => {
     const value = fixture();
@@ -463,6 +507,7 @@ describe("ClaudeSdkTransport Model control", () => {
       openMode: "create",
       model: "custom-model",
       permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
       closeTimeoutMs: 100,
       onPermissionModeChanged: value.onPermissionModeChanged,
       onFault: value.onFault,

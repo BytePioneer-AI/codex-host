@@ -131,6 +131,30 @@ describe("external Harness transport model routing", () => {
     );
   });
 
+  it("round-trips request-scoped Claude Code Thinking with optional Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "claude-model-v1.ZGVmYXVsdA" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("acceptEdits");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
+    const configured = encodeClaudeTransportModel(model, permissionModeId, thinkingOptionId);
+    const withoutPermission = encodeClaudeTransportModel(model, undefined, thinkingOptionId);
+
+    expect(configured).toBe(
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(decodeClaudeTransportSelection(configured)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(withoutPermission).toBe(
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+    );
+    expect(decodeClaudeTransportSelection(withoutPermission)).toEqual({ model, thinkingOptionId });
+    expect(
+      decodeCreateRoute({ id: 9, method: "thread/start", params: { model: configured } }),
+    ).toMatchObject({ harnessId: "claude-code", model, permissionModeId, thinkingOptionId });
+  });
+
   it("decodes existing Thread carriers only for their owning Harness", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const selectedPi = encodePiTransportModel(model);
@@ -157,10 +181,11 @@ describe("external Harness transport model routing", () => {
       `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@provider/model`,
       `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@${"x".repeat(513)}`,
       `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@claude-model-v1.valid@provider/mode`,
-      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@claude-model-v1.valid@default@extra`,
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@claude-model-v1.valid@default@high@extra`,
+      `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@claude-model-v1.valid@default@`,
     ]) {
       expect(() => decodeCreateRoute({ id: 8, method: "thread/start", params: { model } })).toThrow(
-        /invalid Model Ref|invalid Permission Mode|invalid component count/u,
+        /invalid Model Ref|invalid Permission Mode|invalid component count|empty Thinking option/u,
       );
     }
     expect(() =>

@@ -111,6 +111,45 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     });
   });
 
+  it("shows Claude Thinking options through the shared picker when selection is enabled", () => {
+    const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
+    const claudeCatalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: claudeModel,
+          label: "Family alias",
+          supportedThinkingOptionIds: ["off", "auto", "high"],
+        },
+      ],
+      defaultModel: claudeModel,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "auto", label: "Auto" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "auto",
+    });
+
+    expect(
+      rendererModelPickerPresentation({
+        status: "ready",
+        catalog: claudeCatalog,
+        selected: claudeModel,
+        selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+        thinkingSelectionSupported: true,
+      }),
+    ).toMatchObject({
+      thinkingLabel: "Auto",
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "auto", label: "Auto" },
+        { id: "high", label: "High" },
+      ],
+      showThinkingSection: true,
+      thinkingSelectionEnabled: true,
+    });
+  });
+
   it("does not reuse global Thinking options for a Model without a declared list", () => {
     const uninspectedCatalog = harnessModelCatalogSchema.parse({
       models: [{ ref: model, label: "provider / model" }],

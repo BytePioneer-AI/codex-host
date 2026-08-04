@@ -32,6 +32,10 @@ export interface ExternalThreadStore {
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
+  reconcileTurnMappings(
+    hostThreadId: HostThreadId,
+    mappings: StoredTurnMappingV1[],
+  ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
   setTransportModelId(
     hostThreadId: HostThreadId,
@@ -345,13 +349,16 @@ export class ExternalThreadRepository {
       throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
     }
 
-    const updates = aligned.flatMap(({ existing, mapping }) =>
-      existing && sameMapping(existing, mapping) ? [] : [mapping],
-    );
-    const nextRecord =
-      updates.length > 0
-        ? await this.store.upsertTurnMappings(record.hostThreadId, updates)
-        : record;
+    const orderedMappings = aligned.map(({ mapping }) => mapping);
+    const mappingsChanged =
+      orderedMappings.length !== record.turnMappings.length ||
+      orderedMappings.some((mapping, index) => {
+        const persisted = record.turnMappings[index];
+        return !persisted || !sameMapping(mapping, persisted);
+      });
+    const nextRecord = mappingsChanged
+      ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
+      : record;
     return {
       record: nextRecord,
       turns: aligned.map(({ mapping, snapshot: turn }) =>

@@ -133,6 +133,72 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("omits Claude model controls and metadata without hiding other human commands", () => {
+    const synthetic = {
+      ...message("user", "synthetic", "synthetic prompt"),
+      isSynthetic: true,
+    };
+    const metadata = {
+      ...message("user", "metadata", "metadata prompt"),
+      isMeta: true,
+    };
+    const toolResult = {
+      ...message("user", "tool-result", "tool output"),
+      toolUseResult: { status: "completed" },
+    };
+    const history = [
+      message("user", "user-1", "first"),
+      message("assistant", "assistant-1", "answer", "end_turn"),
+      message(
+        "user",
+        "model-command",
+        "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>",
+      ),
+      message(
+        "user",
+        "model-output",
+        "<local-command-stdout>Set model to claude-opus-4-6</local-command-stdout>",
+      ),
+      message("user", "model-caveat", [
+        {
+          type: "text",
+          text: "<local-command-caveat>Model changed locally</local-command-caveat>",
+        },
+      ]),
+      synthetic,
+      metadata,
+      toolResult,
+      message(
+        "user",
+        "diagnose-command",
+        "<command-message>diagnose</command-message>\n<command-name>/diagnose</command-name>\n<command-args>auth</command-args>",
+      ),
+      message("assistant", "assistant-2", "diagnosis", "end_turn"),
+      message("user", "user-2", "literal <command-name>/model</command-name> example"),
+      message("assistant", "assistant-3", "still visible", "end_turn"),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId).turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        input: [{ type: "text", text: "first" }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "diagnose-command" },
+        input: [
+          {
+            type: "text",
+            text: "<command-message>diagnose</command-message>\n<command-name>/diagnose</command-name>\n<command-args>auth</command-args>",
+          },
+        ],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "user-2" },
+        input: [{ type: "text", text: "literal <command-name>/model</command-name> example" }],
+      },
+    ]);
+  });
+
   it("keeps an incomplete reasoning-only historical Turn without inventing success", () => {
     expect(
       mapClaudeSnapshot(

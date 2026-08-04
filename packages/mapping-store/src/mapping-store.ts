@@ -277,6 +277,56 @@ export class MappingStore {
     }));
   }
 
+  async reconcileTurnMappings(
+    hostThreadId: HostThreadId,
+    mappings: StoredTurnMappingV1[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      if (current.state !== "ready" || !current.nativeSessionRef) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Only a ready Thread can reconcile Snapshot mappings",
+        );
+      }
+
+      const merged = this.#mergeMappings(current.turnMappings, mappings);
+      if (merged.length !== mappings.length) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Snapshot reconciliation must retain every existing Turn mapping",
+        );
+      }
+      const mergedByHost = new Map(merged.map((mapping) => [mapping.hostTurnId, mapping] as const));
+      const ordered = mappings.map(({ hostTurnId }) => {
+        const mapping = mergedByHost.get(hostTurnId);
+        if (!mapping) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Snapshot reconciliation contains a duplicate Turn mapping",
+          );
+        }
+        return mapping;
+      });
+
+      const orderedIndexByHost = new Map(
+        ordered.map(({ hostTurnId }, index) => [hostTurnId, index] as const),
+      );
+      let previousIndex = -1;
+      for (const existing of current.turnMappings) {
+        const nextIndex = orderedIndexByHost.get(existing.hostTurnId);
+        if (nextIndex === undefined || nextIndex <= previousIndex) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Snapshot reconciliation reordered an existing Turn mapping",
+          );
+        }
+        previousIndex = nextIndex;
+      }
+
+      return sameJson(current.turnMappings, ordered) ? null : { ...current, turnMappings: ordered };
+    });
+  }
+
   async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) => ({ ...current, title }));
   }

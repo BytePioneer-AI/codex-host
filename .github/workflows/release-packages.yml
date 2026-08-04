@@ -112,6 +112,14 @@ jobs:
           --pack
           --skip-build
 
+      - name: Build npm meta package
+        if: matrix.target == 'macos-arm64'
+        shell: bash
+        run: >
+          npm run release:npm:meta --
+          --version ${{ steps.version.outputs.version }}
+          --pack
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -120,6 +128,7 @@ jobs:
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
             build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
+            build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
           if-no-files-found: error
 
       - name: Upload GitHub Release assets
@@ -131,3 +140,39 @@ jobs:
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
             build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
+            build/npm/${{ steps.version.outputs.version }}/meta/codexhost-cli-${{ steps.version.outputs.version }}.tgz
+
+  publish-npm:
+    name: Publish npm registry packages
+    if: github.event_name == 'release'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codexhost-*
+          path: build/npm-publish
+          merge-multiple: true
+
+      - name: Publish platform packages and meta package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >
+          npm run release:npm:publish --
+          --artifacts build/npm-publish
+          --version "${RELEASE_TAG#v}"
+          --provenance

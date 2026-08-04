@@ -31,6 +31,8 @@
     "release:package": "node scripts/release/prepare-payload.mjs",
     "release:npm": "node scripts/release/prepare-npm.mjs",
     "release:npm:pack": "node scripts/release/prepare-npm.mjs --pack",
+    "release:npm:meta": "node scripts/release/prepare-npm-meta.mjs",
+    "release:npm:publish": "node scripts/release/publish-npm.mjs",
     "typecheck": "tsc -b --pretty false && tsc -p tests/tsconfig.json --noEmit --pretty false",
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",

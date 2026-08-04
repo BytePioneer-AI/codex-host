@@ -33,7 +33,10 @@ describe("platform packagers", () => {
     expect(workflow).toContain("codexhost-cli-*-${{ matrix.target }}.tgz");
     expect(workflow).toContain("Build installer package");
     expect(workflow).toContain("Build npm package");
-    expect(workflow).not.toContain("npm publish");
+    expect(workflow).toContain("release:npm:meta");
+    expect(workflow).toContain("release:npm:publish");
+    expect(workflow).toContain("secrets.NPM_TOKEN");
+    expect(workflow).toContain("id-token: write");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(releaseBuilder).not.toContain("checksumPath");
     expect(releaseBuilder).not.toContain("sha256=${result.checksum}");

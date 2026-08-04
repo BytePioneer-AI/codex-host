@@ -18,8 +18,26 @@ import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targ
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const NPM_PACKAGE_NAME = "@codexhost/cli";
+export const NPM_PLATFORM_PACKAGE_NAMES = Object.freeze({
+  "macos-arm64": "@codexhost/cli-darwin-arm64",
+  "macos-x64": "@codexhost/cli-darwin-x64",
+  "windows-x64": "@codexhost/cli-win32-x64",
+  "windows-arm64": "@codexhost/cli-win32-arm64",
+});
+export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
+  "darwin-arm64": NPM_PLATFORM_PACKAGE_NAMES["macos-arm64"],
+  "darwin-x64": NPM_PLATFORM_PACKAGE_NAMES["macos-x64"],
+  "win32-x64": NPM_PLATFORM_PACKAGE_NAMES["windows-x64"],
+  "win32-arm64": NPM_PLATFORM_PACKAGE_NAMES["windows-arm64"],
+});
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
+
+export function npmPlatformPackageName(target) {
+  const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
+  if (!packageName) throw new Error(`unsupported npm package target: ${target.id}`);
+  return packageName;
+}
 
 const runtimeLicenses = [
   {
@@ -149,7 +167,6 @@ export function expectedNpmPackagePaths(target) {
   return [
     "package.json",
     "README.md",
-    "bin/codexhost.js",
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     "app/desktop-controller.mjs",
@@ -167,13 +184,10 @@ export function expectedNpmPackagePaths(target) {
 
 export function createNpmPackageManifest({ version, target }) {
   return {
-    name: NPM_PACKAGE_NAME,
+    name: npmPlatformPackageName(target),
     version,
     description: NPM_PACKAGE_DESCRIPTION,
     type: "module",
-    bin: {
-      codexhost: "bin/codexhost.js",
-    },
     files: [
       "bin/**",
       "libexec/**",
@@ -206,10 +220,24 @@ export function createNpmBinLauncherSource() {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const platformPackages = ${JSON.stringify(NPM_RUNTIME_PLATFORM_PACKAGES, null, 2)};
+const platformKey = \`\${process.platform}-\${process.arch}\`;
+const platformPackage = platformPackages[platformKey];
+if (!platformPackage) fail(\`unsupported platform '\${platformKey}'\`);
+
+const require = createRequire(import.meta.url);
+let packageRoot;
+try {
+  packageRoot = path.dirname(require.resolve(\`\${platformPackage}/package.json\`));
+} catch {
+  fail(
+    \`missing optional platform package '\${platformPackage}'. Reinstall ${NPM_PACKAGE_NAME} without --omit=optional.\`,
+  );
+}
+
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);
 const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuffix}\`);
@@ -301,11 +329,12 @@ child.on("exit", (code, signal) => {
 }
 
 export function createNpmReadme({ version, target }) {
-  return `# ${NPM_PACKAGE_NAME}
+  const packageName = npmPlatformPackageName(target);
+  return `# ${packageName}
 
 ${NPM_PACKAGE_DESCRIPTION}
 
-> Experimental distribution channel. Requires Node.js 22 or 24+, an installed Codex Desktop, and a matching platform binary package built for \`${target.id}\`.
+> Internal platform package for \`${NPM_PACKAGE_NAME}\`, built for \`${target.id}\`.
 
 ## Install
 
@@ -313,7 +342,9 @@ ${NPM_PACKAGE_DESCRIPTION}
 npm install -g ${NPM_PACKAGE_NAME}@${version}
 \`\`\`
 
-This package is platform-specific (\`os=${npmPackageOs(target).join(",")}\`, \`cpu=${npmPackageCpu(target).join(",")}\`). Install on the same platform that the package was built for.
+Do not install this package directly. npm selects it through the optional dependencies of \`${NPM_PACKAGE_NAME}\`.
+
+This package is platform-specific (\`os=${npmPackageOs(target).join(",")}\`, \`cpu=${npmPackageCpu(target).join(",")}\`).
 
 ## Usage
 
@@ -424,11 +455,12 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   }
 
   const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
-  if (manifest.name !== NPM_PACKAGE_NAME) {
-    throw new Error(`npm package name must be ${NPM_PACKAGE_NAME}`);
+  const expectedName = npmPlatformPackageName(target);
+  if (manifest.name !== expectedName) {
+    throw new Error(`npm package name must be ${expectedName}`);
   }
-  if (manifest.bin?.codexhost !== "bin/codexhost.js") {
-    throw new Error("npm package bin.codexhost must point to bin/codexhost.js");
+  if (manifest.bin !== undefined) {
+    throw new Error("npm platform package must not expose a bin entry");
   }
   if (manifest.private === true) {
     throw new Error("npm package must not be private");
@@ -576,10 +608,6 @@ export async function prepareNpmPackage({
     "production Renderer Bundle",
   );
 
-  const binLauncherPath = path.join(packageRoot, "bin", "codexhost.js");
-  await writeFile(binLauncherPath, createNpmBinLauncherSource(), "utf8");
-  if (process.platform !== "win32") await chmod(binLauncherPath, 0o755);
-
   await writeFile(
     path.join(packageRoot, "package.json"),
     `${JSON.stringify(createNpmPackageManifest({ version: packageVersion, target }), null, 2)}\n`,
@@ -651,9 +679,9 @@ export async function runNpmReleaseCli(arguments_) {
     console.log(
       [
         "next:",
-        `  npm publish ${prepared.packageRoot} --access public`,
-        "or:",
         `  npm run release:npm -- --version ${prepared.version} --pack`,
+        "or:",
+        "  build every platform plus the meta package, then run release:npm:publish",
       ].join("\n"),
     );
   }

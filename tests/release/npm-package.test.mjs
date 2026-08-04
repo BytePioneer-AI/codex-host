@@ -6,16 +6,23 @@ import { describe, expect, it } from "vitest";
 
 import {
   NPM_PACKAGE_NAME,
+  NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
   createNpmPackageManifest,
   expectedNpmPackagePaths,
   npmPackageCpu,
   npmPackageOs,
+  npmPlatformPackageName,
   npmReleaseBuildCommands,
   npmTarballFileName,
   parseNpmReleaseArguments,
   validateNpmPackage,
 } from "../../scripts/release/prepare-npm.mjs";
+import {
+  createNpmMetaPackageManifest,
+  expectedNpmMetaPackagePaths,
+  validateNpmMetaPackage,
+} from "../../scripts/release/prepare-npm-meta.mjs";
 import { hostReleaseTargetId, releaseTarget } from "../../scripts/release/targets.mjs";
 
 async function temporaryDirectory() {
@@ -33,11 +40,24 @@ async function createNpmPackageFixture(root, target) {
       );
       continue;
     }
-    if (relative === "bin/codexhost.js") {
-      await writeFile(absolute, createNpmBinLauncherSource());
-      continue;
-    }
     await writeFile(absolute, `npm-package:${relative}\n`);
+  }
+}
+
+async function createNpmMetaPackageFixture(root) {
+  for (const relative of expectedNpmMetaPackagePaths()) {
+    const absolute = path.join(root, ...relative.split("/"));
+    await mkdir(path.dirname(absolute), { recursive: true });
+    if (relative === "package.json") {
+      await writeFile(
+        absolute,
+        `${JSON.stringify(createNpmMetaPackageManifest({ version: "0.1.0" }), null, 2)}\n`,
+      );
+    } else if (relative === "bin/codexhost.js") {
+      await writeFile(absolute, createNpmBinLauncherSource());
+    } else {
+      await writeFile(absolute, `npm-meta-package:${relative}\n`);
+    }
   }
 }
 
@@ -94,12 +114,13 @@ describe("npm package release", () => {
     expect(commands.at(-1).args).not.toContain("codexhost-platform");
   });
 
-  it("publishes a scoped public package with platform constraints", () => {
+  it("publishes a scoped platform package with platform constraints", () => {
     const target = releaseTarget("macos-arm64");
     const manifest = createNpmPackageManifest({ version: "0.1.0", target });
-    expect(manifest.name).toBe(NPM_PACKAGE_NAME);
+    expect(manifest.name).toBe("@codexhost/cli-darwin-arm64");
+    expect(npmPlatformPackageName(target)).toBe(manifest.name);
     expect(manifest.private).toBeUndefined();
-    expect(manifest.bin.codexhost).toBe("bin/codexhost.js");
+    expect(manifest.bin).toBeUndefined();
     expect(manifest.os).toEqual(npmPackageOs(target));
     expect(manifest.cpu).toEqual(npmPackageCpu(target));
     expect(manifest.engines.node).toBe(">=22");
@@ -114,8 +135,22 @@ describe("npm package release", () => {
     ]);
   });
 
+  it("publishes one meta package with exact optional platform dependencies", () => {
+    const manifest = createNpmMetaPackageManifest({ version: "0.1.0" });
+    expect(manifest.name).toBe(NPM_PACKAGE_NAME);
+    expect(manifest.bin.codexhost).toBe("bin/codexhost.js");
+    expect(manifest.os).toBeUndefined();
+    expect(manifest.cpu).toBeUndefined();
+    expect(manifest.optionalDependencies).toEqual(
+      Object.fromEntries(Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((name) => [name, "0.1.0"])),
+    );
+  });
+
   it("injects package resources when the user runs codexhost with no args", () => {
     const source = createNpmBinLauncherSource();
+    expect(source).toContain('"darwin-arm64": "@codexhost/cli-darwin-arm64"');
+    expect(source).toContain("require.resolve");
+    expect(source).toContain("--omit=optional");
     expect(source).toContain('launchArguments = ["launch", "--agent", "pi"]');
     expect(source).toContain('extras.push("--node", process.execPath)');
     expect(source).toContain('extras.push("--shim", shim)');
@@ -137,7 +172,6 @@ describe("npm package release", () => {
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
       expect(paths).not.toContain("runtime/node");
-      expect(paths).toContain("bin/codexhost.js");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
       await mkdir(path.join(root, "runtime"), { recursive: true });
@@ -145,6 +179,18 @@ describe("npm package release", () => {
       await expect(
         validateNpmPackage({ packageRoot: root, target, root: "/repo/source" }),
       ).rejects.toThrow("non-allowlist files: runtime/node");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("validates the architecture-neutral meta package", async () => {
+    const root = await temporaryDirectory();
+    try {
+      await createNpmMetaPackageFixture(root);
+      expect(await validateNpmMetaPackage({ packageRoot: root })).toEqual(
+        expectedNpmMetaPackagePaths(),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -164,12 +210,18 @@ describe("npm package release", () => {
     }
   });
 
-  it("keeps the published package name under the codexhost npm org", async () => {
+  it("keeps all published package names under the codexhost npm org", async () => {
     const source = await readFile(
       path.resolve(import.meta.dirname, "../../scripts/release/prepare-npm.mjs"),
       "utf8",
     );
     expect(source).toContain('NPM_PACKAGE_NAME = "@codexhost/cli"');
+    expect(Object.values(NPM_PLATFORM_PACKAGE_NAMES)).toEqual([
+      "@codexhost/cli-darwin-arm64",
+      "@codexhost/cli-darwin-x64",
+      "@codexhost/cli-win32-x64",
+      "@codexhost/cli-win32-arm64",
+    ]);
     expect(source).toContain("publishConfig");
     expect(source).toContain('access: "public"');
   });

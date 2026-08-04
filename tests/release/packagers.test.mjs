@@ -54,9 +54,11 @@ describe("platform packagers", () => {
     expect(workflow).not.toContain("smoke-npm:");
     expect(workflow).not.toContain("npm view");
     expect(workflow).toContain("publish-release:");
-    expect(workflow).toContain("gh release create");
-    expect(workflow).toContain('"codexhost-${VERSION}-windows-x64.exe"');
-    expect(workflow).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
+    const publishRelease = workflow.slice(workflow.indexOf("  publish-release:"));
+    expect(publishRelease).toContain("gh release create");
+    expect(publishRelease).toContain('"codexhost-${VERSION}-windows-x64.exe"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
+    expect(publishRelease).not.toContain('"codexhost-cli-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(releaseBuilder).not.toContain("checksumPath");

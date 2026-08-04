@@ -276,11 +276,6 @@ jobs:
             "codexhost-${VERSION}-macos-x64.dmg"
             "codexhost-${VERSION}-windows-x64.exe"
             "codexhost-${VERSION}-windows-arm64.exe"
-            "codexhost-cli-${VERSION}-macos-arm64.tgz"
-            "codexhost-cli-${VERSION}-macos-x64.tgz"
-            "codexhost-cli-${VERSION}-windows-x64.tgz"
-            "codexhost-cli-${VERSION}-windows-arm64.tgz"
-            "codexhost-cli-${VERSION}.tgz"
           )
           files=()
           for name in "${expected[@]}"; do

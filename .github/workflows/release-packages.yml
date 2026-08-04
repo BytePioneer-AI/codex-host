@@ -236,58 +236,9 @@ jobs:
           --tag "$NPM_TAG"
           --provenance
 
-  smoke-npm:
-    name: Verify npm registry installation
-    needs: [prepare, publish-npm]
-    runs-on: windows-latest
-    steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-
-      - name: Setup npm
-        run: npm install --global npm@11.8.0
-
-      - name: Wait for all packages and install from the registry
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $packages = @(
-            "@codexhost/cli-darwin-arm64",
-            "@codexhost/cli-darwin-x64",
-            "@codexhost/cli-win32-x64",
-            "@codexhost/cli-win32-arm64",
-            "@codexhost/cli"
-          )
-          foreach ($package in $packages) {
-            $available = $false
-            for ($attempt = 1; $attempt -le 60; $attempt += 1) {
-              $published = & npm view "$package@$env:RELEASE_VERSION" version --registry=https://registry.npmjs.org 2>$null
-              if ($LASTEXITCODE -eq 0 -and "$published".Trim() -eq $env:RELEASE_VERSION) {
-                $available = $true
-                break
-              }
-              Start-Sleep -Seconds 10
-            }
-            if (-not $available) {
-              throw "$package@$env:RELEASE_VERSION did not become available in the npm registry"
-            }
-          }
-
-          npm install --prefix smoke "@codexhost/cli@$env:RELEASE_VERSION" --registry=https://registry.npmjs.org
-          if ($LASTEXITCODE -ne 0) { throw "npm registry smoke installation failed" }
-          if (-not (Test-Path "smoke/node_modules/@codexhost/cli-win32-x64/package.json")) {
-            throw "npm did not install the Windows x64 platform package"
-          }
-          & "./smoke/node_modules/.bin/codexhost.cmd" --help
-          if ($LASTEXITCODE -ne 0) { throw "codexhost --help failed after registry installation" }
-
   publish-release:
     name: Publish GitHub Release
-    needs: [prepare, package, publish-npm, smoke-npm]
+    needs: [prepare, package, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

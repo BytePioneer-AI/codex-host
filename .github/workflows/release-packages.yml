@@ -264,7 +264,7 @@ jobs:
           )
           foreach ($package in $packages) {
             $available = $false
-            for ($attempt = 1; $attempt -le 12; $attempt += 1) {
+            for ($attempt = 1; $attempt -le 60; $attempt += 1) {
               $published = & npm view "$package@$env:RELEASE_VERSION" version --registry=https://registry.npmjs.org 2>$null
               if ($LASTEXITCODE -eq 0 -and "$published".Trim() -eq $env:RELEASE_VERSION) {
                 $available = $true

@@ -53,6 +53,7 @@ describe("platform packagers", () => {
 
     expect(workflow).toContain("smoke-npm:");
     expect(workflow).toContain('"@codexhost/cli@$env:RELEASE_VERSION"');
+    expect(workflow).toContain("$attempt -le 60");
     expect(workflow).toContain('codexhost.cmd" --help');
     expect(workflow).toContain("publish-release:");
     expect(workflow).toContain("gh release create");

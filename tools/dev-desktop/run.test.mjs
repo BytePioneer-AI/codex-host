@@ -131,7 +131,13 @@ describe("development Desktop start", () => {
     expect(macOsInvocation?.arguments.at(-1)).toContain(
       "^$HOME/Applications/(ChatGPT|Codex)\\.app/Contents/",
     );
-    expect(macOsInvocation?.arguments.at(-1)).toContain("pkill -KILL");
+    const macOsScript = macOsInvocation?.arguments.at(-1);
+    expect(macOsScript).toContain("desktop-runtime-v1.json");
+    expect(macOsScript).toContain("lsof -nP -t -iTCP:");
+    expect(macOsScript).toContain("ps -p");
+    expect(macOsScript).toContain("packages/desktop-control/dist/release-main.js");
+    expect(macOsScript).toContain("kill -TERM");
+    expect(macOsScript).toContain("pkill -KILL");
     expect(runningDesktopCleanupInvocation("linux")).toBeNull();
   });
 

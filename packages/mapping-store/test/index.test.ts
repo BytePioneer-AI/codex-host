@@ -175,6 +175,78 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("reconciles middle-inserted Turn mappings in complete Snapshot order", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.upsertTurnMappings(threadId, [mapping(4)]);
+    const before = await first.getThread(threadId);
+
+    const ordered = [mapping(1), mapping(2), mapping(3), mapping(4)];
+    const reconciled = await first.reconcileTurnMappings(threadId, ordered);
+    expect(reconciled.turnMappings).toEqual(ordered);
+    expect(reconciled.revision).toBe((before?.revision ?? 0) + 1);
+
+    const repeated = await first.reconcileTurnMappings(threadId, ordered);
+    expect(repeated).toEqual(reconciled);
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({
+      revision: reconciled.revision,
+      turnMappings: ordered,
+    });
+
+    const changedCheckpoint = {
+      ...mapping(1),
+      nativeCheckpointRef: {
+        ...mapping(1).nativeCheckpointRef,
+        checkpointId: "changed-checkpoint",
+      },
+    } as StoredTurnMappingV1;
+    const invalidSets = [
+      [mapping(1), mapping(2), mapping(4)],
+      [mapping(1), mapping(3), mapping(2), mapping(4)],
+      [{ ...mapping(1), nativeTurnRef: mapping(4).nativeTurnRef }, ...ordered.slice(1)],
+      [changedCheckpoint, ...ordered.slice(1)],
+    ];
+    for (const invalid of invalidSets) {
+      await expect(second.reconcileTurnMappings(threadId, invalid)).rejects.toMatchObject({
+        code: "MAPPING_CONFLICT",
+      });
+    }
+    await expect(second.getThread(threadId)).resolves.toEqual(reconciled);
+    await second.close();
+  });
+
+  it("keeps prior mappings when ordered reconciliation replacement fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    let fail = false;
+    const store = new MappingStore({
+      directory,
+      beforeReplace() {
+        if (fail) throw new Error("synthetic reconciliation failure");
+      },
+    });
+    await store.initialize();
+    await createReady(store);
+    await store.upsertTurnMappings(threadId, [mapping(3)]);
+    const before = await store.getThread(threadId);
+    fail = true;
+
+    await expect(
+      store.reconcileTurnMappings(threadId, [mapping(1), mapping(2), mapping(3)]),
+    ).rejects.toMatchObject({ code: "IO_ERROR" });
+    await expect(store.getThread(threadId)).resolves.toEqual(before);
+    const persisted = JSON.parse(
+      await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8"),
+    ) as StoredThreadRecordV1;
+    expect(persisted.turnMappings).toEqual([mapping(1), mapping(3)]);
+    await store.close();
+  });
+
   it("keeps the prior durable and in-memory record when replacement fails", async () => {
     const directory = await temporaryStoreDirectory();
     let fail = false;

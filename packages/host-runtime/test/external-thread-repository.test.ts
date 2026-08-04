@@ -1,0 +1,110 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import { MappingStore, type StoredTurnMappingV1 } from "@codexhost/mapping-store";
+import {
+  harnessIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+  nativeTurnRefSchema,
+} from "@codexhost/shared-contracts";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ExternalThreadRepository } from "../src/external-thread-repository.js";
+
+const temporaryDirectories: string[] = [];
+const harnessId = harnessIdSchema.parse("claude-code");
+const hostThreadId = hostThreadIdSchema.parse("thread-1");
+const nativeSessionRef = nativeSessionRefSchema.parse({
+  harnessId,
+  nativeSessionId: "native-session-1",
+  formatVersion: 1,
+});
+
+async function temporaryStoreDirectory(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-repository-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+function snapshotTurn(key: string): HostThreadSnapshot["turns"][number] {
+  return {
+    nativeTurnRef: nativeTurnRefSchema.parse({
+      harnessId,
+      nativeSessionId: nativeSessionRef.nativeSessionId,
+      nativeTurnKey: key,
+      formatVersion: 1,
+    }),
+    input: [{ type: "text", text: `prompt ${key}` }],
+    items: [],
+    outcome: { status: "unknown", reason: "synthetic history" },
+  };
+}
+
+function mapping(hostKey: string, nativeKey: string): StoredTurnMappingV1 {
+  return {
+    hostTurnId: hostTurnIdSchema.parse(hostKey),
+    nativeTurnRef: snapshotTurn(nativeKey).nativeTurnRef,
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+describe("ExternalThreadRepository", () => {
+  it("converges across consecutive cold alignments with middle-inserted Native Turns", async () => {
+    const directory = await temporaryStoreDirectory();
+    const firstStore = new MappingStore({ directory, instanceId: "first" });
+    const firstRepository = new ExternalThreadRepository(firstStore);
+    await firstRepository.initialize();
+    await firstStore.createProvisional({
+      hostThreadId,
+      createRequestId: "create-1",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const originalMappings = [mapping("host-a", "native-a"), mapping("host-d", "native-d")];
+    const original = await firstStore.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: originalMappings,
+    });
+    const snapshot: HostThreadSnapshot = {
+      turns: ["native-a", "native-b", "native-c", "native-d"].map(snapshotTurn),
+    };
+
+    const first = await firstRepository.alignSnapshot(original, snapshot);
+    expect(
+      first.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+    ).toEqual(["native-a", "native-b", "native-c", "native-d"]);
+    expect(first.record.turnMappings[0]?.hostTurnId).toBe(originalMappings[0]?.hostTurnId);
+    expect(first.record.turnMappings[3]?.hostTurnId).toBe(originalMappings[1]?.hostTurnId);
+    await firstRepository.close();
+
+    const secondStore = new MappingStore({ directory, instanceId: "second" });
+    const secondRepository = new ExternalThreadRepository(secondStore);
+    await secondRepository.initialize();
+    const restored = await secondRepository.find(hostThreadId);
+    if (!restored) throw new Error("Reconciled Thread was not restored");
+
+    const repeated = await secondRepository.alignSnapshot(restored, snapshot);
+    expect(repeated.record).toEqual(restored);
+    expect(repeated.record.turnMappings).toEqual(first.record.turnMappings);
+    expect(repeated.turns.map((turn) => turn.id)).toEqual(
+      first.record.turnMappings.map(({ hostTurnId }) => hostTurnId),
+    );
+    await secondRepository.close();
+  });
+});

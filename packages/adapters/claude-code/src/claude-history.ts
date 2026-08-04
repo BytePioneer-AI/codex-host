@@ -15,6 +15,7 @@ interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  syntheticUser: boolean;
 }
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
@@ -40,6 +41,25 @@ function thinkingParts(value: unknown): string[] {
   );
 }
 
+const localCommandRecordPattern = /^\s*<(local-command-(?:stdout|caveat))>[\s\S]*<\/\1>\s*$/u;
+const commandEnvelopePattern = /^\s*(?:<(command-(?:message|name|args))>[\s\S]*?<\/\1>\s*)+$/u;
+const modelCommandNamePattern = /<command-name>\s*\/model\s*<\/command-name>/u;
+
+function isLocalCommandRecord(text: string): boolean {
+  return localCommandRecordPattern.test(text);
+}
+
+function isModelCommandEnvelope(text: string): boolean {
+  return commandEnvelopePattern.test(text) && modelCommandNamePattern.test(text);
+}
+
+function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
+  if (message.type !== "user" || message.syntheticUser) return [];
+  const parts = textParts(message.message.content);
+  if (parts.some(isModelCommandEnvelope)) return [];
+  return parts.filter((part) => !isLocalCommandRecord(part));
+}
+
 function conversationMessages(values: unknown[], sessionId: string): ClaudeHistoryMessage[] {
   const messages: ClaudeHistoryMessage[] = [];
   const ids = new Set<string>();
@@ -58,13 +78,22 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     }
     if (ids.has(value.uuid)) throw new Error("Claude history contains duplicate message IDs");
     ids.add(value.uuid);
-    messages.push({ type: value.type, uuid: value.uuid, message: value.message });
+    messages.push({
+      type: value.type,
+      uuid: value.uuid,
+      message: value.message,
+      syntheticUser:
+        value.type === "user" &&
+        (value.isSynthetic === true ||
+          value.isMeta === true ||
+          (value.toolUseResult !== undefined && value.toolUseResult !== null)),
+    });
   }
   return messages;
 }
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
-  return message.type === "user" && textParts(message.message.content).length > 0;
+  return visibleUserTextParts(message).length > 0;
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
@@ -130,7 +159,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             }),
           }
         : {}),
-      input: textParts(user.message.content).map((text) => ({ type: "text", text })),
+      input: visibleUserTextParts(user).map((text) => ({ type: "text", text })),
       items: turnMessages.flatMap((message) => {
         if (message.type !== "assistant") return [];
         const content = message.message.content;

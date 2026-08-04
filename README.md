@@ -37,11 +37,11 @@ codexhost 不走这条路：
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 
-## npm 安装（实验性）
+## npm 安装
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
-要求 Node.js 22 或更高版本，以及已安装的 Codex Desktop。入口包通过 npm optional dependencies 自动选择 macOS/Windows 的 ARM64 或 x64 原生平台包；不要使用 `--omit=optional`。
+要求 Node.js 22 或更高版本。

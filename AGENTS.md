@@ -9,7 +9,6 @@ This repository contains the product and technical baselines for `codexhost` and
 
 - `docs/工程落地文档.md` defines the toolchain, workspace layout, module dependencies, and build outputs.
 - `docs/开发步骤清单.md` defines implementation priority, technical gates, development batches, and completion criteria.
-- `发布提交指南.md` defines the required version commit, annotated Tag, automated release, and failure-handling procedure. Read it before preparing or publishing any version.
 
 If documents conflict, report the conflict explicitly. Follow the PRD as the current delivery baseline.
 

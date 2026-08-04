@@ -612,11 +612,7 @@ export async function packNpmPackage({ packageRoot, outputRoot, version, target 
       `npm pack failed with status ${result.status}: ${(result.stderr || result.stdout).trim()}`,
     );
   }
-  const packedName = result.stdout
-    .trim()
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .at(-1);
+  const packedName = result.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1);
   if (!packedName) throw new Error("npm pack did not report an output tarball");
   const packedPath = path.join(outputRoot, packedName);
   if (version === undefined || target === undefined) return packedPath;

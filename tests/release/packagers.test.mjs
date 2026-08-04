@@ -20,13 +20,20 @@ describe("platform packagers", () => {
     expect(source).not.toContain("cargo-packager");
   });
 
-  it("produces and uploads only installable release artifacts", async () => {
+  it("produces and uploads installers and per-target npm packages from one matrix", async () => {
     const [workflow, releaseBuilder] = await Promise.all([
       readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
     ]);
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.msi");
+    expect(workflow).toContain("npm run release:npm --");
+    expect(workflow).toContain("--skip-build");
+    expect(workflow).toContain("--pack");
+    expect(workflow).toContain("codexhost-cli-*-${{ matrix.target }}.tgz");
+    expect(workflow).toContain("Build installer package");
+    expect(workflow).toContain("Build npm package");
+    expect(workflow).not.toContain("npm publish");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(releaseBuilder).not.toContain("checksumPath");
     expect(releaseBuilder).not.toContain("sha256=${result.checksum}");

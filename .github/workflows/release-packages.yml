@@ -2,6 +2,11 @@ name: Release packages
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "npm package version when root package.json is still 0.0.0 (optional)"
+        required: false
+        type: string
   release:
     types: [published]
 
@@ -51,14 +56,43 @@ jobs:
         with:
           dotnet-version: 6.0.x
 
-      - name: Verify GitHub Release version
-        if: github.event_name == 'release'
+      - name: Resolve release version
+        id: version
+        shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: >-
-          node --input-type=module -e "import manifest from './package.json' with { type: 'json' };
-          const expected = 'v' + manifest.version;
-          if (process.env.RELEASE_TAG !== expected) throw new Error('release tag must be ' + expected);"
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          root_version="$(node --input-type=module -e "import manifest from './package.json' with { type: 'json' }; process.stdout.write(manifest.version);")"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            expected="v${root_version}"
+            if [[ "$RELEASE_TAG" != "$expected" ]]; then
+              echo "release tag must be ${expected}, got ${RELEASE_TAG}" >&2
+              exit 1
+            fi
+            if [[ "$root_version" == "0.0.0" ]]; then
+              echo "root package.json version must not be 0.0.0 for a published release" >&2
+              exit 1
+            fi
+            version="$root_version"
+          else
+            version="${INPUT_VERSION:-}"
+            if [[ -z "$version" || "$version" == "0.0.0" ]]; then
+              if [[ "$root_version" != "0.0.0" ]]; then
+                version="$root_version"
+              else
+                version="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+              fi
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release version: ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Using release version ${version}"
 
       - name: Setup npm
         run: npm install --global npm@11.8.0
@@ -66,16 +100,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build package
+      - name: Build installer package
         run: npm run release:package -- --target ${{ matrix.target }}
 
-      - name: Upload workflow artifact
+      - name: Build npm package
+        shell: bash
+        run: >
+          npm run release:npm --
+          --target ${{ matrix.target }}
+          --version ${{ steps.version.outputs.version }}
+          --pack
+          --skip-build
+
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: codexhost-${{ matrix.target }}
           path: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
           if-no-files-found: error
 
       - name: Upload GitHub Release assets
@@ -86,3 +130,4 @@ jobs:
           files: |
             build/release/*/${{ matrix.target }}/codexhost-*.dmg
             build/release/*/${{ matrix.target }}/codexhost-*.msi
+            build/npm/${{ steps.version.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz

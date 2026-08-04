@@ -304,7 +304,6 @@ export class ClaudeNativeTurnAccumulator {
       !Number.isFinite(elapsedSeconds) ||
       elapsedSeconds < 0
     ) {
-      this.#protocolConflict = true;
       return;
     }
     events.push({ type: "tool.progress", callId, elapsedMs: Math.round(elapsedSeconds * 1_000) });

@@ -523,12 +523,9 @@ describe("ClaudeSdkTransport Model control", () => {
     await selected.close();
   });
 
-  it("downgrades an older context response that has no actual Model readback", async () => {
+  it("detects Model selection without probing Context Usage", async () => {
     const value = fixture();
-    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
-      totalTokens: 0,
-      maxTokens: 200,
-    } as never);
+    value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("must not be called"));
     const inspector = new ClaudeSdkModelInspector({
       command: process.execPath,
       cwd: process.cwd(),
@@ -536,13 +533,11 @@ describe("ClaudeSdkTransport Model control", () => {
       queryFactory: value.queryFactory,
     });
 
-    await expect(inspector.inspect()).resolves.toMatchObject({
-      canSelectModel: false,
-      currentModel: undefined,
-    });
+    await expect(inspector.inspect()).resolves.toMatchObject({ canSelectModel: true });
+    expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
   });
 
-  it("inspects initialization Models and actual Model with persistence disabled", async () => {
+  it("inspects initialization Models with persistence disabled", async () => {
     const value = fixture();
     const inspector = new ClaudeSdkModelInspector({
       command: process.execPath,
@@ -560,10 +555,10 @@ describe("ClaudeSdkTransport Model control", () => {
           supportsAutoMode: true,
         },
       ],
-      currentModel: "runtime-model",
       canSelectModel: true,
       canSelectPermissionMode: true,
     });
+    expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
     expect(options(value)).toMatchObject({
       persistSession: false,
       includePartialMessages: false,

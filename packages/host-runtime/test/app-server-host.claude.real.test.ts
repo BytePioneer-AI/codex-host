@@ -118,7 +118,6 @@ describe("AppServerHost hermetic Claude projection", () => {
       createInspector: () => ({
         inspect: async () => ({
           models: [{ value: "default", displayName: "Default" }],
-          currentModel: "hermetic-model",
           canSelectModel: true,
           canSelectPermissionMode: true,
         }),

@@ -750,47 +750,13 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       const initialized = await activeQuery.initializationResult();
       const candidate = activeQuery as unknown as Record<string, unknown>;
       const canSelectModel =
-        Array.isArray(initialized.models) &&
-        typeof candidate.setModel === "function" &&
-        typeof candidate.getContextUsage === "function";
+        Array.isArray(initialized.models) && typeof candidate.setModel === "function";
       const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
-      if (!canSelectModel) {
-        return {
-          models: initialized.models,
-          currentModel: undefined,
-          canSelectModel: false,
-          canSelectPermissionMode,
-        };
-      }
-      try {
-        const rawContext = await activeQuery.getContextUsage();
-        if (!isRecord(rawContext) || !("model" in rawContext)) {
-          return {
-            models: initialized.models,
-            currentModel: undefined,
-            canSelectModel: false,
-            canSelectPermissionMode,
-          };
-        }
-        const context = parseContextUsage(rawContext);
-        return {
-          models: initialized.models,
-          currentModel: context.model,
-          canSelectModel: true,
-          canSelectPermissionMode,
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message.toLowerCase() : "";
-        if (message.includes("unknown") || message.includes("unsupported")) {
-          return {
-            models: initialized.models,
-            currentModel: undefined,
-            canSelectModel: false,
-            canSelectPermissionMode,
-          };
-        }
-        throw error;
-      }
+      return {
+        models: initialized.models,
+        canSelectModel,
+        canSelectPermissionMode,
+      };
     } finally {
       await this.close();
     }

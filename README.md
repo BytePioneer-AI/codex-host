@@ -1,7 +1,7 @@
 # codexhost
 
 <p align="center">
-  <img src="packages/renderer-extension/src/assets/codexhost-readme.svg" alt="Codex、Claude Code 与 Pi" width="560">
+  <img src="packages/renderer-extension/src/assets/codexhost-readme.svg" alt="Codex、Claude Code 与 Pi" width="480">
 </p>
 
 在 [Codex Desktop](https://openai.com/codex/) 中运行 [Pi](https://github.com/badlogic/pi-mono) 和 Claude Code。

@@ -1,5 +1,9 @@
 # Renderer brand assets
 
+`codexhost-logo.png` is the 3:4 codexhost product logo source selected for
+README and brand-material use. `codexhost-icon.png` is its square crop used for
+the in-product brand mark.
+
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
 `openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
 does not depend on a local extension path or a network request.

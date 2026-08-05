@@ -129,6 +129,7 @@ button {
 .settings-brand__mark .codexhost-settings-icon {
   width: 18px;
   height: 18px;
+  object-fit: contain;
 }
 
 .settings-brand__copy {

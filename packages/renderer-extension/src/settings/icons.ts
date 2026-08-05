@@ -2,7 +2,6 @@ import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Box from "lucide/dist/esm/icons/box.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
-import Gauge from "lucide/dist/esm/icons/gauge.mjs";
 import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
@@ -12,6 +11,7 @@ import Search from "lucide/dist/esm/icons/search.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
+import codexhostIconUrl from "../assets/codexhost-icon.png";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
@@ -58,13 +58,17 @@ export function createRendererSettingsIcon(name: RendererSettingsIconName, size 
   return icon;
 }
 
-export function createRendererSettingsBrandIcon(size = 22): SVGElement {
-  const icon = createElement(Gauge, {
-    width: size,
-    height: size,
-    "aria-hidden": "true",
-    focusable: "false",
-  });
+export function createRendererSettingsBrandIcon(size = 22): HTMLImageElement {
+  const icon = document.createElement("img");
+  icon.src = codexhostIconUrl;
+  icon.alt = "";
+  icon.width = size;
+  icon.height = size;
+  icon.draggable = false;
+  icon.setAttribute("aria-hidden", "true");
+  icon.style.width = `${size}px`;
+  icon.style.height = `${size}px`;
+  icon.style.objectFit = "contain";
   icon.classList.add("codexhost-settings-icon");
   return icon;
 }

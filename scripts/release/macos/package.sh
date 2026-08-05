@@ -42,8 +42,9 @@ done
 
 OUTPUT_DIRECTORY="$(dirname "$DMG_PATH")"
 DMG_STAGE="$OUTPUT_DIRECTORY/.codexhost-dmg-stage-$$"
+ASSETS_DIR="$OUTPUT_DIRECTORY/.codexhost-dmg-assets-$$"
 cleanup() {
-  rm -rf "$DMG_STAGE"
+  rm -rf "$DMG_STAGE" "$ASSETS_DIR"
 }
 trap cleanup EXIT
 
@@ -63,6 +64,19 @@ chmod 755 \
   "$CONTENTS/MacOS/codexhost" \
   "$RESOURCES/libexec/codexhost-shim" \
   "$RESOURCES/runtime/node"
+
+mkdir -p "$ASSETS_DIR"
+node "$(cd "$(dirname "$0")" && pwd)/assets.mjs" --output "$ASSETS_DIR"
+mkdir -p "$ASSETS_DIR/codexhost.iconset"
+for size in 16 32 128 256 512; do
+  /usr/bin/sips -z "$size" "$size" "$ASSETS_DIR/codexhost-icon-1024.png" \
+    --out "$ASSETS_DIR/codexhost.iconset/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  /usr/bin/sips -z "$double" "$double" "$ASSETS_DIR/codexhost-icon-1024.png" \
+    --out "$ASSETS_DIR/codexhost.iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+/usr/bin/iconutil -c icns "$ASSETS_DIR/codexhost.iconset" -o "$ASSETS_DIR/codexhost.icns"
+cp "$ASSETS_DIR/codexhost.icns" "$RESOURCES/codexhost.icns"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -74,6 +88,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <string>codexhost</string>
   <key>CFBundleExecutable</key>
   <string>codexhost</string>
+  <key>CFBundleIconFile</key>
+  <string>codexhost.icns</string>
   <key>CFBundleIdentifier</key>
   <string>com.codexhost.app</string>
   <key>CFBundleInfoDictionaryVersion</key>

@@ -15,7 +15,13 @@ mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod background;
+#[cfg(not(target_os = "windows"))]
+mod background;
 
+pub use background::detach_from_terminal;
 pub use desktop_launch::launch_desktop;
 #[cfg(target_os = "macos")]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
@@ -25,7 +31,7 @@ pub use process::{
     parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
 };
 #[cfg(target_os = "macos")]
-pub use process::{desktop_process_tree, process_snapshot, process_snapshots};
+pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "windows")]
 pub use windows_ui::{

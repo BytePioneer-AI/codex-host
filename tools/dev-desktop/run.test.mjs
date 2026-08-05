@@ -43,6 +43,16 @@ function exitingChild(code = 0, signal = null) {
   return child;
 }
 
+function readyChild() {
+  const child = new EventEmitter();
+  const stdout = new EventEmitter();
+  stdout.setEncoding = () => {};
+  child.stdout = stdout;
+  child.unref = vi.fn();
+  queueMicrotask(() => stdout.emit("data", "ready\n"));
+  return child;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
@@ -173,7 +183,7 @@ describe("development Desktop start", () => {
     expect(invocation.arguments.join(" ")).not.toContain("observed-host");
   });
 
-  it("builds once and then runs the native launcher in the foreground", async () => {
+  it("builds once and returns when the native launcher reports ready", async () => {
     const root = temporaryDirectory();
     const nodePath = path.join(root, "runtime", "node.exe");
     materializeArtifacts(root, "win32", nodePath);
@@ -210,7 +220,10 @@ describe("development Desktop start", () => {
     });
     expect(invocations[2].command).toBe(path.join(root, "target", "debug", "codexhost.exe"));
     expect(invocations[2].arguments).toContain(piPath);
-    expect(invocations[2].options).toMatchObject({ cwd: root, stdio: "inherit" });
+    expect(invocations[2].options).toMatchObject({
+      cwd: root,
+      stdio: ["ignore", "pipe", "inherit"],
+    });
   });
 
   it("does not build or launch when Desktop cleanup fails", async () => {
@@ -259,7 +272,68 @@ describe("development Desktop start", () => {
     expect(invocations[1]).toMatchObject({
       command: artifacts.launcher,
       arguments: expect.arrayContaining(["launch", "--agent", "pi"]),
-      options: expect.objectContaining({ cwd: root, stdio: "inherit" }),
+      options: expect.objectContaining({
+        cwd: root,
+        stdio: ["ignore", "pipe", "inherit"],
+      }),
     });
+  });
+
+  it("returns on the launcher ready signal without waiting for it to exit", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node.exe");
+    const artifacts = materializeArtifacts(root, "win32", nodePath);
+    const invocations = [];
+    let launcherChild;
+    const spawnImplementation = vi.fn((command, arguments_, options) => {
+      invocations.push({ command, arguments: arguments_, options });
+      if (command === artifacts.launcher) {
+        launcherChild = readyChild();
+        return launcherChild;
+      }
+      return exitingChild();
+    });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["--no-build"],
+        root,
+        platform: "win32",
+        nodePath,
+        environment: { PATH: path.join(root, "missing") },
+        spawnImplementation,
+      }),
+    ).resolves.toBe(0);
+
+    expect(invocations).toHaveLength(2);
+    expect(invocations[1].command).toBe(artifacts.launcher);
+    expect(launcherChild.unref).toHaveBeenCalled();
+  });
+
+  it("propagates a launcher failure when it exits without ready", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node.exe");
+    materializeArtifacts(root, "win32", nodePath);
+    const spawnImplementation = vi.fn((command) => {
+      if (command === path.join(root, "target", "debug", "codexhost.exe")) {
+        return exitingChild(9);
+      }
+      return exitingChild();
+    });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["--no-build"],
+        root,
+        platform: "win32",
+        nodePath,
+        environment: { PATH: path.join(root, "missing") },
+        spawnImplementation,
+      }),
+    ).resolves.toBe(9);
   });
 });

@@ -351,6 +351,39 @@ function runChild(invocation, root, spawnImplementation = spawn) {
   });
 }
 
+// The Launcher prints a single "ready\n" line once the Desktop, Controller,
+// and Host chain are up, then detaches from the terminal to keep supervising.
+// Resolve on that signal so `npm start` returns instead of holding the terminal
+// open, while still propagating a real failure (exit without "ready").
+function runLauncher(invocation, root, spawnImplementation = spawn) {
+  return new Promise((resolve, reject) => {
+    const child = spawnImplementation(invocation.command, invocation.arguments, {
+      cwd: root,
+      stdio: ["ignore", "pipe", "inherit"],
+      windowsHide: false,
+    });
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      // The Launcher keeps running as a detached supervisor; do not let its
+      // live child handle keep the `npm start` process alive after ready.
+      if (result.ready) child.unref?.();
+      resolve(result);
+    };
+    child.once("error", reject);
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+        if (output.includes("ready\n")) settle({ code: 0, signal: null, ready: true });
+      });
+    }
+    child.once("exit", (code, signal) => settle({ code, signal }));
+  });
+}
+
 function nodeMajorVersion(version = process.versions.node) {
   return Number.parseInt(version.split(".")[0] ?? "", 10);
 }
@@ -403,7 +436,7 @@ export async function runDevelopmentDesktop({
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
   console.log(`codexhost dev: launching with default Agent '${options.agent}'`);
-  const launchResult = await runChild(
+  const launchResult = await runLauncher(
     launcherInvocation(artifacts, options.agent, piPath),
     root,
     spawnImplementation,

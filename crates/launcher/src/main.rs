@@ -8,7 +8,7 @@ use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
 use std::process::{Child, ExitStatus};
@@ -48,8 +48,11 @@ const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const START_MENU_ARGUMENT: &str = "--start-menu";
+const READY_LINE: &str = "ready";
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug)]
 struct UnmanagedDesktopConflict;
 
@@ -65,6 +68,23 @@ fn usage() {
     eprintln!(
         "usage:\n  codexhost\n  codexhost inspect\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>]"
     );
+}
+
+/// Emits the exact startup-success signal consumed by the npm/dev wrappers so
+/// they can return immediately instead of holding the terminal open.
+fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
+    writeln!(output, "{READY_LINE}")?;
+    output.flush()
+}
+
+/// Signals startup success to the invoking parent, then detaches from the
+/// controlling terminal so this Launcher keeps supervising the Desktop after
+/// the command returns. Startup failures must not reach this point: they exit
+/// non-zero on stderr exactly like before.
+fn notify_ready_and_detach() -> Result<(), Box<dyn Error>> {
+    emit_ready_line(&mut std::io::stdout())?;
+    codexhost_platform::detach_from_terminal()?;
+    Ok(())
 }
 
 fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
@@ -443,6 +463,7 @@ fn supervise_desktop(
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
     let _runtime = publish_runtime_descriptor(control)?;
+    notify_ready_and_detach()?;
     loop {
         if let Some(status) = controller.try_wait()? {
             let _ = desktop.shutdown(Duration::from_secs(2));
@@ -500,6 +521,7 @@ fn supervise_desktop(
             return Err(error);
         }
     };
+    notify_ready_and_detach()?;
     loop {
         if let Some(status) = controller.try_wait()? {
             if let Some(desktop_status) =
@@ -551,6 +573,20 @@ fn desktop_environment(options: &ResolvedLaunchOptions) -> Vec<(OsString, OsStri
         ));
     }
     environment
+}
+
+/// Forcefully stop a Desktop that codexhost does not own (an official instance
+/// or a controlled instance whose Launcher exited), then relaunch cleanly.
+fn stop_external_desktop(installation: &DesktopInstallation) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "macos")]
+    {
+        codexhost_platform::force_stop_desktop(installation, Duration::from_secs(10))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        force_stop_external_desktop(installation, Duration::from_secs(10))?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -643,7 +679,15 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
                         RunningDesktopChoice::Cancel => return Ok(()),
                     }
                 }
-                return Err(Box::new(UnmanagedDesktopConflict));
+                // A Desktop is running without a live codexhost owner (an official
+                // instance or a controlled instance whose Launcher exited). Drop the
+                // stale runtime descriptor, force-stop the Desktop, and relaunch
+                // cleanly instead of refusing, matching the dev runner behavior.
+                if let Some(descriptor) = &descriptor {
+                    let _ = remove_matching_descriptor(&descriptor_path, descriptor);
+                }
+                stop_external_desktop(&installation)?;
+                continue;
             }
             StartupState::CleanLaunch => {
                 if descriptor_present && control_endpoint_ready {
@@ -725,7 +769,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
+    #[cfg(target_os = "windows")]
+    use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -748,7 +794,7 @@ mod tests {
     use super::wait_for_controller_ready;
     use super::{
         Agent, DEFAULT_AGENT_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
-        default_launch_options, desktop_controller_command, desktop_environment,
+        default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
         parse_launch_options,
     };
     #[cfg(target_os = "windows")]
@@ -757,6 +803,13 @@ mod tests {
     #[test]
     fn no_argument_launch_defaults_to_pi() {
         assert_eq!(default_launch_options().agent.as_str(), "pi");
+    }
+
+    #[test]
+    fn ready_line_is_the_exact_wrapper_protocol() {
+        let mut output = Vec::new();
+        emit_ready_line(&mut output).expect("emit ready line");
+        assert_eq!(output, b"ready\n");
     }
 
     #[cfg(target_os = "windows")]
@@ -931,6 +984,30 @@ mod tests {
                 .expect("runtime descriptor");
 
         assert!(!try_activate_controlled_instance(&descriptor).expect("unavailable Controller"));
+    }
+
+    #[test]
+    fn controlled_attachment_retries_a_transient_empty_controller_response() {
+        use crate::desktop_attachment::try_activate_controlled_instance;
+        use crate::runtime_instance::RuntimeDescriptor;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
+        let port = listener.local_addr().expect("attachment address").port();
+        let descriptor =
+            RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
+                .expect("runtime descriptor");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("attachment connection");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone stream"))
+                .read_line(&mut request)
+                .expect("attachment request");
+            assert_eq!(request, "ATTACH 0123456789abcdef0123456789abcdef\n");
+            // Simulate a Controller that was still restoring the Desktop: close
+            // the socket without a response line.
+            drop(stream);
+        });
+        assert!(!try_activate_controlled_instance(&descriptor).expect("transient response"));
+        server.join().expect("attachment server");
     }
 
     #[cfg(target_os = "windows")]

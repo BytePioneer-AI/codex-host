@@ -128,19 +128,20 @@ fn connect_controlled_instance(descriptor: &RuntimeDescriptor) -> std::io::Resul
 fn send_controlled_attachment(
     mut stream: TcpStream,
     descriptor: &RuntimeDescriptor,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<bool, Box<dyn Error>> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
     let mut response = String::new();
     BufReader::new(stream).read_line(&mut response)?;
     match response.trim_end() {
-        "ready" => Ok(()),
+        "ready" => Ok(true),
         "rejected" => Err("Desktop Controller rejected the attachment nonce".into()),
         "failed" => Err("Desktop Controller could not restore the running Desktop".into()),
-        value => {
-            Err(format!("Desktop Controller returned invalid attachment status {value:?}").into())
-        }
+        // An empty or malformed status means the Controller was still restoring
+        // the Desktop when its socket timeout fired. The acquisition loop treats
+        // this as transient and retries rather than failing the whole launch.
+        _ => Ok(false),
     }
 }
 
@@ -151,8 +152,7 @@ pub(super) fn try_activate_controlled_instance(
         Ok(stream) => stream,
         Err(_) => return Ok(false),
     };
-    send_controlled_attachment(stream, descriptor)?;
-    Ok(true)
+    send_controlled_attachment(stream, descriptor)
 }
 
 #[cfg(target_os = "windows")]

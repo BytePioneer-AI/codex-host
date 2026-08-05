@@ -171,6 +171,10 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--host-runtime", hostRuntime)');
     expect(source).toContain('extras.push("--desktop-controller", desktopController)');
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
+    expect(source).toContain('if (launchArguments[0] === "launch")');
+    expect(source).toContain('stdio: ["ignore", "pipe", "inherit"]');
+    expect(source).toContain('launcherOutput.includes("ready\\n")');
+    expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
   });
 

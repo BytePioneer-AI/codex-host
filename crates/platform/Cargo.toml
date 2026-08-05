@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14.11"
-nix = { version = "0.31.3", features = ["process", "signal"] }
+nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
 plist = { version = "1.10.0", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -19,6 +19,7 @@ windows = { version = "0.62.2", features = [
   "Management_Deployment",
   "Storage_Search",
   "Win32_Foundation",
+  "Win32_System_Console",
   "Win32_UI_Controls",
   "Win32_UI_WindowsAndMessaging",
 ] }

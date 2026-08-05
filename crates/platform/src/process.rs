@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::thread;
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 use super::PlatformError;
 #[cfg(target_os = "macos")]
@@ -419,6 +423,90 @@ pub fn process_exists(process_id: u32) -> bool {
     i32::try_from(process_id).is_ok_and(|process_id| pidpath(process_id).is_ok())
 }
 
+#[cfg(target_os = "macos")]
+fn signal_processes_checked(
+    snapshots: &[ProcessSnapshot],
+    signal: nix::sys::signal::Signal,
+) -> Result<(), PlatformError> {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    for expected in snapshots {
+        let current = match macos_process_snapshot(expected.id) {
+            Ok(current) => current,
+            Err(PlatformError::NotFound(_)) => continue,
+            Err(error) => return Err(error),
+        };
+        if !same_process_identity(expected, &current) {
+            return Err(PlatformError::Invalid(format!(
+                "PID {} identity changed before signal delivery",
+                expected.id
+            )));
+        }
+        let process_id = i32::try_from(expected.id).map_err(|_| {
+            PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
+        })?;
+        if let Err(error) = kill(Pid::from_raw(process_id), signal)
+            && error != Errno::ESRCH
+        {
+            return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
+                error as i32,
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Forcefully stop the entire Desktop process tree, including descendants such
+/// as the injected Shim, Host Runtime, and app-server. The Desktop is verified
+/// by identity before every signal so a reused PID is never terminated.
+#[cfg(target_os = "macos")]
+pub fn force_stop_desktop(
+    installation: &DesktopInstallation,
+    grace: Duration,
+) -> Result<(), PlatformError> {
+    let members = desktop_process_tree(installation)?;
+    if members.is_empty() {
+        return Ok(());
+    }
+    signal_processes_checked(&members, nix::sys::signal::Signal::SIGTERM)?;
+    let mut survivors = members;
+    let started = Instant::now();
+    loop {
+        survivors.retain(|process| process_exists(process.id));
+        if survivors.is_empty() {
+            return Ok(());
+        }
+        if started.elapsed() >= grace {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    signal_processes_checked(&survivors, nix::sys::signal::Signal::SIGKILL)?;
+    let forced_at = Instant::now();
+    loop {
+        let still_alive = survivors
+            .iter()
+            .filter(|process| process_exists(process.id))
+            .collect::<Vec<_>>();
+        if still_alive.is_empty() {
+            return Ok(());
+        }
+        if forced_at.elapsed() >= grace {
+            return Err(PlatformError::Invalid(format!(
+                "Desktop processes remained after forced termination: {}",
+                still_alive
+                    .iter()
+                    .map(|process| process.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn process_exists(_process_id: u32) -> bool {
     false
@@ -508,5 +596,20 @@ mod tests {
         assert!(same_process_instance(&original, &execed));
         assert!(!same_process_identity(&original, &execed));
         assert!(!same_process_instance(&original, &reused));
+    }
+
+    #[test]
+    fn terminates_a_spawned_process_by_identity() {
+        use std::process::Command;
+
+        use nix::sys::signal::Signal;
+
+        use super::signal_processes_checked;
+
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().expect("spawn sleep");
+        let snapshot = process_snapshot(child.id()).expect("snapshot sleep process");
+        signal_processes_checked(&[snapshot], Signal::SIGTERM).expect("terminate sleep");
+        let status = child.wait().expect("wait for sleep exit");
+        assert!(!status.success());
     }
 }

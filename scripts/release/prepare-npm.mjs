@@ -241,9 +241,26 @@ let packageRoot;
 try {
   packageRoot = path.dirname(require.resolve(\`\${platformPackage}/package.json\`));
 } catch {
-  fail(
-    \`missing optional platform package '\${platformPackage}'. Reinstall ${NPM_PACKAGE_NAME} without --omit=optional.\`,
-  );
+  // Local folder installs symlink packages into the source tree; Node realpaths
+  // the entry script, so the sibling platform package drops off the resolution
+  // chain. Fall back to the npm global layout derived from the bin symlink.
+  packageRoot = null;
+  if (process.platform !== "win32" && process.argv[1]) {
+    const prefix = path.dirname(path.dirname(path.resolve(process.argv[1])));
+    const globalPackage = path.join(
+      prefix,
+      "lib",
+      "node_modules",
+      platformPackage,
+      "package.json",
+    );
+    if (existsSync(globalPackage)) packageRoot = path.dirname(globalPackage);
+  }
+  if (!packageRoot) {
+    fail(
+      \`missing optional platform package '\${platformPackage}'. Reinstall ${NPM_PACKAGE_NAME} without --omit=optional.\`,
+    );
+  }
 }
 
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
@@ -321,18 +338,48 @@ if (launchArguments[0] === "launch") {
   launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
 }
 
-const child = spawn(launcher, launchArguments, {
-  stdio: "inherit",
-  windowsHide: true,
-});
-child.on("error", (error) => fail(error.message));
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 1);
-});
+if (launchArguments[0] === "launch") {
+  // The Launcher prints "ready" once the Desktop, Controller, and Host chain
+  // are up, then detaches from the terminal to keep supervising. Return
+  // success immediately so the terminal is not held open by this command.
+  const child = spawn(launcher, launchArguments, {
+    stdio: ["ignore", "pipe", "inherit"],
+    windowsHide: true,
+  });
+  let finished = false;
+  const finish = (code) => {
+    if (finished) return;
+    finished = true;
+    process.exit(code);
+  };
+  child.stdout.setEncoding("utf8");
+  let launcherOutput = "";
+  child.stdout.on("data", (chunk) => {
+    launcherOutput += chunk;
+    if (launcherOutput.includes("ready\\n")) finish(0);
+  });
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    finish(code ?? 1);
+  });
+} else {
+  const child = spawn(launcher, launchArguments, {
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
+}
 `;
 }
 

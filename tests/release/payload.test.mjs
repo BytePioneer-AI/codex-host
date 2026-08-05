@@ -71,8 +71,8 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(14);
-      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(15);
+      expect(paths).toHaveLength(15);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(16);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );

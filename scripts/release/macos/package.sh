@@ -122,14 +122,23 @@ PLIST
 
 mkdir -p "$DMG_STAGE"
 /usr/bin/ditto "$APP_PATH" "$DMG_STAGE/codexhost.app"
-ln -s /Applications "$DMG_STAGE/Applications"
 /usr/bin/codesign --verify --deep --strict "$DMG_STAGE/codexhost.app"
-/usr/bin/hdiutil create \
-  -volname "codexhost" \
-  -srcfolder "$DMG_STAGE" \
-  -format UDZO \
-  -ov \
-  "$DMG_PATH" >/dev/null
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# create-dmg (https://github.com/create-dmg/create-dmg) builds the styled
+# standard DMG: window size, icon positions, Applications drop link, volume
+# icon and background are matched to the official example template.
+create-dmg \
+  --volname "codexhost" \
+  --volicon "$RESOURCES/codexhost.icns" \
+  --background "$SCRIPT_DIR/assets/installer-background.png" \
+  --window-pos 200 120 \
+  --window-size 800 400 \
+  --icon-size 100 \
+  --icon "codexhost.app" 200 190 \
+  --hide-extension "codexhost.app" \
+  --app-drop-link 600 185 \
+  "$DMG_PATH" \
+  "$DMG_STAGE" >/dev/null
 /usr/bin/hdiutil verify "$DMG_PATH" >/dev/null
 
 test -s "$DMG_PATH" || {

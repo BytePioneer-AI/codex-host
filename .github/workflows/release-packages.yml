@@ -160,6 +160,10 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      - name: Install create-dmg
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
       - name: Install dependencies
         run: npm ci
 

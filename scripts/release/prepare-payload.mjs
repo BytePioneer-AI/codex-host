@@ -170,6 +170,17 @@ async function writeThirdPartyNotices(root, payloadRoot) {
       "",
     );
   }
+  await copyReleaseFile(
+    path.join(root, "scripts", "release", "macos", "assets", "LICENSE-create-dmg-background.txt"),
+    path.join(licensesDirectory, "create-dmg-background-LICENSE.txt"),
+    "create-dmg background license",
+  );
+  notices.push(
+    "create-dmg example installer background",
+    "License: MIT",
+    "License text: licenses/create-dmg-background-LICENSE.txt",
+    "",
+  );
   await writeFile(
     path.join(payloadRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -188,6 +199,7 @@ export function expectedPayloadPaths(target) {
     "licenses/Node.js-LICENSE.txt",
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
+    "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",

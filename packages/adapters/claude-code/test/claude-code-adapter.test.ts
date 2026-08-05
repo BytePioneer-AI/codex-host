@@ -227,6 +227,22 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
+  it("rejects unsupported last-Turn rollback without creating a Transport", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+
+    await expect(
+      adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    expect(transports).toHaveLength(0);
+    await adapter.close();
+  });
+
   it("inspects the runtime Model catalog and publishes Claude Code Thinking control", async () => {
     const { adapter, dependencies, inspectors } = fixture();
 
@@ -270,7 +286,7 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: true,
           selectPermissionMode: true,
         },
-        history: { fork: true, forkAcrossCwd: false },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
       },
     });
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toEqual(first);
@@ -289,7 +305,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectThinkingOption: true,
         selectPermissionMode: true,
       },
-      history: { fork: true, forkAcrossCwd: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
     await expect(

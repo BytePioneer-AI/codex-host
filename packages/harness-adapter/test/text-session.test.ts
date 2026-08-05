@@ -555,7 +555,7 @@ describe("minimal Harness text Session", () => {
           selectThinkingOption: true,
           selectPermissionMode: false,
         },
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
       },
     });
     expect(adapter.inspectionCalls).toBe(1);
@@ -713,6 +713,129 @@ describe("minimal Harness text Session", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     expect(adapter.sessions).toHaveLength(0);
     await adapter.close();
+  });
+
+  it("rolls back exactly one Turn while preserving current Model and Thinking", async () => {
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("fake"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      true,
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+
+    await source.execute(textTurn("source-1"));
+    source.succeedTurn();
+    await source.execute(textTurn("source-2"));
+    source.succeedTurn();
+    const model = adapter.catalog.models[1]?.ref;
+    const low = adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
+    if (!model || !low) throw new Error("Fake catalog is incomplete");
+    await source.execute({ type: "model.select", model });
+    await source.execute({ type: "thinking.select", thinkingOptionId: low });
+
+    const before = await source.readSnapshot();
+    const sourceRef = source.state.nativeRef;
+    if (!before.ok || !sourceRef) throw new Error("Fake source has no rollback identity");
+    const rolledBack = await adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef,
+      cwd: "/synthetic",
+    });
+    if (!rolledBack.ok) throw new Error(rolledBack.error.message);
+    const derived = rolledBack.value;
+    const derivedSnapshot = await derived.readSnapshot();
+
+    expect(derived.initialState.nativeRef?.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
+    expect(derived.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: low,
+    });
+    expect(derivedSnapshot.ok && derivedSnapshot.value.turns).toHaveLength(1);
+    await expect(source.readSnapshot()).resolves.toEqual(before);
+    await adapter.close();
+  });
+
+  it("rolls one Turn back to an empty continuable Session", async () => {
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("fake"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      true,
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const source = opened.value as FakeHarnessSession;
+    await source.execute(textTurn("source-only"));
+    source.succeedTurn();
+    const sourceRef = source.state.nativeRef;
+    if (!sourceRef) throw new Error("Fake source has no rollback identity");
+
+    const rolledBack = await adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef,
+      cwd: "/synthetic",
+    });
+    if (!rolledBack.ok) throw new Error(rolledBack.error.message);
+    const derived = rolledBack.value as FakeHarnessSession;
+    await expect(derived.readSnapshot()).resolves.toMatchObject({ ok: true, value: { turns: [] } });
+    await derived.execute(textTurn("edited"));
+    derived.succeedTurn();
+    await expect(derived.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ type: "text", text: "edited" }] }] },
+    });
+    await adapter.close();
+  });
+
+  it("rejects unsupported, empty, and active last-Turn rollback", async () => {
+    const unsupported = new FakeHarnessAdapter();
+    const unsupportedOpen = await unsupported.open({ kind: "create", cwd: "/synthetic" });
+    if (!unsupportedOpen.ok) throw new Error(unsupportedOpen.error.message);
+    const unsupportedRef = unsupportedOpen.value.initialState.nativeRef;
+    if (!unsupportedRef) throw new Error("Fake source has no Native Ref");
+    await expect(
+      unsupported.open({
+        kind: "rollbackLastTurn",
+        sourceRef: unsupportedRef,
+        cwd: "/synthetic",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(unsupported.sessions).toHaveLength(1);
+    await unsupported.close();
+
+    const capable = new FakeHarnessAdapter(
+      harnessIdSchema.parse("fake"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      true,
+    );
+    const capableOpen = await capable.open({ kind: "create", cwd: "/synthetic" });
+    if (!capableOpen.ok) throw new Error(capableOpen.error.message);
+    const source = capableOpen.value as FakeHarnessSession;
+    const sourceRef = source.state.nativeRef;
+    if (!sourceRef) throw new Error("Fake source has no Native Ref");
+    await expect(
+      capable.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+    await source.execute(textTurn("active"));
+    await expect(
+      capable.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(capable.sessions).toHaveLength(1);
+    await capable.close();
   });
 
   it("reads deterministic history and Forks an isolated derived Session", async () => {

@@ -332,7 +332,7 @@ describe("Pi HarnessAdapter Session", () => {
       },
       capabilities: {
         configuration: { selectModel: true, selectThinkingOption: true },
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
@@ -484,6 +484,121 @@ describe("Pi HarnessAdapter Session", () => {
           { nativeTurnRef: { nativeTurnKey: "source-user-2" } },
         ],
       },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const inputHistory = sourceHistory(2);
+    const unchangedInputHistory = structuredClone(inputHistory);
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "rollback-startup-session",
+        sessionFile: "/synthetic/rollback-startup.jsonl",
+      };
+      transport.history = structuredClone(inputHistory);
+      transport.fork.mockImplementationOnce(async (entryId) => {
+        const cutoff = transport.history.entries.findIndex((entry) => entry.id === entryId);
+        transport.history.entries = transport.history.entries.slice(0, cutoff);
+        transport.history.leafId = "source-assistant-1";
+        transport.state = {
+          ...transport.state,
+          sessionId: "rollback-final-session",
+          sessionFile: "/synthetic/rollback-final.jsonl",
+          modelId: "alternate-model",
+          thinkingLevel: harnessThinkingOptionIdSchema.parse("low"),
+        };
+        return transport.state;
+      });
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ forkSessionFile: "/synthetic/source.jsonl" }),
+    );
+    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
+    expect(transports[0]?.selectModel).toHaveBeenCalledWith({
+      provider: "synthetic-provider",
+      id: "synthetic-model",
+    });
+    expect(transports[0]?.selectThinkingOption).toHaveBeenCalledWith("high");
+    expect(transports[0]?.verifySessionCwd).toHaveBeenCalledWith("/synthetic");
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "rollback-final-session" },
+      effectiveModel: encodePiModelRef({
+        provider: "synthetic-provider",
+        id: "synthetic-model",
+      }),
+      effectiveThinkingOptionId: "high",
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
+    });
+    expect(inputHistory).toEqual(unchangedInputHistory);
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("rolls the only Pi Turn back to an empty continuable Session", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.state = {
+        ...transport.state,
+        sessionId: "rollback-startup-session",
+        sessionFile: "/synthetic/rollback-startup.jsonl",
+      };
+      transport.history = sourceHistory(1);
+      transports.push(transport);
+      return transport;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-1");
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await expect(opened.value.execute(textTurn("edited"))).resolves.toMatchObject({ ok: true });
+    transports[0]?.succeed("edited answer");
+    let terminal = await nextEvent(iterator);
+    while (terminal.type !== "turn.completed") terminal = await nextEvent(iterator);
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ type: "text", text: "edited" }] }] },
     });
     await opened.value.close();
     await adapter.close();

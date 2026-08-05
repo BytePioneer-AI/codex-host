@@ -47,7 +47,7 @@ function readyInspection() {
         selectThinkingOption: true,
         selectPermissionMode: false,
       },
-      history: { fork: true, forkAcrossCwd: true },
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
     },
   };
 }
@@ -98,7 +98,7 @@ describe("Harness Model runtime contracts", () => {
             selectThinkingOption: true,
             selectPermissionMode: false,
           },
-          history: { fork: false, forkAcrossCwd: true },
+          history: { fork: false, forkAcrossCwd: true, rollbackLastTurn: false },
         },
       }).success,
     ).toBe(false);
@@ -274,7 +274,7 @@ describe("Harness Model runtime contracts", () => {
           { id: "off", label: "Off" },
           { id: "high", label: "High" },
         ],
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         locked: true,
       }),
     ).toMatchObject({ owner: "external", harnessId: "pi", locked: true });
@@ -287,7 +287,7 @@ describe("Harness Model runtime contracts", () => {
         owner: "external",
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         locked: true,
         nativeSessionRef: { nativeSessionId: "secret" },
       }).success,

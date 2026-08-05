@@ -5,10 +5,11 @@ Codex Desktop `26.727.40816` 已提供最后一条用户消息的铅笔入口，
 ## What Changes
 
 - 让支持该能力的 ready External Thread 接受仅限 `numTurns=1` 的最后一轮 rollback，成功后保持 Host Thread ID，并返回删除最后一轮后的完整 Thread。
-- 为 HarnessAdapter 增加窄化的“派生当前 Native Session 去掉最后一轮后的独立 Native Session”能力；首轮被删除时允许空历史。
-- 由 PiAdapter 使用 Pi 原生 Session Fork 能力实现该派生，验证来源 Session 不变、目标 Session 身份不同且历史恰好少一轮。
+- 为 HarnessAdapter 增加窄化的“派生当前 Native Session 去掉最后一轮后的独立 Native Session”能力；首轮被删除时允许空历史，并保持当前 Native Session 已确认的 Model 和 Thinking 配置。
+- 由 PiAdapter 使用 Pi 结构化原生能力实现该派生，验证输入 Session 不变、目标 Session 身份不同、历史恰好少一轮且当前配置一致。
 - 由 Mapping Store 原子替换同一 ready Thread 的 Native Session 和精确短一轮 Turn mappings；失败时旧记录和旧 Runtime 继续有效。
-- 继续优先执行现有 untouched Fork-derived Thread rollback 兼容路径；普通 External 多轮 rollback、任意历史消息 Rewind 和 Claude Code 支持不在本 Change 范围内。
+- 将最后一轮 rollback 作为当前 External Thread 的独立操作，不要求 `forkSource` 或来源 Checkpoint；现有 `thread/fork` 和 post-Fork rollback 行为保持独立且不变。
+- 普通 External 多轮 rollback、任意历史消息 Rewind 和 Claude Code 支持不在本 Change 范围内。
 - 复用 Codex Desktop 现有铅笔、Composer 回填和重新发送流程，不修改 Renderer Extension，不回滚或复制项目文件。
 
 ## Capabilities
@@ -20,7 +21,7 @@ Codex Desktop `26.727.40816` 已提供最后一条用户消息的铅笔入口，
 ### Modified Capabilities
 
 - `harness-adapter-history-fork-session`: 增加诚实的最后一轮 Native Session 派生能力及空历史结果语义。
-- `external-thread-fork-routing`: 在保留现有 post-Fork rollback 行为的前提下，接管支持能力的 External Thread 单轮 rollback。
+- `external-thread-fork-routing`: 接管当前 ready External Thread 的直接单轮 rollback，并与既有 Fork 路由保持独立。
 - `external-thread-mapping-store`: 增加 ready Thread 的原子最后一轮 Session 替换，并允许零 Turn mappings。
 - `pi-model-routed-vertical-slice`: 让 Pi 原生派生 Session 精确排除当前最后一个 User Turn。
 

@@ -19,6 +19,7 @@ import {
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
   type CreateProvisionalThreadInput,
+  type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
@@ -263,6 +264,32 @@ export class MappingStore {
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
         forkSource: input.forkSource,
+      };
+    });
+  }
+
+  async replaceReadySessionAfterLastTurn(
+    input: ReplaceReadySessionAfterLastTurnInput,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
+        input.turnMappings.length !== current.turnMappings.length - 1 ||
+        input.turnMappings.some(
+          ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
+        )
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Last-Turn Session replacement must retain the exact shorter Host Turn prefix",
+        );
+      }
+      return {
+        ...current,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: input.turnMappings,
       };
     });
   }

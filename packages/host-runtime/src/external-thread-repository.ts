@@ -7,6 +7,7 @@ import {
   MappingStore,
   type CommitReadyThreadInput,
   type CreateProvisionalThreadInput,
+  type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
@@ -28,6 +29,9 @@ export interface ExternalThreadStore {
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
+  replaceReadySessionAfterLastTurn(
+    input: ReplaceReadySessionAfterLastTurnInput,
+  ): Promise<StoredThreadRecordV1>;
   upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -274,6 +278,57 @@ export class ExternalThreadRepository {
         return projectHistoricalTurn({
           turnId: mapping.hostTurnId,
           cwd: derived.cwd,
+          snapshot: turn,
+        });
+      }),
+    };
+  }
+
+  async commitLastTurnRollback(
+    current: StoredThreadRecordV1,
+    nativeSessionRef: NativeSessionRef,
+    snapshot: HostThreadSnapshot,
+  ): Promise<AlignedExternalSnapshot> {
+    if (
+      current.state !== "ready" ||
+      !current.nativeSessionRef ||
+      nativeSessionRef.harnessId !== current.harnessId ||
+      nativeSessionRef.nativeSessionId === current.nativeSessionRef.nativeSessionId ||
+      snapshot.turns.length !== current.turnMappings.length - 1
+    ) {
+      throw new Error("Last-Turn rollback is not an exact ready Session replacement");
+    }
+    const mappings = snapshot.turns.map((turn, index): StoredTurnMappingV1 => {
+      const previous = current.turnMappings[index];
+      if (
+        !previous ||
+        turn.nativeTurnRef.harnessId !== current.harnessId ||
+        turn.nativeTurnRef.nativeSessionId !== nativeSessionRef.nativeSessionId ||
+        (turn.checkpoint &&
+          (turn.checkpoint.harnessId !== current.harnessId ||
+            turn.checkpoint.nativeSessionId !== nativeSessionRef.nativeSessionId))
+      ) {
+        throw new Error("Last-Turn rollback Snapshot identity is invalid");
+      }
+      return {
+        hostTurnId: previous.hostTurnId,
+        nativeTurnRef: turn.nativeTurnRef,
+        ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
+      };
+    });
+    const nextRecord = await this.store.replaceReadySessionAfterLastTurn({
+      hostThreadId: current.hostThreadId,
+      nativeSessionRef,
+      turnMappings: mappings,
+    });
+    return {
+      record: nextRecord,
+      turns: snapshot.turns.map((turn, index) => {
+        const mapping = mappings[index];
+        if (!mapping) throw new Error("Last-Turn rollback Snapshot mapping is incomplete");
+        return projectHistoricalTurn({
+          turnId: mapping.hostTurnId,
+          cwd: current.cwd,
           snapshot: turn,
         });
       }),

@@ -81,7 +81,14 @@ export interface ForkSessionInput {
   cwd: string;
 }
 
-export type OpenSessionInput = CreateSessionInput | ResumeSessionInput | ForkSessionInput;
+export interface RollbackLastTurnSessionInput {
+  kind: "rollbackLastTurn";
+  sourceRef: NativeSessionRef;
+  cwd: string;
+}
+
+export type OpenSessionInput =
+  CreateSessionInput | ResumeSessionInput | ForkSessionInput | RollbackLastTurnSessionInput;
 
 export interface HarnessSessionState {
   nativeRef?: NativeSessionRef;

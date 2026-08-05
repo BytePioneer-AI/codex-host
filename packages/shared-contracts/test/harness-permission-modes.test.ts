@@ -33,7 +33,7 @@ function readyInspection(selectPermissionMode: boolean) {
         selectThinkingOption: false,
         selectPermissionMode,
       },
-      history: { fork: false, forkAcrossCwd: false },
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
     },
   };
 }

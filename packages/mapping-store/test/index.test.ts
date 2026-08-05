@@ -336,6 +336,88 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("atomically replaces the only Turn with an empty ready Session", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory, instanceId: "first" });
+    await first.initialize();
+    const forkSource = {
+      hostThreadId: hostThreadIdSchema.parse("source-thread"),
+      hostTurnId: hostTurnIdSchema.parse("source-turn"),
+    };
+    await createReady(first, forkSource);
+    const before = await first.getThread(threadId);
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-empty",
+      locator: { sessionFile: "/synthetic/empty.jsonl" },
+      formatVersion: 1,
+    }) as NativeSessionRef;
+
+    const replaced = await first.replaceReadySessionAfterLastTurn({
+      hostThreadId: threadId,
+      nativeSessionRef: replacementRef,
+      turnMappings: [],
+    });
+    expect(replaced).toMatchObject({
+      revision: (before?.revision ?? 0) + 1,
+      nativeSessionRef: replacementRef,
+      turnMappings: [],
+      forkSource,
+      title: "External Thread",
+      transportModelId: "codexhost/pi-native",
+    });
+    await first.close();
+
+    const second = new MappingStore({ directory, instanceId: "second" });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toEqual(replaced);
+    await second.close();
+  });
+
+  it("keeps the latest ready Session authoritative when last-Turn replacement fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    let fail = false;
+    const store = new MappingStore({
+      directory,
+      beforeReplace() {
+        if (fail) throw new Error("synthetic last-Turn replacement failure");
+      },
+    });
+    await store.initialize();
+    await createReady(store);
+    await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-shorter",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    const replaced = await store.replaceReadySessionAfterLastTurn({
+      hostThreadId: threadId,
+      nativeSessionRef: replacementRef,
+      turnMappings: [mappingForSession(replacementRef, 1), mappingForSession(replacementRef, 2)],
+    });
+
+    fail = true;
+    const failedRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-failed",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    await expect(
+      store.replaceReadySessionAfterLastTurn({
+        hostThreadId: threadId,
+        nativeSessionRef: failedRef,
+        turnMappings: [mappingForSession(failedRef, 1)],
+      }),
+    ).rejects.toMatchObject({ code: "IO_ERROR" });
+    await expect(store.getThread(threadId)).resolves.toEqual(replaced);
+    const persisted = JSON.parse(
+      await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8"),
+    ) as StoredThreadRecordV1;
+    expect(persisted).toEqual(replaced);
+    await store.close();
+  });
+
   it("persists the current transport configuration", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });

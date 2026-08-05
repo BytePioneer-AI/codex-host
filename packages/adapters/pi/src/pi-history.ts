@@ -310,6 +310,14 @@ export function mapPiSnapshot(
   return { turns };
 }
 
+export function resolvePiLastTurnBoundary(
+  history: PiSessionHistory,
+): { lastUserEntryId: string; sourceTurnCount: number } | null {
+  const users = activePiEntries(history).filter((entry) => messageRole(entry) === "user");
+  const last = users.at(-1);
+  return last ? { lastUserEntryId: last.id, sourceTurnCount: users.length } : null;
+}
+
 export function resolvePiForkBoundary(
   history: PiSessionHistory,
   checkpointId: string,

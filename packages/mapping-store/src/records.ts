@@ -147,3 +147,9 @@ export interface ReplaceReadySessionInput {
   turnMappings: StoredTurnMappingV1[];
   forkSource: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
 }
+
+export interface ReplaceReadySessionAfterLastTurnInput {
+  hostThreadId: HostThreadId;
+  nativeSessionRef: NativeSessionRef;
+  turnMappings: StoredTurnMappingV1[];
+}

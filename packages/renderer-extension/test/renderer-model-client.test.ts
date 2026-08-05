@@ -47,7 +47,7 @@ const inspection = {
       selectThinkingOption: true,
       selectPermissionMode: false,
     },
-    history: { fork: true, forkAcrossCwd: true },
+    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
   },
 };
 
@@ -63,7 +63,7 @@ describe("Renderer fixed Model request client", () => {
         effectiveModel: model,
         effectiveThinkingOptionId: high,
         availableThinkingOptions: thinkingOptions,
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         locked: true,
       })
       .mockResolvedValueOnce({ threadId: "forked-thread" })
@@ -107,7 +107,7 @@ describe("Renderer fixed Model request client", () => {
     ).resolves.toMatchObject({
       owner: "external",
       harnessId: "pi",
-      history: { fork: true, forkAcrossCwd: true },
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
       locked: true,
     });
     await expect(

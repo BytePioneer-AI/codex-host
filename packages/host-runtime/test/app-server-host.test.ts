@@ -129,6 +129,18 @@ function writeRequest(stream: PassThrough, value: JsonObject): void {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
+function rollbackCapableAdapter(): FakeHarnessAdapter {
+  return new FakeHarnessAdapter(
+    harnessIdSchema.parse("pi"),
+    undefined,
+    true,
+    true,
+    null,
+    undefined,
+    true,
+  );
+}
+
 function createFixture(
   options: {
     environment?: NodeJS.ProcessEnv;
@@ -262,7 +274,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
         capabilities: {
           configuration: { selectModel: true, selectThinkingOption: true },
-          history: { fork: true, forkAcrossCwd: true },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         },
       },
     });
@@ -325,7 +337,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: { id: "fake-model-v1.primary" },
-        history: { fork: true, forkAcrossCwd: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         locked: true,
       },
     });
@@ -1703,6 +1715,149 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [{}] } } });
     expect(fixture.adapter.sessions).toHaveLength(1);
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rolls back the current External Thread by exactly one Turn", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const firstTurnId = await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({
+      result: { thread: { id: threadId, turns: [{ id: firstTurnId }] } },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      hostThreadId: threadId,
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      transportModelId: before?.transportModelId,
+      turnMappings: [{ hostTurnId: firstTurnId }],
+    });
+    expect(adapter.sessions[1]?.initialState).toMatchObject({
+      effectiveModel: adapter.sessions[0]?.state.effectiveModel,
+      effectiveThinkingOptionId: adapter.sessions[0]?.state.effectiveThinkingOptionId,
+    });
+    await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await completePiTurn(fixture, threadId, 11, 1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rolls the only current External Turn back to empty history", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      turnMappings: [],
+    });
+    await completePiTurn(fixture, threadId, 11, 1);
+    await stopFixture(fixture);
+  });
+
+  it("rejects current last-Turn rollback while active or for multiple Turns", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 2 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+
+    const activeTurnId = await startPiTurn(fixture, threadId, 11);
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 12)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    expect(adapter.sessions).toHaveLength(1);
+    adapter.sessions[0]?.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", activeTurnId),
+    );
+    await stopFixture(fixture);
+  });
+
+  it("keeps the current Session authoritative when last-Turn persistence fails", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-last-turn-failure-"));
+    let failRollbackCommit = false;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (failRollbackCommit && record.state === "ready" && record.turnMappings.length === 1) {
+          throw new Error("synthetic last-Turn rollback failure");
+        }
+      },
+    });
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+    });
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    const before = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    failRollbackCommit = true;
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32081 } });
+    await expect(mappingStore.getThread(hostThreadIdSchema.parse(threadId))).resolves.toEqual(
+      before,
+    );
+    await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await completePiTurn(fixture, threadId, 11, 0);
     await stopFixture(fixture);
   });
 

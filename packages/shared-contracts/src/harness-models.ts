@@ -137,6 +137,7 @@ const harnessHistoryCapabilitiesSchema = z
   .object({
     fork: z.boolean(),
     forkAcrossCwd: z.boolean(),
+    rollbackLastTurn: z.boolean(),
   })
   .strict()
   .refine((history) => history.fork || !history.forkAcrossCwd, {

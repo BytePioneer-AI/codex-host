@@ -125,7 +125,7 @@ describe("Renderer external Thread Fork control", () => {
       owner: "external",
       harnessId: "pi",
       transportModelId: "codexhost/pi-native",
-      history: { fork: true, forkAcrossCwd: true },
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
       locked: true,
     });
     const control = installRendererForkControl({ getClient: () => client, dom });
@@ -148,7 +148,7 @@ describe("Renderer external Thread Fork control", () => {
       owner: "external",
       harnessId: "pi",
       transportModelId: "codexhost/pi-native",
-      history: { fork: true, forkAcrossCwd: true },
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
       locked: true,
     });
     const source = target(false);
@@ -168,7 +168,7 @@ describe("Renderer external Thread Fork control", () => {
       owner: "external",
       harnessId: "claude-code",
       transportModelId: "codexhost/claude-code-native",
-      history: { fork: true, forkAcrossCwd: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
       locked: true,
     });
     const source = target(false);

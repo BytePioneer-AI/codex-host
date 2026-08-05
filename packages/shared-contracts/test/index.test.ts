@@ -52,7 +52,7 @@ describe("shared-contracts public package", () => {
             selectThinkingOption: true,
             selectPermissionMode: false,
           },
-          history: { fork: true, forkAcrossCwd: true },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         },
       }),
     ).toMatchObject({ status: "ready" });

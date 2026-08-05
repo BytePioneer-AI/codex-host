@@ -184,6 +184,7 @@ export class ExternalThreadRuntime {
       sessionId: string;
       thread: JsonObject;
       turns: JsonObject[];
+      restoredState?: HarnessSessionState;
     },
   ): Promise<ExternalThread> {
     if (

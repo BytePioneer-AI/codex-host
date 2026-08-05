@@ -214,7 +214,7 @@ class ClaudeHarnessSession implements HarnessSession {
       selectThinkingOption: true,
       selectPermissionMode: true,
     },
-    history: { fork: true, forkAcrossCwd: false },
+    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
   };
   readonly initialState: HarnessSessionState;
   readonly initialUsage = null;
@@ -1303,7 +1303,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
               selectThinkingOption: false,
               selectPermissionMode: snapshot.canSelectPermissionMode,
             },
-            history: { fork: true, forkAcrossCwd: false },
+            history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
           },
         };
       }
@@ -1318,7 +1318,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             selectThinkingOption: true,
             selectPermissionMode: snapshot.canSelectPermissionMode,
           },
-          history: { fork: true, forkAcrossCwd: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         },
       };
     } catch (error) {
@@ -1356,6 +1356,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: {
           code: "invalidRequest",
           message: "Claude Code Adapter requires cwd",
+          retryable: false,
+        },
+      };
+    }
+    if (input.kind === "rollbackLastTurn") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Claude Code does not support exact last-Turn rollback",
           retryable: false,
         },
       };

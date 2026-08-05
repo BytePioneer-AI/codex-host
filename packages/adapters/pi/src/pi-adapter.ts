@@ -62,6 +62,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
+import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
 import {
   PiRpcFaultError,
   PiRpcSession,
@@ -382,7 +383,7 @@ class PiHarnessSession implements HarnessSession {
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: false,
       },
-      history: { fork: true, forkAcrossCwd: true },
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
     };
     this.#transport = options.startedTransport ?? null;
     this.initialState = options.startedTransport
@@ -1457,7 +1458,7 @@ export class PiAdapter implements HarnessAdapter {
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: false,
           },
-          history: { fork: true, forkAcrossCwd: true },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },
       };
     } catch (error) {
@@ -1574,7 +1575,7 @@ export class PiAdapter implements HarnessAdapter {
             retryable: false,
           });
         }
-      } else {
+      } else if (input.kind === "fork") {
         const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
         const startupSessionId = transport.state.sessionId;
         if (startupSessionId === sourceRef.nativeSessionId) {
@@ -1612,6 +1613,19 @@ export class PiAdapter implements HarnessAdapter {
           throw new Error("Pi Fork derived history does not match the requested Checkpoint");
         }
         await transport.verifySessionCwd(input.cwd);
+      } else {
+        const rolledBack = await rollbackPiLastTurn(
+          transport,
+          sourceRef.nativeSessionId,
+          input.cwd,
+        );
+        if (!rolledBack.ok) {
+          throw new PiAdapterFaultError({
+            code: "invalidState",
+            message: "Pi Native Session has no Turn to roll back",
+            retryable: false,
+          });
+        }
       }
 
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();

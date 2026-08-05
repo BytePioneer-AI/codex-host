@@ -30,11 +30,14 @@ async function temporaryStoreDirectory(): Promise<string> {
   return directory;
 }
 
-function snapshotTurn(key: string): HostThreadSnapshot["turns"][number] {
+function snapshotTurnForSession(
+  sessionRef: typeof nativeSessionRef,
+  key: string,
+): HostThreadSnapshot["turns"][number] {
   return {
     nativeTurnRef: nativeTurnRefSchema.parse({
       harnessId,
-      nativeSessionId: nativeSessionRef.nativeSessionId,
+      nativeSessionId: sessionRef.nativeSessionId,
       nativeTurnKey: key,
       formatVersion: 1,
     }),
@@ -42,6 +45,10 @@ function snapshotTurn(key: string): HostThreadSnapshot["turns"][number] {
     items: [],
     outcome: { status: "unknown", reason: "synthetic history" },
   };
+}
+
+function snapshotTurn(key: string): HostThreadSnapshot["turns"][number] {
+  return snapshotTurnForSession(nativeSessionRef, key);
 }
 
 function mapping(hostKey: string, nativeKey: string): StoredTurnMappingV1 {
@@ -60,6 +67,48 @@ afterEach(async () => {
 });
 
 describe("ExternalThreadRepository", () => {
+  it("commits a last-Turn replacement with retained Host Turn identity", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-rollback",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [mapping("host-a", "native-a"), mapping("host-b", "native-b")],
+    });
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-2",
+      formatVersion: 1,
+    });
+
+    const committed = await repository.commitLastTurnRollback(original, replacementRef, {
+      turns: [snapshotTurnForSession(replacementRef, "native-a-derived")],
+    });
+    expect(committed.record).toMatchObject({
+      nativeSessionRef: replacementRef,
+      turnMappings: [
+        {
+          hostTurnId: original.turnMappings[0]?.hostTurnId,
+          nativeTurnRef: { nativeSessionId: replacementRef.nativeSessionId },
+        },
+      ],
+    });
+    expect(committed.turns).toMatchObject([{ id: original.turnMappings[0]?.hostTurnId }]);
+    await repository.close();
+  });
+
   it("converges across consecutive cold alignments with middle-inserted Native Turns", async () => {
     const directory = await temporaryStoreDirectory();
     const firstStore = new MappingStore({ directory, instanceId: "first" });

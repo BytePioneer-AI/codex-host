@@ -196,6 +196,7 @@ export class FakeHarnessSession implements HarnessSession {
     initialUsage: HostUsage | null = null,
     permissionModes?: HarnessPermissionModeCatalog,
     initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
+    supportsRollbackLastTurn = false,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -210,7 +211,11 @@ export class FakeHarnessSession implements HarnessSession {
         selectThinkingOption: catalog.thinkingOptions.length > 0,
         selectPermissionMode: permissionModes !== undefined,
       },
-      history: { fork: supportsFork, forkAcrossCwd: supportsForkAcrossCwd },
+      history: {
+        fork: supportsFork,
+        forkAcrossCwd: supportsForkAcrossCwd,
+        rollbackLastTurn: supportsRollbackLastTurn,
+      },
     };
     this.cwd = cwd;
     this.#catalog = catalog;
@@ -894,6 +899,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly initialUsage: HostUsage | null;
   readonly supportsFork: boolean;
   readonly supportsForkAcrossCwd: boolean;
+  readonly supportsRollbackLastTurn: boolean;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
   #sessionOrdinal = 0;
@@ -906,6 +912,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     supportsForkAcrossCwd = supportsFork,
     initialUsage: HostUsage | null = null,
     permissionModes?: HarnessPermissionModeCatalog,
+    supportsRollbackLastTurn = false,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
@@ -913,6 +920,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     this.initialUsage = initialUsage === null ? null : parseHostUsage(initialUsage);
     this.supportsFork = supportsFork;
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
+    this.supportsRollbackLastTurn = supportsRollbackLastTurn;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -941,6 +949,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         history: {
           fork: this.supportsFork,
           forkAcrossCwd: this.supportsForkAcrossCwd,
+          rollbackLastTurn: this.supportsRollbackLastTurn,
         },
       },
     };
@@ -954,6 +963,16 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         error: {
           code: "invalidRequest",
           message: "Fake Adapter requires a non-empty cwd",
+          retryable: false,
+        },
+      };
+    }
+    if (input.kind === "rollbackLastTurn" && !this.supportsRollbackLastTurn) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Adapter does not support last-Turn rollback",
           retryable: false,
         },
       };
@@ -1029,6 +1048,26 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       };
     }
     if (input.kind === "resume") return { ok: true, value: source };
+    if (input.kind === "rollbackLastTurn") {
+      const current = await source.readSnapshot();
+      if (!current.ok) return current;
+      if (current.value.turns.length === 0) {
+        return {
+          ok: false,
+          error: invalidState("Fake Native Session has no Turn to roll back"),
+        };
+      }
+      return {
+        ok: true,
+        value: this.#createSession(
+          input.cwd,
+          source.state.effectiveModel,
+          current.value.turns.slice(0, -1),
+          source.state.effectiveThinkingOptionId,
+          source.state.effectivePermissionModeId,
+        ),
+      };
+    }
     const snapshot = source.persistedSnapshot();
     if (!this.supportsFork || (!this.supportsForkAcrossCwd && input.cwd !== source.cwd)) {
       return {
@@ -1130,6 +1169,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       this.initialUsage,
       this.permissionModes,
       permissionModeId,
+      this.supportsRollbackLastTurn,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

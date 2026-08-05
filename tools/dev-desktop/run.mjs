@@ -172,13 +172,13 @@ export function usage() {
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 
 options:
-  --agent <codex|pi>  process-level default Agent (default: pi)
+  --agent <codex|pi>  process-level default Agent (default: codex)
   --no-build          reuse existing development artifacts
   --help              show this help`;
 }
 
 export function parseArguments(arguments_) {
-  const options = { agent: "pi", build: true, help: false };
+  const options = { agent: "codex", build: true, help: false };
   let agentProvided = false;
   let buildProvided = false;
 

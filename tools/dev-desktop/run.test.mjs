@@ -62,7 +62,7 @@ afterEach(() => {
 
 describe("development Desktop start", () => {
   it("parses a production-like default and bounded options", () => {
-    expect(parseArguments([])).toEqual({ agent: "pi", build: true, help: false });
+    expect(parseArguments([])).toEqual({ agent: "codex", build: true, help: false });
     expect(parseArguments(["--agent", "codex", "--no-build"])).toEqual({
       agent: "codex",
       build: false,
@@ -271,7 +271,7 @@ describe("development Desktop start", () => {
     expect(invocations[0].command).toBe("powershell.exe");
     expect(invocations[1]).toMatchObject({
       command: artifacts.launcher,
-      arguments: expect.arrayContaining(["launch", "--agent", "pi"]),
+      arguments: expect.arrayContaining(["launch", "--agent", "codex"]),
       options: expect.objectContaining({
         cwd: root,
         stdio: ["ignore", "pipe", "inherit"],

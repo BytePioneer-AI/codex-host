@@ -16,17 +16,21 @@ describe("Renderer Agent picker presentation", () => {
       triggerDisabled: false,
       nativeModelHidden: false,
       optionDisabled: { codex: false, pi: true, "claude-code": true },
+      downloadVisible: { pi: false, "claude-code": false },
     });
   });
 
   it("hides the native Model for an external Agent and locks submitted selection", () => {
     expect(
-      rendererAgentPickerView({ agent: "pi", phase: "locked" }, "ready", false, ["codex", "pi"]),
+      rendererAgentPickerView({ agent: "pi", phase: "locked" }, "ready", false, ["codex", "pi"], {
+        pi: "ready",
+      }),
     ).toEqual({
       label: "Pi",
       triggerDisabled: true,
       nativeModelHidden: true,
       optionDisabled: { codex: true, pi: true },
+      downloadVisible: { pi: false },
     });
   });
 
@@ -37,6 +41,21 @@ describe("Renderer Agent picker presentation", () => {
       triggerDisabled: true,
       nativeModelHidden: true,
       optionDisabled: { codex: true, pi: true },
+      downloadVisible: { pi: false },
+    });
+  });
+
+  it("disables an uninstalled external Agent and exposes its install action", () => {
+    expect(
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex", "pi"], {
+        pi: "notInstalled",
+      }),
+    ).toEqual({
+      label: "Codex",
+      triggerDisabled: false,
+      nativeModelHidden: false,
+      optionDisabled: { codex: false, pi: true },
+      downloadVisible: { pi: true },
     });
   });
 

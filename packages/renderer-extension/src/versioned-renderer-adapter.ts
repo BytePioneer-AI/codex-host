@@ -51,6 +51,27 @@ export interface RendererAdapterStatus {
   hook: "model-state" | null;
 }
 
+type RendererAdapterStatusTransition = Pick<RendererAdapterStatus, "state" | "reason" | "hook">;
+
+export function transitionRendererAdapterStatus(
+  current: RendererAdapterStatus,
+  next: RendererAdapterStatusTransition,
+  publish: () => void,
+): boolean {
+  if (
+    current.state === next.state &&
+    current.reason === next.reason &&
+    current.hook === next.hook
+  ) {
+    return false;
+  }
+  current.state = next.state;
+  current.reason = next.reason;
+  current.hook = next.hook;
+  publish();
+  return true;
+}
+
 interface PrewarmTarget {
   prewarmThreadStart?: (params: unknown, options?: unknown) => Promise<unknown> | unknown;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
@@ -301,10 +322,7 @@ function isModelAtomState(value: unknown): value is ModelAtomState {
 }
 
 function isModelSelection(value: unknown): value is ModelPowerSelection | null {
-  return (
-    value === null ||
-    (isRecord(value) && "model" in value && "reasoningEffort" in value)
-  );
+  return value === null || (isRecord(value) && "model" in value && "reasoningEffort" in value);
 }
 
 export function sameModelPowerSelection(
@@ -656,11 +674,10 @@ export function installCurrentRendererAdapter(): {
     reason: RendererAdapterStatus["reason"],
     hook: RendererAdapterStatus["hook"],
   ): void => {
-    liveStatus.state = state;
-    liveStatus.reason = reason;
     liveStatus.modelUpdates = modelUpdates;
-    liveStatus.hook = hook;
-    window.dispatchEvent(new CustomEvent("codexhost:renderer-adapter-status"));
+    transitionRendererAdapterStatus(liveStatus, { state, reason, hook }, () => {
+      window.dispatchEvent(new CustomEvent("codexhost:renderer-adapter-status"));
+    });
   };
 
   const unsupportedResult = () => ({

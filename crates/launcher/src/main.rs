@@ -722,7 +722,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
 
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
-        agent: Agent::Pi,
+        agent: Agent::Codex,
         shim: None,
         node: None,
         host_runtime: None,
@@ -769,9 +769,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     #[cfg(target_os = "windows")]
     use std::ffi::OsStr;
+    use std::ffi::OsString;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -801,8 +801,8 @@ mod tests {
     use super::{stop_desktop_controller, wait_for_desktop_exit};
 
     #[test]
-    fn no_argument_launch_defaults_to_pi() {
-        assert_eq!(default_launch_options().agent.as_str(), "pi");
+    fn no_argument_launch_defaults_to_codex() {
+        assert_eq!(default_launch_options().agent.as_str(), "codex");
     }
 
     #[test]

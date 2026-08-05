@@ -24,6 +24,7 @@ export type {
   DraftComposerState,
   ExternalRendererAgent,
   RendererAgent,
+  RendererAgentAvailability,
 } from "./agent-selection-state.js";
 export {
   HARNESS_INSPECT_METHOD,

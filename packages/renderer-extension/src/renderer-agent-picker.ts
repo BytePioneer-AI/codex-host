@@ -1,12 +1,25 @@
-import type { ComposerAgentPhase, RendererAgent } from "./agent-selection-state.js";
+import type {
+  ComposerAgentPhase,
+  ExternalRendererAgent,
+  RendererAgent,
+  RendererAgentAvailability,
+} from "./agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
+
+export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
+  pi: "https://pi.dev/",
+  "claude-code": "https://code.claude.com/docs/en/quickstart",
+};
+
+type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
 
 interface AgentOptionControl {
   button: HTMLButtonElement;
   check: HTMLElement;
+  download: HTMLButtonElement | null;
 }
 
 export interface RendererAgentPickerControl {
@@ -26,6 +39,7 @@ export interface RendererAgentPickerView {
   triggerDisabled: boolean;
   nativeModelHidden: boolean;
   optionDisabled: Partial<Record<RendererAgent, boolean>>;
+  downloadVisible: Partial<Record<ExternalRendererAgent, boolean>>;
 }
 
 export function rendererAgentPickerView(
@@ -33,18 +47,27 @@ export function rendererAgentPickerView(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   agents: readonly RendererAgent[],
+  availability: AgentAvailability = {},
 ): RendererAgentPickerView {
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
       agent,
-      switching || state.phase === "locked" || (agent !== "codex" && adapterState !== "ready"),
+      switching ||
+        state.phase === "locked" ||
+        (agent !== "codex" && (adapterState !== "ready" || availability[agent] !== "ready")),
     ]),
   ) as Partial<Record<RendererAgent, boolean>>;
+  const downloadVisible = Object.fromEntries(
+    agents
+      .filter((agent): agent is ExternalRendererAgent => agent !== "codex")
+      .map((agent) => [agent, availability[agent] === "notInstalled"]),
+  ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
     label: RENDERER_AGENT_LABELS[state.agent],
     triggerDisabled: switching || state.phase === "locked" || agents.length < 2,
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
+    downloadVisible,
   };
 }
 
@@ -68,6 +91,7 @@ export function mountRendererAgentPicker(
   composerId: string,
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
+  onDownload: (agent: ExternalRendererAgent) => void,
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -175,6 +199,7 @@ export function mountRendererAgentPicker(
     button.style.alignItems = "center";
     button.style.gap = "8px";
     button.style.width = "100%";
+    button.style.flex = "1 1 auto";
     button.style.height = "36px";
     button.style.padding = "0 8px";
     button.style.border = "0";
@@ -207,6 +232,7 @@ export function mountRendererAgentPicker(
     const label = document.createElement("span");
     label.textContent = RENDERER_AGENT_LABELS[agent];
     label.style.minWidth = "0";
+    label.style.flex = "1 1 auto";
     label.style.overflow = "hidden";
     label.style.textOverflow = "ellipsis";
     label.style.whiteSpace = "nowrap";
@@ -217,8 +243,53 @@ export function mountRendererAgentPicker(
       trigger.focus();
       if (!selected) onSelect(agent);
     });
-    options[agent] = { button, check };
-    menu.append(button);
+
+    const download =
+      agent === "codex"
+        ? null
+        : (() => {
+            const control = document.createElement("button");
+            control.type = "button";
+            control.textContent = "\u2193";
+            control.setAttribute("aria-label", `Install ${RENDERER_AGENT_LABELS[agent]}`);
+            control.title = `Open ${RENDERER_AGENT_LABELS[agent]} installation page`;
+            control.style.display = "inline-flex";
+            control.style.alignItems = "center";
+            control.style.justifyContent = "center";
+            control.style.width = "24px";
+            control.style.height = "24px";
+            control.style.flex = "none";
+            control.style.padding = "0";
+            control.style.border = "0";
+            control.style.borderRadius = "4px";
+            control.style.background = "transparent";
+            control.style.color = "inherit";
+            control.style.cursor = "pointer";
+            control.style.font = "600 16px/1 system-ui, sans-serif";
+            control.style.opacity = "0.72";
+            control.addEventListener("pointerenter", () => {
+              if (!control.disabled) control.style.background = "rgba(127, 127, 127, 0.16)";
+            });
+            control.addEventListener("pointerleave", () => {
+              control.style.background = "transparent";
+            });
+            control.addEventListener("click", (event) => {
+              event.stopPropagation();
+              onDownload(agent);
+            });
+            return control;
+          })();
+    options[agent] = { button, check, download };
+    if (download) {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "2px";
+      row.append(button, download);
+      menu.append(row);
+    } else {
+      menu.append(button);
+    }
   }
   root.append(trigger, menu);
 
@@ -299,8 +370,15 @@ export function renderRendererAgentPicker(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
+  availability: AgentAvailability = {},
 ): RendererAgentPickerView {
-  const view = rendererAgentPickerView(state, adapterState, switching, control.agents);
+  const view = rendererAgentPickerView(
+    state,
+    adapterState,
+    switching,
+    control.agents,
+    availability,
+  );
   if (control.iconSlot.dataset.agent !== state.agent) {
     control.iconSlot.replaceChildren(createRendererAgentIcon(state.agent));
     control.iconSlot.dataset.agent = state.agent;
@@ -330,6 +408,12 @@ export function renderRendererAgentPicker(
     option.button.style.cursor = option.button.disabled ? "not-allowed" : "pointer";
     option.button.style.opacity = option.button.disabled && !selected ? "0.5" : "1";
     option.check.style.visibility = selected ? "visible" : "hidden";
+    if (option.download) {
+      const visible = view.downloadVisible[agent as ExternalRendererAgent] === true;
+      option.download.hidden = !visible;
+      option.download.disabled = !visible;
+      option.download.style.display = visible ? "inline-flex" : "none";
+    }
   }
   return view;
 }

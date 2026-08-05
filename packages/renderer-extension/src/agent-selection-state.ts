@@ -8,6 +8,8 @@ export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
+export type RendererAgentAvailability =
+  "checking" | "ready" | "notInstalled" | "unavailable" | "error";
 export type ComposerAgentPhase = "draft" | "locked";
 
 export interface DraftComposerState {

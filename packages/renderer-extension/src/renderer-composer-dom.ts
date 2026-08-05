@@ -1,4 +1,9 @@
-import type { ComposerAgentPhase, RendererAgent } from "./agent-selection-state.js";
+import type {
+  ComposerAgentPhase,
+  ExternalRendererAgent,
+  RendererAgent,
+  RendererAgentAvailability,
+} from "./agent-selection-state.js";
 import {
   CONTROL_ATTRIBUTE,
   mountRendererAgentPicker,
@@ -297,6 +302,7 @@ export function mountComposerAgentControl(
   sendButton: HTMLButtonElement,
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
+  onDownload: (agent: ExternalRendererAgent) => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
@@ -308,7 +314,7 @@ export function mountComposerAgentControl(
   const nativePermissionModeControlVerified =
     semanticNativePermissionModeControl !== null &&
     nativePermissionModeControlForComposer(composer) === semanticNativePermissionModeControl;
-  const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect);
+  const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect, onDownload);
   const modelPicker = mountRendererModelPicker(
     composerId,
     nativeModelControl?.element.className,
@@ -354,6 +360,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
+  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
 ): void {
@@ -384,7 +391,13 @@ export function renderComposerAgentControl(
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
     control.sendDisabledBeforeSwitch = null;
   }
-  const pickerView = renderRendererAgentPicker(control.picker, state, adapterState, switching);
+  const pickerView = renderRendererAgentPicker(
+    control.picker,
+    state,
+    adapterState,
+    switching,
+    availability,
+  );
   refreshNativeModelControl(control);
   refreshNativePermissionModeControl(control);
   setNativeControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);

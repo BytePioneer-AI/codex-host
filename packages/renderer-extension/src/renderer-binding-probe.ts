@@ -13,7 +13,9 @@ import {
   DEFAULT_RENDERER_AGENTS,
   DraftAgentController,
   type ComposerAgentPhase,
+  type ExternalRendererAgent,
   type RendererAgent,
+  type RendererAgentAvailability,
 } from "./agent-selection-state.js";
 import {
   CODEX_COMPOSER_SELECTOR,
@@ -43,6 +45,7 @@ import {
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
   readClaudePermissionModePreference,
   writeClaudePermissionModePreference,
@@ -56,10 +59,14 @@ const externalHarnessIds = {
   "claude-code": harnessIdSchema.parse("claude-code"),
 } as const;
 
+const externalAgents: readonly ExternalRendererAgent[] = ["pi", "claude-code"];
+type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+
 export interface RendererBindingProbeStatus {
   version: 2;
   mountedComposers: number;
   enabledAgents: RendererAgent[];
+  availability: HarnessAvailability;
   selections: Array<{
     composerId: string;
     agent: RendererAgent;
@@ -312,6 +319,11 @@ export function installRendererBindingProbe(
     modelUpdates: 0,
     hook: null,
   };
+  let harnessAvailability: HarnessAvailability = Object.fromEntries(
+    externalAgents.map((agent) => [agent, "checking"]),
+  ) as HarnessAvailability;
+  let availabilityRequestGeneration = 0;
+  let availabilityRequest: { client: RendererModelClient; promise: Promise<void> } | null = null;
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
     mounted.composer.isConnected &&
@@ -343,6 +355,7 @@ export function installRendererBindingProbe(
       adapterStatus.state,
       controller.isSwitching(mounted.composer) ||
         isOwnershipSubmissionBlocked(mounted.ownershipStatus),
+      harnessAvailability,
       mounted.modelView,
       mounted.permissionModeView,
     );
@@ -491,6 +504,22 @@ export function installRendererBindingProbe(
     const state = controller.get(mounted.composer);
     if (state.agent === "codex") return;
     const agent = state.agent;
+    const availability = harnessAvailability[agent];
+    if (availability !== "ready") {
+      mounted.modelView = {
+        status:
+          adapterStatus.state !== "ready" || availability === "checking"
+            ? "waitingForAdapter"
+            : "error",
+        thinkingSelectionSupported: false,
+        ...(availability && availability !== "checking"
+          ? { error: `${agent} runtime is ${availability}` }
+          : {}),
+      };
+      mounted.permissionModeView = { status: "idle" };
+      renderMounted(mounted);
+      return;
+    }
     mounted.modelView = {
       status: adapterStatus.state === "ready" ? "loading" : "waitingForAdapter",
       thinkingSelectionSupported: false,
@@ -1040,6 +1069,7 @@ export function installRendererBindingProbe(
     mounted: MountedComposer,
     agent: RendererAgent,
   ): Promise<boolean> => {
+    if (agent !== "codex" && harnessAvailability[agent] !== "ready") return false;
     const composerId = controller.get(mounted.composer).composerId;
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
@@ -1085,6 +1115,64 @@ export function installRendererBindingProbe(
     }
   };
 
+  const openInstallPage = (agent: ExternalRendererAgent): void => {
+    const url = RENDERER_AGENT_INSTALL_URLS[agent];
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const refreshHarnessAvailability = (refresh = false): Promise<void> => {
+    if (adapterStatus.state !== "ready" || !modelControl) return Promise.resolve();
+    const client = modelControl;
+    if (availabilityRequest?.client === client) return availabilityRequest.promise;
+    const generation = ++availabilityRequestGeneration;
+    const promise = (async () => {
+      const inspections = await Promise.all(
+        externalAgents.map(async (agent) => {
+          try {
+            const inspection = await client.inspectHarness({
+              harnessId: externalHarnessIds[agent],
+              refresh,
+            });
+            return [agent, inspection.status === "ready" ? "ready" : inspection.status] as const;
+          } catch {
+            return [agent, "error"] as const;
+          }
+        }),
+      );
+      if (generation !== availabilityRequestGeneration || disposed) return;
+      harnessAvailability = Object.fromEntries(inspections) as HarnessAvailability;
+      for (const mounted of mountedByComposer.values()) {
+        const state = controller.get(mounted.composer);
+        if (
+          state.phase === "draft" &&
+          state.agent !== "codex" &&
+          harnessAvailability[state.agent] !== "ready"
+        ) {
+          await switchComposerAgent(mounted, "codex");
+        }
+      }
+      for (const mounted of mountedByComposer.values()) {
+        const state = controller.get(mounted.composer);
+        if (state.agent !== "codex") {
+          void loadExternalCatalog(mounted);
+        } else {
+          renderMounted(mounted);
+        }
+      }
+    })();
+    const request = { client, promise };
+    availabilityRequest = request;
+    void promise.then(
+      () => {
+        if (availabilityRequest === request) availabilityRequest = null;
+      },
+      () => {
+        if (availabilityRequest === request) availabilityRequest = null;
+      },
+    );
+    return promise;
+  };
+
   const mount = (composer: Element): void => {
     if (mountedByComposer.has(composer) || !composer.isConnected) return;
     const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
@@ -1103,6 +1191,7 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         void switchComposerAgent(mounted, agent);
       },
+      openInstallPage,
       (modelId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
@@ -1351,6 +1440,7 @@ export function installRendererBindingProbe(
   });
   const onAdapterStatus = () => {
     if (adapterStatus.state === "ready") {
+      void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {
         if (
           mounted.modelView.status === "waitingForAdapter" &&
@@ -1368,7 +1458,13 @@ export function installRendererBindingProbe(
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
+  const onWindowFocus = (): void => {
+    if (externalAgents.some((agent) => harnessAvailability[agent] !== "ready")) {
+      void refreshHarnessAvailability(true);
+    }
+  };
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+  window.addEventListener("focus", onWindowFocus);
 
   const connectedComposers = (): MountedComposer[] =>
     [...mountedByComposer.values()].filter(
@@ -1386,6 +1482,7 @@ export function installRendererBindingProbe(
         version: 2,
         mountedComposers: selections.length,
         enabledAgents: [...enabledAgents],
+        availability: { ...harnessAvailability },
         selections,
         adapter: { ...adapterStatus },
       };
@@ -1422,6 +1519,7 @@ export function installRendererBindingProbe(
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
       sidebarAgentIcons.refresh();
+      void refreshHarnessAvailability();
       const connected = connectedComposers();
       if (connected.length === 1) {
         const mounted = connected[0];
@@ -1456,6 +1554,7 @@ export function installRendererBindingProbe(
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
+      window.removeEventListener("focus", onWindowFocus);
       for (const mounted of mountedByComposer.values())
         disposeComposerAgentControl(mounted.control);
       mountedByComposer.clear();

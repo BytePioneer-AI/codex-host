@@ -22,8 +22,29 @@ import {
   selectOptimisticModelAtom,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
+import { transitionRendererAdapterStatus } from "../src/versioned-renderer-adapter.js";
 
 describe("versioned Renderer Agent adapter", () => {
+  it("publishes only semantic Adapter status transitions", () => {
+    const status = {
+      state: "installing" as const,
+      reason: "installing" as const,
+      modelUpdates: 0,
+      hook: null,
+    };
+    const publish = vi.fn();
+    const ready = {
+      state: "ready" as const,
+      reason: "ready" as const,
+      hook: "model-state" as const,
+    };
+
+    expect(transitionRendererAdapterStatus(status, ready, publish)).toBe(true);
+    expect(transitionRendererAdapterStatus(status, ready, publish)).toBe(false);
+    expect(status).toEqual({ ...ready, modelUpdates: 0 });
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
   it("finds only current-build request clients from the active Composer Fiber", () => {
     const editor = {
       parentElement: null,

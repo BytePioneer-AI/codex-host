@@ -65,6 +65,8 @@ export class DraftAgentController<Composer extends object> {
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
   #composerSequence = 0;
+  #modelRequestSequence = 0;
+  #ownershipRequestSequence = 0;
   #lastSubmittedAgent: RendererAgent;
 
   constructor(options: DraftAgentControllerOptions = {}) {
@@ -106,7 +108,7 @@ export class DraftAgentController<Composer extends object> {
 
   beginModelRequest(composer: Composer): number {
     const state = this.#state(composer);
-    const generation = (this.#modelRequestGenerations.get(state) ?? 0) + 1;
+    const generation = ++this.#modelRequestSequence;
     this.#modelRequestGenerations.set(state, generation);
     return generation;
   }
@@ -121,13 +123,37 @@ export class DraftAgentController<Composer extends object> {
 
   beginOwnershipRequest(composer: Composer): number {
     const state = this.#state(composer);
-    const generation = (this.#ownershipRequestGenerations.get(state) ?? 0) + 1;
+    const generation = ++this.#ownershipRequestSequence;
     this.#ownershipRequestGenerations.set(state, generation);
     return generation;
   }
 
   isCurrentOwnershipRequest(composer: Composer, generation: number): boolean {
     return (this.#ownershipRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+  }
+
+  rebindConversation(
+    composer: Composer,
+    target: readonly unknown[] | null,
+  ): Readonly<DraftComposerState> | null {
+    if (!isConversationTarget(target)) return null;
+    const previous = this.#state(composer);
+    this.#modelRequestGenerations.set(previous, ++this.#modelRequestSequence);
+    this.#ownershipRequestGenerations.set(previous, ++this.#ownershipRequestSequence);
+
+    let state = this.#conversationState(target);
+    if (!state) {
+      state = {
+        agent: "codex",
+        phase: "draft",
+        composerId: this.#idFactory(++this.#composerSequence),
+      };
+      this.#conversationStates.push({ target, state });
+    }
+    this.#states.set(composer, state);
+    this.#modelRequestGenerations.set(state, ++this.#modelRequestSequence);
+    this.#ownershipRequestGenerations.set(state, ++this.#ownershipRequestSequence);
+    return state;
   }
 
   restore(

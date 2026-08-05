@@ -343,6 +343,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("continues an existing Pi Thread without requiring a Renderer Model carrier", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const effectiveModel = session.state.effectiveModel;
+
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "turn/start",
+      params: {
+        threadId,
+        model: "gpt-5.6-luna",
+        input: [{ type: "text", text: "existing Pi turn" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 42)),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    expect(session.state.effectiveModel).toEqual(effectiveModel);
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
   it("lists persisted ownership without restoring external Sessions", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
@@ -1950,6 +1974,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await store.close();
 
+    const restoredModel = adapter.catalog.models[1]?.ref;
+    if (!restoredModel) throw new Error("Fake Adapter has no restored Model");
+    fakeSource.setStateForSnapshot({
+      ...fakeSource.state,
+      effectiveModel: restoredModel,
+      resolvedModelLabel: "Fake Secondary",
+    });
+
     const fixture = createFixture({
       externalAdapters: new Map([["pi", adapter]]),
       mappingStoreDirectory: directory,
@@ -1986,6 +2018,21 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.messages.findIndex((message) => requestId(message, 60)),
     );
     expect(fakeSource.snapshotReads).toBe(2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 63,
+      method: "codexhost/thread/inspect",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 63)),
+    ).resolves.toMatchObject({
+      result: {
+        owner: "external",
+        effectiveModel: restoredModel,
+        resolvedModelLabel: "Fake Secondary",
+      },
+    });
 
     writeRequest(fixture.desktopInput, {
       id: 61,

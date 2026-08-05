@@ -475,6 +475,10 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: {
+        state: {
+          nativeRef: { nativeSessionId: "source-session" },
+          effectiveThinkingOptionId: "high",
+        },
         turns: [
           { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
           { nativeTurnRef: { nativeTurnKey: "source-user-2" } },

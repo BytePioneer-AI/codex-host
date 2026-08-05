@@ -583,6 +583,10 @@ describe("minimal Harness text Session", () => {
       },
     });
     await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectiveModel: model } },
+    });
     await session.close();
   });
 

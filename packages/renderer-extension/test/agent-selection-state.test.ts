@@ -249,6 +249,34 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.get(revisit)).toEqual(original);
   });
 
+  it("rebinds a reused Composer without carrying another conversation's Pi state", () => {
+    const composer = {};
+    const piTarget = ["conversation", "pi-thread"];
+    const codexTarget = ["conversation", "codex-thread"];
+    const agents = controller();
+    const model = harnessModelRefSchema.parse({ id: "openai~gpt-5.6-sol" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+
+    agents.mount(composer, piTarget);
+    agents.restore(composer, "pi", model, thinkingOptionId);
+    const staleModelRequest = agents.beginModelRequest(composer);
+    const staleOwnershipRequest = agents.beginOwnershipRequest(composer);
+
+    expect(agents.rebindConversation(composer, codexTarget)).toMatchObject({
+      agent: "codex",
+      phase: "draft",
+    });
+    expect(agents.get(composer)).not.toHaveProperty("piModel");
+    expect(agents.get(composer)).not.toHaveProperty("piThinkingOptionId");
+    expect(agents.isCurrentModelRequest(composer, staleModelRequest)).toBe(false);
+    expect(agents.isCurrentOwnershipRequest(composer, staleOwnershipRequest)).toBe(false);
+
+    expect(agents.restore(composer, "codex")).toMatchObject({
+      agent: "codex",
+      phase: "locked",
+    });
+  });
+
   it("restores a newly mounted Fork owner and ignores stale ownership generations", () => {
     const forkComposer = {};
     const replacement = {};

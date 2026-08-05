@@ -295,7 +295,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    if (!this.#statePublished) return { ok: true, value: { turns: [] } };
+    if (!this.#statePublished) return { ok: true, value: { turns: [], state: this.#state } };
 
     this.#readingHistory = true;
     try {
@@ -323,7 +323,10 @@ class ClaudeHarnessSession implements HarnessSession {
         };
       }
       try {
-        return { ok: true, value: mapClaudeSnapshot(messages, this.#sessionId) };
+        return {
+          ok: true,
+          value: { ...mapClaudeSnapshot(messages, this.#sessionId), state: this.#state },
+        };
       } catch {
         return {
           ok: false,

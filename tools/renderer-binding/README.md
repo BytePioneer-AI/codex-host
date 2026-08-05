@@ -34,11 +34,11 @@ The probe does not persist Prompt text, input values, Transcript, full DOM, Mode
 
 The public DOM/preload surface still has no stable Agent-to-create binding. The supported build instead uses three version-locked structural policies:
 
-1. The Renderer Adapter uniquely locates the current Composer's optimistic Model atom and writes the internal `codexhost/pi-native` transport token for Pi.
+1. The Renderer Adapter uniquely locates a new-Thread draft Composer's optimistic Model atom and writes the internal `codexhost/pi-native` transport token only for external Thread creation. Existing conversation targets never write that atom.
 2. The draft prewarm policy recovers the owned official request bridge through CDP and exposes only `clear-prewarmed-threads-for-host({ hostId: "local" })` as a no-argument Renderer operation.
 3. The main-process title policy locates `ThreadMetadataGenerationService.generateTitle`; Pi uses the Desktop's local fallback instead of creating an official Codex ephemeral title Thread.
 
-A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: the same target or a locked `default → conversation` creation transition transfers state, while an unsubmitted `default → conversation` transition resolves immutable ownership through the Host before submission. A new task starts with the most recently submitted Agent, and revisiting a known conversation in the same Renderer process restores its final Agent and locked phase.
+A draft remains switchable while the user edits it. Each Agent change applies the target optimistic Model state and then clears the stale prewarm; Send is disabled until clearing settles. Click, non-composing Enter, or form submission synchronously reapplies and locks the final Agent. Composer replacement uses an opaque React Model target identity: the same target or a locked `default → conversation` creation transition transfers state, while an unsubmitted `default → conversation` transition resolves immutable ownership through the Host before submission. A `conversation A → conversation B` transition invalidates A, resolves B through Host ownership, and never transfers or writes native Model state. Existing external Turns route by immutable Thread ownership and use fixed Host controls for configuration. A new task starts with the most recently submitted Agent, and revisiting a known conversation in the same Renderer process restores its final Agent and locked phase.
 
 The final controlled Gates proved:
 

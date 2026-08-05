@@ -21,6 +21,14 @@ Every history-capable production external HarnessSession SHALL provide an idle f
 - **WHEN** native history does not prove success, failure, or cancellation
 - **THEN** the Snapshot SHALL use an explicit unknown outcome rather than report success
 
+### Requirement: Snapshot recovery includes current Native Session state
+An idle `readSnapshot()` SHALL return the latest visible history and the current confirmed Native Session state as one recovery result. Historical Turn data and current configuration remain distinct fields; Host SHALL initialize a restored Thread from that Snapshot state before exposing the Thread as recovered.
+
+#### Scenario: Existing external Thread is restored
+- **WHEN** Host resumes a Native Session and reads its Snapshot
+- **THEN** the Snapshot SHALL include the current confirmed Model, Thinking option, and other available Session configuration
+- **AND** the first ownership inspection after recovery SHALL observe that configuration without waiting for a later output event
+
 ### Requirement: Live terminal identity aligns with Snapshot identity
 A live accepted Turn that becomes part of Native history SHALL emit a stable NativeTurnRef and any supported exact Checkpoint before Host-visible completion. When the Session supports Snapshot reads, a later Snapshot SHALL return the same NativeTurnRef and Checkpoint for that logical Turn.
 
@@ -44,6 +52,7 @@ A live accepted Turn that becomes part of Native history SHALL emit a stable Nat
 #### Scenario: Valid Session is resumed
 - **WHEN** resume receives a readable NativeSessionRef belonging to the Adapter and matching cwd
 - **THEN** the returned HarnessSession SHALL identify the same Native Session and expose its latest full Snapshot
+- **AND** opening and reading SHALL NOT change the Session's current native configuration
 
 #### Scenario: Session cannot be resumed
 - **WHEN** the Ref belongs to another Harness, the Session is missing, or cwd cannot be safely matched

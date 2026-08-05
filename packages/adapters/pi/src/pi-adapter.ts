@@ -417,10 +417,13 @@ class PiHarnessSession implements HarnessSession {
       const history = await transport.getEntries();
       return {
         ok: true,
-        value: mapPiSnapshot(history, {
-          sessionId: transport.state.sessionId,
-          model: nativeModelForHistory(transport.state),
-        }),
+        value: {
+          ...mapPiSnapshot(history, {
+            sessionId: transport.state.sessionId,
+            model: nativeModelForHistory(transport.state),
+          }),
+          state: this.#state,
+        },
       };
     } catch (error) {
       return { ok: false, error: normalizedError(error, "nativeFailure") };

@@ -235,6 +235,11 @@ export class FakeHarnessSession implements HarnessSession {
     return this.#state;
   }
 
+  setStateForSnapshot(state: HarnessSessionState): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.#state = cloneJson(state);
+  }
+
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {
     if (this.#closed) throw new Error("Fake Harness Session is closed");
     this.#event({
@@ -266,7 +271,10 @@ export class FakeHarnessSession implements HarnessSession {
         },
       };
     }
-    return { ok: true, value: cloneJson(this.#snapshot) };
+    return {
+      ok: true,
+      value: { ...cloneJson(this.#snapshot), state: cloneJson(this.#state) },
+    };
   }
 
   persistedSnapshot(): HostThreadSnapshot {

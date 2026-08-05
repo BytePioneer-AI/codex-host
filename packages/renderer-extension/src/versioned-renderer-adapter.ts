@@ -303,10 +303,7 @@ function isModelAtomState(value: unknown): value is ModelAtomState {
 function isModelSelection(value: unknown): value is ModelPowerSelection | null {
   return (
     value === null ||
-    (isRecord(value) &&
-      Object.keys(value).sort().join(",") === "model,reasoningEffort" &&
-      "model" in value &&
-      "reasoningEffort" in value)
+    (isRecord(value) && "model" in value && "reasoningEffort" in value)
   );
 }
 

@@ -153,8 +153,8 @@ For the supported Desktop build, the Renderer SHALL show a codexhost-owned Pi Mo
 - **WHEN** the supported request manager, Composer Model atom, or conversation Thread identity cannot be uniquely validated
 - **THEN** Pi Model discovery or selection is disabled and no generic request or guessed identity fallback is used
 
-### Requirement: Current-process scope is explicit
-This change SHALL preserve Model state only for current-process Pi drafts and Threads and SHALL NOT claim recovery after Renderer, Host, or Desktop restart.
+### Requirement: Draft state and Existing Thread recovery have distinct sources
+The Renderer SHALL keep unsubmitted draft Model state only in the logical Composer. An Existing Thread SHALL recover its confirmed current Model and Thinking state from the resumed Native Session Snapshot and SHALL NOT infer it from cached UI state or another Thread.
 
 #### Scenario: Same-process Composer replacement or revisit
 - **WHEN** an equivalent logical Pi Composer is replaced or revisited in the same Renderer process
@@ -165,9 +165,9 @@ This change SHALL preserve Model state only for current-process Pi drafts and Th
 - **THEN** the new Composer does not inherit the prior Pi Model Ref
 
 #### Scenario: Application restarts
-- **WHEN** current-process Model state is lost after restart
-- **THEN** this slice does not infer it from cached UI data or create a persisted second source of truth
-- **AND** cross-restart recovery remains assigned to later Snapshot and Mapping Store work
+- **WHEN** Host restores an Existing external Thread after restart
+- **THEN** Host resumes the mapped Native Session and initializes the Thread from the current state returned with its Snapshot
+- **AND** Mapping Store and cached Renderer state do not become a second source of Model or Thinking truth
 
 ### Requirement: Selectable Model aliases remain distinct from resolved Models
 An Adapter SHALL preserve every distinct native selectable value as an Adapter-owned Model Ref even when multiple values currently resolve to the same underlying Model. A dynamic default or family alias SHALL NOT be replaced by a resolved Model string that cannot reproduce the same policy selection.

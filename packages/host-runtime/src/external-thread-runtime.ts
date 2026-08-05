@@ -2,6 +2,7 @@ import type {
   HarnessAdapter,
   HarnessModelRef,
   HarnessSession,
+  HarnessSessionState,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -129,16 +130,18 @@ export class ExternalThreadRuntime {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    restoredState?: HarnessSessionState;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
     if (!this.#adapters.has(harnessId)) {
       throw new Error(`External Harness '${input.record.harnessId}' is not registered`);
     }
-    const effectiveModel = input.requestedModel ?? input.session.initialState.effectiveModel;
+    const initialState = input.restoredState ?? input.session.initialState;
+    const effectiveModel = input.requestedModel ?? initialState.effectiveModel;
     const effectiveThinkingOptionId =
-      input.requestedThinkingOptionId ?? input.session.initialState.effectiveThinkingOptionId;
+      input.requestedThinkingOptionId ?? initialState.effectiveThinkingOptionId;
     const effectivePermissionModeId =
-      input.requestedPermissionModeId ?? input.session.initialState.effectivePermissionModeId;
+      input.requestedPermissionModeId ?? initialState.effectivePermissionModeId;
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -154,7 +157,7 @@ export class ExternalThreadRuntime {
         : {}),
       record: input.record,
       sessionId: input.sessionId,
-      stateObserver: new SessionStateObserver(input.session.initialState),
+      stateObserver: new SessionStateObserver(initialState),
       thread: input.thread,
       transportModelId: input.record.transportModelId,
       turns: input.turns,
@@ -333,6 +336,7 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns: aligned.turns,
+        ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     } catch (error) {
       await session.close().catch(() => undefined);

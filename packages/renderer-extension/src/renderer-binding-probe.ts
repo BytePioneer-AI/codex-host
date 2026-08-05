@@ -217,7 +217,14 @@ export function isLateConversationTarget(
   mountedTarget: readonly unknown[] | null,
   currentTarget: readonly unknown[] | null,
 ): boolean {
-  return mountedTarget?.[0] === "default" && currentTarget?.[0] === "conversation";
+  if (currentTarget?.[0] !== "conversation") return false;
+  if (mountedTarget === null) return true;
+  if (mountedTarget?.[0] === "default") return true;
+  if (mountedTarget?.[0] !== "conversation") return false;
+  return (
+    mountedTarget.length !== currentTarget.length ||
+    mountedTarget.some((value, index) => value !== currentTarget[index])
+  );
 }
 
 export function lateConversationTargetResolution(
@@ -226,7 +233,20 @@ export function lateConversationTargetResolution(
   sourcePhase: ComposerAgentPhase,
 ): "none" | "transfer" | "inspect" {
   if (!isLateConversationTarget(mountedTarget, currentTarget)) return "none";
-  return sourcePhase === "locked" ? "transfer" : "inspect";
+  return mountedTarget?.[0] === "default" && sourcePhase === "locked" ? "transfer" : "inspect";
+}
+
+export function isComposerModelWriteAllowed(target: readonly unknown[] | null): boolean {
+  return target?.[0] === "default";
+}
+
+export function applyComposerModelWrite(
+  target: readonly unknown[] | null,
+  write: () => boolean,
+): boolean {
+  if (target?.[0] === "conversation") return true;
+  if (!isComposerModelWriteAllowed(target)) return false;
+  return write();
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
@@ -354,9 +374,14 @@ export function installRendererBindingProbe(
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-  ): boolean =>
-    applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId, mounted.composer) ??
-    false;
+  ): boolean => {
+    return applyComposerModelWrite(
+      mounted.modelTarget,
+      () =>
+        applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId, mounted.composer) ??
+        false,
+    );
+  };
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
@@ -386,13 +411,7 @@ export function installRendererBindingProbe(
         thinkingOptionId,
         permissionModeId,
       );
-      if (
-        !restored ||
-        !(
-          applyAdapterAgent?.(agent, model, thinkingOptionId, permissionModeId, mounted.composer) ??
-          agent === "codex"
-        )
-      ) {
+      if (!restored) {
         throw new Error("Thread owner could not be applied to the Composer");
       }
       mounted.ownershipStatus = "ready";
@@ -442,8 +461,13 @@ export function installRendererBindingProbe(
     );
     if (resolution === "none") return false;
 
+    const previousTarget = mounted.modelTarget;
     mounted.modelTarget = currentTarget;
-    if (!controller.transfer(mounted.composer, mounted.composer, currentTarget)) {
+    const rebound =
+      resolution === "transfer"
+        ? controller.transfer(mounted.composer, mounted.composer, currentTarget)
+        : controller.rebindConversation(mounted.composer, currentTarget) !== null;
+    if (!rebound) {
       mounted.ownershipStatus = "error";
       renderMounted(mounted);
       return true;
@@ -452,6 +476,12 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
     } else {
+      mounted.composerId = controller.get(mounted.composer).composerId;
+      mounted.modelView = { status: "idle" };
+      mounted.permissionModeView = { status: "idle" };
+      mounted.threadConfiguration = undefined;
+      mounted.ownershipStatus = "loading";
+      if (previousTarget?.[0] === "conversation") renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
     return true;
@@ -1104,17 +1134,19 @@ export function installRendererBindingProbe(
       threadConfiguration: inherited?.threadConfiguration,
     };
     mountedByComposer.set(composer, mounted);
-    applyAdapterAgent?.(
-      state.agent,
-      controller.modelForAgent(composer, state.agent),
-      state.agent !== "codex"
-        ? controller.thinkingOptionForAgent(composer, state.agent)
-        : undefined,
-      state.agent !== "codex"
-        ? controller.permissionModeForAgent(composer, state.agent)
-        : undefined,
-      composer,
-    );
+    if (isComposerModelWriteAllowed(modelTarget)) {
+      applyAdapterAgent?.(
+        state.agent,
+        controller.modelForAgent(composer, state.agent),
+        state.agent !== "codex"
+          ? controller.thinkingOptionForAgent(composer, state.agent)
+          : undefined,
+        state.agent !== "codex"
+          ? controller.permissionModeForAgent(composer, state.agent)
+          : undefined,
+        composer,
+      );
+    }
     renderMounted(mounted);
     if (threadIdFromComposerModelTarget(modelTarget) && !inherited) {
       void loadThreadOwnership(mounted);
@@ -1213,18 +1245,25 @@ export function installRendererBindingProbe(
 
   const applyComposerAgent = (composer: Element): boolean => {
     const state = controller.get(composer);
-    return (
-      applyAdapterAgent?.(
-        state.agent,
-        controller.modelForAgent(composer, state.agent),
-        state.agent !== "codex"
-          ? controller.thinkingOptionForAgent(composer, state.agent)
-          : undefined,
-        state.agent !== "codex"
-          ? controller.permissionModeForAgent(composer, state.agent)
-          : undefined,
-        composer,
-      ) ?? state.agent === "codex"
+    const mounted = mountedByComposer.get(composer);
+    if (mounted?.modelTarget?.[0] === "conversation") {
+      return state.phase === "locked" && mounted.ownershipStatus === "ready";
+    }
+    if (!mounted || !isComposerModelWriteAllowed(mounted.modelTarget)) return false;
+    return applyComposerModelWrite(
+      mounted.modelTarget,
+      () =>
+        applyAdapterAgent?.(
+          state.agent,
+          controller.modelForAgent(composer, state.agent),
+          state.agent !== "codex"
+            ? controller.thinkingOptionForAgent(composer, state.agent)
+            : undefined,
+          state.agent !== "codex"
+            ? controller.permissionModeForAgent(composer, state.agent)
+            : undefined,
+          composer,
+        ) ?? state.agent === "codex",
     );
   };
   const blockEvent = (event: Event): void => {
@@ -1388,17 +1427,6 @@ export function installRendererBindingProbe(
         const mounted = connected[0];
         if (mounted) {
           const state = controller.get(mounted.composer);
-          applyAdapterAgent?.(
-            state.agent,
-            controller.modelForAgent(mounted.composer, state.agent),
-            state.agent !== "codex"
-              ? controller.thinkingOptionForAgent(mounted.composer, state.agent)
-              : undefined,
-            state.agent !== "codex"
-              ? controller.permissionModeForAgent(mounted.composer, state.agent)
-              : undefined,
-            mounted.composer,
-          );
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&
             mounted.ownershipStatus !== "ready"
@@ -1406,6 +1434,8 @@ export function installRendererBindingProbe(
             void loadThreadOwnership(mounted);
           } else if (state.agent !== "codex") {
             void loadExternalCatalog(mounted);
+          } else if (isComposerModelWriteAllowed(mounted.modelTarget)) {
+            applyComposerAgent(mounted.composer);
           }
         }
       }

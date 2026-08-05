@@ -1692,130 +1692,19 @@ export class AppServerHost {
       return;
     }
     const params = requestObject(request);
-    let requestedSelection: ReturnType<typeof decodeExternalTransportSelection>;
-    try {
-      requestedSelection = decodeExternalTransportSelection(thread.harnessId, params.model);
-    } catch (error) {
-      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
-      return;
-    }
-    if (typeof params.model === "string" && requestedSelection === null) {
-      await this.#writer.json(
-        rpcError(request, -32602, "Turn Model carrier does not belong to the Thread Harness"),
-      );
-      return;
-    }
-    const requestedModel = requestedSelection?.model;
-    if (requestedModel) {
-      if (!thread.session.capabilities.configuration.selectModel) {
-        await this.#writer.json(
-          rpcError(request, -32078, "External Harness does not support Model selection"),
-        );
+    if (typeof params.model === "string") {
+      let route: ReturnType<typeof decodeCreateRoute>;
+      try {
+        route = decodeCreateRoute({ id: request.id, method: "thread/start", params });
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
         return;
       }
-      const current = thread.stateObserver.state.effectiveModel;
-      const pendingCreateSelection =
-        current === undefined && thread.requestedModel?.id === requestedModel.id;
-      if (current?.id !== requestedModel.id && !pendingCreateSelection) {
-        const beforeRevision = thread.stateObserver.revision;
-        const selection = await thread.session.execute({
-          type: "model.select",
-          model: requestedModel,
-        });
-        if (!selection.ok) {
-          await this.#writer.json(rpcError(request, -32078, selection.error.message));
-          return;
-        }
-        try {
-          const state = await thread.stateObserver.waitForChange(beforeRevision);
-          if (state.effectiveModel?.id !== requestedModel.id) {
-            throw new Error("Harness Session activated a different Model");
-          }
-        } catch (error) {
-          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
-          return;
-        }
-      }
-      thread.requestedModel = requestedModel;
-    }
-    const requestedThinkingOptionId = requestedSelection?.thinkingOptionId;
-    if (requestedThinkingOptionId) {
-      if (!thread.session.capabilities.configuration.selectThinkingOption) {
+      if (route?.harnessId !== "codex" && route?.harnessId !== thread.harnessId) {
         await this.#writer.json(
-          rpcError(request, -32078, "External Harness does not support Thinking selection"),
+          rpcError(request, -32602, "Turn Model carrier does not belong to the Thread Harness"),
         );
         return;
-      }
-      const current = thread.stateObserver.state.effectiveThinkingOptionId;
-      const pendingCreateSelection =
-        current === undefined && thread.requestedThinkingOptionId === requestedThinkingOptionId;
-      if (current !== requestedThinkingOptionId && !pendingCreateSelection) {
-        const beforeRevision = thread.stateObserver.revision;
-        const selection = await thread.session.execute({
-          type: "thinking.select",
-          thinkingOptionId: requestedThinkingOptionId,
-        });
-        if (!selection.ok) {
-          await this.#writer.json(rpcError(request, -32078, selection.error.message));
-          return;
-        }
-        try {
-          const state = await thread.stateObserver.waitForChange(beforeRevision);
-          if (!state.effectiveThinkingOptionId) {
-            throw new Error("Harness Session did not report effective Thinking");
-          }
-          thread.requestedThinkingOptionId = state.effectiveThinkingOptionId;
-        } catch (error) {
-          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
-          return;
-        }
-      }
-    }
-    const requestedPermissionModeId = requestedSelection?.permissionModeId;
-    if (requestedPermissionModeId) {
-      if (!thread.session.capabilities.configuration.selectPermissionMode) {
-        await this.#writer.json(
-          rpcError(request, -32078, "External Harness does not support Permission Mode selection"),
-        );
-        return;
-      }
-      const current = thread.stateObserver.state.effectivePermissionModeId;
-      const pendingCreateSelection =
-        current === undefined && thread.requestedPermissionModeId === requestedPermissionModeId;
-      if (current !== requestedPermissionModeId && !pendingCreateSelection) {
-        const beforeRevision = thread.stateObserver.revision;
-        const selection = await thread.session.execute({
-          type: "permissionMode.select",
-          permissionModeId: requestedPermissionModeId,
-        });
-        if (!selection.ok) {
-          await this.#writer.json(rpcError(request, -32078, selection.error.message));
-          return;
-        }
-        try {
-          const state = await thread.stateObserver.waitForChange(beforeRevision);
-          if (state.effectivePermissionModeId !== requestedPermissionModeId) {
-            throw new Error("Harness Session activated a different Permission Mode");
-          }
-        } catch (error) {
-          await this.#writer.json(rpcError(request, -32078, errorMessage(error)));
-          return;
-        }
-      }
-      thread.requestedPermissionModeId = requestedPermissionModeId;
-    }
-    if (requestedModel || requestedThinkingOptionId || requestedPermissionModeId) {
-      const transportModelId = params.model as string;
-      thread.transportModelId = transportModelId;
-      if (requestedPermissionModeId) {
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
-        }
       }
     }
     let text: string;

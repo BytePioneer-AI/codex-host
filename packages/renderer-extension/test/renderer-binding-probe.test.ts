@@ -8,9 +8,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  applyComposerModelWrite,
   draftPermissionMode,
   draftThinkingOptionForModel,
   isLateConversationTarget,
+  isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lateConversationTargetResolution,
   restoredThreadOwnership,
@@ -224,8 +226,12 @@ describe("Renderer Composer DOM behavior", () => {
     );
     expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
-    expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(false);
-    expect(isLateConversationTarget(null, conversationTarget)).toBe(false);
+    expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(true);
+    expect(
+      lateConversationTargetResolution(conversationTarget, ["conversation", "opaque-2"], "locked"),
+    ).toBe("inspect");
+    expect(isLateConversationTarget(null, conversationTarget)).toBe(true);
+    expect(lateConversationTargetResolution(null, conversationTarget, "draft")).toBe("inspect");
   });
 
   it("does not transfer an unsubmitted default draft when an existing conversation opens", () => {
@@ -245,5 +251,23 @@ describe("Renderer Composer DOM behavior", () => {
       shouldTransferComposerState(firstConversationTarget, otherConversationTarget, "locked"),
     ).toBe(false);
     expect(shouldTransferComposerState(null, firstConversationTarget, "locked")).toBe(false);
+  });
+
+  it("allows native Model writes only for a new-Thread draft target", () => {
+    expect(isComposerModelWriteAllowed(["default", "draft"])).toBe(true);
+    expect(isComposerModelWriteAllowed(["conversation", "pi-thread"])).toBe(false);
+    expect(isComposerModelWriteAllowed(["conversation", "codex-thread"])).toBe(false);
+    expect(isComposerModelWriteAllowed(null)).toBe(false);
+  });
+
+  it("never writes the native Model while repeatedly switching existing conversations", () => {
+    const write = vi.fn(() => true);
+
+    for (let index = 0; index < 100; index += 1) {
+      const agent = index % 2 === 0 ? "pi" : "codex";
+      expect(applyComposerModelWrite(["conversation", `${agent}-${index}`], write)).toBe(true);
+    }
+
+    expect(write).not.toHaveBeenCalled();
   });
 });

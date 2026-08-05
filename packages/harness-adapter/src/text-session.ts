@@ -330,6 +330,8 @@ export interface HostTurnSnapshot {
 
 export interface HostThreadSnapshot {
   turns: HostTurnSnapshot[];
+  /** Current Native Session configuration observed with this history read. */
+  state?: HarnessSessionState;
 }
 
 export type TurnOutcome =

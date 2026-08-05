@@ -69,14 +69,21 @@ describe("versioned Renderer Agent adapter", () => {
     const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
     const compact = { atom: {}, get: vi.fn(() => wrapper), set: vi.fn() };
     const target = ["conversation", "thread-1"];
+    const nativeSelection = {
+      id: "official/model:medium",
+      model: "official/model",
+      modelLabel: "Official Model",
+      reasoningEffort: "medium",
+      powerSettingIndex: 2,
+    };
     const optimistic = {
       atom: {},
-      get: vi.fn(() => ({ model: "official/model", reasoningEffort: "medium" })),
+      get: vi.fn(() => nativeSelection),
       set: vi.fn(),
     };
     const committed = {
       atom: {},
-      get: vi.fn(() => ({ model: "official/model", reasoningEffort: "medium" })),
+      get: vi.fn(() => nativeSelection),
       set: vi.fn(),
     };
     const composer = { matches: () => true, parentElement: null } as unknown as Element;

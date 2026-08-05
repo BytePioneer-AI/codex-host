@@ -171,6 +171,7 @@ export async function executeExternalThreadFork(input: {
       sessionId: source.sessionId,
       thread,
       turns: aligned.turns,
+      ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
     });
     return {
       ok: true,

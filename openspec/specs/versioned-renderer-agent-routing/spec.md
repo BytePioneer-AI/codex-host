@@ -41,6 +41,24 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 - **AND** it resolves and locks the conversation's immutable Agent through fixed Host ownership inspection
 - **AND** that Thread's Agent does not replace the most recently submitted Agent used for later new-Thread drafts
 
+#### Scenario: One mounted Composer changes between existing Threads
+
+- **WHEN** Desktop reuses the same Composer DOM while its opaque conversation target changes from Thread A to Thread B
+- **THEN** the Renderer immediately invalidates Thread A's pending ownership and Model requests and blocks submission while inspecting Thread B
+- **AND** no Agent, Model, Thinking, or Permission state from Thread A is transferred to Thread B
+
+#### Scenario: Rebound Thread belongs to Codex
+
+- **WHEN** ownership inspection identifies Thread B as an existing Codex Thread
+- **THEN** the Renderer locks it as Codex without writing its native Model state or calling an official Model setter
+- **AND** its existing Codex Model and Thinking selection remain controlled only by Codex and explicit user action
+
+#### Scenario: Rebound Thread belongs to an external Harness
+
+- **WHEN** ownership inspection identifies Thread B as an existing external Thread
+- **THEN** the Renderer restores only Thread B's confirmed Model, Thinking, and Permission state returned by Host
+- **AND** it SHALL NOT represent that restored configuration by writing a transport carrier into the native Codex Model state
+
 #### Scenario: User revisits a submitted Thread
 
 - **WHEN** a submitted conversation Composer is unmounted and an equivalent opaque conversation Model target is mounted again in the same Renderer process
@@ -94,6 +112,16 @@ For a supported Desktop build, the Renderer Adapter SHALL synchronously update t
 #### Scenario: Transport state is temporary
 - **WHEN** Pi is selected and later a new Codex Composer is mounted
 - **THEN** the Adapter restores the opaque pre-Pi state without calling the official persistent Model setter or persisting any Pi transport carrier as the user default Model
+
+#### Scenario: Existing Codex Thread is prepared for input
+- **WHEN** a locked existing Codex Thread receives input or submission events
+- **THEN** the Renderer forwards the native Codex flow without writing any native Model state
+
+#### Scenario: Existing external Thread continues
+- **WHEN** a locked existing Pi or Claude Code Thread receives input or submission events
+- **THEN** the Renderer SHALL NOT write a transport carrier into the native Codex Model state
+- **AND** Host routes the Turn from immutable Thread ownership and retains configuration from the Native Session
+- **AND** explicit Model, Thinking, or Permission changes use only the fixed Host control methods
 
 ### Requirement: Pi title generation does not enter Codex Harness
 

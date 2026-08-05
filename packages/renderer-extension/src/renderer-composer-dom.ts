@@ -142,6 +142,12 @@ export function isNativeModelControlCandidate(element: Element): boolean {
   ) {
     return false;
   }
+  if (
+    element.getAttribute("data-codex-intelligence-trigger") === "true" &&
+    element.getAttribute("data-composer-navigation-target") === "reasoning"
+  ) {
+    return true;
+  }
   const fiberName = Object.getOwnPropertyNames(element).find((name) =>
     name.startsWith("__reactFiber$"),
   );
@@ -289,11 +295,23 @@ function setNativeControlHidden(state: NativeControlState | null, hidden: boolea
     restoreNativeControl(state);
     return;
   }
+  if (state.element.hidden && state.element.getAttribute("aria-hidden") === "true") return;
   const active = document.activeElement;
   if (active instanceof HTMLElement && state.element.contains(active)) active.blur();
   if (state.element.getAttribute("aria-expanded") === "true") state.element.click();
   state.element.hidden = true;
   state.element.setAttribute("aria-hidden", "true");
+}
+
+export function reconcileComposerNativeControls(
+  control: ComposerAgentControl,
+  hideModel: boolean,
+  hidePermissionMode: boolean,
+): void {
+  refreshNativeModelControl(control);
+  refreshNativePermissionModeControl(control);
+  setNativeControlHidden(control.nativeModelControl, hideModel);
+  setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
 }
 
 export function mountComposerAgentControl(
@@ -398,10 +416,11 @@ export function renderComposerAgentControl(
     switching,
     availability,
   );
-  refreshNativeModelControl(control);
-  refreshNativePermissionModeControl(control);
-  setNativeControlHidden(control.nativeModelControl, pickerView.nativeModelHidden);
-  setNativeControlHidden(control.nativePermissionModeControl, switching || state.agent !== "codex");
+  reconcileComposerNativeControls(
+    control,
+    pickerView.nativeModelHidden,
+    switching || state.agent !== "codex",
+  );
   renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
   const permissionModeVisible =
     state.agent !== "codex" &&

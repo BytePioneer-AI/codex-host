@@ -60,9 +60,15 @@ describe("Renderer Agent picker presentation", () => {
   });
 
   it("recognizes only the native React Model menu as the Model candidate", () => {
-    const element = (ownAttributes: readonly string[], matches: boolean, modelProps: boolean) => {
+    const element = (
+      ownAttributes: readonly string[],
+      matches: boolean,
+      modelProps: boolean,
+      attributes: Readonly<Record<string, string>> = {},
+    ) => {
       const candidate = {
-        hasAttribute: (name: string) => ownAttributes.includes(name),
+        getAttribute: (name: string) => attributes[name] ?? null,
+        hasAttribute: (name: string) => ownAttributes.includes(name) || name in attributes,
         matches: () => matches,
       } as unknown as Element;
       Object.defineProperty(candidate, "__reactFiber$test", {
@@ -81,6 +87,14 @@ describe("Renderer Agent picker presentation", () => {
     };
 
     expect(isNativeModelControlCandidate(element([], true, true))).toBe(true);
+    expect(
+      isNativeModelControlCandidate(
+        element([], true, false, {
+          "data-codex-intelligence-trigger": "true",
+          "data-composer-navigation-target": "reasoning",
+        }),
+      ),
+    ).toBe(true);
     expect(isNativeModelControlCandidate(element([], true, false))).toBe(false);
     expect(isNativeModelControlCandidate(element([], false, true))).toBe(false);
     expect(

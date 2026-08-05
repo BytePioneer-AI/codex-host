@@ -28,6 +28,7 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   mountComposerAgentControl,
+  reconcileComposerNativeControls,
   renderComposerAgentControl,
   sendButtonWithin,
   type ComposerAgentControl,
@@ -1270,6 +1271,9 @@ export function installRendererBindingProbe(
         mountedByComposer.delete(composer);
         continue;
       }
+      const state = controller.get(composer);
+      const hideNativeControls = controller.isSwitching(composer) || state.agent !== "codex";
+      reconcileComposerNativeControls(mounted.control, hideNativeControls, hideNativeControls);
       if (refreshTargets) refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
@@ -1453,7 +1457,12 @@ export function installRendererBindingProbe(
     }
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);
   };
-  mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
+  mutationObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["hidden", "aria-hidden"],
+    childList: true,
+    subtree: true,
+  });
   document.addEventListener("beforeinput", onBeforeInput, true);
   document.addEventListener("submit", onSubmit, true);
   document.addEventListener("keydown", onKeyDown, true);

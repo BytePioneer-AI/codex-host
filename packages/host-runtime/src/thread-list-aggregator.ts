@@ -182,7 +182,7 @@ export async function aggregateThreadList(input: {
   let nextOfficialCursor = officialCursor;
   let nextOfficialDone = officialDone;
   const finalOfficialBatch = officialBatch as OfficialThreadListPage | null;
-  if (finalOfficialBatch) {
+  if (finalOfficialBatch && !officialDone) {
     if (officialIndex === 0) {
       nextOfficialCursor = officialBatchStart;
       nextOfficialDone = false;

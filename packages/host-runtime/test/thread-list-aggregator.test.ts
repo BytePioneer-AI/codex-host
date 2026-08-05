@@ -93,6 +93,19 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("terminates after an empty final official page", async () => {
+    const source = officialSource([]);
+    const page = await aggregateThreadList({
+      query: query({ limit: 100, sortDirection: "desc" }),
+      records: [],
+      runtimeFor: () => null,
+      requestOfficialPage: source.request,
+    });
+
+    expect(page).toMatchObject({ data: [], nextCursor: null, backwardsCursor: null });
+    expect(source.calls).toHaveLength(1);
+  });
+
   it("re-requests a partially consumed official batch for an exact cursor", async () => {
     const source = officialSource([official("official-5", 5), official("official-3", 3)]);
     const decoded = query({ limit: 2, sortKey: "created_at", sortDirection: "desc" });

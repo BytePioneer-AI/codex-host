@@ -1,16 +1,8 @@
+import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
-  readCodexLocaleSettings,
-  setCodexLocaleOverride,
-  type CodexLocaleSettings,
-} from "./codex-locale-adapter.js";
-import {
-  codexLocaleOverrideForSettingsSelection,
-  rendererSettingsLanguageSelection,
   rendererSettingsMessages,
   resolveRendererSettingsLocale,
-  type RendererSettingsLanguageSelection,
   type RendererSettingsLocale,
-  type RendererSettingsWritableLanguageSelection,
 } from "./settings/localization.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
@@ -29,8 +21,6 @@ export function installRendererSettingsLifecycle(
 ): RendererSettingsLifecycleControl {
   const lifecycleController = new AbortController();
   let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
-  let languageSelection: RendererSettingsLanguageSelection = "automatic";
-  let languageAvailable = false;
   let shell: RendererSettingsShell | null = null;
   let trigger: RendererSettingsHeaderTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
@@ -42,11 +32,7 @@ export function installRendererSettingsLifecycle(
     trigger: RendererSettingsHeaderTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
-    const nextShell = installRendererSettingsShell(undefined, messages, ownerWindow.document, {
-      available: languageAvailable,
-      selection: languageSelection,
-      setSelection: setLanguageSelection,
-    });
+    const nextShell = installRendererSettingsShell(undefined, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({
       available: nextShell.supported,
       messages,
@@ -67,24 +53,13 @@ export function installRendererSettingsLifecycle(
     return { shell: nextShell, trigger: nextTrigger };
   };
 
-  const applyLanguageState = (
-    nextLocale: RendererSettingsLocale,
-    nextSelection: RendererSettingsLanguageSelection,
-    nextAvailable: boolean,
-    preserveOpen: boolean,
-  ): void => {
+  const applyLanguageState = (nextLocale: RendererSettingsLocale, preserveOpen: boolean): void => {
     if (disposed) return;
-    const shouldRemount =
-      locale !== nextLocale ||
-      languageSelection !== nextSelection ||
-      languageAvailable !== nextAvailable;
-    if (!shouldRemount) return;
+    if (locale === nextLocale) return;
 
     const reopen = preserveOpen && shell?.open === true;
     const activePageId = shell?.activePageId;
     locale = nextLocale;
-    languageSelection = nextSelection;
-    languageAvailable = nextAvailable;
     trigger?.dispose();
     shell?.dispose();
     trigger = null;
@@ -98,34 +73,8 @@ export function installRendererSettingsLifecycle(
   };
 
   const applyLocaleSettings = (settings: CodexLocaleSettings, preserveOpen: boolean): void => {
-    applyLanguageState(
-      resolveRendererSettingsLocale([settings.preferredLocale]),
-      rendererSettingsLanguageSelection(settings.localeOverride),
-      settings.status === "ready",
-      preserveOpen,
-    );
+    applyLanguageState(resolveRendererSettingsLocale([settings.preferredLocale]), preserveOpen);
   };
-
-  async function setLanguageSelection(
-    selection: RendererSettingsWritableLanguageSelection,
-  ): Promise<void> {
-    const localeOverride = codexLocaleOverrideForSettingsSelection(selection);
-    await setCodexLocaleOverride(localeOverride, {
-      ownerWindow,
-      signal: lifecycleController.signal,
-    });
-    const settings = await readCodexLocaleSettings({
-      ownerWindow,
-      signal: lifecycleController.signal,
-    });
-    if (settings.status === "ready") {
-      applyLocaleSettings(settings, true);
-      return;
-    }
-
-    const preferredLocale = localeOverride ?? settings.preferredLocale;
-    applyLanguageState(resolveRendererSettingsLocale([preferredLocale]), selection, true, true);
-  }
 
   const refreshLocale = (): Promise<void> => {
     if (localeRequest) return localeRequest;

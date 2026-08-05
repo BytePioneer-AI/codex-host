@@ -8,6 +8,7 @@ import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
+import { createRendererSettingsIcon } from "./icons.js";
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "overview",
@@ -56,14 +57,20 @@ function mountOverview(
 
     const identity = context.content.ownerDocument.createElement("span");
     identity.className = "settings-status-row__identity";
+    const icon = context.content.ownerDocument.createElement("span");
+    icon.className = "settings-status-row__icon";
+    icon.append(createRendererSettingsIcon(pageId, 20));
     const label = context.content.ownerDocument.createElement("span");
     label.textContent = messages.pageLabels[pageId];
-    identity.append(label);
+    identity.append(icon, label);
 
     const status = context.content.ownerDocument.createElement("span");
     status.className = "settings-status-badge";
     status.textContent = messages.unavailable;
-    row.append(identity, status);
+    const detail = context.content.ownerDocument.createElement("span");
+    detail.className = "settings-status-row__detail";
+    detail.textContent = messages.runtimeCapabilityNotInstalled;
+    row.append(identity, status, detail);
     list.append(row);
   }
   context.content.append(heading, list);

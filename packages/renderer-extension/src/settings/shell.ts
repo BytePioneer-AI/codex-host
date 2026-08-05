@@ -9,9 +9,7 @@ import {
 import { createRendererSettingsBrandIcon, createRendererSettingsIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
-  type RendererSettingsLanguageControl,
   type RendererSettingsMessages,
-  type RendererSettingsWritableLanguageSelection,
 } from "./localization.js";
 import { createDefaultRendererSettingsRegistry } from "./pages.js";
 
@@ -41,23 +39,6 @@ export function isRendererSettingsDialogSupported(
   return typeof dialog.showModal === "function" && typeof dialog.close === "function";
 }
 
-function rendererSettingsTheme(ownerDocument: Document): "light" | "dark" {
-  const documentElement = ownerDocument.documentElement;
-  const explicitTheme = documentElement.dataset.theme?.toLowerCase();
-  const className = documentElement.className.toLowerCase();
-  if (explicitTheme === "dark" || className.includes("electron-dark")) return "dark";
-  if (explicitTheme === "light" || className.includes("electron-light")) return "light";
-  const colorScheme = ownerDocument.defaultView
-    ?.getComputedStyle(documentElement)
-    .colorScheme.trim()
-    .toLowerCase();
-  if (colorScheme?.startsWith("dark")) return "dark";
-  if (colorScheme?.startsWith("light")) return "light";
-  return ownerDocument.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
-
 function setActiveNavigation(
   buttons: ReadonlyMap<string, HTMLButtonElement>,
   activePageId: string,
@@ -72,7 +53,6 @@ export function mountRendererSettingsShell(
   registry?: RendererSettingsPageRegistry,
   ownerDocument: Document = document,
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
-  languageControl?: RendererSettingsLanguageControl,
 ): RendererSettingsShell {
   const resolvedRegistry = registry ?? createDefaultRendererSettingsRegistry(messages);
   if (!ownerDocument.body) throw new Error("Renderer document body is unavailable");
@@ -83,18 +63,7 @@ export function mountRendererSettingsShell(
   const root = ownerDocument.createElement("div");
   root.setAttribute(SETTINGS_SHELL_ATTRIBUTE, "v1");
   root.lang = messages.locale;
-  const updateTheme = (): void => {
-    root.dataset.theme = rendererSettingsTheme(ownerDocument);
-  };
-  const defaultView = ownerDocument.defaultView;
-  const themeObserver = defaultView ? new defaultView.MutationObserver(updateTheme) : null;
-  const themeMedia = defaultView?.matchMedia?.("(prefers-color-scheme: dark)") ?? null;
-  updateTheme();
-  themeObserver?.observe(ownerDocument.documentElement, {
-    attributes: true,
-    attributeFilter: ["class", "data-theme", "style"],
-  });
-  themeMedia?.addEventListener("change", updateTheme);
+  root.dataset.theme = "dark";
   const shadow = root.attachShadow({ mode: "open" });
   const style = ownerDocument.createElement("style");
   style.textContent = settingsCss;
@@ -115,9 +84,10 @@ export function mountRendererSettingsShell(
   brandCopy.className = "settings-brand__copy";
   const brandName = ownerDocument.createElement("span");
   brandName.className = "settings-brand__name";
-  brandName.textContent = "codexhost";
+  brandName.textContent = "Codex Host";
   const brandTitle = ownerDocument.createElement("span");
   brandTitle.className = "settings-brand__title";
+  brandTitle.id = "codexhost-settings-dialog-title";
   brandTitle.textContent = messages.title;
   brandCopy.append(brandName, brandTitle);
   brand.append(brandMark, brandCopy);
@@ -128,55 +98,12 @@ export function mountRendererSettingsShell(
   closeButton.setAttribute("aria-label", messages.close);
   closeButton.title = messages.close;
   closeButton.append(createRendererSettingsIcon("close", 18));
-  header.append(brand);
+  header.append(brand, closeButton);
 
   const layout = ownerDocument.createElement("div");
   layout.className = "settings-layout";
   const sidebar = ownerDocument.createElement("aside");
   sidebar.className = "settings-sidebar";
-  const languageField = ownerDocument.createElement("div");
-  languageField.className = "settings-language";
-  const languageLabel = ownerDocument.createElement("label");
-  languageLabel.className = "settings-language__label";
-  languageLabel.htmlFor = "codexhost-settings-language";
-  languageLabel.append(createRendererSettingsIcon("language", 15));
-  const languageLabelText = ownerDocument.createElement("span");
-  languageLabelText.textContent = messages.interfaceLanguage;
-  languageLabel.append(languageLabelText);
-  const languageSelect = ownerDocument.createElement("select");
-  languageSelect.id = "codexhost-settings-language";
-  languageSelect.setAttribute("aria-label", messages.interfaceLanguage);
-  languageSelect.setAttribute("aria-describedby", "codexhost-settings-language-error");
-  const languageOptions: ReadonlyArray<{
-    value: RendererSettingsWritableLanguageSelection;
-    label: string;
-  }> = [
-    { value: "automatic", label: messages.automaticLanguage },
-    { value: "en", label: messages.englishLanguage },
-    { value: "zh-CN", label: messages.simplifiedChineseLanguage },
-  ];
-  if (languageControl?.selection === "other") {
-    const option = ownerDocument.createElement("option");
-    option.value = "other";
-    option.textContent = messages.otherCodexLanguage;
-    option.disabled = true;
-    languageSelect.append(option);
-  }
-  for (const definition of languageOptions) {
-    const option = ownerDocument.createElement("option");
-    option.value = definition.value;
-    option.textContent = definition.label;
-    languageSelect.append(option);
-  }
-  languageSelect.value = languageControl?.selection ?? messages.locale;
-  languageSelect.disabled = languageControl?.available !== true;
-  const languageError = ownerDocument.createElement("span");
-  languageError.id = "codexhost-settings-language-error";
-  languageError.className = "settings-language__error";
-  languageError.setAttribute("role", "alert");
-  languageError.textContent = messages.languageUpdateFailed;
-  languageError.hidden = true;
-  languageField.append(languageLabel, languageSelect, languageError);
 
   const searchControl = ownerDocument.createElement("div");
   searchControl.className = "settings-search";
@@ -190,31 +117,21 @@ export function mountRendererSettingsShell(
   const navigation = ownerDocument.createElement("nav");
   navigation.className = "settings-nav";
   navigation.setAttribute("aria-label", messages.sectionsLabel);
-  const navigationGroup = ownerDocument.createElement("div");
-  navigationGroup.className = "settings-nav__group";
-  navigationGroup.textContent = "codexhost";
   const searchEmpty = ownerDocument.createElement("div");
   searchEmpty.className = "settings-nav__empty";
   searchEmpty.setAttribute("role", "status");
   searchEmpty.textContent = messages.noResults;
   searchEmpty.hidden = true;
-  navigation.append(navigationGroup);
   const page = ownerDocument.createElement("main");
   page.className = "settings-page";
-  const pageHeader = ownerDocument.createElement("div");
-  pageHeader.className = "settings-page__header";
-  const pageTitle = ownerDocument.createElement("h1");
-  pageTitle.className = "settings-page__title";
-  pageTitle.id = "codexhost-settings-page-title";
-  pageHeader.append(pageTitle, closeButton);
   const pageContent = ownerDocument.createElement("div");
   pageContent.className = "settings-page__content";
-  page.append(pageHeader, pageContent);
-  sidebar.append(header, languageField, searchControl, navigation);
+  page.append(pageContent);
+  sidebar.append(searchControl, navigation);
   layout.append(sidebar, page);
-  frame.append(layout);
+  frame.append(header, layout);
   dialog.append(frame);
-  dialog.setAttribute("aria-labelledby", pageTitle.id);
+  dialog.setAttribute("aria-labelledby", brandTitle.id);
   shadow.append(style, dialog);
   ownerDocument.body.append(root);
 
@@ -224,7 +141,6 @@ export function mountRendererSettingsShell(
   let activeCleanup: (() => void) | null = null;
   let opener: HTMLElement | null = null;
   let lifecycleGeneration = 0;
-  let languageGeneration = 0;
   let disposed = false;
 
   const disposeActivePage = (): void => {
@@ -253,7 +169,6 @@ export function mountRendererSettingsShell(
     navigationState.select(pageId);
     disposeActivePage();
     setActiveNavigation(navigationButtons, pageId);
-    pageTitle.textContent = definition.label;
     pageContent.replaceChildren();
     const scope = new RendererSettingsPageScope();
     activeScope = scope;
@@ -298,29 +213,6 @@ export function mountRendererSettingsShell(
     searchEmpty.hidden = visibleCount !== 0;
   };
   searchInput.addEventListener("input", onSearchInput);
-
-  const onLanguageChange = (): void => {
-    if (!languageControl) return;
-    const selection = languageSelect.value;
-    if (selection !== "automatic" && selection !== "en" && selection !== "zh-CN") return;
-    const previousSelection = languageControl.selection;
-    const generation = ++languageGeneration;
-    languageSelect.disabled = true;
-    languageError.hidden = true;
-    void languageControl
-      .setSelection(selection)
-      .then(() => {
-        if (disposed || generation !== languageGeneration || !root.isConnected) return;
-        languageSelect.disabled = !languageControl.available;
-      })
-      .catch(() => {
-        if (disposed || generation !== languageGeneration || !root.isConnected) return;
-        languageSelect.value = previousSelection;
-        languageSelect.disabled = !languageControl.available;
-        languageError.hidden = false;
-      });
-  };
-  languageSelect.addEventListener("change", onLanguageChange);
 
   const supported = isRendererSettingsDialogSupported(dialog);
   const focusActiveNavigation = (): void => {
@@ -399,12 +291,8 @@ export function mountRendererSettingsShell(
       if (disposed) return;
       disposed = true;
       opener = null;
-      languageGeneration += 1;
-      themeObserver?.disconnect();
-      themeMedia?.removeEventListener("change", updateTheme);
       navigation.removeEventListener("click", onNavigationClick);
       searchInput.removeEventListener("input", onSearchInput);
-      languageSelect.removeEventListener("change", onLanguageChange);
       closeButton.removeEventListener("click", onCloseClick);
       dialog.removeEventListener("click", onDialogClick);
       dialog.removeEventListener("close", onDialogClose);
@@ -420,7 +308,6 @@ export function installRendererSettingsShell(
   definitions?: readonly RendererSettingsPageDefinition[],
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   ownerDocument: Document = document,
-  languageControl?: RendererSettingsLanguageControl,
 ): RendererSettingsShell {
   const registry = definitions
     ? createRendererSettingsPageRegistry(
@@ -432,7 +319,7 @@ export function installRendererSettingsShell(
     : createDefaultRendererSettingsRegistry(messages);
   const ownerWindow = ownerDocument.defaultView ?? window;
   ownerWindow.__codexhostSettingsShellV1?.dispose();
-  const shell = mountRendererSettingsShell(registry, ownerDocument, messages, languageControl);
+  const shell = mountRendererSettingsShell(registry, ownerDocument, messages);
   ownerWindow.__codexhostSettingsShellV1 = shell;
   const dispose = shell.dispose.bind(shell);
   shell.dispose = () => {

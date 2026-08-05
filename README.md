@@ -10,7 +10,7 @@
 
 但 Codex 并不是唯一优秀的 Agent Harness：有人更依赖 **Claude Code** 在复杂任务上的规划与落地，有人选择 **Pi** 的极简可控与 token 效率（我非常喜欢 Pi）。想用它们，通常只能换到另一个客户端，会话和文件上下文随之割裂。
 
-**Codex-Host** 使用 Codex Desktop 作为主界面，让你在开始任务时选择真正执行任务的 Agent。Pi 与 Claude Code 使用各自本机已有的模型、认证和配置；选 Codex 时，体验也与官方 App 一致。
+**Codex-Host** 让你使用 Codex Desktop 在开始任务时选择真正执行任务的 Agent。Pi 与 Claude Code 使用各自本机已有的模型、认证和配置；选 Codex 时，体验与官方 App 一致。
 
 ## 快速使用
 
@@ -38,11 +38,11 @@ codexhost
 | Model / Thinking | 原生 | ✅ | ✅ |
 | 权限模式 | 原生 | — | ✅ |
 | 会话恢复 | 原生 | ✅ | ✅ |
-| Thread 管理 | 原生 | ✅ | 🚧 |
+| Thread 管理 | 原生 | ✅ | ✅ |
 | Fork | 原生 | ✅ | ✅ |
 | 上下文压缩 | 原生 | ✅ | ✅ |
 | 斜杠命令 | 原生 | 🚧 | 🚧 |
-| 修订上一条消息 | 原生 | 🚧 | 🚧 |
+| 修订上一条消息 | 原生 | ✅ | 🚧 |
 
 ## 怎么做的
 

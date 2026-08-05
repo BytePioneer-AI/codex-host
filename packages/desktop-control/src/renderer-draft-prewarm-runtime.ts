@@ -78,77 +78,90 @@ export async function installDraftPrewarmPolicyInRenderer(
     )?.value?.value;
     const hostId = managerProperties.result?.find((property) => property.name === "hostId")?.value
       ?.value;
-    const sendRequest = managerProperties.result?.find(
-      (property) => property.name === "sendRequest",
-    )?.value;
-    if (candidateCount !== 1 || hostId !== "local" || typeof sendRequest?.objectId !== "string") {
+    const manager = managerProperties.result?.find((property) => property.name === "manager")
+      ?.value;
+    if (candidateCount !== 1 || hostId !== "local" || typeof manager?.objectId !== "string") {
       throw new Error("Renderer request manager is ambiguous");
     }
 
-    const functionProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
-      objectId: sendRequest.objectId,
+    const managerFunctions = (await contents.debugger.sendCommand("Runtime.getProperties", {
+      objectId: manager.objectId,
     })) as {
-      internalProperties?: Array<{
-        name?: unknown;
-        value?: { objectId?: unknown };
-      }>;
+      result?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
+      internalProperties?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
+    };
+    let managerSendRequestId = managerFunctions.result?.find(
+      (property) => property.name === "sendRequest",
+    )?.value?.objectId;
+    const managerPrototypeId = managerFunctions.internalProperties?.find(
+      (property) => property.name === "[[Prototype]]",
+    )?.value?.objectId;
+    if (typeof managerSendRequestId !== "string" && typeof managerPrototypeId === "string") {
+      const prototypeFunctions = (await contents.debugger.sendCommand("Runtime.getProperties", {
+        objectId: managerPrototypeId,
+        ownProperties: true,
+      })) as { result?: Array<{ name?: unknown; value?: { objectId?: unknown } }> };
+      managerSendRequestId = prototypeFunctions.result?.find(
+        (property) => property.name === "sendRequest",
+      )?.value?.objectId;
+    }
+    if (typeof managerSendRequestId !== "string") {
+      throw new Error("Renderer request manager sendRequest is unavailable");
+    }
+    const functionProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
+      objectId: managerSendRequestId,
+    })) as {
+      internalProperties?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
     };
     const scopesId = functionProperties.internalProperties?.find(
       (property) => property.name === "[[Scopes]]",
     )?.value?.objectId;
-    if (typeof scopesId !== "string") {
-      throw new Error("Renderer request bridge scopes are unavailable");
-    }
-    const scopes = (await contents.debugger.sendCommand("Runtime.getProperties", {
-      objectId: scopesId,
-      ownProperties: true,
-    })) as {
-      result?: Array<{ value?: { objectId?: unknown } }>;
-    };
-    const bridgeCandidates: Array<{ objectId: string }> = [];
-    for (const scope of scopes.result ?? []) {
-      const scopeId = scope.value?.objectId;
-      if (typeof scopeId !== "string") continue;
-      const scopeProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
-        objectId: scopeId,
+    const hostBridgeCandidates: Array<{ name: string; objectId: string }> = [];
+    if (typeof scopesId === "string") {
+      const scopes = (await contents.debugger.sendCommand("Runtime.getProperties", {
+        objectId: scopesId,
         ownProperties: true,
-      })) as {
-        result?: Array<{
-          name?: unknown;
-          value?: { objectId?: unknown; type?: unknown };
-        }>;
-      };
-      const bridge = scopeProperties.result?.find(
-        (property) =>
-          (property.name === "Rf" || property.name === "rp") && property.value?.type === "function",
-      )?.value;
-      if (typeof bridge?.objectId === "string") {
-        bridgeCandidates.push({ objectId: bridge.objectId });
+      })) as { result?: Array<{ value?: { objectId?: unknown } }> };
+      for (const scope of scopes.result ?? []) {
+        if (typeof scope.value?.objectId !== "string") continue;
+        const scopeProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
+          objectId: scope.value.objectId,
+          ownProperties: true,
+        })) as {
+          result?: Array<{
+            name?: unknown;
+            value?: { objectId?: unknown; type?: unknown };
+          }>;
+        };
+        for (const property of scopeProperties.result ?? []) {
+          if (property.value?.type !== "object" || typeof property.value.objectId !== "string") {
+            continue;
+          }
+          const candidateSignature = (await contents.debugger.sendCommand(
+            "Runtime.callFunctionOn",
+            {
+              objectId: property.value.objectId,
+              functionDeclaration:
+                "function(){const send=this.sendRequest;return typeof send==='function'&&Function.prototype.toString.call(send).includes('messageHandler')}",
+              returnByValue: true,
+            },
+          )) as { result?: { value?: unknown } };
+          if (candidateSignature.result?.value === true) {
+            hostBridgeCandidates.push({
+              name: String(property.name),
+              objectId: property.value.objectId,
+            });
+          }
+        }
       }
     }
-    const bridge = bridgeCandidates[0];
-    if (bridgeCandidates.length !== 1 || !bridge) {
-      throw new Error("Renderer request bridge is ambiguous");
-    }
-    const signature = (await contents.debugger.sendCommand("Runtime.callFunctionOn", {
-      objectId: bridge.objectId,
-      functionDeclaration:
-        "function(){return {arity:this.length,source:Function.prototype.toString.call(this)}}",
-      returnByValue: true,
-    })) as {
-      result?: { value?: { arity?: unknown; source?: unknown } };
-    };
-    const signatureValue = signature.result?.value;
-    if (
-      signatureValue?.arity !== 2 ||
-      typeof signatureValue.source !== "string" ||
-      !signatureValue.source.includes(".sendRequest")
-    ) {
-      throw new Error("Renderer request bridge signature mismatch");
+    const hostBridge = hostBridgeCandidates[0];
+    if (hostBridgeCandidates.length !== 1 || !hostBridge) {
+      throw new Error("Renderer Host request bridge is ambiguous");
     }
 
     const installed = (await contents.debugger.sendCommand("Runtime.callFunctionOn", {
-      objectId: bridge.objectId,
+      objectId: hostBridge.objectId,
       functionDeclaration: installRendererPolicyFunction,
       arguments: [{ value: hostId }],
       awaitPromise: true,

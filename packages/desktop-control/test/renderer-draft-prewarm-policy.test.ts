@@ -13,8 +13,7 @@ function rendererFixture(
   options: {
     candidateCount?: number;
     hostId?: string;
-    signatureSource?: string;
-    bridgeName?: "Rf" | "rp";
+    hostBridgeCandidates?: number;
   } = {},
 ): {
   contents: RendererWebContents;
@@ -40,40 +39,43 @@ function rendererFixture(
               result: [
                 { name: "candidateCount", value: { value: options.candidateCount ?? 1 } },
                 { name: "hostId", value: { value: options.hostId ?? "local" } },
-                { name: "sendRequest", value: { objectId: "send-request" } },
+                { name: "manager", value: { objectId: "request-manager" } },
               ],
             };
-          case "send-request":
+          case "request-manager":
+            return {
+              result: [],
+              internalProperties: [
+                { name: "[[Prototype]]", value: { objectId: "manager-prototype" } },
+              ],
+            };
+          case "manager-prototype":
+            return {
+              result: [{ name: "sendRequest", value: { objectId: "manager-send-request" } }],
+            };
+          case "manager-send-request":
             return {
               internalProperties: [{ name: "[[Scopes]]", value: { objectId: "scopes" } }],
             };
           case "scopes":
-            return { result: [{ name: "0", value: { objectId: "local-scope" } }] };
-          case "local-scope":
+            return { result: [{ value: { objectId: "module-scope" } }] };
+          case "module-scope":
             return {
-              result: [
-                {
-                  name: options.bridgeName ?? "Rf",
-                  value: { objectId: "request-bridge", type: "function" },
-                },
-              ],
+              result: Array.from(
+                { length: options.hostBridgeCandidates ?? 1 },
+                (_, index) => ({
+                  name: `bridge-${index}`,
+                  value: { objectId: `host-bridge-${index}`, type: "object" },
+                }),
+              ),
             };
           default:
             throw new Error(`Unexpected Runtime.getProperties object: ${parameters.objectId}`);
         }
       }
       if (method === "Runtime.callFunctionOn") {
-        if (String(parameters.functionDeclaration).includes("arity:this.length")) {
-          return {
-            result: {
-              value: {
-                arity: 2,
-                source:
-                  options.signatureSource ??
-                  "function Rf(method, params) { return client.sendRequest(method, params); }",
-              },
-            },
-          };
+        if (String(parameters.functionDeclaration).includes("messageHandler")) {
+          return { result: { value: true } };
         }
         return { result: { value: { state: "ready", reason: "owned-request-bridge" } } };
       }
@@ -118,39 +120,37 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate.mock.calls[0]?.[0]).toContain("webContents.fromId(17)");
   });
 
-  it.each(["Rf", "rp"] as const)(
-    "executes the CDP traversal through the %s request bridge",
-    async (bridgeName) => {
-      const fixture = rendererFixture({ bridgeName });
+  it("installs the fixed policy on the uniquely owned Host request bridge", async () => {
+    const fixture = rendererFixture();
 
-      await expect(
-        installDraftPrewarmPolicyInRenderer(
-          fixture.contents,
-          "synthetic-manager-expression",
-          "function syntheticPolicy() {}",
-        ),
-      ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
+    await expect(
+      installDraftPrewarmPolicyInRenderer(
+        fixture.contents,
+        "synthetic-manager-expression",
+        "function syntheticPolicy() {}",
+      ),
+    ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
 
-      expect(fixture.attach).toHaveBeenCalledWith("1.3");
-      expect(fixture.detach).toHaveBeenCalledOnce();
-      expect(fixture.sendCommand).toHaveBeenCalledWith("Runtime.evaluate", {
-        expression: "synthetic-manager-expression",
-      });
-      expect(fixture.sendCommand).toHaveBeenCalledWith(
-        "Runtime.callFunctionOn",
-        expect.objectContaining({
-          objectId: "request-bridge",
-          functionDeclaration: "function syntheticPolicy() {}",
-          arguments: [{ value: "local" }],
-        }),
-      );
-    },
-  );
+    expect(fixture.attach).toHaveBeenCalledWith("1.3");
+    expect(fixture.detach).toHaveBeenCalledOnce();
+    expect(fixture.sendCommand).toHaveBeenCalledWith("Runtime.evaluate", {
+      expression: "synthetic-manager-expression",
+    });
+    expect(fixture.sendCommand).toHaveBeenCalledWith(
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "host-bridge-0",
+        functionDeclaration: "function syntheticPolicy() {}",
+        arguments: [{ value: "local" }],
+      }),
+    );
+  });
 
   it.each([
     [{ candidateCount: 2 }, "request manager is ambiguous"],
     [{ hostId: "remote" }, "request manager is ambiguous"],
-    [{ signatureSource: "function Rf() {}" }, "signature mismatch"],
+    [{ hostBridgeCandidates: 0 }, "Host request bridge is ambiguous"],
+    [{ hostBridgeCandidates: 2 }, "Host request bridge is ambiguous"],
   ] as const)("fails closed for an unsupported request bridge", async (options, error) => {
     const fixture = rendererFixture(options);
 

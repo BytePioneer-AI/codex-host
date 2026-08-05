@@ -61,7 +61,7 @@ describe("main-process title policy", () => {
     });
     const functionDeclaration = inspector.command.mock.calls.at(-2)?.[1]?.functionDeclaration;
     expect(functionDeclaration).toContain("ownService(sampleService, selected)");
-    expect(functionDeclaration).toContain("['Dhe', 'Nye']");
+    expect(functionDeclaration).toContain("['Dhe', 'Nye', 'wbe']");
     expect(inspector.command.mock.calls.at(-1)?.[1]).toEqual({
       promiseObjectId: "install-promise",
       returnByValue: true,

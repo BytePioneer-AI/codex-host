@@ -59,12 +59,14 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   return {
     candidateCount: managers.size,
     hostId: manager?.getHostId?.() ?? null,
-    sendRequest: manager?.sendRequest ?? null,
+    manager,
   };
 })()`;
 
 const INSTALL_RENDERER_POLICY_FUNCTION = `function(hostId) {
-  return (${installDraftPrewarmPolicyBridge.toString()})(this, hostId, window);
+  const bridge = this;
+  const send = (method, parameters) => bridge.sendRequest(method, parameters);
+  return (${installDraftPrewarmPolicyBridge.toString()})(send, hostId, window);
 }`;
 
 function mainProcessInstaller(rendererWebContentsId: number): string {

@@ -13,10 +13,28 @@ use super::PlatformError;
 /// startup is complete, so Ctrl+C during startup still cancels the launch.
 #[cfg(target_os = "macos")]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
-    use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, setsid};
+    use nix::errno::Errno;
+    use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, getsid, setsid};
 
-    setsid()
-        .map_err(|error| PlatformError::Io(io::Error::other(format!("setsid failed: {error}"))))?;
+    // LaunchServices launches an application bundle as its own process-group
+    // leader (PGID == PID) without a controlling terminal. `setsid` refuses to
+    // create a new session for a group leader with EPERM, but such a process is
+    // already detached: terminal close (SIGHUP) and Ctrl+C cannot reach it, and
+    // the stdio redirection below still applies. Tolerate that case so a
+    // double-click launch keeps supervising instead of tearing the Desktop down.
+    let pid = getpid();
+    let already_detached = getsid(None).map(|session| session == pid).unwrap_or(false);
+    if !already_detached {
+        match setsid() {
+            Ok(_) => {}
+            Err(Errno::EPERM) => {}
+            Err(error) => {
+                return Err(PlatformError::Io(io::Error::other(format!(
+                    "setsid failed: {error}"
+                ))));
+            }
+        }
+    }
     let null = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -59,6 +77,7 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::io;
     use std::process::Command;
 
     use super::detach_from_terminal;
@@ -99,6 +118,45 @@ mod tests {
         assert!(
             !String::from_utf8_lossy(&output.stdout).contains("must-not-appear-on-stdout"),
             "stdout was not redirected to /dev/null after detach"
+        );
+    }
+
+    #[test]
+    fn detach_tolerates_an_existing_process_group_leader() {
+        // LaunchServices launches an application bundle as its own process-group
+        // leader (PGID == PID) without a controlling terminal. `setsid` rejects a
+        // group leader with EPERM; detach must tolerate that and still redirect
+        // standard streams so a double-click launch keeps supervising.
+        const TEST_NAME: &str =
+            "background::tests::detach_tolerates_an_existing_process_group_leader";
+        if std::env::var("CODEXHOST_DETACH_GROUP_LEADER_HELPER").as_deref() == Ok("1") {
+            let result = (|| -> Result<(), PlatformError> {
+                nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), nix::unistd::Pid::from_raw(0))
+                    .map_err(|error| {
+                        PlatformError::Io(io::Error::other(format!("setpgid failed: {error}")))
+                    })?;
+                detach_from_terminal()?;
+                println!("must-not-appear-on-stdout");
+                Ok(())
+            })()
+            .is_ok();
+            std::process::exit(if result { 0 } else { 1 });
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .env("CODEXHOST_DETACH_GROUP_LEADER_HELPER", "1")
+            .output()
+            .expect("spawn group leader helper");
+        assert!(
+            output.status.success(),
+            "helper failed: {:?}",
+            output.status
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("must-not-appear-on-stdout"),
+            "stdout was not redirected to /dev/null for a group leader"
         );
     }
 }

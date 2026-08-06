@@ -371,6 +371,102 @@ button {
   border-radius: 20px;
 }
 
+.settings-update-panel {
+  display: grid;
+  gap: 16px;
+  min-height: 128px;
+  padding: 20px;
+  color: var(--settings-text);
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-update-panel > strong,
+.settings-update-panel > span,
+.settings-update-summary,
+.settings-update-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-update-panel > span,
+.settings-update-summary {
+  color: var(--settings-muted);
+}
+
+.settings-update-error {
+  color: #ef4444;
+}
+
+.settings-update-notes {
+  max-height: 240px;
+  padding: 14px;
+  overflow: auto;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid var(--settings-divider);
+  border-radius: 6px;
+}
+
+.settings-update-version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-height: 32px;
+  color: var(--settings-muted);
+  font-size: 13px;
+}
+
+.settings-update-version-row strong {
+  color: var(--settings-text);
+  font-size: 15px;
+}
+
+.settings-command-button,
+.settings-update-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 36px;
+  gap: 8px;
+  padding: 8px 12px;
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  background: #1677d2;
+  border: 1px solid #238be8;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-command-button--secondary,
+.settings-update-link {
+  color: var(--settings-text);
+  background: transparent;
+  border-color: var(--settings-border);
+}
+
+.settings-command-button:hover,
+.settings-update-link:hover {
+  filter: brightness(1.08);
+}
+
+.settings-command-button:focus-visible,
+.settings-update-link:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
 .codexhost-settings-icon {
   display: block;
   flex: none;

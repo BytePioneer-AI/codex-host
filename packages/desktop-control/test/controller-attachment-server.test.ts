@@ -38,11 +38,13 @@ describe("Controller attachment server", () => {
   it("accepts only the exact nonce and invokes the attachment callback", async () => {
     const port = await availablePort();
     const attach = vi.fn(async () => {});
-    const server = await startControllerAttachmentServer({ port, nonce, attach });
+    const shutdown = vi.fn(async () => {});
+    const server = await startControllerAttachmentServer({ port, nonce, attach, shutdown });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
       await expect(request(port, `ATTACH ${"0".repeat(32)}\n`)).resolves.toBe("rejected\n");
       expect(attach).toHaveBeenCalledOnce();
+      expect(shutdown).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -56,9 +58,31 @@ describe("Controller attachment server", () => {
       attach: async () => {
         throw new Error("private detail");
       },
+      shutdown: async () => {},
     });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("failed\n");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("acknowledges an authenticated shutdown before invoking its callback", async () => {
+    const port = await availablePort();
+    const events: string[] = [];
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: async () => {},
+      shutdown: async () => {
+        events.push("shutdown");
+      },
+    });
+    try {
+      await expect(request(port, `SHUTDOWN ${nonce}\n`)).resolves.toBe("ready\n");
+      events.unshift("response");
+      await vi.waitFor(() => expect(events).toEqual(["response", "shutdown"]));
+      await expect(request(port, `SHUTDOWN ${"0".repeat(32)}\n`)).resolves.toBe("rejected\n");
     } finally {
       await server.close();
     }

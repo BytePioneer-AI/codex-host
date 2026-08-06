@@ -117,6 +117,26 @@ export type {
   NativeTurnRef,
   NativeTurnRefV1,
 } from "./native-refs.js";
+export {
+  UPDATE_ERROR_MAX_LENGTH,
+  UPDATE_SEMVER_PATTERN,
+  updateCheckResultSchema,
+  updateEmptyParamsSchema,
+  updateInstallationSchema,
+  updatePhaseSchema,
+  updateSemanticVersionSchema,
+  updateStartResultSchema,
+  updateStatusResultSchema,
+  updateStatusSchema,
+} from "./updates.js";
+export type {
+  UpdateCheckResult,
+  UpdateInstallation,
+  UpdatePhase,
+  UpdateStartResult,
+  UpdateStatus,
+  UpdateStatusResult,
+} from "./updates.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);

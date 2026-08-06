@@ -47,6 +47,10 @@ const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
+const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
+const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
+const CONTROL_PORT_ENV: &str = "CODEXHOST_CONTROL_PORT";
+const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -551,7 +555,11 @@ fn supervise_desktop(
     }
 }
 
-fn desktop_environment(options: &ResolvedLaunchOptions) -> Vec<(OsString, OsString)> {
+fn desktop_environment(
+    options: &ResolvedLaunchOptions,
+    control: &RuntimeControl,
+    launcher_executable: &Path,
+) -> Vec<(OsString, OsString)> {
     let mut environment = vec![
         (
             OsString::from(HOST_NODE_PATH_ENV),
@@ -564,6 +572,22 @@ fn desktop_environment(options: &ResolvedLaunchOptions) -> Vec<(OsString, OsStri
         (
             OsString::from(DEFAULT_AGENT_ENV),
             OsString::from(Agent::Codex.as_str()),
+        ),
+        (
+            OsString::from(LAUNCHER_PID_ENV),
+            OsString::from(std::process::id().to_string()),
+        ),
+        (
+            OsString::from(LAUNCHER_EXECUTABLE_ENV),
+            launcher_executable.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from(CONTROL_PORT_ENV),
+            OsString::from(control.attachment_port.to_string()),
+        ),
+        (
+            OsString::from(CONTROL_NONCE_ENV),
+            OsString::from(&control.nonce),
         ),
     ];
     if let Some(pi) = &options.pi {
@@ -699,8 +723,9 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
             }
         }
 
-        let environment = desktop_environment(&options);
         let control = allocate_runtime_control()?;
+        let launcher_executable = env::current_exe()?.canonicalize()?;
+        let environment = desktop_environment(&options, &control, &launcher_executable);
         let result = supervise_desktop(
             &installation,
             &options,
@@ -774,7 +799,7 @@ mod tests {
     use std::ffi::OsString;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use std::process::Command;
     #[cfg(target_os = "macos")]
@@ -793,7 +818,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
     use super::{
-        Agent, DEFAULT_AGENT_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
+        Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, LAUNCHER_EXECUTABLE_ENV,
+        LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
         default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
         parse_launch_options,
     };
@@ -940,13 +966,29 @@ mod tests {
                 .to_string_lossy()
                 .contains("remote-debugging")
         );
-        let environment = desktop_environment(&options);
-        assert_eq!(
+        let environment = desktop_environment(&options, &control, Path::new("/opt/codexhost"));
+        let value = |name: &str| {
             environment
                 .iter()
-                .find(|(name, _)| name == DEFAULT_AGENT_ENV)
-                .map(|(_, value)| value),
-            Some(&OsString::from("codex")),
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, value)| value)
+        };
+        assert_eq!(value(DEFAULT_AGENT_ENV), Some(&OsString::from("codex")));
+        assert_eq!(
+            value(LAUNCHER_PID_ENV),
+            Some(&OsString::from(std::process::id().to_string()))
+        );
+        assert_eq!(
+            value(LAUNCHER_EXECUTABLE_ENV),
+            Some(&OsString::from("/opt/codexhost"))
+        );
+        assert_eq!(
+            value(CONTROL_PORT_ENV),
+            Some(&OsString::from(control.attachment_port.to_string()))
+        );
+        assert_eq!(
+            value(CONTROL_NONCE_ENV),
+            Some(&OsString::from(&control.nonce))
         );
     }
 
@@ -1034,7 +1076,7 @@ mod tests {
         };
 
         assert_eq!(
-            desktop_environment(&options)
+            desktop_environment(&options, &runtime_control(), Path::new(r"C:\codexhost.exe"))
                 .into_iter()
                 .find(|(name, _)| name == PI_COMMAND_ENV)
                 .map(|(_, value)| value),

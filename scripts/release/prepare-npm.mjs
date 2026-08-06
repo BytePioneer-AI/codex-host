@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { writeDistributionMetadata } from "./distribution-metadata.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -105,6 +106,8 @@ export function npmReleaseBuildCommands(
         "codexhost-launcher",
         "--package",
         "codexhost-shim",
+        "--package",
+        "codexhost-updater",
       ],
     },
   ];
@@ -177,6 +180,8 @@ export function expectedNpmPackagePaths(target) {
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
+    `libexec/codexhost-updater${target.executableSuffix}`,
+    "app/codexhost-distribution.json",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
@@ -230,6 +235,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const platformPackages = ${JSON.stringify(NPM_RUNTIME_PLATFORM_PACKAGES, null, 2)};
 const platformKey = \`\${process.platform}-\${process.arch}\`;
@@ -284,6 +290,29 @@ for (const [label, filePath] of [
 ]) {
   if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
 }
+
+const npmCliCandidates = [
+  process.env.npm_execpath,
+  process.platform === "win32"
+    ? path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+    : path.join(
+        path.dirname(path.dirname(process.execPath)),
+        "lib",
+        "node_modules",
+        "npm",
+        "bin",
+        "npm-cli.js",
+      ),
+].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+const npmCliPath = npmCliCandidates.find((candidate) => existsSync(candidate));
+if (!npmCliPath) fail("could not locate the npm CLI used to update this global installation");
+const updateEnvironment = {
+  ...process.env,
+  CODEXHOST_NPM_NODE_PATH: process.execPath,
+  CODEXHOST_NPM_CLI_PATH: path.resolve(npmCliPath),
+  CODEXHOST_NPM_LAUNCHER_PATH: fileURLToPath(import.meta.url),
+  CODEXHOST_NPM_PACKAGE_ROOT: packageRoot,
+};
 
 const userArguments = process.argv.slice(2);
 let launchArguments;
@@ -343,6 +372,7 @@ if (launchArguments[0] === "launch") {
   // are up, then detaches from the terminal to keep supervising. Return
   // success immediately so the terminal is not held open by this command.
   const child = spawn(launcher, launchArguments, {
+    env: updateEnvironment,
     stdio: ["ignore", "pipe", "inherit"],
     windowsHide: true,
   });
@@ -368,6 +398,7 @@ if (launchArguments[0] === "launch") {
   });
 } else {
   const child = spawn(launcher, launchArguments, {
+    env: updateEnvironment,
     stdio: "inherit",
     windowsHide: true,
   });
@@ -632,6 +663,12 @@ export async function prepareNpmPackage({
     "npm Shim",
     true,
   );
+  await copyReleaseFile(
+    path.join(rustOutput, `codexhost-updater${target.executableSuffix}`),
+    path.join(packageRoot, "libexec", `codexhost-updater${target.executableSuffix}`),
+    "npm Updater",
+    true,
+  );
 
   await runCommand(
     {
@@ -662,6 +699,11 @@ export async function prepareNpmPackage({
     path.join(packageRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
   );
+  await writeDistributionMetadata(path.join(packageRoot, "app", "codexhost-distribution.json"), {
+    version: packageVersion,
+    distribution: "npm",
+    target: target.id,
+  });
 
   await writeFile(
     path.join(packageRoot, "package.json"),

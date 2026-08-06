@@ -23,7 +23,9 @@ esac
 for relative in \
   bin/codexhost \
   libexec/codexhost-shim \
+  libexec/codexhost-updater \
   runtime/node \
+  app/codexhost-distribution.json \
   app/desktop-controller.mjs \
   app/host-runtime.mjs \
   app/renderer-extension.js \
@@ -63,6 +65,7 @@ cp "$PAYLOAD_ROOT/THIRD_PARTY_NOTICES.txt" "$RESOURCES/THIRD_PARTY_NOTICES.txt"
 chmod 755 \
   "$CONTENTS/MacOS/codexhost" \
   "$RESOURCES/libexec/codexhost-shim" \
+  "$RESOURCES/libexec/codexhost-updater" \
   "$RESOURCES/runtime/node"
 
 mkdir -p "$ASSETS_DIR"
@@ -117,6 +120,7 @@ PLIST
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
 /usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
+/usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
 /usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"

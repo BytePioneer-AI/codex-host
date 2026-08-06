@@ -10,6 +10,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  shutdown(): Promise<void>;
 }
 
 function validPort(value: number): boolean {
@@ -61,14 +62,19 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
-      if (line !== `ATTACH ${options.nonce}`) {
-        respond(socket, "rejected");
+      if (line === `ATTACH ${options.nonce}`) {
+        void options.attach().then(
+          () => respond(socket, "ready"),
+          () => respond(socket, "failed"),
+        );
         return;
       }
-      void options.attach().then(
-        () => respond(socket, "ready"),
-        () => respond(socket, "failed"),
-      );
+      if (line === `SHUTDOWN ${options.nonce}`) {
+        respond(socket, "ready");
+        queueMicrotask(() => void options.shutdown().catch(() => undefined));
+        return;
+      }
+      respond(socket, "rejected");
     });
   });
 

@@ -88,11 +88,13 @@ describe("production Desktop Controller", () => {
       return snapshot;
     });
     const activateDesktop = vi.fn(async () => 1);
+    const quitDesktop = vi.fn(async () => {});
     const close = vi.fn();
     const session: RendererControlSession = {
       snapshot,
       ensureInstalled,
       activateDesktop,
+      quitDesktop,
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,
@@ -101,8 +103,10 @@ describe("production Desktop Controller", () => {
     const install = vi.fn(async () => session);
     const server = attachmentServer();
     let attach: (() => Promise<void>) | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
     const startAttachmentServer = vi.fn(async (options) => {
       attach = options.attach;
+      shutdown = options.shutdown;
       return server;
     });
     const dependencies: DesktopControllerDependencies = {
@@ -127,12 +131,14 @@ describe("production Desktop Controller", () => {
       port: 43124,
       nonce: attachmentNonce,
       attach: expect.any(Function),
+      shutdown: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledOnce();
     expect(ensureInstalled).toHaveBeenCalledOnce();
     expect(server.close).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(attach).toEqual(expect.any(Function));
+    expect(shutdown).toEqual(expect.any(Function));
   });
 
   it("retries a transient Electron evaluation failure during cold startup", async () => {
@@ -143,6 +149,7 @@ describe("production Desktop Controller", () => {
       snapshot: {} as RendererControlSession["snapshot"],
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
+      quitDesktop: vi.fn(async () => {}),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,

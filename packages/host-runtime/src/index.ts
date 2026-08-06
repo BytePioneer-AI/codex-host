@@ -5,6 +5,7 @@ import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { packageMetadata as mappingStore } from "@codexhost/mapping-store";
 import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts";
+import { packageMetadata as updateManager } from "@codexhost/update-manager";
 
 export {
   CLAUDE_CODE_COMMAND_ENV,
@@ -14,6 +15,11 @@ export {
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
+export { createHostUpdateCoordinator, requestControllerShutdown } from "./update-coordinator.js";
+export type {
+  CreateHostUpdateCoordinatorOptions,
+  HostUpdateCoordinator,
+} from "./update-coordinator.js";
 export { classifyThreadPurpose, RequestRouteObservationTracker } from "./route-observation.js";
 export type {
   CreateRequestRouteObservation,
@@ -32,5 +38,6 @@ export const packageMetadata = {
     mappingStore.name,
     piAdapter.name,
     sharedContracts.name,
+    updateManager.name,
   ],
 } as const;

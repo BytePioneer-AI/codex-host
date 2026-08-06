@@ -5,11 +5,12 @@ import { classifyCreateRequestRoute, packageMetadata } from "../src/index.js";
 
 describe("host-runtime package", () => {
   it("declares the composition-root dependencies", () => {
-    expect(packageMetadata.dependencies).toHaveLength(7);
+    expect(packageMetadata.dependencies).toHaveLength(8);
     expect(packageMetadata.dependencies).toContain("@codexhost/protocol-core");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-claude-code");
     expect(packageMetadata.dependencies).toContain("@codexhost/harness-adapter");
     expect(packageMetadata.dependencies).toContain("@codexhost/shared-contracts");
+    expect(packageMetadata.dependencies).toContain("@codexhost/update-manager");
   });
 
   it("classifies create routes without exposing Model values or request IDs", () => {

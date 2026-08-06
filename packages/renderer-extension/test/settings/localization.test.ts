@@ -46,6 +46,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "模型池", "路由", "网关"]);
+    ).toEqual(["连接", "模型池", "路由", "网关", "更新"]);
   });
 });

@@ -44,6 +44,7 @@ describe("release Payload", () => {
     expect(commands.at(-1).args).toContain("aarch64-pc-windows-msvc");
     expect(commands.at(-1).args).toContain("codexhost-launcher");
     expect(commands.at(-1).args).toContain("codexhost-shim");
+    expect(commands.at(-1).args).toContain("codexhost-updater");
     expect(() => npmReleaseCommand(["--version"], "win32", {})).toThrow("npm_execpath");
   });
 
@@ -71,11 +72,13 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(15);
-      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(16);
+      expect(paths).toHaveLength(17);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(18);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );
+      expect(paths).toContain("libexec/codexhost-updater");
+      expect(paths).toContain("app/codexhost-distribution.json");
       expect(paths).not.toContain("release-manifest.json");
       expect(paths).not.toContain("SHA256SUMS.txt");
       await writeFile(path.join(root, "app/host-runtime.js.map"), "unexpected");

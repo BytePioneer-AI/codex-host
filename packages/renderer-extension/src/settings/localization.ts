@@ -35,6 +35,17 @@ export interface RendererSettingsMessages {
   readonly openSettings: string;
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
+  readonly updateCurrentVersion: string;
+  readonly updateLatestVersion: string;
+  readonly updateUpToDate: string;
+  readonly updateAvailable: string;
+  readonly updateAndRestart: string;
+  readonly updatePreparing: string;
+  readonly updateRestarting: string;
+  readonly updateSucceeded: string;
+  readonly updateFailed: string;
+  readonly updateRetry: string;
+  readonly updateViewRelease: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -56,11 +67,23 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   openSettings: "Open codexhost settings",
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
+  updateCurrentVersion: "Current version",
+  updateLatestVersion: "Latest version",
+  updateUpToDate: "You are up to date.",
+  updateAvailable: "A new version is available.",
+  updateAndRestart: "Update and restart",
+  updatePreparing: "Preparing update...",
+  updateRestarting: "Restarting to finish the update...",
+  updateSucceeded: "Update installed successfully.",
+  updateFailed: "Update failed.",
+  updateRetry: "Retry",
+  updateViewRelease: "View release notes",
   pageLabels: Object.freeze({
     connections: "Connections",
     "model-pool": "Model Pool",
     routes: "Routes",
     gateway: "Gateway",
+    updates: "Updates",
   }),
 });
 
@@ -82,11 +105,23 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   openSettings: "打开 codexhost 设置",
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",
+  updateCurrentVersion: "当前版本",
+  updateLatestVersion: "最新版本",
+  updateUpToDate: "当前已是最新版本。",
+  updateAvailable: "有新版本可用。",
+  updateAndRestart: "更新并重启",
+  updatePreparing: "正在准备更新...",
+  updateRestarting: "正在重启以完成更新...",
+  updateSucceeded: "更新安装成功。",
+  updateFailed: "更新失败。",
+  updateRetry: "重试",
+  updateViewRelease: "查看更新日志",
   pageLabels: Object.freeze({
     connections: "连接",
     "model-pool": "模型池",
     routes: "路由",
     gateway: "网关",
+    updates: "更新",
   }),
 });
 

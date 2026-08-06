@@ -39,6 +39,9 @@ function clientWith(inspection: ThreadInspection): RendererModelClient {
     selectThreadModel: vi.fn(),
     selectThreadThinking: vi.fn(),
     selectThreadPermissionMode: vi.fn(),
+    checkUpdate: vi.fn(),
+    startUpdate: vi.fn(),
+    readUpdateStatus: vi.fn(),
   };
 }
 

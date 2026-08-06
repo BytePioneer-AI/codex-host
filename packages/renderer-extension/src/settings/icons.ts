@@ -2,9 +2,12 @@ import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
+import Download from "lucide/dist/esm/icons/download.mjs";
+import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
+import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
@@ -18,6 +21,9 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "model-pool",
   "routes",
   "gateway",
+  "updates",
+  "external-link",
+  "refresh",
   "unavailable",
 ] as const;
 
@@ -31,6 +37,9 @@ const iconNodes = {
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,
+  updates: Download,
+  "external-link": ExternalLink,
+  refresh: RefreshCw,
   unavailable: CircleOff,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 

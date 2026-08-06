@@ -4,11 +4,16 @@ import {
   resolveRendererSettingsLocale,
   type RendererSettingsLocale,
 } from "./settings/localization.js";
+import { createDefaultRendererSettingsPages, type RendererUpdateClient } from "./settings/pages.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
   installRendererSettingsHeaderTrigger,
   type RendererSettingsHeaderTriggerControl,
 } from "./settings/trigger.js";
+
+export interface RendererSettingsLifecycleOptions {
+  getUpdateClient?(): RendererUpdateClient | null;
+}
 
 export interface RendererSettingsLifecycleControl {
   readonly locale: RendererSettingsLocale;
@@ -18,12 +23,16 @@ export interface RendererSettingsLifecycleControl {
 
 export function installRendererSettingsLifecycle(
   ownerWindow: Window = window,
+  options: RendererSettingsLifecycleOptions = {},
 ): RendererSettingsLifecycleControl {
   const lifecycleController = new AbortController();
   let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
   let shell: RendererSettingsShell | null = null;
   let trigger: RendererSettingsHeaderTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
+  let checkedUpdateClient: RendererUpdateClient | null = null;
+  let updateCheckGeneration = 0;
+  let updateAvailable = false;
   let openGeneration = 0;
   let disposed = false;
 
@@ -32,22 +41,27 @@ export function installRendererSettingsLifecycle(
     trigger: RendererSettingsHeaderTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
-    const nextShell = installRendererSettingsShell(undefined, messages, ownerWindow.document);
+    const definitions = createDefaultRendererSettingsPages(
+      messages,
+      options.getUpdateClient ?? (() => null),
+    );
+    const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({
       available: nextShell.supported,
       messages,
       ownerDocument: ownerWindow.document,
-      onOpen(opener) {
+      onOpen(opener, pageId) {
         const generation = ++openGeneration;
         void refreshLocale().then(() => {
           if (disposed || generation !== openGeneration) return;
           const currentOpener = opener.isConnected
             ? opener
             : (trigger?.root?.querySelector<HTMLButtonElement>("button") ?? undefined);
-          shell?.openSettings(currentOpener);
+          shell?.openSettings(currentOpener, pageId);
         });
       },
     });
+    nextTrigger.setUpdateAvailable(updateAvailable);
     shell = nextShell;
     trigger = nextTrigger;
     return { shell: nextShell, trigger: nextTrigger };
@@ -95,20 +109,41 @@ export function installRendererSettingsLifecycle(
     return request;
   };
 
+  const refreshUpdateIndicator = (): void => {
+    const client = options.getUpdateClient?.() ?? null;
+    if (!client || checkedUpdateClient === client) return;
+    checkedUpdateClient = client;
+    const generation = ++updateCheckGeneration;
+    void client
+      .checkUpdate()
+      .then((result) => {
+        if (disposed || generation !== updateCheckGeneration) return;
+        updateAvailable = result.updateAvailable;
+        trigger?.setUpdateAvailable(updateAvailable);
+      })
+      .catch(() => {
+        // Version discovery remains available from the Updates page for an explicit retry.
+      });
+  };
+
   mount();
   void refreshLocale();
+  refreshUpdateIndicator();
 
   return {
     get locale() {
       return locale;
     },
     refresh() {
-      return trigger?.refresh() ?? false;
+      const refreshed = trigger?.refresh() ?? false;
+      refreshUpdateIndicator();
+      return refreshed;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       openGeneration += 1;
+      updateCheckGeneration += 1;
       lifecycleController.abort();
       trigger?.dispose();
       shell?.dispose();

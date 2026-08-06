@@ -34,9 +34,10 @@ describe("platform packagers", () => {
   });
 
   it("publishes one tag-bound four-platform installer and npm release", async () => {
-    const [workflow, releaseBuilder] = await Promise.all([
+    const [workflow, releaseBuilder, releaseClient] = await Promise.all([
       readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
+      readFile(path.join(root, "packages/update-manager/src/github-release.ts"), "utf8"),
     ]);
     expect(workflow).toContain('tags:\n      - "v*"');
     expect(workflow).not.toContain("types: [published]");
@@ -70,12 +71,20 @@ describe("platform packagers", () => {
     const publishRelease = workflow.slice(workflow.indexOf("  publish-release:"));
     expect(publishRelease).toContain("gh release create");
     expect(publishRelease).toContain('"codexhost-${VERSION}-windows-x64.exe"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-windows-arm64.exe"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-macos-x64.dmg"');
     expect(publishRelease).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
     expect(publishRelease).not.toContain('"codexhost-cli-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
+    expect(workflow).not.toContain("checksums.txt");
+    expect(workflow).not.toContain("update.json");
     expect(releaseBuilder).not.toContain("checksumPath");
     expect(releaseBuilder).not.toContain("sha256=${result.checksum}");
+    expect(releaseClient).toContain("assets");
+    expect(releaseClient).toContain("size");
+    expect(releaseClient).toContain("digest");
+    expect(releaseClient).toContain("sha256:");
   });
 
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {

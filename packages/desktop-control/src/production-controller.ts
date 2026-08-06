@@ -203,6 +203,7 @@ export async function runDesktopController(
           await session.ensureInstalled();
           await session.activateDesktop();
         }),
+      shutdown: () => useSession(() => session.quitDesktop()),
     });
     dependencies.ready();
     while (!signal.aborted) {

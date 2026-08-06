@@ -27,7 +27,7 @@
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
     "build:typescript": "tsc -b",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
-    "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim",
+    "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",
     "release:package": "node scripts/release/prepare-payload.mjs",
     "release:npm": "node scripts/release/prepare-npm.mjs",

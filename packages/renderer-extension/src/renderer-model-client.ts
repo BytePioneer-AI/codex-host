@@ -12,6 +12,10 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  updateCheckResultSchema,
+  updateEmptyParamsSchema,
+  updateStartResultSchema,
+  updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
   type HarnessConfigurationState,
@@ -25,6 +29,9 @@ import {
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
+  type UpdateCheckResult,
+  type UpdateStartResult,
+  type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
@@ -34,6 +41,9 @@ export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+export const UPDATE_CHECK_METHOD = "codexhost/update/check";
+export const UPDATE_START_METHOD = "codexhost/update/start";
+export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 
 interface RequestManagerCandidate {
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
@@ -49,6 +59,9 @@ export interface RendererModelClient {
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
+  checkUpdate(): Promise<UpdateCheckResult>;
+  startUpdate(): Promise<UpdateStartResult>;
+  readUpdateStatus(): Promise<UpdateStatusResult>;
 }
 
 export function createRendererModelClient(
@@ -117,5 +130,26 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
+    async checkUpdate(): Promise<UpdateCheckResult> {
+      const result = await manager.sendRequest(
+        UPDATE_CHECK_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return updateCheckResultSchema.parse(result);
+    },
+    async startUpdate(): Promise<UpdateStartResult> {
+      const result = await manager.sendRequest(
+        UPDATE_START_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return updateStartResultSchema.parse(result);
+    },
+    async readUpdateStatus(): Promise<UpdateStatusResult> {
+      const result = await manager.sendRequest(
+        UPDATE_STATUS_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return updateStatusResultSchema.parse(result);
+    },
   });
 }

@@ -112,6 +112,7 @@ describe("npm package release", () => {
     ]);
     expect(commands.at(-1).args).toContain("codexhost-launcher");
     expect(commands.at(-1).args).toContain("codexhost-shim");
+    expect(commands.at(-1).args).toContain("codexhost-updater");
     expect(commands.at(-1).args).not.toContain("codexhost-platform");
   });
 
@@ -192,6 +193,8 @@ describe("npm package release", () => {
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
+      expect(paths).toContain("libexec/codexhost-updater");
+      expect(paths).toContain("app/codexhost-distribution.json");
       await mkdir(path.join(root, "runtime"), { recursive: true });
       await writeFile(path.join(root, "runtime/node"), "unexpected");
       await expect(

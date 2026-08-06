@@ -3,12 +3,14 @@ members = [
   "crates/launcher",
   "crates/platform",
   "crates/shim",
+  "crates/updater",
   "tools/gate-a/native",
 ]
 default-members = [
   "crates/launcher",
   "crates/platform",
   "crates/shim",
+  "crates/updater",
 ]
 resolver = "3"
 

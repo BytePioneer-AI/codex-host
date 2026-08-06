@@ -703,6 +703,9 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().selectThreadThinking(input),
     selectThreadPermissionMode: (input: ThreadPermissionModeSelectParams) =>
       currentModelClient().selectThreadPermissionMode(input),
+    checkUpdate: () => currentModelClient().checkUpdate(),
+    startUpdate: () => currentModelClient().startUpdate(),
+    readUpdateStatus: () => currentModelClient().readUpdateStatus(),
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);

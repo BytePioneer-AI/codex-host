@@ -24,7 +24,7 @@ import {
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
-import { AppServerHost } from "../src/index.js";
+import { AppServerHost, type HostUpdateCoordinator } from "../src/index.js";
 
 class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -147,6 +147,7 @@ function createFixture(
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
+    updateCoordinator?: HostUpdateCoordinator;
   } = {},
 ) {
   const adapter =
@@ -173,12 +174,14 @@ function createFixture(
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
+    ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
   });
   const running = host.run();
   return {
     adapter,
     collector,
     desktopInput,
+    desktopOutput,
     diagnosticOutput,
     official,
     running,
@@ -256,6 +259,88 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("routes fixed update controls locally and starts shutdown after the response", async () => {
+    const events: string[] = [];
+    const updateCoordinator: HostUpdateCoordinator = {
+      check: vi.fn(async () => ({
+        currentVersion: "1.2.2",
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: "Safer updates",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        status: null,
+        error: null,
+      })),
+      start: vi.fn(async () => ({
+        status: {
+          version: "1.2.3",
+          installation: "npm" as const,
+          phase: "prepared" as const,
+          updatedAt: 10,
+          error: null,
+        },
+      })),
+      status: vi.fn(async () => ({ status: null })),
+      requestShutdown: vi.fn(() => events.push("shutdown")),
+    };
+    const fixture = createFixture({ updateCoordinator });
+    fixture.desktopOutput.on("data", () => events.push("response"));
+
+    writeRequest(fixture.desktopInput, {
+      id: 20,
+      method: "codexhost/update/check",
+      params: {},
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 20)),
+    ).resolves.toMatchObject({ result: { latestVersion: "1.2.3", updateAvailable: true } });
+
+    events.length = 0;
+    writeRequest(fixture.desktopInput, {
+      id: 21,
+      method: "codexhost/update/start",
+      params: {},
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 21)),
+    ).resolves.toMatchObject({ result: { status: { phase: "prepared" } } });
+    expect(events).toEqual(["response", "shutdown"]);
+    expect(updateCoordinator.start).toHaveBeenCalledOnce();
+    await stopFixture(fixture);
+  });
+
+  it("rejects privileged update params and unavailable composition", async () => {
+    const fixture = createFixture();
+    writeRequest(fixture.desktopInput, {
+      id: 22,
+      method: "codexhost/update/start",
+      params: { url: "https://example.com/update.exe" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 22)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 24,
+      method: "codexhost/update/status",
+      params: null,
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 24)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 23,
+      method: "codexhost/update/check",
+      params: {},
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 23)),
+    ).resolves.toMatchObject({ error: { code: -32090 } });
+    await stopFixture(fixture);
+  });
+
   it("handles Pi inspection locally without opening a Thread Session", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

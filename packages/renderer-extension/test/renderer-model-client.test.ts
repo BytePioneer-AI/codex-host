@@ -16,6 +16,9 @@ import {
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
+  UPDATE_CHECK_METHOD,
+  UPDATE_START_METHOD,
+  UPDATE_STATUS_METHOD,
   createRendererModelClient,
 } from "../src/renderer-model-client.js";
 
@@ -90,13 +93,16 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
+      "checkUpdate",
       "forkThread",
       "inspectHarness",
       "inspectThread",
       "listThreadOwnership",
+      "readUpdateStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "startUpdate",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -175,6 +181,40 @@ describe("Renderer fixed Model request client", () => {
     });
   });
 
+  it("calls only fixed update methods with strict empty params", async () => {
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({
+        currentVersion: "1.2.2",
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: "Safer updates",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        status: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        status: {
+          version: "1.2.3",
+          installation: "npm",
+          phase: "prepared",
+          updatedAt: 10,
+          error: null,
+        },
+      })
+      .mockResolvedValueOnce({ status: null });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic update client was not created");
+
+    await expect(client.checkUpdate()).resolves.toMatchObject({ latestVersion: "1.2.3" });
+    await expect(client.startUpdate()).resolves.toMatchObject({ status: { phase: "prepared" } });
+    await expect(client.readUpdateStatus()).resolves.toEqual({ status: null });
+    expect(sendRequest).toHaveBeenNthCalledWith(1, UPDATE_CHECK_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, UPDATE_START_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(3, UPDATE_STATUS_METHOD, {});
+  });
+
   it("fails closed when request manager ownership is absent or ambiguous", () => {
     expect(createRendererModelClient([])).toBeNull();
     expect(
@@ -214,6 +254,24 @@ describe("Renderer fixed Model request client", () => {
         threadIds: [hostThreadIdSchema.parse("thread-1"), hostThreadIdSchema.parse("thread-2")],
       }),
     ).rejects.toThrow("does not match");
+  });
+
+  it("rejects update results that expose privileged artifact data", async () => {
+    const sendRequest = vi.fn(async () => ({
+      currentVersion: "1.2.2",
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+      installationAvailable: true,
+      releaseNotes: "Safer updates",
+      releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+      status: null,
+      error: null,
+      artifactUrl: "https://example.com/update.exe",
+    }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic update client was not created");
+
+    await expect(client.checkUpdate()).rejects.toThrow();
   });
 
   it("rejects a response that leaks undeclared native Model fields", async () => {

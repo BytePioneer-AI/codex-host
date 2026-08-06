@@ -1,21 +1,38 @@
+import type {
+  UpdateCheckResult,
+  UpdateStartResult,
+  UpdateStatus,
+  UpdateStatusResult,
+} from "@codexhost/shared-contracts";
+
 import {
   createRendererSettingsPageRegistry,
   type RendererSettingsPageDefinition,
   type RendererSettingsPageMountContext,
   type RendererSettingsPageRegistry,
 } from "./core.js";
+import { createRendererSettingsIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
+
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
   "model-pool",
   "routes",
   "gateway",
+  "updates",
 ] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
+type UnavailableRendererSettingsPageId = Exclude<DefaultRendererSettingsPageId, "updates">;
+
+export interface RendererUpdateClient {
+  checkUpdate(): Promise<UpdateCheckResult>;
+  startUpdate(): Promise<UpdateStartResult>;
+  readUpdateStatus(): Promise<UpdateStatusResult>;
+}
 
 function appendUnavailableStatus(content: HTMLElement, messages: RendererSettingsMessages): void {
   const heading = content.ownerDocument.createElement("div");
@@ -36,7 +53,7 @@ function appendUnavailableStatus(content: HTMLElement, messages: RendererSetting
 }
 
 function unavailablePage(
-  id: DefaultRendererSettingsPageId,
+  id: UnavailableRendererSettingsPageId,
   messages: RendererSettingsMessages,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
@@ -50,16 +67,251 @@ function unavailablePage(
   });
 }
 
+function versionRow(
+  context: RendererSettingsPageMountContext,
+  label: string,
+  version: string,
+): HTMLElement {
+  const row = context.content.ownerDocument.createElement("div");
+  row.className = "settings-update-version-row";
+  const name = context.content.ownerDocument.createElement("span");
+  name.textContent = label;
+  const value = context.content.ownerDocument.createElement("strong");
+  value.textContent = `v${version}`;
+  row.append(name, value);
+  return row;
+}
+
+function isPendingStatus(status: UpdateStatus | null): boolean {
+  return status !== null && status.phase !== "succeeded" && status.phase !== "failed";
+}
+
+function statusMessage(
+  status: UpdateStatus | null,
+  messages: RendererSettingsMessages,
+): string | null {
+  if (!status) return null;
+  if (status.phase === "succeeded") return messages.updateSucceeded;
+  if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "restarting") return messages.updateRestarting;
+  return messages.updatePreparing;
+}
+
+function updatesPage(
+  messages: RendererSettingsMessages,
+  getClient: () => RendererUpdateClient | null,
+): RendererSettingsPageDefinition {
+  return Object.freeze({
+    id: "updates",
+    label: messages.pageLabels.updates,
+    icon: "updates",
+    mount(context: RendererSettingsPageMountContext) {
+      const document = context.content.ownerDocument;
+      const heading = document.createElement("div");
+      heading.className = "settings-section-label";
+      heading.textContent = messages.pageLabels.updates;
+      const panel = document.createElement("section");
+      panel.className = "settings-update-panel";
+      panel.setAttribute("aria-live", "polite");
+      context.content.append(heading, panel);
+      let pollTimer: number | undefined;
+      let pollAttempts = 0;
+      let pending = false;
+
+      const clearPoll = (): void => {
+        if (pollTimer !== undefined) {
+          document.defaultView?.clearTimeout(pollTimer);
+          pollTimer = undefined;
+        }
+      };
+
+      const renderUnavailable = (detail: string): void => {
+        panel.dataset.updateState = "unavailable";
+        panel.replaceChildren();
+        const title = document.createElement("strong");
+        title.textContent = messages.notAvailable;
+        const copy = document.createElement("span");
+        copy.textContent = detail;
+        panel.append(title, copy);
+      };
+
+      const scheduleStatusPoll = (client: RendererUpdateClient, resetAttempts = false): void => {
+        clearPoll();
+        if (resetAttempts) pollAttempts = 0;
+        if (pollAttempts >= 320) return;
+        pollAttempts += 1;
+        pollTimer = document.defaultView?.setTimeout(() => {
+          void context.runLatest(() => client.readUpdateStatus(), {
+            success(result) {
+              const message = statusMessage(result.status, messages);
+              if (isPendingStatus(result.status)) scheduleStatusPoll(client);
+              if (message) renderPendingStatus(result.status, message);
+            },
+            failure(error) {
+              renderUnavailable(error instanceof Error ? error.message : messages.updateFailed);
+            },
+          });
+        }, 750);
+      };
+
+      const renderPendingStatus = (
+        status: UpdateStatus | null,
+        message: string,
+        viewPhase: UpdateStatus["phase"] | "pending" = status?.phase ?? "pending",
+      ): void => {
+        panel.dataset.updateState = viewPhase;
+        panel.replaceChildren();
+        const state = document.createElement("strong");
+        state.textContent = message;
+        panel.append(state);
+        if (viewPhase === "failed") {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "settings-command-button";
+          retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
+          retry.addEventListener("click", () => void load());
+          panel.append(retry);
+        }
+      };
+
+      const start = (client: RendererUpdateClient): void => {
+        if (pending) return;
+        pending = true;
+        renderPendingStatus(null, messages.updatePreparing);
+        void context.runLatest(() => client.startUpdate(), {
+          success(result) {
+            pending = false;
+            renderPendingStatus(
+              result.status,
+              statusMessage(result.status, messages) ?? messages.updatePreparing,
+            );
+            if (isPendingStatus(result.status)) scheduleStatusPoll(client, true);
+          },
+          failure(error) {
+            pending = false;
+            renderPendingStatus(
+              null,
+              error instanceof Error ? error.message : messages.updateFailed,
+              "failed",
+            );
+          },
+        });
+      };
+
+      const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
+        const operationMessage = statusMessage(result.status, messages);
+        if (isPendingStatus(result.status)) {
+          renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
+          scheduleStatusPoll(client, true);
+          return;
+        }
+        panel.dataset.updateState = result.error
+          ? "error"
+          : result.updateAvailable
+            ? "available"
+            : "current";
+        panel.replaceChildren(
+          versionRow(context, messages.updateCurrentVersion, result.currentVersion),
+        );
+        if (result.latestVersion) {
+          panel.append(versionRow(context, messages.updateLatestVersion, result.latestVersion));
+        }
+        const summary = document.createElement("p");
+        summary.className = "settings-update-summary";
+        summary.textContent =
+          operationMessage ??
+          (result.error
+            ? messages.updateFailed
+            : result.updateAvailable
+              ? messages.updateAvailable
+              : messages.updateUpToDate);
+        panel.append(summary);
+        if (result.releaseNotes) {
+          const releaseNotes = document.createElement("div");
+          releaseNotes.className = "settings-update-notes";
+          releaseNotes.textContent = result.releaseNotes;
+          panel.append(releaseNotes);
+        }
+        if (result.status?.phase === "failed" && result.status.error) {
+          const error = document.createElement("p");
+          error.className = "settings-update-error";
+          error.textContent = result.status.error;
+          panel.append(error);
+        }
+        if (result.updateAvailable && result.installationAvailable) {
+          const update = document.createElement("button");
+          update.type = "button";
+          update.className = "settings-command-button";
+          update.append(createRendererSettingsIcon("updates", 16), messages.updateAndRestart);
+          update.addEventListener("click", () => start(client));
+          panel.append(update);
+        }
+        if (result.releaseNotesUrl) {
+          const notes = document.createElement("a");
+          notes.className = "settings-update-link";
+          notes.href = result.releaseNotesUrl;
+          notes.target = "_blank";
+          notes.rel = "noopener noreferrer";
+          notes.append(messages.updateViewRelease, createRendererSettingsIcon("external-link", 14));
+          panel.append(notes);
+        }
+        if (result.error) {
+          const error = document.createElement("p");
+          error.className = "settings-update-error";
+          error.textContent = result.error;
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "settings-command-button settings-command-button--secondary";
+          retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
+          retry.addEventListener("click", () => void load());
+          panel.append(error, retry);
+        }
+      };
+
+      const load = (): Promise<void> => {
+        const client = getClient();
+        if (!client) {
+          renderUnavailable(messages.runtimeCapabilityNotInstalled);
+          return Promise.resolve();
+        }
+        pending = true;
+        renderPendingStatus(null, messages.updatePreparing);
+        return context.runLatest(() => client.checkUpdate(), {
+          success(result) {
+            pending = false;
+            renderCheck(result, client);
+          },
+          failure(error) {
+            pending = false;
+            renderUnavailable(error instanceof Error ? error.message : messages.updateFailed);
+          },
+        });
+      };
+
+      void load();
+      return clearPoll;
+    },
+  });
+}
+
 export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  getUpdateClient: () => RendererUpdateClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
-  return Object.freeze(
-    DEFAULT_RENDERER_SETTINGS_PAGE_IDS.map((id) => unavailablePage(id, messages)),
+  const unavailableIds = DEFAULT_RENDERER_SETTINGS_PAGE_IDS.filter(
+    (id): id is UnavailableRendererSettingsPageId => id !== "updates",
   );
+  return Object.freeze([
+    ...unavailableIds.map((id) => unavailablePage(id, messages)),
+    updatesPage(messages, getUpdateClient),
+  ]);
 }
 
 export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
+  getUpdateClient: () => RendererUpdateClient | null = () => null,
 ): RendererSettingsPageRegistry {
-  return createRendererSettingsPageRegistry(createDefaultRendererSettingsPages(messages));
+  return createRendererSettingsPageRegistry(
+    createDefaultRendererSettingsPages(messages, getUpdateClient),
+  );
 }

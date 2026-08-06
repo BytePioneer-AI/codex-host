@@ -3,6 +3,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { writeDistributionMetadata } from "./distribution-metadata.mjs";
 import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
@@ -73,6 +74,8 @@ export function releaseBuildCommands(
         "codexhost-launcher",
         "--package",
         "codexhost-shim",
+        "--package",
+        "codexhost-updater",
       ],
     },
   ];
@@ -192,7 +195,9 @@ export function expectedPayloadPaths(target) {
   const paths = [
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
+    `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
+    "app/codexhost-distribution.json",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
@@ -290,6 +295,12 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Shim",
     true,
   );
+  await copyReleaseFile(
+    path.join(rustOutput, `codexhost-updater${target.executableSuffix}`),
+    path.join(payloadRoot, "libexec", `codexhost-updater${target.executableSuffix}`),
+    "release Updater",
+    true,
+  );
 
   await runCommand(
     {
@@ -320,6 +331,11 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     path.join(payloadRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
   );
+  await writeDistributionMetadata(path.join(payloadRoot, "app", "codexhost-distribution.json"), {
+    version,
+    distribution: "installer",
+    target: target.id,
+  });
 
   const archivePath = await ensureNodeArchive({
     target,
@@ -341,7 +357,8 @@ export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   const extension = target.hostPlatform === "darwin" ? ".dmg" : ".exe";
   const artifactBase = path.join(prepared.outputRoot, `codexhost-${prepared.version}-${target.id}`);
   const artifactPath = `${artifactBase}${extension}`;
-  const priorExtensions = target.hostPlatform === "darwin" ? [".app.zip", ".dmg"] : [".msi", ".exe"];
+  const priorExtensions =
+    target.hostPlatform === "darwin" ? [".app.zip", ".dmg"] : [".msi", ".exe"];
   await Promise.all(
     priorExtensions.map((suffix) => rm(`${artifactBase}${suffix}`, { force: true })),
   );

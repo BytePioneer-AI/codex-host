@@ -34,6 +34,9 @@ export {
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
+  UPDATE_CHECK_METHOD,
+  UPDATE_START_METHOD,
+  UPDATE_STATUS_METHOD,
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
@@ -127,7 +130,7 @@ export {
   createDefaultRendererSettingsPages,
   createDefaultRendererSettingsRegistry,
 } from "./settings/pages.js";
-export type { DefaultRendererSettingsPageId } from "./settings/pages.js";
+export type { DefaultRendererSettingsPageId, RendererUpdateClient } from "./settings/pages.js";
 export {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   RENDERER_SETTINGS_LANGUAGE_SELECTIONS,

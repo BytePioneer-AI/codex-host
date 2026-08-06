@@ -1,4 +1,4 @@
-import { createRendererSettingsBrandIcon } from "./icons.js";
+import { createRendererSettingsBrandIcon, createRendererSettingsIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
@@ -11,6 +11,8 @@ export const SETTINGS_HEADER_SURFACE_SELECTOR =
 export interface RendererSettingsTriggerControl {
   root: HTMLElement;
   button: HTMLButtonElement;
+  updateButton: HTMLButtonElement;
+  setUpdateAvailable(available: boolean): void;
   dispose(): void;
 }
 
@@ -33,6 +35,7 @@ export interface RendererSettingsHeaderSlotCandidate<T> {
 export interface RendererSettingsHeaderTriggerControl {
   readonly root: HTMLElement | null;
   refresh(): boolean;
+  setUpdateAvailable(available: boolean): void;
   dispose(): void;
 }
 
@@ -111,7 +114,7 @@ function findRendererSettingsHeaderInsertionPoint(
 export function mountRendererSettingsTrigger(
   triggerId: string,
   available: boolean,
-  onOpen: (opener: HTMLButtonElement) => void,
+  onOpen: (opener: HTMLButtonElement, pageId?: "updates") => void,
   ownerDocument: Document = document,
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
 ): RendererSettingsTriggerControl {
@@ -157,6 +160,40 @@ export function mountRendererSettingsTrigger(
   brandLabel.style.whiteSpace = "nowrap";
   button.append(brandLabel);
 
+  const updateButton = ownerDocument.createElement("button");
+  updateButton.type = "button";
+  updateButton.disabled = !available;
+  updateButton.setAttribute("aria-label", messages.updateAvailable);
+  updateButton.setAttribute("aria-haspopup", "dialog");
+  updateButton.title = messages.updateAvailable;
+  updateButton.style.display = "none";
+  updateButton.style.position = "relative";
+  updateButton.style.alignItems = "center";
+  updateButton.style.justifyContent = "center";
+  updateButton.style.width = "28px";
+  updateButton.style.height = "28px";
+  updateButton.style.padding = "0";
+  updateButton.style.border = "0";
+  updateButton.style.borderRadius = "8px";
+  updateButton.style.background = "transparent";
+  updateButton.style.color = "inherit";
+  updateButton.style.cursor = available ? "pointer" : "not-allowed";
+  updateButton.style.outlineOffset = "2px";
+  updateButton.style.setProperty("-webkit-app-region", "no-drag");
+  updateButton.append(createRendererSettingsIcon("updates", 16));
+
+  const updateIndicator = ownerDocument.createElement("span");
+  updateIndicator.setAttribute("aria-hidden", "true");
+  updateIndicator.style.position = "absolute";
+  updateIndicator.style.top = "3px";
+  updateIndicator.style.right = "3px";
+  updateIndicator.style.width = "6px";
+  updateIndicator.style.height = "6px";
+  updateIndicator.style.background = "#ef4444";
+  updateIndicator.style.border = "1px solid currentColor";
+  updateIndicator.style.borderRadius = "50%";
+  updateButton.append(updateIndicator);
+
   const onPointerEnter = (): void => {
     if (!button.disabled) button.style.background = "rgba(127, 127, 127, 0.16)";
   };
@@ -167,18 +204,39 @@ export function mountRendererSettingsTrigger(
     event.stopPropagation();
     if (!button.disabled) onOpen(button);
   };
+  const onUpdatePointerEnter = (): void => {
+    if (!updateButton.disabled) updateButton.style.background = "rgba(127, 127, 127, 0.16)";
+  };
+  const onUpdatePointerLeave = (): void => {
+    updateButton.style.background = "transparent";
+  };
+  const onUpdateClick = (event: MouseEvent): void => {
+    event.stopPropagation();
+    if (!updateButton.disabled) onOpen(updateButton, "updates");
+  };
   button.addEventListener("pointerenter", onPointerEnter);
   button.addEventListener("pointerleave", onPointerLeave);
   button.addEventListener("click", onClick);
-  root.append(button);
+  updateButton.addEventListener("pointerenter", onUpdatePointerEnter);
+  updateButton.addEventListener("pointerleave", onUpdatePointerLeave);
+  updateButton.addEventListener("click", onUpdateClick);
+  root.append(button, updateButton);
 
   return {
     root,
     button,
+    updateButton,
+    setUpdateAvailable(updateAvailable) {
+      root.toggleAttribute("data-update-available", updateAvailable);
+      updateButton.style.display = updateAvailable ? "inline-flex" : "none";
+    },
     dispose() {
       button.removeEventListener("pointerenter", onPointerEnter);
       button.removeEventListener("pointerleave", onPointerLeave);
       button.removeEventListener("click", onClick);
+      updateButton.removeEventListener("pointerenter", onUpdatePointerEnter);
+      updateButton.removeEventListener("pointerleave", onUpdatePointerLeave);
+      updateButton.removeEventListener("click", onUpdateClick);
       root.remove();
     },
   };
@@ -186,12 +244,13 @@ export function mountRendererSettingsTrigger(
 
 export function installRendererSettingsHeaderTrigger(options: {
   available: boolean;
-  onOpen(opener: HTMLButtonElement): void;
+  onOpen(opener: HTMLButtonElement, pageId?: "updates"): void;
   messages?: RendererSettingsMessages;
   ownerDocument?: Document;
 }): RendererSettingsHeaderTriggerControl {
   const ownerDocument = options.ownerDocument ?? document;
   let trigger: RendererSettingsTriggerControl | null = null;
+  let updateAvailable = false;
   let disposed = false;
 
   const refresh = (): boolean => {
@@ -211,6 +270,7 @@ export function installRendererSettingsHeaderTrigger(options: {
       ownerDocument,
       options.messages,
     );
+    trigger.setUpdateAvailable(updateAvailable);
     insertionPoint.parent.insertBefore(trigger.root, insertionPoint.before);
     return true;
   };
@@ -221,6 +281,10 @@ export function installRendererSettingsHeaderTrigger(options: {
       return trigger?.root ?? null;
     },
     refresh,
+    setUpdateAvailable(available) {
+      updateAvailable = available;
+      trigger?.setUpdateAvailable(available);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

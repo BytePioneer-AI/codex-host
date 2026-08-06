@@ -320,7 +320,9 @@ export function installRendererBindingProbe(
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
   });
-  const settingsLifecycle = installRendererSettingsLifecycle();
+  const settingsLifecycle = installRendererSettingsLifecycle(window, {
+    getUpdateClient: () => modelControl,
+  });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
     reason: "installing",

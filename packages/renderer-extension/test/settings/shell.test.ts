@@ -18,12 +18,14 @@ describe("Renderer settings foundation", () => {
       "Model Pool",
       "Routes",
       "Gateway",
+      "Updates",
     ]);
     expect(pages.map(({ icon }) => icon)).toEqual([
       "connections",
       "model-pool",
       "routes",
       "gateway",
+      "updates",
     ]);
     expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
@@ -50,6 +52,7 @@ describe("Renderer settings foundation", () => {
 
   it("keeps the foundation free of executable configuration controls", () => {
     const serializedMounts = createDefaultRendererSettingsPages()
+      .filter(({ id }) => id !== "updates")
       .map(({ mount }) => mount.toString())
       .join("\n");
     expect(serializedMounts).not.toMatch(/save|connect|start|test|api.?key|oauth|fetch/iu);

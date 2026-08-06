@@ -907,11 +907,7 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalModel(mounted.composer, agent, effectiveModel);
-      controller.setExternalThinkingOption(
-        mounted.composer,
-        agent,
-        effectiveThinkingOptionId,
-      );
+      controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
       writeNewThreadExternalConfigurationPreference(
         agent,
         effectiveModel,
@@ -1303,9 +1299,7 @@ export function installRendererBindingProbe(
     const state = controller.mount(
       composer,
       modelTarget,
-      modelTarget?.[0] === "default"
-        ? readNewThreadAgentPreference(enabledAgentSet)
-        : undefined,
+      modelTarget?.[0] === "default" ? readNewThreadAgentPreference(enabledAgentSet) : undefined,
     );
     const inherited = pendingReplacements.get(composer)?.source;
     const control = mountComposerAgentControl(

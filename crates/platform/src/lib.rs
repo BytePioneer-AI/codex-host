@@ -5,6 +5,11 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod background;
+#[cfg(not(target_os = "windows"))]
+mod background;
 mod desktop_launch;
 mod installation;
 mod process;
@@ -15,11 +20,6 @@ mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
-#[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
-mod background;
-#[cfg(not(target_os = "windows"))]
-mod background;
 
 pub use background::detach_from_terminal;
 pub use desktop_launch::launch_desktop;

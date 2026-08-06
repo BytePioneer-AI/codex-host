@@ -15,10 +15,12 @@ use super::PlatformError;
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
     use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, setsid};
 
-    setsid().map_err(|error| {
-        PlatformError::Io(io::Error::other(format!("setsid failed: {error}")))
-    })?;
-    let null = std::fs::OpenOptions::new().read(true).write(true).open("/dev/null")?;
+    setsid()
+        .map_err(|error| PlatformError::Io(io::Error::other(format!("setsid failed: {error}"))))?;
+    let null = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")?;
     dup2_stdin(&null).map_err(|error| {
         PlatformError::Io(io::Error::other(format!("redirect stdin failed: {error}")))
     })?;
@@ -70,8 +72,7 @@ mod tests {
             let result = (|| -> Result<(), PlatformError> {
                 detach_from_terminal()?;
                 let pid = i32::try_from(std::process::id()).expect("PID fits i32");
-                let session =
-                    nix::unistd::getsid(None).expect("read session id").as_raw();
+                let session = nix::unistd::getsid(None).expect("read session id").as_raw();
                 if pid != session {
                     return Err(PlatformError::Invalid(
                         "process is not its own session leader".into(),
@@ -90,7 +91,11 @@ mod tests {
             .env("CODEXHOST_DETACH_HELPER", "1")
             .output()
             .expect("spawn detach helper");
-        assert!(output.status.success(), "helper failed: {:?}", output.status);
+        assert!(
+            output.status.success(),
+            "helper failed: {:?}",
+            output.status
+        );
         assert!(
             !String::from_utf8_lossy(&output.stdout).contains("must-not-appear-on-stdout"),
             "stdout was not redirected to /dev/null after detach"

@@ -18,8 +18,8 @@ Before implementing a planned change, follow `docs/开发步骤清单.md` sectio
 
 ## Code Layout
 
-- `crates/` is the Rust Cargo Workspace. `launcher` and `shim` are binary crates; `platform` is their shared Windows/macOS platform library. Rust owns native launch, process, and platform integration, not Host protocol or Harness semantics.
-- `packages/` is the npm/TypeScript Workspace. `protocol-core`, `mapping-store`, `harness-adapter`, `desktop-control`, `host-runtime`, and `adapters/pi` are Node.js modules for protocol routing, metadata persistence, Harness abstraction, Desktop control, composition, and Pi integration.
+- `crates/` is the Rust Cargo Workspace. `launcher`, `shim`, and `updater` are binary crates; `platform` is their shared Windows/macOS platform library. Rust owns native launch, process, update installation, and platform integration, not Host protocol or Harness semantics.
+- `packages/` is the npm/TypeScript Workspace. `protocol-core`, `mapping-store`, `harness-adapter`, `desktop-control`, `update-manager`, `host-runtime`, and Harness adapters are Node.js modules for protocol routing, metadata persistence, Harness abstraction, Desktop control, background update preparation, composition, and Harness integration.
 - `packages/shared-contracts/` contains browser-safe shared types and runtime schemas. It must not depend on Node.js-only capabilities.
 - `packages/renderer-extension/` is TypeScript built to browser JavaScript. It must not import Node.js built-ins, Electron private APIs, or Harness SDKs.
 - `scripts/release/` contains shared build-time release infrastructure plus platform-specific macOS and Windows packaging definitions. This path is not an application Runtime package. `tools/` contains development-only Node.js utilities and technical Gate tooling. `tests/e2e/`, `tests/differential/`, `tests/fixtures/`, and `tests/release/` contain Playwright tests, protocol differential tests, reviewed fixtures, and release infrastructure tests. Package-level `test/` directories contain Vitest tests; crate-level `tests/` directories contain Rust integration tests.

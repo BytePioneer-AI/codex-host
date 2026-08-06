@@ -94,7 +94,27 @@ describe("Renderer fixed Model request client", () => {
       .mockResolvedValueOnce({
         threadId: "thread-1",
         usage: { cacheHitRatePercent: 99.9, totalCostUsd: 0.168 },
-      });
+      })
+      .mockResolvedValueOnce({
+        currentVersion: "1.2.2",
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: "Safer updates",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        status: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        status: {
+          version: "1.2.3",
+          installation: "npm",
+          phase: "prepared",
+          updatedAt: 10,
+          error: null,
+        },
+      })
+      .mockResolvedValueOnce({ status: null });
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
@@ -194,40 +214,12 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(8, THREAD_USAGE_INSPECT_METHOD, {
       threadId: "thread-1",
     });
-  });
-
-  it("calls only fixed update methods with strict empty params", async () => {
-    const sendRequest = vi
-      .fn<(method: string, params: unknown) => Promise<unknown>>()
-      .mockResolvedValueOnce({
-        currentVersion: "1.2.2",
-        latestVersion: "1.2.3",
-        updateAvailable: true,
-        installationAvailable: true,
-        releaseNotes: "Safer updates",
-        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
-        status: null,
-        error: null,
-      })
-      .mockResolvedValueOnce({
-        status: {
-          version: "1.2.3",
-          installation: "npm",
-          phase: "prepared",
-          updatedAt: 10,
-          error: null,
-        },
-      })
-      .mockResolvedValueOnce({ status: null });
-    const client = createRendererModelClient([{ sendRequest }]);
-    if (!client) throw new Error("Synthetic update client was not created");
-
     await expect(client.checkUpdate()).resolves.toMatchObject({ latestVersion: "1.2.3" });
     await expect(client.startUpdate()).resolves.toMatchObject({ status: { phase: "prepared" } });
     await expect(client.readUpdateStatus()).resolves.toEqual({ status: null });
-    expect(sendRequest).toHaveBeenNthCalledWith(1, UPDATE_CHECK_METHOD, {});
-    expect(sendRequest).toHaveBeenNthCalledWith(2, UPDATE_START_METHOD, {});
-    expect(sendRequest).toHaveBeenNthCalledWith(3, UPDATE_STATUS_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(9, UPDATE_CHECK_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_START_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_STATUS_METHOD, {});
   });
 
   it("fails closed when request manager ownership is absent or ambiguous", () => {

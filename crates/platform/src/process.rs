@@ -444,9 +444,8 @@ fn signal_processes_checked(
                 expected.id
             )));
         }
-        let process_id = i32::try_from(expected.id).map_err(|_| {
-            PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
-        })?;
+        let process_id = i32::try_from(expected.id)
+            .map_err(|_| PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id)))?;
         if let Err(error) = kill(Pid::from_raw(process_id), signal)
             && error != Errno::ESRCH
         {
@@ -606,7 +605,10 @@ mod tests {
 
         use super::signal_processes_checked;
 
-        let mut child = Command::new("/bin/sleep").arg("60").spawn().expect("spawn sleep");
+        let mut child = Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
         let snapshot = process_snapshot(child.id()).expect("snapshot sleep process");
         signal_processes_checked(&[snapshot], Signal::SIGTERM).expect("terminate sleep");
         let status = child.wait().expect("wait for sleep exit");

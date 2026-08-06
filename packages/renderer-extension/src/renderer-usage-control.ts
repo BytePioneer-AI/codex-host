@@ -7,6 +7,7 @@ export interface RendererUsageControl {
   trigger: HTMLButtonElement;
   popover: HTMLDivElement;
   anchor: HTMLElement | null;
+  label: HTMLSpanElement;
   syncNativeModelClassName(className?: string): void;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
@@ -203,6 +204,7 @@ export function mountRendererUsageControl(
     trigger,
     popover,
     anchor: null,
+    label,
     syncNativeModelClassName,
     dispose() {
       closePopover(control);
@@ -279,9 +281,11 @@ export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
 ): boolean {
-  const hasCacheHitRate = usage?.cacheHitRatePercent !== undefined;
-  const hasCost = usage?.totalCostUsd !== undefined;
-  const visible = usage !== null && (hasCacheHitRate || hasCost);
+  const cacheHitRatePercent = usage?.cacheHitRatePercent;
+  const totalCostUsd = usage?.totalCostUsd;
+  const hasCacheHitRate = cacheHitRatePercent !== undefined;
+  const hasCost = totalCostUsd !== undefined;
+  const visible = hasCacheHitRate || hasCost;
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible || !usage) {
     closePopover(control);
@@ -289,14 +293,14 @@ export function renderRendererUsageControl(
   }
 
   const summary = [
-    hasCacheHitRate ? formatRendererCacheHitRate(usage.cacheHitRatePercent!) : null,
-    hasCost ? formatRendererCost(usage.totalCostUsd!) : null,
+    cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
+    totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   const compactSummary = summary.join(" · ");
   const accessibleSummary = `Thread Usage: ${compactSummary}`;
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
-  control.trigger.querySelector("span")!.textContent = compactSummary;
+  control.label.textContent = compactSummary;
   renderDetails(control.popover, usage);
   return true;
 }

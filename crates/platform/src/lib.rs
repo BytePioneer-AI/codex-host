@@ -218,9 +218,7 @@ fn temporary_directory(prefix: &str) -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::{
-        CRATE_NAME, PlatformError, node_entrypoint_path, temporary_directory, validate_proxy_target,
-    };
+    use super::{CRATE_NAME, PlatformError, temporary_directory, validate_proxy_target};
 
     fn temporary_file(name: &str) -> std::path::PathBuf {
         let path = temporary_directory("codexhost-platform").join(name);
@@ -265,6 +263,8 @@ mod tests {
     #[test]
     fn normalizes_verbatim_node_entrypoint_paths() {
         use std::path::Path;
+
+        use super::node_entrypoint_path;
 
         assert_eq!(
             node_entrypoint_path(Path::new(r"\\?\D:\workspace\host-runtime.js")),

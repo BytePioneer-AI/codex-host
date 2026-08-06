@@ -114,7 +114,7 @@ Host Runtime SHALL handle fixed codexhost inspection and Pi Thread Model-selecti
 - **THEN** Host preserves the stock transparent forwarding path
 
 ### Requirement: Draft Model selection is bound to the exact Pi creation
-The Renderer SHALL bind a selected Pi Model to the same logical Composer and native create state as the Pi Agent selection, without using a process-level or window-level next-Model value.
+The Renderer SHALL bind a selected Pi Model to the same logical Composer and native create state as the Pi Agent selection. A persisted new-Thread preference MAY initialize that Composer after current-Catalog validation, but it SHALL NOT act as a consumable process-level or window-level next-Model route.
 
 #### Scenario: Draft selects a Pi Model and submits
 - **WHEN** a Pi draft selects a Model and is submitted
@@ -133,8 +133,8 @@ The Renderer SHALL bind a selected Pi Model to the same logical Composer and nat
 For the supported Desktop build, the Renderer SHALL show a codexhost-owned Pi Model option control separately from the Agent control and SHALL display only normalized labels and confirmed selection state.
 
 #### Scenario: User selects Pi
-- **WHEN** a Composer changes its Agent to Pi and inspection succeeds
-- **THEN** the Model control displays the Pi RPC catalog and selects the current/default Model Ref
+- **WHEN** a new Composer changes its Agent to Pi and inspection succeeds
+- **THEN** the Model control displays the Pi RPC catalog and selects the most recent valid Pi preference or the current/default Model Ref
 - **AND** it never displays `codexhost/pi-native` or the selected transport carrier as a Model
 
 #### Scenario: User keeps Codex
@@ -154,7 +154,7 @@ For the supported Desktop build, the Renderer SHALL show a codexhost-owned Pi Mo
 - **THEN** Pi Model discovery or selection is disabled and no generic request or guessed identity fallback is used
 
 ### Requirement: Draft state and Existing Thread recovery have distinct sources
-The Renderer SHALL keep unsubmitted draft Model state only in the logical Composer. An Existing Thread SHALL recover its confirmed current Model and Thinking state from the resumed Native Session Snapshot and SHALL NOT infer it from cached UI state or another Thread.
+The Renderer SHALL keep active unsubmitted draft Model state in the logical Composer and MAY initialize a new default Composer from the most recent per-Harness Model and Thinking preference shared by codexhost Renderer windows. It SHALL validate that preference against the current Catalog before binding it to the Composer. An Existing Thread SHALL recover its confirmed current Model and Thinking state from the resumed Native Session Snapshot and SHALL NOT infer it from the new-Thread preference, cached UI state, or another Thread.
 
 #### Scenario: Same-process Composer replacement or revisit
 - **WHEN** an equivalent logical Pi Composer is replaced or revisited in the same Renderer process
@@ -162,7 +162,12 @@ The Renderer SHALL keep unsubmitted draft Model state only in the logical Compos
 
 #### Scenario: New default Composer opens
 - **WHEN** a conversation Composer is replaced by a new default Composer
-- **THEN** the new Composer does not inherit the prior Pi Model Ref
+- **THEN** the new Composer uses the most recent Pi Model and Thinking preference when both remain valid for the current Catalog
+- **AND** it falls back to the current Catalog defaults rather than inheriting uncommitted state from the prior Composer
+
+#### Scenario: Stored preference is stale
+- **WHEN** the stored Pi Model is absent from the current Catalog or its Thinking option is unsupported by that Model
+- **THEN** Renderer ignores the stale component and uses the applicable current Catalog default
 
 #### Scenario: Application restarts
 - **WHEN** Host restores an Existing external Thread after restart

@@ -6,7 +6,7 @@ Define the supported Desktop build contract for Composer-scoped Codex, Pi, and C
 ## Requirements
 ### Requirement: Composer Agent freezes at submission
 
-The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, SHALL synchronously freeze the final Agent when that draft is submitted, and SHALL remember the Agent of the most recently submitted Composer for later new-Thread drafts in the same Renderer process.
+The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, SHALL synchronously freeze the final Agent when that draft is submitted, and SHALL persist the Agent of the most recently submitted Composer for later new-Thread drafts across codexhost Renderer windows.
 
 #### Scenario: User switches after editing
 
@@ -31,8 +31,8 @@ The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHAL
 #### Scenario: User opens a new Thread
 
 - **WHEN** a conversation Composer is replaced by a new default Composer
-- **THEN** the new Composer starts in draft phase with the Agent used by the most recently submitted Composer in the same Renderer process
-- **AND** it starts as Codex when no Composer has been submitted in that Renderer process
+- **THEN** the new Composer starts in draft phase with the valid persisted Agent used by the most recently submitted Composer in a codexhost Renderer window
+- **AND** it uses the configured default, normally Codex, when no valid preference exists
 
 #### Scenario: User only opens an existing Thread
 
@@ -282,9 +282,10 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 - **WHEN** an equivalent opaque conversation target is revisited in the same Renderer process
 - **THEN** the Renderer restores the final Pi Model Ref without persisting or logging the Thread identity
 
-#### Scenario: New task resets Model
-- **WHEN** a conversation target transitions to a new default Composer
-- **THEN** the new Composer uses the most recently submitted Agent without inheriting the prior Composer's Pi Model Ref
+#### Scenario: New task uses the Pi preference
+- **WHEN** a conversation target transitions to a new default Composer and Pi is selected
+- **THEN** the new Composer initializes from the most recent valid Pi Model and Thinking preference
+- **AND** it does not inherit uncommitted Model state from the prior Composer
 
 #### Scenario: Existing Pi Thread selection
 - **WHEN** the supported conversation target yields one validated current-process Host Thread ID and the user selects a different Pi Model
@@ -391,11 +392,11 @@ The external Fork feature SHALL reuse Codex Desktop's existing message action an
 - **AND** 系统 MUST NOT 安装启发式 DOM 表盘作为 fallback
 
 ### Requirement: Renderer Model control is capability-driven for external Harnesses
-For a supported Desktop build, Renderer SHALL use the fixed Harness inspection and Thread Model-selection methods for the currently selected external Harness when its inspection/session capability allows Model selection. It SHALL keep each Harness's Catalog and Model Ref opaque and MUST NOT branch on Claude or Pi native Model structure.
+For a supported Desktop build, Renderer SHALL use the fixed Harness inspection and Thread Model-selection methods for the currently selected external Harness when its inspection/session capability allows Model selection. It SHALL keep each Harness's Catalog and Model Ref opaque and MUST NOT branch on Claude or Pi native Model structure. Renderer SHALL persist each external Harness's most recent successful Model and Thinking selection as a new-Thread preference, validate it against each fresh Catalog, and SHALL NOT apply that preference while restoring an Existing Thread.
 
 #### Scenario: User selects Claude Code
-- **WHEN** a Claude Composer requests inspection and Claude returns a ready selectable Catalog
-- **THEN** the existing codexhost Model control displays normalized Claude labels, selects the default Ref, and may display the bounded resolved Model label
+- **WHEN** a new Claude Composer requests inspection and Claude returns a ready selectable Catalog
+- **THEN** the existing codexhost Model control displays normalized Claude labels, selects the most recent valid Claude preference or the default Ref, and may display the bounded resolved Model label
 - **AND** it does not show a Claude Thinking selector while `selectThinkingOption=false`
 
 #### Scenario: User selects Pi after Claude
@@ -420,9 +421,10 @@ Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog,
 - **WHEN** a submitted and locked Claude new-Thread Composer transitions from the default target to its created conversation target
 - **THEN** the replacement retains the selected Claude Ref and locked Agent state for that exact create
 
-#### Scenario: New task resets Claude Model
+#### Scenario: New task uses the Claude preference
 - **WHEN** a Claude conversation transitions to a new default Composer
-- **THEN** the new Composer may inherit the most recently submitted Agent but does not inherit the prior Thread's Claude Model Ref
+- **THEN** the new Composer may use the most recently submitted Agent and initializes from the most recent valid Claude Model and Thinking preference
+- **AND** it does not inherit uncommitted Model state from the prior Thread Composer
 
 #### Scenario: Existing Claude Thread selects an alias
 - **WHEN** a validated current-process Claude Thread selects another Catalog Ref while Idle
@@ -435,6 +437,11 @@ Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog,
 #### Scenario: Claude result becomes stale
 - **WHEN** an inspection or selection resolves after Agent, Composer, target, request generation, or extension lifetime changed
 - **THEN** Renderer ignores the result and preserves the newer state
+
+#### Scenario: Existing external Thread opens
+- **WHEN** Host ownership inspection restores a Pi or Claude Code conversation
+- **THEN** Renderer uses only that Thread's Host-confirmed Model and Thinking state
+- **AND** opening or revisiting the Thread neither reads nor overwrites the new-Thread Model and Thinking preference
 
 ### Requirement: Renderer projects provider-native Permission Mode controls
 

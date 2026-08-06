@@ -52,6 +52,12 @@ import {
   writeClaudePermissionModePreference,
 } from "./renderer-permission-mode-preference.js";
 import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
+import {
+  readNewThreadAgentPreference,
+  readNewThreadExternalConfigurationPreference,
+  writeNewThreadAgentPreference,
+  writeNewThreadExternalConfigurationPreference,
+} from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 
@@ -298,6 +304,7 @@ export function installRendererBindingProbe(
   if (existing) return existing;
 
   const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
+  const enabledAgentSet = new Set(enabledAgents);
   const controller = new DraftAgentController<Element>({
     enabledAgents,
     ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
@@ -338,6 +345,17 @@ export function installRendererBindingProbe(
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
+    writeNewThreadAgentPreference(state.agent);
+    if (state.agent !== "codex") {
+      const model = controller.modelForAgent(composer, state.agent);
+      if (model) {
+        writeNewThreadExternalConfigurationPreference(
+          state.agent,
+          model,
+          controller.thinkingOptionForAgent(composer, state.agent),
+        );
+      }
+    }
     window.dispatchEvent(
       new CustomEvent("codexhost:renderer-submission", {
         detail: {
@@ -596,15 +614,24 @@ export function installRendererBindingProbe(
       if (current.phase === "locked" && previousModel && !previousModelAvailable) {
         throw new Error("Existing Thread Model is absent from the current Catalog");
       }
-      const selected = previousModelAvailable ? previousModel : inspection.catalog.defaultModel;
+      const preferredConfiguration =
+        current.phase === "draft" && !previousModelAvailable
+          ? readNewThreadExternalConfigurationPreference(agent, inspection.catalog)
+          : undefined;
+      const selected = previousModelAvailable
+        ? previousModel
+        : (preferredConfiguration?.model ?? inspection.catalog.defaultModel);
       if (!selected) throw new Error("External Harness did not report its default Model");
       const effectiveCatalog =
         current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
           : inspection.catalog;
       const previousThinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
+      const requestedThinkingOptionId = previousModelAvailable
+        ? previousThinkingOptionId
+        : preferredConfiguration?.thinkingOptionId;
       const selectedThinkingOptionId = inspection.capabilities.configuration.selectThinkingOption
-        ? draftThinkingOptionForModel(effectiveCatalog, selected, previousThinkingOptionId)
+        ? draftThinkingOptionForModel(effectiveCatalog, selected, requestedThinkingOptionId)
         : undefined;
       if (
         current.phase === "draft" &&
@@ -640,9 +667,7 @@ export function installRendererBindingProbe(
         if (!isCurrentModelRequest(mounted, generation)) return;
       }
       controller.setExternalModel(mounted.composer, agent, selected);
-      if (selectedThinkingOptionId) {
-        controller.setExternalThinkingOption(mounted.composer, agent, selectedThinkingOptionId);
-      }
+      controller.setExternalThinkingOption(mounted.composer, agent, selectedThinkingOptionId);
       if (selectedPermissionModeId) {
         controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
       }
@@ -795,9 +820,16 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalModel(mounted.composer, agent, effectiveModel);
-      if (effectiveThinkingOptionId) {
-        controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
-      }
+      controller.setExternalThinkingOption(
+        mounted.composer,
+        agent,
+        effectiveThinkingOptionId,
+      );
+      writeNewThreadExternalConfigurationPreference(
+        agent,
+        effectiveModel,
+        effectiveThinkingOptionId,
+      );
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
@@ -1043,6 +1075,7 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
+      writeNewThreadExternalConfigurationPreference(agent, model, effectiveThinkingOptionId);
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
@@ -1180,7 +1213,13 @@ export function installRendererBindingProbe(
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
-    const state = controller.mount(composer, modelTarget);
+    const state = controller.mount(
+      composer,
+      modelTarget,
+      modelTarget?.[0] === "default"
+        ? readNewThreadAgentPreference(enabledAgentSet)
+        : undefined,
+    );
     const inherited = pendingReplacements.get(composer)?.source;
     const control = mountComposerAgentControl(
       composer,

@@ -88,16 +88,21 @@ export class DraftAgentController<Composer extends object> {
     return this.#state(composer);
   }
 
-  mount(composer: Composer, target: readonly unknown[] | null): Readonly<DraftComposerState> {
+  mount(
+    composer: Composer,
+    target: readonly unknown[] | null,
+    preferredNewThreadAgent?: RendererAgent,
+  ): Readonly<DraftComposerState> {
     const bound = this.#conversationState(target);
     if (bound) {
       this.#states.set(composer, bound);
       return bound;
     }
-    const state = this.#state(
-      composer,
-      isDefaultTarget(target) ? this.#lastSubmittedAgent : "codex",
-    );
+    const preferredAgent =
+      preferredNewThreadAgent && this.#enabledAgents.has(preferredNewThreadAgent)
+        ? preferredNewThreadAgent
+        : this.#lastSubmittedAgent;
+    const state = this.#state(composer, isDefaultTarget(target) ? preferredAgent : "codex");
     if (isConversationTarget(target)) {
       this.#conversationStates.push({ target, state });
     }
@@ -260,11 +265,13 @@ export class DraftAgentController<Composer extends object> {
   setExternalThinkingOption(
     composer: Composer,
     agent: ExternalRendererAgent,
-    thinkingOptionId: HarnessThinkingOptionId,
+    thinkingOptionId?: HarnessThinkingOptionId,
   ): Readonly<DraftComposerState> {
     const state = this.#state(composer);
-    if (agent === "pi") state.piThinkingOptionId = thinkingOptionId;
-    else state.claudeThinkingOptionId = thinkingOptionId;
+    if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
+    else if (agent === "pi") delete state.piThinkingOptionId;
+    else if (thinkingOptionId) state.claudeThinkingOptionId = thinkingOptionId;
+    else delete state.claudeThinkingOptionId;
     return state;
   }
 

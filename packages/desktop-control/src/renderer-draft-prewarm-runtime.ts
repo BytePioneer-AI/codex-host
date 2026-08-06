@@ -78,8 +78,9 @@ export async function installDraftPrewarmPolicyInRenderer(
     )?.value?.value;
     const hostId = managerProperties.result?.find((property) => property.name === "hostId")?.value
       ?.value;
-    const manager = managerProperties.result?.find((property) => property.name === "manager")
-      ?.value;
+    const manager = managerProperties.result?.find(
+      (property) => property.name === "manager",
+    )?.value;
     if (candidateCount !== 1 || hostId !== "local" || typeof manager?.objectId !== "string") {
       throw new Error("Renderer request manager is ambiguous");
     }

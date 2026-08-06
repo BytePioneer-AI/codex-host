@@ -61,13 +61,10 @@ function rendererFixture(
             return { result: [{ value: { objectId: "module-scope" } }] };
           case "module-scope":
             return {
-              result: Array.from(
-                { length: options.hostBridgeCandidates ?? 1 },
-                (_, index) => ({
-                  name: `bridge-${index}`,
-                  value: { objectId: `host-bridge-${index}`, type: "object" },
-                }),
-              ),
+              result: Array.from({ length: options.hostBridgeCandidates ?? 1 }, (_, index) => ({
+                name: `bridge-${index}`,
+                value: { objectId: `host-bridge-${index}`, type: "object" },
+              })),
             };
           default:
             throw new Error(`Unexpected Runtime.getProperties object: ${parameters.objectId}`);

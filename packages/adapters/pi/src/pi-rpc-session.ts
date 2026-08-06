@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
 
-import type { HostUsage } from "@codexhost/harness-adapter";
+import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
   jsonValueSchema,
@@ -14,6 +14,8 @@ import {
 
 import type { PiSessionHistory } from "./pi-history.js";
 import {
+  latestPiCacheHitRatePercent,
+  optionalPiCacheHitRatePercent,
   optionalPiStateContextUsage,
   parsePiSessionUsage,
   parsePiStateContextUsage,
@@ -470,6 +472,7 @@ export class PiRpcSession {
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
+  #latestCacheHitRatePercent: number | null | undefined;
 
   constructor(
     options: PiRpcSessionOptions,
@@ -565,7 +568,9 @@ export class PiRpcSession {
 
   async getSessionUsage(): Promise<HostUsage | null> {
     try {
-      return parsePiSessionUsage(await this.#send("get_session_stats", {}));
+      const usage = parsePiSessionUsage(await this.#send("get_session_stats", {}));
+      await this.#ensureLatestCacheHitRate();
+      return this.#withLatestCacheHitRate(usage);
     } catch (error) {
       if (!(error instanceof PiRpcUnsupportedCommandError)) throw error;
       const response = await this.#send("get_state", {});
@@ -578,8 +583,27 @@ export class PiRpcSession {
       ) {
         throw new Error("Pi RPC Usage fallback does not match the confirmed Session state");
       }
-      return parsePiStateContextUsage(response);
+      await this.#ensureLatestCacheHitRate();
+      const usage = parsePiStateContextUsage(response);
+      return usage ? this.#withLatestCacheHitRate(usage) : null;
     }
+  }
+
+  async #ensureLatestCacheHitRate(): Promise<void> {
+    if (this.#latestCacheHitRatePercent !== undefined) return;
+    try {
+      this.#latestCacheHitRatePercent = latestPiCacheHitRatePercent(
+        parseSessionHistory(await this.#send("get_entries", {})),
+      );
+    } catch {
+      this.#latestCacheHitRatePercent = null;
+    }
+  }
+
+  #withLatestCacheHitRate(usage: HostUsage): HostUsage {
+    return this.#latestCacheHitRatePercent === null || this.#latestCacheHitRatePercent === undefined
+      ? usage
+      : parseHostUsage({ ...usage, cacheHitRatePercent: this.#latestCacheHitRatePercent });
   }
 
   async fork(entryId: string): Promise<PiSessionState> {
@@ -1170,6 +1194,7 @@ export class PiRpcSession {
     const finalText = assistantText(value);
     const finalReasoning = assistantReasoning(value);
     const failure = assistantFailure(value);
+    const cacheHitRatePercent = optionalPiCacheHitRatePercent(value);
     if (finalText === null || finalReasoning === null || failure === undefined) return;
     if (
       active.assistantMessageId === null &&
@@ -1182,6 +1207,7 @@ export class PiRpcSession {
     }
 
     active.failure = failure;
+    this.#latestCacheHitRatePercent = cacheHitRatePercent;
     const messageId = this.#ensureAssistantMessage(active, value);
     if (!active.sawStreamedMessageReasoning && finalReasoning.length > 0) {
       active.reasoningMessageOpen = true;

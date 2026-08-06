@@ -14,6 +14,7 @@ import {
   type ThreadPermissionModeSelectParams,
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
+  type ThreadUsageInspectionParams,
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -695,6 +696,8 @@ export function installCurrentRendererAdapter(): {
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectThreadUsage: (input: ThreadUsageInspectionParams) =>
+      currentModelClient().inspectThreadUsage(input),
     listThreadOwnership: (input: ThreadOwnershipListParams) =>
       currentModelClient().listThreadOwnership(input),
     selectThreadModel: (input: ThreadModelSelectParams) =>

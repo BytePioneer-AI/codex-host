@@ -5,7 +5,7 @@ import type {
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-const FALLBACK_TRIGGER_CLASSES =
+export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
   "border-token-border no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-sm leading-[18px] min-w-0";
 
 const MENU_CLASSES =
@@ -156,7 +156,7 @@ export function syncRendererModelTriggerClass(
   control: RendererModelPickerControl,
   nativeClassName?: string,
 ): void {
-  control.trigger.className = nativeClassName?.trim() || FALLBACK_TRIGGER_CLASSES;
+  control.trigger.className = nativeClassName?.trim() || RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES;
   control.trigger.style.width = "fit-content";
   control.trigger.style.maxWidth = "min(320px, 38vw)";
 }

@@ -16,6 +16,8 @@ import {
   isOwnershipSubmissionBlocked,
   lateConversationTargetResolution,
   restoredThreadOwnership,
+  rendererUsageRefreshDelay,
+  shouldRetryExternalThreadUsage,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
 import {
@@ -23,11 +25,28 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   isComposerSubmitButton,
+  isNativeContextUsageControlCandidate,
+  nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
   type ComposerAgentControl,
 } from "../src/renderer-composer-dom.js";
+import {
+  formatRendererCacheHitRate,
+  formatRendererCost,
+  formatRendererTokenCount,
+} from "../src/renderer-usage-control.js";
 
 describe("Renderer Composer DOM behavior", () => {
+  it("retries external Usage after an early empty inspection", () => {
+    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(false);
+    expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
+    expect(rendererUsageRefreshDelay(0)).toBe(250);
+    expect(rendererUsageRefreshDelay(1)).toBe(500);
+    expect(rendererUsageRefreshDelay(99)).toBe(8000);
+  });
+
   it("re-hides a replaced native Model control for an external Agent", () => {
     class FakeElement {
       readonly attributes = new Map<string, string>();
@@ -78,6 +97,12 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { trigger },
       nativeModelControl: { element: previous, hidden: false, ariaHidden: null },
       nativePermissionModeControl: null,
+      usage: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        dispose: vi.fn(),
+      },
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, true, true);
@@ -114,6 +139,32 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerInputIntent(event("Delete"))).toBe(true);
     expect(isComposerInputIntent(event("ArrowLeft"))).toBe(false);
     expect(isComposerInputIntent(event("c", { ctrlKey: true }))).toBe(false);
+  });
+
+  it("recognizes only a uniquely described native context control", () => {
+    const native = {
+      hasAttribute: vi.fn(() => false),
+      getAttribute: (name: string) => (name === "aria-label" ? "Context window usage" : null),
+    } as unknown as HTMLElement;
+    const composer = {
+      querySelectorAll: vi.fn(() => [native]),
+    } as unknown as Element;
+
+    expect(isNativeContextUsageControlCandidate(native)).toBe(true);
+    expect(nativeContextUsageControlForComposer(composer)).toBe(native);
+    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCost(0.168)).toBe("$0.168");
+    expect(formatRendererTokenCount(87000)).toBe("87k");
+    expect(formatRendererTokenCount(6700)).toBe("6.7k");
+    expect(formatRendererTokenCount(375000)).toBe("375k");
+  });
+
+  it("does not treat codexhost Usage controls as native anchors", () => {
+    const usage = {
+      hasAttribute: (name: string) => name === "data-codexhost-usage-control",
+      getAttribute: () => "Context window usage",
+    } as unknown as HTMLElement;
+    expect(isNativeContextUsageControlCandidate(usage)).toBe(false);
   });
 
   it("does not treat attachment controls as submission", () => {
@@ -288,6 +339,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
     );
+    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
     expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(true);

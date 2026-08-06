@@ -36,6 +36,7 @@ type Scenario =
   | "malformed-thinking"
   | "unsupported-thinking"
   | "stats-full"
+  | "stats-cache-hit"
   | "stats-context-only"
   | "stats-malformed"
   | "stats-unsupported"
@@ -161,16 +162,25 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "get_entries") {
+      const user = {
+        id: "user-1",
+        parentId: null,
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "hello" }] },
+      };
+      const assistant = {
+        id: "assistant-1",
+        parentId: "user-1",
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "answer" }],
+          usage: { input: 1, output: 1, cacheRead: 999, cacheWrite: 0 },
+        },
+      };
       this.#respond(command, {
-        entries: [
-          {
-            id: "user-1",
-            parentId: null,
-            type: "message",
-            message: { role: "user", content: [{ type: "text", text: "hello" }] },
-          },
-        ],
-        leafId: "user-1",
+        entries: this.#scenario === "stats-cache-hit" ? [user, assistant] : [user],
+        leafId: this.#scenario === "stats-cache-hit" ? "assistant-1" : "user-1",
       });
       return;
     }
@@ -357,7 +367,13 @@ class FakePiRpcProcess extends EventEmitter {
         this.#scenario === "cancel" || this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
-      const message = { role: "assistant", content: [{ type: "text", text }] };
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text }],
+        ...(this.#scenario === "final-only"
+          ? { usage: { input: 1, output: 1, cacheRead: 999, cacheWrite: 0 } }
+          : {}),
+      };
       this.#output({ type: "message_start", message });
       this.#output({ type: "message_end", message });
       this.#settleAgent();
@@ -748,6 +764,7 @@ describe("Pi RPC Turn aggregation", () => {
       { type: "text.delta", messageId: expect.any(String), delta: "synthetic final text" },
       { type: "message.completed", messageId: expect.any(String) },
     ]);
+    await expect(rpc.getSessionUsage()).resolves.toMatchObject({ cacheHitRatePercent: 99.9 });
     await rpc.close();
   });
 
@@ -965,6 +982,13 @@ describe("Pi RPC Turn aggregation", () => {
       contextWindowTokens: 200,
     });
     await complete.close();
+
+    const cacheHit = session("stats-cache-hit");
+    await cacheHit.start();
+    await expect(cacheHit.getSessionUsage()).resolves.toMatchObject({
+      cacheHitRatePercent: 99.9,
+    });
+    await cacheHit.close();
 
     const contextOnly = session("stats-context-only");
     await contextOnly.start();

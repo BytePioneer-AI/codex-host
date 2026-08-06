@@ -34,12 +34,22 @@ export {
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
+  THREAD_USAGE_INSPECT_METHOD,
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
   createRendererModelClient,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
+export {
+  isNativeContextUsageControlCandidate,
+  nativeContextUsageControlForComposer,
+} from "./renderer-composer-dom.js";
+export {
+  formatRendererCacheHitRate,
+  formatRendererCost,
+  formatRendererTokenCount,
+} from "./renderer-usage-control.js";
 export {
   installRendererForkControl,
   rendererForkTargetFromButton,

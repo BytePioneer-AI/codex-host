@@ -24,6 +24,8 @@ import {
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
+  threadUsageInspectionParamsSchema,
+  threadUsageInspectionSchema,
   threadPermissionModeSelectParamsSchema,
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
@@ -453,6 +455,10 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/inspect") {
         await this.#inspectThread(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/usage/inspect") {
+        await this.#inspectThreadUsage(request);
         continue;
       }
       if (request.method === "codexhost/thread/ownership/list") {
@@ -972,10 +978,35 @@ export class AppServerHost {
                 }
               : {}),
             history: resolution.thread.session.capabilities.history,
+            ...(resolution.thread.latestUsage ? { usage: resolution.thread.latestUsage } : {}),
             locked: true,
           },
     );
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
+  async #inspectThreadUsage(request: JsonRpcRequest): Promise<void> {
+    const params = threadUsageInspectionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread Usage inspection params"));
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (resolution.kind === "error") {
+      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+      return;
+    }
+    if (resolution.kind === "official") {
+      await this.#writer.json(
+        rpcError(request, -32079, "Thread Usage is unavailable for official Codex Threads"),
+      );
+      return;
+    }
+    const result = threadUsageInspectionSchema.parse({
+      threadId: params.data.threadId,
+      usage: resolution.thread.latestUsage,
+    });
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }
 
   async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {

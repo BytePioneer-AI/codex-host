@@ -7,6 +7,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type ThreadInspection,
+  type ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -28,6 +29,7 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   mountComposerAgentControl,
+  nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
   renderComposerAgentControl,
   sendButtonWithin,
@@ -68,6 +70,20 @@ const externalHarnessIds = {
 
 const externalAgents: readonly ExternalRendererAgent[] = ["pi", "claude-code"];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+
+const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
+
+export function rendererUsageRefreshDelay(attempt: number): number {
+  const index = Math.max(0, Math.min(Math.trunc(attempt), rendererUsageRefreshDelays.length - 1));
+  return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
+}
+
+export function shouldRetryExternalThreadUsage(
+  agent: RendererAgent,
+  usage: ThreadUsageSnapshot | null,
+): boolean {
+  return agent !== "codex" && usage === null;
+}
 
 export interface RendererBindingProbeStatus {
   version: 2;
@@ -204,6 +220,8 @@ interface MountedComposer {
   permissionModeView: ExternalPermissionModeControlView;
   ownershipStatus: ComposerOwnershipStatus;
   threadConfiguration: HarnessModelSelectionState | undefined;
+  usage: ThreadUsageSnapshot | null;
+  usageRequestGeneration: number;
 }
 
 interface PendingComposerReplacement {
@@ -334,6 +352,8 @@ export function installRendererBindingProbe(
   ) as HarnessAvailability;
   let availabilityRequestGeneration = 0;
   let availabilityRequest: { client: RendererModelClient; promise: Promise<void> } | null = null;
+  const usageRefreshTimers = new Map<Element, number>();
+  const usageRefreshAttempts = new Map<Element, number>();
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
     mounted.composer.isConnected &&
@@ -379,7 +399,59 @@ export function installRendererBindingProbe(
       harnessAvailability,
       mounted.modelView,
       mounted.permissionModeView,
+      mounted.usage,
     );
+  };
+
+  const refreshThreadUsage = async (mounted: MountedComposer): Promise<void> => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") {
+      mounted.usage = null;
+      usageRefreshAttempts.delete(mounted.composer);
+      renderMounted(mounted);
+      return;
+    }
+    const generation = ++mounted.usageRequestGeneration;
+    try {
+      const result = await modelControl.inspectThreadUsage({ threadId });
+      if (
+        disposed ||
+        mountedByComposer.get(mounted.composer) !== mounted ||
+        !mounted.composer.isConnected ||
+        mounted.usageRequestGeneration !== generation ||
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
+        result.threadId !== threadId
+      ) {
+        return;
+      }
+      mounted.usage = result.usage;
+      if (result.usage !== null) usageRefreshAttempts.delete(mounted.composer);
+      renderMounted(mounted);
+      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, result.usage)) {
+        scheduleThreadUsageRefresh(mounted);
+      }
+    } catch {
+      if (
+        mountedByComposer.get(mounted.composer) === mounted &&
+        mounted.usageRequestGeneration === generation
+      ) {
+        renderMounted(mounted);
+        if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null)) {
+          scheduleThreadUsageRefresh(mounted);
+        }
+      }
+    }
+  };
+
+  const scheduleThreadUsageRefresh = (mounted: MountedComposer): void => {
+    if (usageRefreshTimers.has(mounted.composer)) return;
+    const attempt = usageRefreshAttempts.get(mounted.composer) ?? 0;
+    usageRefreshAttempts.set(mounted.composer, attempt + 1);
+    const timer = window.setTimeout(() => {
+      usageRefreshTimers.delete(mounted.composer);
+      void refreshThreadUsage(mounted);
+    }, rendererUsageRefreshDelay(attempt));
+    usageRefreshTimers.set(mounted.composer, timer);
   };
 
   const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
@@ -438,6 +510,7 @@ export function installRendererBindingProbe(
       }
       const { agent, model, thinkingOptionId, permissionModeId } =
         restoredThreadOwnership(inspection);
+      mounted.usage = inspection.owner === "external" ? (inspection.usage ?? null) : null;
       const restored = controller.restore(
         mounted.composer,
         agent,
@@ -482,6 +555,12 @@ export function installRendererBindingProbe(
     } finally {
       if (isCurrentOwnershipRequest(mounted, generation)) {
         renderMounted(mounted);
+        if (
+          mounted.ownershipStatus !== "error" &&
+          shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, mounted.usage)
+        ) {
+          scheduleThreadUsageRefresh(mounted);
+        }
       }
     }
   };
@@ -509,12 +588,18 @@ export function installRendererBindingProbe(
     if (resolution === "transfer") {
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
+      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null)) {
+        scheduleThreadUsageRefresh(mounted);
+      }
     } else {
       mounted.composerId = controller.get(mounted.composer).composerId;
       mounted.modelView = { status: "idle" };
       mounted.permissionModeView = { status: "idle" };
       mounted.threadConfiguration = undefined;
       mounted.ownershipStatus = "loading";
+      mounted.usage = null;
+      mounted.usageRequestGeneration += 1;
+      usageRefreshAttempts.delete(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
@@ -1263,6 +1348,8 @@ export function installRendererBindingProbe(
           : "loading"
         : "not-required",
       threadConfiguration: inherited?.threadConfiguration,
+      usage: inherited?.usage ?? null,
+      usageRequestGeneration: 0,
     };
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
@@ -1281,6 +1368,12 @@ export function installRendererBindingProbe(
     renderMounted(mounted);
     if (threadIdFromComposerModelTarget(modelTarget) && !inherited) {
       void loadThreadOwnership(mounted);
+    } else if (
+      threadIdFromComposerModelTarget(modelTarget) &&
+      inherited &&
+      shouldRetryExternalThreadUsage(state.agent, mounted.usage)
+    ) {
+      scheduleThreadUsageRefresh(mounted);
     } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {
       void loadExternalCatalog(mounted);
     }
@@ -1481,6 +1574,16 @@ export function installRendererBindingProbe(
 
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
+    for (const mounted of mountedByComposer.values()) {
+      const anchor = nativeContextUsageControlForComposer(mounted.composer);
+      if (!anchor) continue;
+      const changed = mutations.some((mutation) => {
+        const target =
+          mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        return target === anchor || target === anchor.parentElement || anchor.contains(target);
+      });
+      if (changed) scheduleThreadUsageRefresh(mounted);
+    }
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onAdapterStatus = () => {
@@ -1501,6 +1604,7 @@ export function installRendererBindingProbe(
   mutationObserver.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ["hidden", "aria-hidden"],
+    characterData: true,
     childList: true,
     subtree: true,
   });
@@ -1605,8 +1709,13 @@ export function installRendererBindingProbe(
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
-      for (const mounted of mountedByComposer.values())
+      for (const timer of usageRefreshTimers.values()) window.clearTimeout(timer);
+      usageRefreshTimers.clear();
+      for (const mounted of mountedByComposer.values()) {
+        mounted.usageRequestGeneration += 1;
+        usageRefreshAttempts.delete(mounted.composer);
         disposeComposerAgentControl(mounted.control);
+      }
       mountedByComposer.clear();
       pendingReplacements.clear();
       delete window.__codexhostRendererBindingProbeV1;

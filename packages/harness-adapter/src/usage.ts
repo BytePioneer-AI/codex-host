@@ -6,6 +6,7 @@ export interface HostUsage {
   reasoningOutputTokens?: number;
   totalTokens?: number;
   totalCostUsd?: number;
+  cacheHitRatePercent?: number;
   contextWindowTokens?: number;
   contextUsedTokens?: number;
 }
@@ -21,7 +22,11 @@ const tokenFields = [
   "contextUsedTokens",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
-const usageFields = new Set<keyof HostUsage>([...tokenFields, "totalCostUsd"]);
+const usageFields = new Set<keyof HostUsage>([
+  ...tokenFields,
+  "totalCostUsd",
+  "cacheHitRatePercent",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -52,6 +57,15 @@ export function parseHostUsage(value: unknown): HostUsage {
       value.totalCostUsd < 0)
   ) {
     throw new Error("Harness Usage 'totalCostUsd' must be a finite non-negative number");
+  }
+  if (
+    value.cacheHitRatePercent !== undefined &&
+    (typeof value.cacheHitRatePercent !== "number" ||
+      !Number.isFinite(value.cacheHitRatePercent) ||
+      value.cacheHitRatePercent < 0 ||
+      value.cacheHitRatePercent > 100)
+  ) {
+    throw new Error("Harness Usage 'cacheHitRatePercent' must be between 0 and 100");
   }
   const hasContextUsed = value.contextUsedTokens !== undefined;
   const hasContextWindow = value.contextWindowTokens !== undefined;

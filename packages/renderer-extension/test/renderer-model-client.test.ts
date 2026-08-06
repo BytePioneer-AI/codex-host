@@ -16,6 +16,7 @@ import {
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
+  THREAD_USAGE_INSPECT_METHOD,
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
@@ -89,6 +90,10 @@ describe("Renderer fixed Model request client", () => {
       .mockResolvedValueOnce({
         effectiveModel: model,
         effectivePermissionModeId: permissionModeId,
+      })
+      .mockResolvedValueOnce({
+        threadId: "thread-1",
+        usage: { cacheHitRatePercent: 99.9, totalCostUsd: 0.168 },
       });
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
@@ -97,6 +102,7 @@ describe("Renderer fixed Model request client", () => {
       "forkThread",
       "inspectHarness",
       "inspectThread",
+      "inspectThreadUsage",
       "listThreadOwnership",
       "readUpdateStatus",
       "selectThreadModel",
@@ -178,6 +184,15 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(7, THREAD_PERMISSION_MODE_SELECT_METHOD, {
       threadId: "thread-1",
       permissionModeId,
+    });
+    await expect(
+      client.inspectThreadUsage({ threadId: hostThreadIdSchema.parse("thread-1") }),
+    ).resolves.toEqual({
+      threadId: "thread-1",
+      usage: { cacheHitRatePercent: 99.9, totalCostUsd: 0.168 },
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(8, THREAD_USAGE_INSPECT_METHOD, {
+      threadId: "thread-1",
     });
   });
 

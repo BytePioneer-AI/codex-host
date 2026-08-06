@@ -4,6 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
+import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 import {
   CONTROL_ATTRIBUTE,
   mountRendererAgentPicker,
@@ -26,6 +27,11 @@ import {
   type RendererPermissionModeControlView,
   type RendererPermissionModePickerControl,
 } from "./renderer-permission-mode-picker.js";
+import {
+  mountRendererUsageControl,
+  renderRendererUsageControl,
+  type RendererUsageControl,
+} from "./renderer-usage-control.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 
 export { CONTROL_ATTRIBUTE };
@@ -53,6 +59,7 @@ export interface ComposerAgentControl {
   nativeModelControl: NativeModelControlState | null;
   nativePermissionModeControl: NativePermissionModeControlState | null;
   nativePermissionModeControlVerified: boolean;
+  usage: RendererUsageControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -243,6 +250,29 @@ function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
+const contextUsageDescriptionPattern = /(context|token|上下文|令牌)/iu;
+
+export function isNativeContextUsageControlCandidate(element: Element): boolean {
+  if (element.hasAttribute("data-codexhost-usage-control")) return false;
+  const description = [
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.getAttribute("data-testid"),
+  ]
+    .filter((value): value is string => value !== null)
+    .join(" ");
+  return contextUsageDescriptionPattern.test(description);
+}
+
+export function nativeContextUsageControlForComposer(composer: Element): HTMLElement | null {
+  const candidates = [
+    ...composer.querySelectorAll<HTMLElement>(
+      'button, [role="button"], [aria-label], [title], [data-testid]',
+    ),
+  ].filter(isNativeContextUsageControlCandidate);
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
 function captureNativeControl(element: HTMLElement | null): NativeControlState | null {
   return element
     ? {
@@ -262,10 +292,26 @@ function restoreNativeControl(state: NativeControlState | null): void {
 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
-  if (!candidate || candidate === control.nativeModelControl?.element) return;
-  restoreNativeControl(control.nativeModelControl);
-  control.nativeModelControl = captureNativeControl(candidate);
-  syncRendererModelTriggerClass(control.modelPicker, candidate.className);
+  if (!candidate) {
+    control.usage.syncNativeModelClassName();
+    return;
+  }
+  if (candidate !== control.nativeModelControl?.element) {
+    restoreNativeControl(control.nativeModelControl);
+    control.nativeModelControl = captureNativeControl(candidate);
+    syncRendererModelTriggerClass(control.modelPicker, candidate.className);
+  }
+  control.usage.syncNativeModelClassName(candidate.className);
+}
+
+function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
+  const candidate = nativeContextUsageControlForComposer(control.composer);
+  if (!candidate) {
+    if (control.usage.anchor) control.usage.root.remove();
+    control.usage.anchor = null;
+    return;
+  }
+  control.usage.place(candidate);
 }
 
 function refreshNativePermissionModeControl(control: ComposerAgentControl): void {
@@ -309,6 +355,7 @@ export function reconcileComposerNativeControls(
   hidePermissionMode: boolean,
 ): void {
   refreshNativeModelControl(control);
+  refreshNativeContextUsageControl(control);
   refreshNativePermissionModeControl(control);
   setNativeControlHidden(control.nativeModelControl, hideModel);
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
@@ -344,6 +391,7 @@ export function mountComposerAgentControl(
     nativePermissionModeControl?.element.className,
     onSelectPermissionMode,
   );
+  const usage = mountRendererUsageControl(composerId, nativeModelControl?.element.className);
 
   const permissionParent = nativePermissionModeControl?.element.parentElement;
   if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
@@ -359,7 +407,7 @@ export function mountComposerAgentControl(
   } else {
     composer.append(modelPicker.root, picker.root);
   }
-  return {
+  const control = {
     composer,
     root: picker.root,
     picker,
@@ -368,9 +416,12 @@ export function mountComposerAgentControl(
     nativeModelControl,
     nativePermissionModeControl,
     nativePermissionModeControlVerified,
+    usage,
     sendButton,
     sendDisabledBeforeSwitch: null,
-  };
+  } satisfies ComposerAgentControl;
+  refreshNativeContextUsageControl(control);
+  return control;
 }
 
 export function renderComposerAgentControl(
@@ -381,6 +432,7 @@ export function renderComposerAgentControl(
   availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
+  usage: ThreadUsageSnapshot | null = null,
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -433,6 +485,7 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
+  renderRendererUsageControl(control.usage, usage);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
@@ -441,6 +494,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativePermissionModeControl);
+  control.usage.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();
   control.picker.dispose();

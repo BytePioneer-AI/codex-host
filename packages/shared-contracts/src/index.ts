@@ -69,6 +69,16 @@ export type {
   ThreadOwnershipListResult,
 } from "./harness-models.js";
 export {
+  threadUsageInspectionParamsSchema,
+  threadUsageInspectionSchema,
+  threadUsageSnapshotSchema,
+} from "./thread-usage.js";
+export type {
+  ThreadUsageInspection,
+  ThreadUsageInspectionParams,
+  ThreadUsageSnapshot,
+} from "./thread-usage.js";
+export {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,

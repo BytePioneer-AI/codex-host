@@ -12,6 +12,8 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadUsageInspectionParamsSchema,
+  threadUsageInspectionSchema,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -29,6 +31,8 @@ import {
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
+  type ThreadUsageInspection,
+  type ThreadUsageInspectionParams,
   type UpdateCheckResult,
   type UpdateStartResult,
   type UpdateStatusResult,
@@ -41,6 +45,7 @@ export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
@@ -54,6 +59,7 @@ export interface RendererModelClient {
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
+  inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -78,6 +84,13 @@ export function createRendererModelClient(
     const params = harnessInspectParamsSchema.parse(input);
     const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
     return harnessInspectionSchema.parse(result);
+  };
+  const inspectThreadUsage = async (
+    input: ThreadUsageInspectionParams,
+  ): Promise<ThreadUsageInspection> => {
+    const params = threadUsageInspectionParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_USAGE_INSPECT_METHOD, params);
+    return threadUsageInspectionSchema.parse(result);
   };
   const selectThreadModel = async (
     input: ThreadModelSelectParams,
@@ -127,6 +140,7 @@ export function createRendererModelClient(
       }
       return result;
     },
+    inspectThreadUsage,
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,

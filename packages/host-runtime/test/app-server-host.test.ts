@@ -436,6 +436,26 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 41,
       result: { owner: "codex", locked: true },
     });
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: "official-thread" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 42)),
+    ).resolves.toMatchObject({
+      error: { code: -32079, message: "Thread Usage is unavailable for official Codex Threads" },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 43,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: 42 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 43)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
@@ -2258,6 +2278,24 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.messages.findIndex((message) => requestId(message, 60)),
     );
     expect(fakeSource.snapshotReads).toBe(2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 64,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 64)),
+    ).resolves.toMatchObject({
+      result: {
+        threadId,
+        usage: {
+          totalTokens: 77,
+          contextUsedTokens: 33,
+          contextWindowTokens: 200,
+        },
+      },
+    });
 
     writeRequest(fixture.desktopInput, {
       id: 63,

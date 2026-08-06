@@ -1,9 +1,35 @@
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 
+import { activePiEntries, type PiSessionHistory } from "./pi-history.js";
+
 export type PiSessionStats = HostUsage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonNegativeSafeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+export function optionalPiCacheHitRatePercent(value: unknown): number | null {
+  if (!isRecord(value) || value.role !== "assistant" || !isRecord(value.usage)) return null;
+  const input = nonNegativeSafeInteger(value.usage.input);
+  const cacheRead = nonNegativeSafeInteger(value.usage.cacheRead);
+  const cacheWrite = nonNegativeSafeInteger(value.usage.cacheWrite);
+  if (input === null || cacheRead === null || cacheWrite === null) return null;
+  const promptTokens = input + cacheRead + cacheWrite;
+  return promptTokens > 0 ? (cacheRead / promptTokens) * 100 : null;
+}
+
+export function latestPiCacheHitRatePercent(history: PiSessionHistory): number | null {
+  let latest: number | null = null;
+  for (const entry of activePiEntries(history)) {
+    if (entry.type === "message" && isRecord(entry.message) && entry.message.role === "assistant") {
+      latest = optionalPiCacheHitRatePercent(entry.message);
+    }
+  }
+  return latest;
 }
 
 function responseData(

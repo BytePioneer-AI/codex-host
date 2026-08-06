@@ -12,6 +12,7 @@ describe("Harness Usage", () => {
       reasoningOutputTokens: 3,
       totalTokens: 21,
       totalCostUsd: 0.125,
+      cacheHitRatePercent: 99.9,
       contextUsedTokens: 120,
       contextWindowTokens: 100,
     };
@@ -27,6 +28,9 @@ describe("Harness Usage", () => {
     { totalTokens: Number.MAX_SAFE_INTEGER + 1 },
     { totalCostUsd: Number.POSITIVE_INFINITY },
     { totalCostUsd: -0.1 },
+    { cacheHitRatePercent: -0.1 },
+    { cacheHitRatePercent: 100.1 },
+    { cacheHitRatePercent: Number.NaN },
     { contextUsedTokens: 10 },
     { contextWindowTokens: 100 },
     { contextUsedTokens: 0, contextWindowTokens: 0 },

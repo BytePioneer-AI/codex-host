@@ -33,15 +33,15 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
 
 #[cfg(target_os = "windows")]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
-    use windows::Win32::Foundation::BOOL;
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows::core::BOOL;
 
     unsafe extern "system" fn suppress_console_events(_event: u32) -> BOOL {
-        BOOL(1)
+        true.into()
     }
 
     unsafe {
-        SetConsoleCtrlHandler(Some(suppress_console_events), BOOL(1)).map_err(|error| {
+        SetConsoleCtrlHandler(Some(suppress_console_events), true).map_err(|error| {
             PlatformError::Io(io::Error::other(format!(
                 "SetConsoleCtrlHandler failed: {error}"
             )))

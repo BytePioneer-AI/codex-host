@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// Copies the reviewed codexhost app icon master into the macOS packaging
-// workspace. The source is kept as a checked-in PNG so the packaged icon and
-// the in-product brand mark use the same artwork.
+// Copies the launcher icon into the macOS packaging workspace so Windows and
+// macOS packages use the same reviewed codexhost artwork.
 // Usage: node assets.mjs --output <directory>
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -9,14 +8,30 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const ICON_SOURCE = path.join(import.meta.dirname, "assets", "codexhost-icon-1024.png");
+const ICON_SOURCE = path.resolve(
+  import.meta.dirname,
+  "../../../crates/launcher/assets/codexhost.ico",
+);
 
-export function renderIcon() {
+export function readIcon() {
   return readFileSync(ICON_SOURCE);
 }
 
-export function pngSize(buffer) {
-  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+export function iconDimensions(buffer) {
+  if (buffer.readUInt16LE(0) !== 0 || buffer.readUInt16LE(2) !== 1) {
+    throw new Error("invalid ICO header");
+  }
+
+  const dimensions = [];
+  const imageCount = buffer.readUInt16LE(4);
+  for (let index = 0; index < imageCount; index += 1) {
+    const offset = 6 + index * 16;
+    dimensions.push({
+      width: buffer[offset] || 256,
+      height: buffer[offset + 1] || 256,
+    });
+  }
+  return dimensions;
 }
 
 function parseArguments(args) {
@@ -38,6 +53,6 @@ function parseArguments(args) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const output = parseArguments(process.argv.slice(2));
   await mkdir(output, { recursive: true });
-  await writeFile(path.join(output, "codexhost-icon-1024.png"), await readFile(ICON_SOURCE));
-  console.log(`icon=${path.join(output, "codexhost-icon-1024.png")}`);
+  await writeFile(path.join(output, "codexhost.ico"), await readFile(ICON_SOURCE));
+  console.log(`icon=${path.join(output, "codexhost.ico")}`);
 }

@@ -13,13 +13,15 @@ describe("platform packagers", () => {
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");
+    expect(source).toContain('"$ASSETS_DIR/codexhost.ico"');
+    expect(source).toContain("sips -s format png");
     expect(source).toContain("iconutil -c icns");
     expect(source).toContain("CFBundleIconFile");
     expect(source).toContain("codexhost.icns");
     expect(source).toContain("create-dmg");
     expect(source).toContain("--window-size 800 400");
     expect(source).toContain("--window-pos 200 120");
-    expect(source).toContain("--icon \"codexhost.app\" 200 190");
+    expect(source).toContain('--icon "codexhost.app" 200 190');
     expect(source).toContain("--app-drop-link 600 185");
     expect(source).toContain("installer-background.png");
     expect(source).not.toContain("layout_dmg_window");

@@ -67,12 +67,14 @@ chmod 755 \
 
 mkdir -p "$ASSETS_DIR"
 node "$(cd "$(dirname "$0")" && pwd)/assets.mjs" --output "$ASSETS_DIR"
+/usr/bin/sips -s format png "$ASSETS_DIR/codexhost.ico" \
+  --out "$ASSETS_DIR/codexhost-icon.png" >/dev/null
 mkdir -p "$ASSETS_DIR/codexhost.iconset"
 for size in 16 32 128 256 512; do
-  /usr/bin/sips -z "$size" "$size" "$ASSETS_DIR/codexhost-icon-1024.png" \
+  /usr/bin/sips -z "$size" "$size" "$ASSETS_DIR/codexhost-icon.png" \
     --out "$ASSETS_DIR/codexhost.iconset/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))
-  /usr/bin/sips -z "$double" "$double" "$ASSETS_DIR/codexhost-icon-1024.png" \
+  /usr/bin/sips -z "$double" "$double" "$ASSETS_DIR/codexhost-icon.png" \
     --out "$ASSETS_DIR/codexhost.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 /usr/bin/iconutil -c icns "$ASSETS_DIR/codexhost.iconset" -o "$ASSETS_DIR/codexhost.icns"

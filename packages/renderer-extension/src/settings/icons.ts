@@ -11,7 +11,7 @@ import Search from "lucide/dist/esm/icons/search.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
-import codexhostIconUrl from "../assets/codexhost-icon.png";
+import codexLogoUrl from "../assets/codex-logo-bright.png";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
@@ -60,7 +60,7 @@ export function createRendererSettingsIcon(name: RendererSettingsIconName, size 
 
 export function createRendererSettingsBrandIcon(size = 22): HTMLImageElement {
   const icon = document.createElement("img");
-  icon.src = codexhostIconUrl;
+  icon.src = codexLogoUrl;
   icon.alt = "";
   icon.width = size;
   icon.height = size;

@@ -1,4 +1,4 @@
-import { createRendererSettingsIcon } from "./icons.js";
+import { createRendererSettingsBrandIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
@@ -136,8 +136,6 @@ export function mountRendererSettingsTrigger(
   root.style.justifyContent = "center";
   root.style.alignSelf = "center";
   root.style.flex = "0 0 auto";
-  root.style.width = "28px";
-  root.style.height = "28px";
   root.style.marginRight = "6px";
   root.style.color = "inherit";
   root.style.pointerEvents = "auto";
@@ -152,9 +150,9 @@ export function mountRendererSettingsTrigger(
   button.style.display = "inline-flex";
   button.style.alignItems = "center";
   button.style.justifyContent = "center";
-  button.style.width = "28px";
   button.style.height = "28px";
-  button.style.padding = "0";
+  button.style.padding = "0 12px";
+  button.style.gap = "6px";
   button.style.border = "0";
   button.style.borderRadius = "8px";
   button.style.background = "transparent";
@@ -163,7 +161,15 @@ export function mountRendererSettingsTrigger(
   button.style.opacity = available ? "1" : "0.5";
   button.style.outlineOffset = "2px";
   button.style.setProperty("-webkit-app-region", "no-drag");
-  button.append(createRendererSettingsIcon("settings", 17));
+  button.append(createRendererSettingsBrandIcon(24));
+
+  const brandLabel = ownerDocument.createElement("span");
+  brandLabel.textContent = "CodexHost";
+  brandLabel.style.fontSize = "13px";
+  brandLabel.style.fontWeight = "600";
+  brandLabel.style.lineHeight = "1";
+  brandLabel.style.whiteSpace = "nowrap";
+  button.append(brandLabel);
 
   const onPointerEnter = (): void => {
     if (!button.disabled) button.style.background = "rgba(127, 127, 127, 0.16)";

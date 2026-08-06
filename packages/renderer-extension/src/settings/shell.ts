@@ -79,7 +79,7 @@ export function mountRendererSettingsShell(
   brand.className = "settings-brand";
   const brandMark = ownerDocument.createElement("span");
   brandMark.className = "settings-brand__mark";
-  brandMark.append(createRendererSettingsBrandIcon());
+  brandMark.append(createRendererSettingsBrandIcon(32));
   const brandCopy = ownerDocument.createElement("span");
   brandCopy.className = "settings-brand__copy";
   const brandName = ownerDocument.createElement("span");

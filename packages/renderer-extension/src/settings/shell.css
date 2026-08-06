@@ -113,15 +113,15 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 36px;
+  height: 36px;
   flex: none;
   color: var(--settings-text);
 }
 
 .settings-brand__mark .codexhost-settings-icon {
-  width: 18px;
-  height: 18px;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
 }
 

@@ -4,6 +4,14 @@
 application branding. `codexhost-icon.png` is its square crop used for the
 in-product brand mark.
 
+`codexhost-logo-transparent.png` is the white-background-free square logo
+extracted from `codexhost-logo.png`. `codex-logo.png` is the Codex X mark
+source and `codex-logo-transparent.png` is its white-background-free square
+variant. `codex-logo-bright.png` recolors that mark in the official bright
+Codex blue so it stays visible on dark surfaces and is the Renderer settings
+brand icon (settings header mark and the application-header settings trigger
+button).
+
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
 `openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
 does not depend on a local extension path or a network request.

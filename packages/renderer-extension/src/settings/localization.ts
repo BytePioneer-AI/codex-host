@@ -27,16 +27,11 @@ export interface RendererSettingsMessages {
   readonly simplifiedChineseLanguage: string;
   readonly otherCodexLanguage: string;
   readonly languageUpdateFailed: string;
-  readonly searchLabel: string;
-  readonly searchPlaceholder: string;
   readonly sectionsLabel: string;
-  readonly noResults: string;
   readonly pageUnavailable: string;
   readonly availability: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
-  readonly runtimeStatus: string;
-  readonly unavailable: string;
   readonly openSettings: string;
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
@@ -53,25 +48,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   simplifiedChineseLanguage: "Simplified Chinese",
   otherCodexLanguage: "Other Codex language",
   languageUpdateFailed: "Could not update the language setting.",
-  searchLabel: "Search settings",
-  searchPlaceholder: "Search settings...",
   sectionsLabel: "Settings sections",
-  noResults: "No results found",
   pageUnavailable: "Page unavailable",
   availability: "Availability",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
-  runtimeStatus: "Runtime status",
-  unavailable: "Unavailable",
   openSettings: "Open codexhost settings",
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
   pageLabels: Object.freeze({
-    overview: "Overview",
+    connections: "Connections",
+    "model-pool": "Model Pool",
     routes: "Routes",
-    providers: "Providers",
-    credentials: "Credentials",
-    "local-models": "Local Models",
     gateway: "Gateway",
   }),
 });
@@ -86,25 +74,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   simplifiedChineseLanguage: "简体中文",
   otherCodexLanguage: "其他 Codex 语言",
   languageUpdateFailed: "无法更新语言设置。",
-  searchLabel: "搜索设置",
-  searchPlaceholder: "搜索设置...",
   sectionsLabel: "设置分类",
-  noResults: "未找到结果",
   pageUnavailable: "页面不可用",
   availability: "可用性",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
-  runtimeStatus: "运行时状态",
-  unavailable: "暂不可用",
   openSettings: "打开 codexhost 设置",
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",
   pageLabels: Object.freeze({
-    overview: "概览",
+    connections: "连接",
+    "model-pool": "模型池",
     routes: "路由",
-    providers: "提供商",
-    credentials: "凭据",
-    "local-models": "本地模型",
     gateway: "网关",
   }),
 });

@@ -27,6 +27,7 @@ export interface RendererSettingsHeaderSlotCandidate<T> {
   value: T;
   bounds: RendererSettingsBounds;
   visibleButtonCount: number;
+  structuralActionGroup?: boolean;
 }
 
 export interface RendererSettingsHeaderTriggerControl {
@@ -38,10 +39,6 @@ export interface RendererSettingsHeaderTriggerControl {
 interface RendererSettingsHeaderInsertionPoint {
   parent: HTMLElement;
   before: ChildNode | null;
-}
-
-interface MeasuredHeaderSlot {
-  slot: HTMLElement;
 }
 
 function measuredBounds(element: Element): RendererSettingsBounds {
@@ -66,12 +63,12 @@ export function selectRendererSettingsHeaderSlot<T>(
   candidates: readonly RendererSettingsHeaderSlotCandidate<T>[],
 ): T | null {
   const midpoint = header.left + header.width / 2;
-  const maximumWidth = Math.min(240, header.width / 2);
+  const maximumWidth = Math.min(320, header.width / 2);
   const eligible = candidates.filter(
-    ({ bounds, visibleButtonCount }) =>
-      visibleButtonCount > 0 &&
-      bounds.width > 0 &&
-      bounds.height > 0 &&
+    ({ bounds, visibleButtonCount, structuralActionGroup }) =>
+      (visibleButtonCount > 1 || structuralActionGroup === true) &&
+      bounds.width >= 0 &&
+      bounds.height >= 0 &&
       bounds.width <= maximumWidth &&
       bounds.left >= midpoint &&
       bounds.right <= header.right + 1 &&
@@ -81,45 +78,34 @@ export function selectRendererSettingsHeaderSlot<T>(
   eligible.sort(
     (left, right) =>
       Math.abs(header.right - left.bounds.right) - Math.abs(header.right - right.bounds.right) ||
-      right.bounds.left - left.bounds.left,
+      right.visibleButtonCount - left.visibleButtonCount ||
+      left.bounds.left - right.bounds.left,
   );
   return eligible[0]?.value ?? null;
-}
-
-function settingsHeaderCandidates(ownerDocument: Document): HTMLElement[] {
-  const candidates: HTMLElement[] = [];
-  const semanticHeader = ownerDocument
-    .querySelector(SETTINGS_HEADER_SURFACE_SELECTOR)
-    ?.closest<HTMLElement>("header");
-  if (semanticHeader) candidates.push(semanticHeader);
-  for (const candidate of ownerDocument.querySelectorAll<HTMLElement>(".app-header-tint, header")) {
-    if (!candidates.includes(candidate)) candidates.push(candidate);
-  }
-  return candidates;
 }
 
 function findRendererSettingsHeaderInsertionPoint(
   ownerDocument: Document,
 ): RendererSettingsHeaderInsertionPoint | null {
-  for (const header of settingsHeaderCandidates(ownerDocument)) {
-    const headerBounds = measuredBounds(header);
-    if (headerBounds.width <= 0 || headerBounds.height <= 0) continue;
-    const measuredSlots = [...header.children]
-      .filter((child): child is HTMLElement => child instanceof HTMLElement)
-      .map((slot): RendererSettingsHeaderSlotCandidate<MeasuredHeaderSlot> => {
-        const buttons = [...slot.querySelectorAll<HTMLButtonElement>("button")].filter(
-          isVisibleButton,
-        );
-        return {
-          value: { slot },
-          bounds: measuredBounds(slot),
-          visibleButtonCount: buttons.length,
-        };
-      });
-    const selected = selectRendererSettingsHeaderSlot(headerBounds, measuredSlots);
-    if (selected) return { parent: header, before: selected.slot };
-  }
-  return null;
+  const surface = ownerDocument.querySelector<HTMLElement>(SETTINGS_HEADER_SURFACE_SELECTOR);
+  if (!surface || !surface.closest("header")) return null;
+
+  const surfaceBounds = measuredBounds(surface);
+  const view = ownerDocument.defaultView;
+  const measuredSlots = [...surface.querySelectorAll<HTMLElement>("div")].map(
+    (slot): RendererSettingsHeaderSlotCandidate<HTMLElement> => ({
+      value: slot,
+      bounds: measuredBounds(slot),
+      visibleButtonCount: [...slot.querySelectorAll<HTMLButtonElement>("button")].filter(
+        isVisibleButton,
+      ).length,
+      structuralActionGroup:
+        slot.parentElement?.lastElementChild === slot &&
+        view?.getComputedStyle(slot.parentElement).display === "grid",
+    }),
+  );
+  const actionGroup = selectRendererSettingsHeaderSlot(surfaceBounds, measuredSlots);
+  return actionGroup ? { parent: actionGroup, before: actionGroup.firstChild } : null;
 }
 
 export function mountRendererSettingsTrigger(
@@ -136,7 +122,7 @@ export function mountRendererSettingsTrigger(
   root.style.justifyContent = "center";
   root.style.alignSelf = "center";
   root.style.flex = "0 0 auto";
-  root.style.marginRight = "6px";
+  root.style.marginRight = "0";
   root.style.color = "inherit";
   root.style.pointerEvents = "auto";
   root.style.setProperty("-webkit-app-region", "no-drag");

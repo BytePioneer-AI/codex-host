@@ -105,29 +105,15 @@ export function mountRendererSettingsShell(
   const sidebar = ownerDocument.createElement("aside");
   sidebar.className = "settings-sidebar";
 
-  const searchControl = ownerDocument.createElement("div");
-  searchControl.className = "settings-search";
-  searchControl.append(createRendererSettingsIcon("search", 14));
-  const searchInput = ownerDocument.createElement("input");
-  searchInput.type = "search";
-  searchInput.setAttribute("role", "searchbox");
-  searchInput.setAttribute("aria-label", messages.searchLabel);
-  searchInput.placeholder = messages.searchPlaceholder;
-  searchControl.append(searchInput);
   const navigation = ownerDocument.createElement("nav");
   navigation.className = "settings-nav";
   navigation.setAttribute("aria-label", messages.sectionsLabel);
-  const searchEmpty = ownerDocument.createElement("div");
-  searchEmpty.className = "settings-nav__empty";
-  searchEmpty.setAttribute("role", "status");
-  searchEmpty.textContent = messages.noResults;
-  searchEmpty.hidden = true;
   const page = ownerDocument.createElement("main");
   page.className = "settings-page";
   const pageContent = ownerDocument.createElement("div");
   pageContent.className = "settings-page__content";
   page.append(pageContent);
-  sidebar.append(searchControl, navigation);
+  sidebar.append(navigation);
   layout.append(sidebar, page);
   frame.append(header, layout);
   dialog.append(frame);
@@ -198,22 +184,6 @@ export function mountRendererSettingsShell(
     navigationButtons.set(definition.id, button);
     navigation.append(button);
   }
-  navigation.append(searchEmpty);
-
-  const onSearchInput = (): void => {
-    const query = searchInput.value.trim().toLocaleLowerCase();
-    let visibleCount = 0;
-    for (const definition of resolvedRegistry.pages) {
-      const button = navigationButtons.get(definition.id);
-      if (!button) continue;
-      const visible = query.length === 0 || definition.label.toLocaleLowerCase().includes(query);
-      button.hidden = !visible;
-      if (visible) visibleCount += 1;
-    }
-    searchEmpty.hidden = visibleCount !== 0;
-  };
-  searchInput.addEventListener("input", onSearchInput);
-
   const supported = isRendererSettingsDialogSupported(dialog);
   const focusActiveNavigation = (): void => {
     navigationButtons.get(navigationState.activePageId)?.focus();
@@ -221,8 +191,6 @@ export function mountRendererSettingsShell(
   const finishClose = (): void => {
     disposeActivePage();
     navigationState.reset();
-    searchInput.value = "";
-    onSearchInput();
     const focusTarget = opener;
     opener = null;
     const closeGeneration = ++lifecycleGeneration;
@@ -292,7 +260,6 @@ export function mountRendererSettingsShell(
       disposed = true;
       opener = null;
       navigation.removeEventListener("click", onNavigationClick);
-      searchInput.removeEventListener("input", onSearchInput);
       closeButton.removeEventListener("click", onCloseClick);
       dialog.removeEventListener("click", onDialogClick);
       dialog.removeEventListener("close", onDialogClose);
@@ -310,12 +277,7 @@ export function installRendererSettingsShell(
   ownerDocument: Document = document,
 ): RendererSettingsShell {
   const registry = definitions
-    ? createRendererSettingsPageRegistry(
-        definitions,
-        definitions.some(({ id }) => id === "overview")
-          ? "overview"
-          : (definitions[0]?.id ?? "overview"),
-      )
+    ? createRendererSettingsPageRegistry(definitions)
     : createDefaultRendererSettingsRegistry(messages);
   const ownerWindow = ownerDocument.defaultView ?? window;
   ownerWindow.__codexhostSettingsShellV1?.dispose();

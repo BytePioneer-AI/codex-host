@@ -4,7 +4,6 @@
   --settings-panel: transparent;
   --settings-text: #f5f5f5;
   --settings-muted: #a1a1a1;
-  --settings-placeholder: #8f8f8f;
   --settings-border: rgb(255 255 255 / 10%);
   --settings-divider: rgb(255 255 255 / 10%);
   --settings-hover: rgb(255 255 255 / 6%);
@@ -151,48 +150,6 @@ button {
   border-left: 1px solid var(--settings-border);
 }
 
-.settings-search {
-  display: flex;
-  align-items: center;
-  height: 38px;
-  flex: none;
-  gap: 5px;
-  margin: 0 20px 28px;
-  padding: 0 8px;
-  color: var(--settings-placeholder);
-  background: color-mix(in srgb, var(--settings-text) 3%, transparent);
-  border: 1px solid var(--settings-border);
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
-}
-
-.settings-search:focus-within {
-  border-color: color-mix(in srgb, var(--settings-focus) 70%, var(--settings-border));
-  outline: 1px solid color-mix(in srgb, var(--settings-focus) 30%, transparent);
-}
-
-.settings-search input {
-  width: 100%;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  color: var(--settings-text);
-  font-size: 14px;
-  line-height: 18px;
-  background: transparent;
-  border: 0;
-  outline: 0;
-}
-
-.settings-search input::placeholder {
-  color: var(--settings-placeholder);
-  opacity: 1;
-}
-
-.settings-search input::-webkit-search-cancel-button {
-  opacity: 0.65;
-}
-
 .settings-nav {
   display: flex;
   min-width: 0;
@@ -254,12 +211,6 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.settings-nav__empty {
-  padding: 8px;
-  color: var(--settings-muted);
-  font-size: 13px;
 }
 
 .settings-icon-button {
@@ -452,11 +403,6 @@ button {
     padding-top: 20px;
   }
 
-  .settings-search,
-  .settings-nav__empty {
-    display: none;
-  }
-
   .settings-nav {
     flex: none;
     flex-direction: row;
@@ -508,7 +454,6 @@ button {
     --settings-panel: Canvas;
     --settings-text: CanvasText;
     --settings-muted: GrayText;
-    --settings-placeholder: GrayText;
     --settings-border: ButtonBorder;
     --settings-divider: ButtonBorder;
     --settings-hover: Highlight;

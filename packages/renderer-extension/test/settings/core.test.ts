@@ -10,7 +10,7 @@ import {
 function page(
   id: string,
   label = id,
-  icon: RendererSettingsPageDefinition["icon"] = "overview",
+  icon: RendererSettingsPageDefinition["icon"] = "connections",
 ): RendererSettingsPageDefinition {
   return { id, label, icon, mount: () => undefined };
 }
@@ -32,20 +32,20 @@ function deferred<T>(): {
 describe("Renderer settings page registry", () => {
   it("normalizes labels, freezes deterministic pages, and navigates from the default", () => {
     const registry = createRendererSettingsPageRegistry([
-      page("overview", "  Overview  "),
-      page("local-models", "Local Models", "local-models"),
+      page("connections", "  Connections  "),
+      page("model-pool", "Model Pool", "model-pool"),
     ]);
     const navigation = new RendererSettingsNavigationState(registry);
 
     expect(registry.pages.map(({ id, label }) => ({ id, label }))).toEqual([
-      { id: "overview", label: "Overview" },
-      { id: "local-models", label: "Local Models" },
+      { id: "connections", label: "Connections" },
+      { id: "model-pool", label: "Model Pool" },
     ]);
     expect(Object.isFrozen(registry.pages)).toBe(true);
     expect(Object.isFrozen(registry.pages[0])).toBe(true);
-    expect(navigation.activePageId).toBe("overview");
-    expect(navigation.select("local-models")).toBe(true);
-    expect(navigation.select("local-models")).toBe(false);
+    expect(navigation.activePageId).toBe("connections");
+    expect(navigation.select("model-pool")).toBe(true);
+    expect(navigation.select("model-pool")).toBe(false);
     expect(navigation.reset()).toBe(true);
   });
 
@@ -53,8 +53,8 @@ describe("Renderer settings page registry", () => {
     { pages: [] as RendererSettingsPageDefinition[], error: "cannot be empty" },
     { pages: [page("Overview")], error: "Invalid settings page ID" },
     { pages: [page("bad id")], error: "Invalid settings page ID" },
-    { pages: [page("overview", " ")], error: "Invalid settings page label" },
-    { pages: [page("overview"), page("overview")], error: "Duplicate settings page ID" },
+    { pages: [page("connections", " ")], error: "Invalid settings page label" },
+    { pages: [page("connections"), page("connections")], error: "Duplicate settings page ID" },
   ])("rejects an invalid registry: $error", ({ pages, error }) => {
     expect(() => createRendererSettingsPageRegistry(pages)).toThrow(error);
   });
@@ -65,10 +65,10 @@ describe("Renderer settings page registry", () => {
       "routes",
     );
     const navigation = new RendererSettingsNavigationState(registry);
-    expect(() => createRendererSettingsPageRegistry([page("routes")])).toThrow(
+    expect(() => createRendererSettingsPageRegistry([page("routes")], "connections")).toThrow(
       "Default settings page is not registered",
     );
-    expect(() => navigation.select("providers")).toThrow("Unknown settings page");
+    expect(() => navigation.select("connections")).toThrow("Unknown settings page");
   });
 });
 

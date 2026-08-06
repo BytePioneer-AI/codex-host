@@ -4,20 +4,25 @@
 Define the browser-safe, window-scoped codexhost settings shell, validated page extension contract, application-header trigger, lifecycle isolation, responsive presentation, and honest unavailable-state boundary for future runtime settings.
 ## Requirements
 ### Requirement: Codex Renderer exposes one codexhost settings shell
-The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned icon-only settings trigger immediately before the verified Codex application-header action group. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
+The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned settings trigger as the first control in the verified Codex application-header right-side action group. The trigger SHALL remain present when that group has no native actions in a blank Thread and SHALL appear immediately before the native Open Location control when it is available. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
 
 #### Scenario: User opens settings from the application header
 - **WHEN** the user activates the owned codexhost icon in the Codex application header
-- **THEN** the window-scoped settings dialog SHALL open on its default Overview page
+- **THEN** the window-scoped settings dialog SHALL open on its default Connections page
 - **AND** Agent, Model, Composer phase, and native create state SHALL remain unchanged
+
+#### Scenario: Blank Thread has no native header actions
+- **WHEN** the application header does not render Open Location or the context menu for a blank Thread
+- **THEN** the settings trigger SHALL remain mounted in the structurally verified right-side action position
+- **AND** it SHALL remain immediately before Open Location if native actions later appear
 
 #### Scenario: Codex replaces the application header
 - **WHEN** Renderer mutation scanning observes that the mounted header trigger is disconnected
-- **THEN** Renderer SHALL mount one replacement trigger immediately before the next verified header action group
+- **THEN** Renderer SHALL mount one replacement trigger immediately before Open Location in the next verified header action group
 - **AND** it SHALL NOT create a second dialog, trigger, or configuration state store
 
 #### Scenario: Verified header action group is unavailable
-- **WHEN** Renderer cannot identify the observed application-header surface or a bounded right-side native action group
+- **WHEN** Renderer cannot identify either a visible bounded native action group or its structurally verified empty action position
 - **THEN** it SHALL NOT place the trigger in a guessed native control or fixed overlay
 - **AND** a later Renderer scan MAY retry placement
 
@@ -26,8 +31,8 @@ The settings shell SHALL consume an immutable ordered registry of cohesive page 
 
 #### Scenario: Default pages are registered
 - **WHEN** the production settings registry is constructed
-- **THEN** it SHALL contain Overview, Routes, Providers, Credentials, Local Models, and Gateway in deterministic order
-- **AND** Overview SHALL be the default page
+- **THEN** it SHALL contain Connections, Model Pool, Routes, and Gateway in deterministic order
+- **AND** Connections SHALL be the default page
 
 #### Scenario: Future capability contributes a page
 - **WHEN** a later capability composes a valid replacement or additional page definition before shell installation
@@ -93,16 +98,29 @@ Each mounted page SHALL receive a page-scoped AbortSignal and a latest-result he
 - **AND** a late success or failure SHALL be ignored
 
 ### Requirement: Foundation pages report only implemented capability
-The foundation Overview, Routes, Providers, Credentials, Local Models, and Gateway pages SHALL present bounded operational unavailable states until their owning Runtime capabilities are implemented. They MUST NOT display synthetic Provider, Model, account, credential, route, Gateway, or local-model data and MUST NOT expose editable controls that imply persistence or execution.
+The foundation Connections, Model Pool, Routes, and Gateway pages SHALL present bounded operational unavailable states until their owning Runtime capabilities are implemented. Connections SHALL own discovered Credential Sources, explicit authorization, custom Provider endpoints, API Keys, OAuth accounts, and local inference services. Model Pool SHALL project only verified Model Routes produced by authorized Connections. Routes SHALL own explicit and default Route selection, while Gateway SHALL expose bounded operational status and advanced diagnostics. These pages MUST NOT display synthetic Provider, Model, account, credential, route, Gateway, or connection data and MUST NOT expose editable controls that imply persistence or execution.
 
 #### Scenario: User opens a future capability page
 - **WHEN** the foundation has no Runtime implementation for that capability
 - **THEN** the page SHALL show an explicit unavailable status
 - **AND** it SHALL NOT offer a Save, Connect, Start, Test, or credential-entry action
 
-#### Scenario: User opens Overview
+#### Scenario: User opens a foundation page
 - **WHEN** none of the later configuration capabilities are installed
-- **THEN** Overview SHALL summarize each section as unavailable without inventing configuration values
+- **THEN** the selected page SHALL report that its owning capability is unavailable without inventing configuration values
+
+### Requirement: Connections and Model Pool preserve credential boundaries
+A future Connections capability MAY discover supported local Harness/CLI login sources and limited non-sensitive status without reading secrets into Renderer. Discovery MUST NOT authorize a source or add it to Model Pool. Credential Manager SHALL require explicit user authorization before establishing a revocable runtime Credential Lease. Model Pool SHALL contain verified Model Routes derived from authorized Connections and MUST NOT contain raw OAuth Tokens, Refresh Tokens, API Keys, or copied Harness authentication files. Managed Harnesses SHALL receive only a local Gateway endpoint and a Route- and lifecycle-bounded temporary credential.
+
+#### Scenario: A supported local CLI login is discovered
+- **WHEN** Connections detects a supported local Harness/CLI credential source
+- **THEN** it SHALL expose only bounded source type and availability metadata
+- **AND** it SHALL NOT establish a lease or make its models selectable before explicit user authorization
+
+#### Scenario: An authorized connection contributes models
+- **WHEN** Credential Manager can establish a valid lease and the Provider Catalog and protocol capabilities are verified
+- **THEN** Model Pool SHALL expose the resulting distinguishable Model Routes
+- **AND** no source credential SHALL be returned to Renderer or copied to another Harness
 
 ### Requirement: Settings extension boundary remains browser-only and method-specific
 The settings shell and page framework MUST NOT import Node.js built-ins, Electron private APIs, Harness SDKs, or another internal Runtime package. The shell MUST NOT expose a generic method/payload requester, arbitrary URL fetcher, global request client, filesystem access, process control, or credential reader. Future pages SHALL close over capability-owned method-specific clients and Runtime Schemas.
@@ -138,7 +156,7 @@ Installing, opening, navigating, closing, or disposing settings SHALL NOT modify
 - **AND** existing Agent and Model controls SHALL continue through their established installation path
 
 ### Requirement: Settings presentation follows bounded Codex locale state
-The Renderer Extension SHALL resolve settings presentation from a validated Codex `localeOverride` and automatic locale inputs through fixed method-specific operations. It SHALL provide owned English and Simplified Chinese messages for the settings trigger, shell controls, navigation, search, accessibility labels, foundation pages, language options, and errors. It MUST expose the selected owned locale through the settings Shadow host `lang` attribute and MUST NOT infer language from translated DOM text, private React state, or the Codex document `lang` attribute.
+The Renderer Extension SHALL resolve settings presentation from a validated Codex `localeOverride` and automatic locale inputs through fixed method-specific operations. It SHALL provide owned English and Simplified Chinese messages for the settings trigger, shell controls, navigation, accessibility labels, foundation pages, language options, and errors. It MUST expose the selected owned locale through the settings Shadow host `lang` attribute and MUST NOT infer language from translated DOM text, private React state, or the Codex document `lang` attribute.
 
 #### Scenario: User configured an explicit supported language
 - **WHEN** the validated Codex locale override is an English or Chinese language tag
@@ -161,7 +179,7 @@ The Renderer Extension SHALL resolve settings presentation from a validated Code
 - **AND** it SHALL preserve the unsupported Codex override as an honest non-writable current selection until the user chooses a supported option
 
 ### Requirement: Settings exposes a visible bounded language selector
-The settings sidebar SHALL display an interface-language selector before search with Automatic, English, and Simplified Chinese choices. Automatic MUST write Codex `localeOverride` as `null`, English MUST write `en-US`, and Simplified Chinese MUST write `zh-CN` through one fixed method-specific locale operation. The selector MUST NOT expose an arbitrary setting key, locale value, URL, method, or payload.
+The settings sidebar SHALL display an interface-language selector with Automatic, English, and Simplified Chinese choices. Automatic MUST write Codex `localeOverride` as `null`, English MUST write `en-US`, and Simplified Chinese MUST write `zh-CN` through one fixed method-specific locale operation. The selector MUST NOT expose an arbitrary setting key, locale value, URL, method, or payload.
 
 #### Scenario: User chooses English or Simplified Chinese
 - **WHEN** the user selects a supported explicit language and the bounded Codex setting write succeeds

@@ -56,22 +56,23 @@ function normalizedPage(
 
 export function createRendererSettingsPageRegistry(
   definitions: readonly RendererSettingsPageDefinition[],
-  defaultPageId = "overview",
+  defaultPageId?: string,
 ): RendererSettingsPageRegistry {
   if (definitions.length === 0) throw new Error("Settings page registry cannot be empty");
+  const resolvedDefaultPageId = defaultPageId ?? definitions[0]?.id ?? "";
   const pages = definitions.map(normalizedPage);
   const byId = new Map<string, RendererSettingsPageDefinition>();
   for (const page of pages) {
     if (byId.has(page.id)) throw new Error(`Duplicate settings page ID: ${page.id}`);
     byId.set(page.id, page);
   }
-  if (!byId.has(defaultPageId)) {
-    throw new Error(`Default settings page is not registered: ${defaultPageId}`);
+  if (!byId.has(resolvedDefaultPageId)) {
+    throw new Error(`Default settings page is not registered: ${resolvedDefaultPageId}`);
   }
   const frozenPages = Object.freeze([...pages]);
   return Object.freeze({
     pages: frozenPages,
-    defaultPageId,
+    defaultPageId: resolvedDefaultPageId,
     getPage(pageId: string) {
       return byId.get(pageId);
     },

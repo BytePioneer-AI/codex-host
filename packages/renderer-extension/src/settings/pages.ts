@@ -8,14 +8,10 @@ import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
-import { createRendererSettingsIcon } from "./icons.js";
-
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
-  "overview",
+  "connections",
+  "model-pool",
   "routes",
-  "providers",
-  "credentials",
-  "local-models",
   "gateway",
 ] as const;
 
@@ -39,46 +35,8 @@ function appendUnavailableStatus(content: HTMLElement, messages: RendererSetting
   content.append(heading, status);
 }
 
-function mountOverview(
-  context: RendererSettingsPageMountContext,
-  messages: RendererSettingsMessages,
-): undefined {
-  const heading = context.content.ownerDocument.createElement("div");
-  heading.className = "settings-section-label";
-  heading.textContent = messages.runtimeStatus;
-
-  const list = context.content.ownerDocument.createElement("div");
-  list.className = "settings-status-list";
-  list.setAttribute("role", "list");
-  for (const pageId of DEFAULT_RENDERER_SETTINGS_PAGE_IDS.slice(1)) {
-    const row = context.content.ownerDocument.createElement("div");
-    row.className = "settings-status-row";
-    row.setAttribute("role", "listitem");
-
-    const identity = context.content.ownerDocument.createElement("span");
-    identity.className = "settings-status-row__identity";
-    const icon = context.content.ownerDocument.createElement("span");
-    icon.className = "settings-status-row__icon";
-    icon.append(createRendererSettingsIcon(pageId, 20));
-    const label = context.content.ownerDocument.createElement("span");
-    label.textContent = messages.pageLabels[pageId];
-    identity.append(icon, label);
-
-    const status = context.content.ownerDocument.createElement("span");
-    status.className = "settings-status-badge";
-    status.textContent = messages.unavailable;
-    const detail = context.content.ownerDocument.createElement("span");
-    detail.className = "settings-status-row__detail";
-    detail.textContent = messages.runtimeCapabilityNotInstalled;
-    row.append(identity, status, detail);
-    list.append(row);
-  }
-  context.content.append(heading, list);
-  return undefined;
-}
-
 function unavailablePage(
-  id: Exclude<DefaultRendererSettingsPageId, "overview">,
+  id: DefaultRendererSettingsPageId,
   messages: RendererSettingsMessages,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
@@ -95,21 +53,9 @@ function unavailablePage(
 export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
 ): readonly RendererSettingsPageDefinition[] {
-  return Object.freeze([
-    Object.freeze({
-      id: "overview",
-      label: messages.pageLabels.overview,
-      icon: "overview",
-      mount(context: RendererSettingsPageMountContext) {
-        return mountOverview(context, messages);
-      },
-    }),
-    unavailablePage("routes", messages),
-    unavailablePage("providers", messages),
-    unavailablePage("credentials", messages),
-    unavailablePage("local-models", messages),
-    unavailablePage("gateway", messages),
-  ] satisfies RendererSettingsPageDefinition[]);
+  return Object.freeze(
+    DEFAULT_RENDERER_SETTINGS_PAGE_IDS.map((id) => unavailablePage(id, messages)),
+  );
 }
 
 export function createDefaultRendererSettingsRegistry(

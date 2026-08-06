@@ -35,7 +35,6 @@ describe("Renderer settings localization", () => {
     expect(chinese.title).toBe("设置");
     expect(chinese.interfaceLanguage).toBe("界面语言");
     expect(chinese.automaticLanguage).toBe("自动（跟随 Codex）");
-    expect(chinese.searchPlaceholder).toBe("搜索设置...");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
@@ -47,6 +46,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["概览", "路由", "提供商", "凭据", "本地模型", "网关"]);
+    ).toEqual(["连接", "模型池", "路由", "网关"]);
   });
 });

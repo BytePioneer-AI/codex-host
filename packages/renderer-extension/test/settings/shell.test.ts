@@ -8,28 +8,24 @@ import {
 import { isRendererSettingsDialogSupported } from "../../src/settings/shell.js";
 
 describe("Renderer settings foundation", () => {
-  it("publishes deterministic placeholder sections with Overview as the default", () => {
+  it("publishes deterministic product sections with Connections as the default", () => {
     const pages = createDefaultRendererSettingsPages();
     const registry = createDefaultRendererSettingsRegistry();
 
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
     expect(pages.map(({ label }) => label)).toEqual([
-      "Overview",
+      "Connections",
+      "Model Pool",
       "Routes",
-      "Providers",
-      "Credentials",
-      "Local Models",
       "Gateway",
     ]);
     expect(pages.map(({ icon }) => icon)).toEqual([
-      "overview",
+      "connections",
+      "model-pool",
       "routes",
-      "providers",
-      "credentials",
-      "local-models",
       "gateway",
     ]);
-    expect(registry.defaultPageId).toBe("overview");
+    expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
     expect(pages.every((page) => Object.isFrozen(page))).toBe(true);
   });

@@ -16,12 +16,9 @@ export interface ElectronRendererSummary {
   id: number;
   type: string;
   surface: "primary" | "overlay";
-  url: string;
   runtime: {
     available: boolean;
     elementCount: number | null;
-    editorCandidates: number | null;
-    sendButtonCandidates: number | null;
   };
 }
 
@@ -36,7 +33,6 @@ export interface ProductionRendererStatus {
 
 export interface RendererControlSnapshot {
   renderer: ElectronRendererSummary;
-  inventory: ElectronRendererSummary[];
   titlePolicy: MainProcessTitlePolicyStatus;
   titlePolicyReadiness: RendererTitlePolicyReadiness;
   draftPrewarmPolicy: RendererDraftPrewarmPolicyStatus;
@@ -51,8 +47,14 @@ interface RendererInspector {
 
 interface RendererControlOperations {
   inspect(inspector: RendererInspector): Promise<ElectronRendererSummary[]>;
-  installTitlePolicy(inspector: RendererInspector): Promise<MainProcessTitlePolicyStatus>;
-  markTitlePolicyReady(inspector: RendererInspector): Promise<RendererTitlePolicyReadiness>;
+  installTitlePolicy(
+    inspector: RendererInspector,
+    rendererWebContentsId: number,
+  ): Promise<MainProcessTitlePolicyStatus>;
+  markTitlePolicyReady(
+    inspector: RendererInspector,
+    rendererWebContentsId: number,
+  ): Promise<RendererTitlePolicyReadiness>;
   installDraftPrewarmPolicy(
     inspector: RendererInspector,
     rendererWebContentsId: number,
@@ -112,18 +114,11 @@ interface CreateRendererControlOptions extends InstallRendererControlOptions {
   operations?: RendererControlOperations;
 }
 
+const DRAFT_PREWARM_READY_TIMEOUT_MS = 5_000;
+const RENDERER_RELOAD_TIMEOUT_MS = 8_000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeTargetUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) return "unknown";
-  try {
-    const url = new URL(value);
-    return url.protocol === "app:" ? `${url.protocol}//${url.host}${url.pathname}` : url.protocol;
-  } catch {
-    return "unknown";
-  }
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -195,8 +190,7 @@ export function selectRendererWebContents(
     .toSorted(
       (left, right) => (right.runtime.elementCount ?? 0) - (left.runtime.elementCount ?? 0),
     );
-  const selected = candidates[0];
-  return selected && (selected.runtime.elementCount ?? 0) >= 50 ? selected : null;
+  return candidates.find((candidate) => (candidate.runtime.elementCount ?? 0) > 0) ?? null;
 }
 
 export async function waitForRendererTitlePolicyReady(
@@ -224,6 +218,22 @@ export async function waitForRendererTitlePolicyReady(
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
   throw new Error(`Renderer title policy ownership did not become ready${detail}`);
+}
+
+async function waitForDraftPrewarmPolicy(
+  install: () => Promise<RendererDraftPrewarmPolicyStatus>,
+  options: { timeoutMs: number; pollIntervalMs: number },
+): Promise<RendererDraftPrewarmPolicyStatus> {
+  const deadline = Date.now() + Math.min(options.timeoutMs, DRAFT_PREWARM_READY_TIMEOUT_MS);
+  do {
+    try {
+      return await install();
+    } catch {
+      if (Date.now() >= deadline) break;
+      await sleep(options.pollIntervalMs);
+    }
+  } while (Date.now() < deadline);
+  throw new Error("Renderer draft prewarm policy did not become ready");
 }
 
 export async function waitForInspectorTarget(
@@ -262,11 +272,8 @@ const electronModuleExpression = `(() => {
   return createRequire(process.execPath)('electron');
 })()`;
 
-const webContentsRuntimeExpression = `(() => ({
-  elementCount: document.querySelectorAll('*').length,
-  editorCandidates: document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]').length,
-  sendButtonCandidates: [...document.querySelectorAll('button')].filter((button) => button.type === 'submit').length
-}))()`;
+const webContentsRuntimeExpression =
+  "(() => ({ elementCount: document.querySelectorAll('*').length }))()";
 
 export async function inspectElectronWebContents(
   inspector: Pick<RendererInspector, "evaluate">,
@@ -275,7 +282,7 @@ export async function inspectElectronWebContents(
     const { webContents } = ${electronModuleExpression};
     const result = [];
     for (const contents of webContents.getAllWebContents()) {
-      let runtime = { available: false, elementCount: null, editorCandidates: null, sendButtonCandidates: null };
+      let runtime = { available: false, elementCount: null };
       try {
         const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
         const timeout = new Promise((_, reject) => {
@@ -287,7 +294,6 @@ export async function inspectElectronWebContents(
         id: contents.id,
         type: contents.getType(),
         surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
-        url: contents.getURL(),
         runtime,
       });
     }
@@ -308,17 +314,10 @@ export async function inspectElectronWebContents(
       id: item.id as number,
       type: item.type,
       surface: item.surface as "primary" | "overlay",
-      url: safeTargetUrl(item.url),
       runtime: {
         available: item.runtime.available === true,
         elementCount: Number.isInteger(item.runtime.elementCount)
           ? (item.runtime.elementCount as number)
-          : null,
-        editorCandidates: Number.isInteger(item.runtime.editorCandidates)
-          ? (item.runtime.editorCandidates as number)
-          : null,
-        sendButtonCandidates: Number.isInteger(item.runtime.sendButtonCandidates)
-          ? (item.runtime.sendButtonCandidates as number)
           : null,
       },
     };
@@ -373,7 +372,38 @@ async function reloadRenderer(
   inspector: Pick<RendererInspector, "evaluate">,
   rendererWebContentsId: number,
 ): Promise<void> {
-  await executeInWebContents(inspector, rendererWebContentsId, "location.reload(); null");
+  const reloaded = await inspector.evaluate<unknown>(`(() => {
+    const { webContents } = ${electronModuleExpression};
+    const contents = webContents.fromId(${rendererWebContentsId});
+    if (contents == null || contents.isDestroyed()) {
+      throw new Error('Renderer webContents is unavailable');
+    }
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        contents.removeListener('did-finish-load', finish);
+        contents.removeListener('did-fail-load', fail);
+        contents.removeListener('render-process-gone', fail);
+      };
+      const finish = () => {
+        cleanup();
+        resolve(true);
+      };
+      const fail = () => {
+        cleanup();
+        reject(new Error('Renderer reload failed'));
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Renderer reload timed out'));
+      }, ${RENDERER_RELOAD_TIMEOUT_MS});
+      contents.once('did-finish-load', finish);
+      contents.once('did-fail-load', fail);
+      contents.once('render-process-gone', fail);
+      contents.reload();
+    });
+  })()`);
+  if (reloaded !== true) throw new Error("Renderer reload returned an invalid status");
 }
 
 const defaultOperations: RendererControlOperations = {
@@ -398,18 +428,17 @@ async function waitForRenderer(
   operations: RendererControlOperations,
   timeoutMs: number,
   pollIntervalMs: number,
-): Promise<{ inventory: ElectronRendererSummary[]; renderer: ElectronRendererSummary }> {
+): Promise<ElectronRendererSummary> {
   const deadline = Date.now() + timeoutMs;
-  let inventory: ElectronRendererSummary[] = [];
+  let candidateCount = 0;
   while (Date.now() < deadline) {
-    inventory = await operations.inspect(inspector);
+    const inventory = await operations.inspect(inspector);
+    candidateCount = inventory.length;
     const renderer = selectRendererWebContents(inventory);
-    if (renderer) return { inventory, renderer };
+    if (renderer) return renderer;
     await sleep(pollIntervalMs);
   }
-  throw new Error(
-    `Inspector did not find a populated Electron Renderer (${inventory.length} seen)`,
-  );
+  throw new Error(`Inspector did not find a live Electron Renderer (${candidateCount} seen)`);
 }
 
 async function waitForBinding(
@@ -467,7 +496,7 @@ class InstalledRendererControlSession implements RendererControlSession {
       this.pollIntervalMs,
     );
     const existing = await this.operations
-      .readBinding(this.inspector, selected.renderer.id)
+      .readBinding(this.inspector, selected.id)
       .catch(() => null);
     if (existing !== null) {
       const binding = await requireCompatibilityBoundary(
@@ -475,7 +504,7 @@ class InstalledRendererControlSession implements RendererControlSession {
         "agent-routing-structure-unavailable",
         () => validateBindingStatus(existing, this.enabledAgents),
       );
-      this.#snapshot = { ...this.#snapshot, ...selected, binding };
+      this.#snapshot = { ...this.#snapshot, renderer: selected, binding };
       return this.#snapshot;
     }
 
@@ -484,16 +513,20 @@ class InstalledRendererControlSession implements RendererControlSession {
       "title-isolation-structure-unavailable",
       () =>
         waitForRendererTitlePolicyReady(
-          () => this.operations.markTitlePolicyReady(this.inspector),
+          () => this.operations.markTitlePolicyReady(this.inspector, selected.id),
           { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
         ),
     );
     const draftPrewarmPolicy = await requireCompatibilityBoundary(
       "draft-routing",
       "draft-routing-structure-unavailable",
-      () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.renderer.id),
+      () =>
+        waitForDraftPrewarmPolicy(
+          () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
+          { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
+        ),
     );
-    await this.operations.execute(this.inspector, selected.renderer.id, this.rendererSource);
+    await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const binding = await requireCompatibilityBoundary(
       "agent-routing",
       "agent-routing-structure-unavailable",
@@ -501,7 +534,7 @@ class InstalledRendererControlSession implements RendererControlSession {
         waitForBinding(
           this.inspector,
           this.operations,
-          selected.renderer.id,
+          selected.id,
           this.enabledAgents,
           this.timeoutMs,
           this.pollIntervalMs,
@@ -509,7 +542,7 @@ class InstalledRendererControlSession implements RendererControlSession {
     );
     this.#snapshot = {
       ...this.#snapshot,
-      ...selected,
+      renderer: selected,
       titlePolicyReadiness,
       draftPrewarmPolicy,
       binding,
@@ -569,25 +602,32 @@ export async function createRendererControlSession(
   const titlePolicy = await requireCompatibilityBoundary(
     "title-isolation",
     "title-isolation-structure-unavailable",
-    () => operations.installTitlePolicy(options.inspector),
+    () => operations.installTitlePolicy(options.inspector, initial.id),
   );
-  await operations.reload(options.inspector, initial.renderer.id);
+  await operations.reload(options.inspector, initial.id);
   const selected = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
   const titlePolicyReadiness = await requireCompatibilityBoundary(
     "title-isolation",
     "title-isolation-structure-unavailable",
     () =>
-      waitForRendererTitlePolicyReady(() => operations.markTitlePolicyReady(options.inspector), {
-        timeoutMs,
-        pollIntervalMs,
-      }),
+      waitForRendererTitlePolicyReady(
+        () => operations.markTitlePolicyReady(options.inspector, selected.id),
+        {
+          timeoutMs,
+          pollIntervalMs,
+        },
+      ),
   );
   const draftPrewarmPolicy = await requireCompatibilityBoundary(
     "draft-routing",
     "draft-routing-structure-unavailable",
-    () => operations.installDraftPrewarmPolicy(options.inspector, selected.renderer.id),
+    () =>
+      waitForDraftPrewarmPolicy(
+        () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
+        { timeoutMs, pollIntervalMs },
+      ),
   );
-  await operations.execute(options.inspector, selected.renderer.id, options.rendererSource);
+  await operations.execute(options.inspector, selected.id, options.rendererSource);
   const binding = await requireCompatibilityBoundary(
     "agent-routing",
     "agent-routing-structure-unavailable",
@@ -595,7 +635,7 @@ export async function createRendererControlSession(
       waitForBinding(
         options.inspector,
         operations,
-        selected.renderer.id,
+        selected.id,
         enabledAgents,
         timeoutMs,
         pollIntervalMs,
@@ -609,7 +649,7 @@ export async function createRendererControlSession(
     pollIntervalMs,
     operations,
     {
-      ...selected,
+      renderer: selected,
       titlePolicy,
       titlePolicyReadiness,
       draftPrewarmPolicy,

@@ -23,8 +23,6 @@ export interface MainProcessCompatibilityWarning {
 export interface MainProcessTitlePolicyStatus {
   state: "ready";
   reason: "ready";
-  contextClass: string;
-  serviceClass: string;
   requiresRendererReload: true;
   warnings: MainProcessCompatibilityWarning[];
 }
@@ -91,29 +89,14 @@ const SERVICE_OWNER_SYMBOL = "codexhost.main-process-title-policy.owner.v1";
 const RENDERER_READY_EXPRESSION =
   "(() => { Object.defineProperty(window, '__codexhostMainProcessTitlePolicyV1', { configurable: true, value: { state: 'ready' } }); return 'ready'; })()";
 
-const INSTALL_POLICY_FUNCTION = `async function () {
+const INSTALL_POLICY_FUNCTION = `async function (rendererWebContentsId) {
   const mainModule = process.mainModule;
   const electron = mainModule != null && typeof mainModule.require === 'function'
     ? mainModule.require('electron')
     : process.getBuiltinModule('module').createRequire(process.execPath)('electron');
-  let selected = null;
-  let largestElementCount = 0;
-  for (const contents of electron.webContents.getAllWebContents()) {
-    if (contents.isDestroyed() || contents.getType() !== 'window') continue;
-    let elementCount = 0;
-    try {
-      elementCount = await contents.executeJavaScript(
-        "document.querySelectorAll('*').length",
-        true,
-      );
-    } catch {}
-    if (Number.isInteger(elementCount) && elementCount > largestElementCount) {
-      selected = contents;
-      largestElementCount = elementCount;
-    }
-  }
-  if (selected == null || largestElementCount < 50) {
-    throw new Error('Populated Renderer unavailable for title policy');
+  const selected = electron.webContents.fromId(rendererWebContentsId);
+  if (selected == null || selected.isDestroyed() || selected.getType() !== 'window') {
+    throw new Error('Owned Renderer unavailable for title policy');
   }
 
   const context = this(selected);
@@ -220,8 +203,6 @@ const INSTALL_POLICY_FUNCTION = `async function () {
   return {
     state: 'ready',
     reason: 'ready',
-    contextClass: context.constructor.name,
-    serviceClass,
     requiresRendererReload: true,
     warnings,
   };
@@ -229,7 +210,11 @@ const INSTALL_POLICY_FUNCTION = `async function () {
 
 export async function installMainProcessTitlePolicy(
   inspector: Pick<CdpClient, "command"> | CdpCommander,
+  rendererWebContentsId: number,
 ): Promise<MainProcessTitlePolicyStatus> {
+  if (!Number.isInteger(rendererWebContentsId) || rendererWebContentsId <= 0) {
+    throw new Error("Renderer webContents ID must be a positive integer");
+  }
   const listenerResponse = resultRecord(
     await inspector.command("Runtime.evaluate", {
       expression: `(${ELECTRON_MODULE_EXPRESSION}).ipcMain.listeners(${JSON.stringify(
@@ -283,6 +268,7 @@ export async function installMainProcessTitlePolicy(
     await inspector.command("Runtime.callFunctionOn", {
       objectId: getContextId,
       functionDeclaration: INSTALL_POLICY_FUNCTION,
+      arguments: [{ value: rendererWebContentsId }],
     }),
     "Runtime.callFunctionOn",
   );
@@ -303,8 +289,6 @@ export async function installMainProcessTitlePolicy(
     !isRecord(value) ||
     value.state !== "ready" ||
     value.reason !== "ready" ||
-    typeof value.contextClass !== "string" ||
-    typeof value.serviceClass !== "string" ||
     value.requiresRendererReload !== true ||
     !Array.isArray(value.warnings) ||
     value.warnings.length > 1 ||
@@ -325,7 +309,11 @@ export async function installMainProcessTitlePolicy(
 
 export async function markRendererTitlePolicyReady(
   inspector: Pick<CdpClient, "evaluate">,
+  rendererWebContentsId: number,
 ): Promise<RendererTitlePolicyReadiness> {
+  if (!Number.isInteger(rendererWebContentsId) || rendererWebContentsId <= 0) {
+    throw new Error("Renderer webContents ID must be a positive integer");
+  }
   const value = await inspector.evaluate<unknown>(`(async () => {
     const state = globalThis[Symbol.for(${JSON.stringify(POLICY_STATE_SYMBOL)})];
     if (state == null) throw new Error('Main-process title policy is unavailable');
@@ -333,28 +321,9 @@ export async function markRendererTitlePolicyReady(
     const electron = mainModule != null && typeof mainModule.require === 'function'
       ? mainModule.require('electron')
       : process.getBuiltinModule('module').createRequire(process.execPath)('electron');
-    let selected = null;
-    let largestElementCount = 0;
-    for (const contents of electron.webContents.getAllWebContents()) {
-      if (contents.isDestroyed() || contents.getType() !== 'window') continue;
-      let elementCount = 0;
-      try {
-        const evaluation = contents.executeJavaScript(
-          "document.querySelectorAll('*').length",
-          true,
-        );
-        const timeout = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Renderer readiness inspection timed out')), 2_000);
-        });
-        elementCount = await Promise.race([evaluation, timeout]);
-      } catch {}
-      if (Number.isInteger(elementCount) && elementCount > largestElementCount) {
-        selected = contents;
-        largestElementCount = elementCount;
-      }
-    }
-    if (selected == null || largestElementCount < 50) {
-      throw new Error('Populated Renderer unavailable for title policy readiness');
+    const selected = electron.webContents.fromId(${rendererWebContentsId});
+    if (selected == null || selected.isDestroyed() || selected.getType() !== 'window') {
+      throw new Error('Owned Renderer unavailable for title policy readiness');
     }
     if (!state.ownedWebContentsIds.has(selected.id)) {
       throw new Error('Renderer metadata service ownership is unavailable');

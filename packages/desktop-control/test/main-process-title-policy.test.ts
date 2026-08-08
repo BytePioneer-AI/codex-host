@@ -33,8 +33,6 @@ describe("main-process title policy", () => {
           value: {
             state: "ready",
             reason: "ready",
-            contextClass: "WindowContext",
-            serviceClass: "ThreadMetadataGenerationService",
             requiresRendererReload: true,
             warnings: [],
           },
@@ -42,11 +40,9 @@ describe("main-process title policy", () => {
       },
     ]);
 
-    await expect(installMainProcessTitlePolicy(inspector)).resolves.toEqual({
+    await expect(installMainProcessTitlePolicy(inspector, 17)).resolves.toEqual({
       state: "ready",
       reason: "ready",
-      contextClass: "WindowContext",
-      serviceClass: "ThreadMetadataGenerationService",
       requiresRendererReload: true,
       warnings: [],
     });
@@ -60,9 +56,12 @@ describe("main-process title policy", () => {
     ]);
     expect(inspector.command.mock.calls.at(-2)?.[1]).toMatchObject({
       objectId: "get-context",
+      arguments: [{ value: 17 }],
     });
     const functionDeclaration = inspector.command.mock.calls.at(-2)?.[1]?.functionDeclaration;
+    expect(functionDeclaration).toContain("webContents.fromId(rendererWebContentsId)");
     expect(functionDeclaration).toContain("ownService(sampleService, selected)");
+    expect(functionDeclaration).not.toContain("querySelectorAll('*').length");
     expect(functionDeclaration).toContain('["Dhe","Nye","wbe","nxe"].includes(serviceClass)');
     expect(functionDeclaration).toContain("reason: 'unreviewed-title-service-identity'");
     expect(functionDeclaration).not.toContain("constructor?.name) ||");
@@ -87,8 +86,6 @@ describe("main-process title policy", () => {
           value: {
             state: "ready",
             reason: "ready",
-            contextClass: "FutureContext",
-            serviceClass: "FutureTitleService",
             requiresRendererReload: true,
             warnings: [
               {
@@ -102,7 +99,7 @@ describe("main-process title policy", () => {
       },
     ]);
 
-    await expect(installMainProcessTitlePolicy(inspector)).resolves.toMatchObject({
+    await expect(installMainProcessTitlePolicy(inspector, 17)).resolves.toMatchObject({
       state: "ready",
       warnings: [
         {
@@ -129,8 +126,6 @@ describe("main-process title policy", () => {
           value: {
             state: "ready",
             reason: "ready",
-            contextClass: "FutureContext",
-            serviceClass: "FutureTitleService",
             requiresRendererReload: true,
             warnings: [
               {
@@ -144,7 +139,7 @@ describe("main-process title policy", () => {
       },
     ]);
 
-    await expect(installMainProcessTitlePolicy(inspector)).rejects.toThrow("invalid status");
+    await expect(installMainProcessTitlePolicy(inspector, 17)).rejects.toThrow("invalid status");
   });
 
   it("fails closed when the required title service structure is unsupported", async () => {
@@ -164,7 +159,7 @@ describe("main-process title policy", () => {
       },
     ]);
 
-    await expect(installMainProcessTitlePolicy(inspector)).rejects.toThrow(
+    await expect(installMainProcessTitlePolicy(inspector, 17)).rejects.toThrow(
       "ThreadMetadataGenerationService signature mismatch",
     );
   });
@@ -175,22 +170,50 @@ describe("main-process title policy", () => {
       { result: [], internalProperties: [] },
     ]);
 
-    await expect(installMainProcessTitlePolicy(inspector)).rejects.toThrow(
+    await expect(installMainProcessTitlePolicy(inspector, 17)).rejects.toThrow(
       "connect-app-host listener scopes is unavailable",
     );
   });
 
-  it("marks only a Renderer with an owned metadata service as ready", async () => {
+  it("marks only the selected owned Renderer as ready", async () => {
+    const evaluate = vi.fn(async (expression: string) => {
+      void expression;
+      return {
+        state: "ready",
+        reason: "owned-metadata-service",
+      };
+    });
     const inspector = {
-      async evaluate<T>(): Promise<T> {
-        return { state: "ready", reason: "owned-metadata-service" } as T;
+      async evaluate<T>(expression: string): Promise<T> {
+        return (await evaluate(expression)) as T;
       },
     };
 
-    await expect(markRendererTitlePolicyReady(inspector)).resolves.toEqual({
+    await expect(markRendererTitlePolicyReady(inspector, 17)).resolves.toEqual({
       state: "ready",
       reason: "owned-metadata-service",
     });
+    expect(evaluate).toHaveBeenCalledWith(expect.stringContaining("webContents.fromId(17)"));
+    expect(evaluate).not.toHaveBeenCalledWith(expect.stringContaining("querySelectorAll"));
+  });
+
+  it("rejects invalid Renderer identities before inspection", async () => {
+    const inspector = commandSequence([]);
+    const evaluate = vi.fn(async (expression: string) => {
+      void expression;
+      return null;
+    });
+    const readinessInspector = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return (await evaluate(expression)) as T;
+      },
+    };
+    await expect(installMainProcessTitlePolicy(inspector, 0)).rejects.toThrow("positive integer");
+    await expect(markRendererTitlePolicyReady(readinessInspector, -1)).rejects.toThrow(
+      "positive integer",
+    );
+    expect(inspector.command).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
   });
 
   it("reads only sanitized policy counters", async () => {

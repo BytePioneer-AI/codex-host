@@ -16,12 +16,9 @@ function renderer(id: number, surface: "primary" | "overlay", elementCount: numb
     id,
     type: "window",
     surface,
-    url: "app://-/index.html",
     runtime: {
       available: true,
       elementCount,
-      editorCandidates: 1,
-      sendButtonCandidates: 1,
     },
   } satisfies ElectronRendererSummary;
 }
@@ -53,9 +50,10 @@ describe("Renderer Control Session", () => {
     ).rejects.toThrow("found no live window");
   });
 
-  it("selects the populated primary window even when an overlay is larger", () => {
-    const primary = renderer(17, "primary", 100);
+  it("selects any live primary window without an arbitrary population threshold", () => {
+    const primary = renderer(17, "primary", 1);
     expect(selectRendererWebContents([renderer(18, "overlay", 1_000), primary])).toBe(primary);
+    expect(selectRendererWebContents([renderer(17, "primary", 0)])).toBeNull();
   });
 
   it("waits for the loopback Node Inspector target", async () => {
@@ -80,7 +78,7 @@ describe("Renderer Control Session", () => {
     ).resolves.toMatchObject({ id: "node-1", type: "node" });
   });
 
-  it("sanitizes Electron webContents inventory", async () => {
+  it("returns only Renderer fields used by control decisions", async () => {
     const inspector = {
       async evaluate<T>(): Promise<T> {
         return [
@@ -92,8 +90,6 @@ describe("Renderer Control Session", () => {
             runtime: {
               available: true,
               elementCount: 100,
-              editorCandidates: 1,
-              sendButtonCandidates: 1,
             },
           },
         ] as T;
@@ -132,6 +128,7 @@ describe("Renderer Control Session", () => {
     };
     let binding: unknown = null;
     let selected = renderer(17, "primary", 100);
+    let draftPrewarmAttempts = 0;
     const inspector = {
       command: vi.fn(),
       evaluate: vi.fn(),
@@ -142,23 +139,23 @@ describe("Renderer Control Session", () => {
         calls.push("inspect");
         return [selected];
       },
-      async installTitlePolicy() {
-        calls.push("title");
+      async installTitlePolicy(_inspector: unknown, rendererId: number) {
+        calls.push(`title:${rendererId}`);
         return {
           state: "ready" as const,
           reason: "ready" as const,
-          contextClass: "WindowContext",
-          serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
           warnings: [compatibilityWarning],
         };
       },
-      async markTitlePolicyReady() {
-        calls.push("title-ready");
+      async markTitlePolicyReady(_inspector: unknown, rendererId: number) {
+        calls.push(`title-ready:${rendererId}`);
         return { state: "ready" as const, reason: "owned-metadata-service" as const };
       },
       async installDraftPrewarmPolicy(_inspector: unknown, rendererId: number) {
         calls.push(`prewarm:${rendererId}`);
+        draftPrewarmAttempts += 1;
+        if (draftPrewarmAttempts === 1) throw new Error("Composer is still mounting");
         return { state: "ready" as const, reason: "owned-request-bridge" as const };
       },
       async reload() {
@@ -196,10 +193,11 @@ describe("Renderer Control Session", () => {
     });
     expect(calls).toEqual([
       "inspect",
-      "title",
+      "title:17",
       "reload",
       "inspect",
-      "title-ready",
+      "title-ready:17",
+      "prewarm:17",
       "prewarm:17",
       "inject",
       "read-binding",
@@ -218,7 +216,7 @@ describe("Renderer Control Session", () => {
     expect(calls).toEqual([
       "inspect",
       "read-binding",
-      "title-ready",
+      "title-ready:19",
       "prewarm:19",
       "inject",
       "read-binding",
@@ -247,8 +245,6 @@ describe("Renderer Control Session", () => {
         return {
           state: "ready" as const,
           reason: "ready" as const,
-          contextClass: "WindowContext",
-          serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
           warnings: [],
         };
@@ -294,8 +290,6 @@ describe("Renderer Control Session", () => {
         return {
           state: "ready" as const,
           reason: "ready" as const,
-          contextClass: "WindowContext",
-          serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
           warnings: [],
         };

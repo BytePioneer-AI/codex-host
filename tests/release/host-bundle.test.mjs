@@ -74,6 +74,7 @@ describe("release Host Bundle", () => {
       expect(audit.runtimePackages).toContain("@anthropic-ai/claude-agent-sdk");
       const source = await readFile(outputPath, "utf8");
       expect(source).toContain("CODEXHOST_STOCK_CODEX_PATH");
+      expect(source).toContain("--codexhost-compatibility-update");
       expect(source).toContain("Claude Code is not installed");
       expect(source).not.toContain("claude-agent-sdk-darwin-arm64");
     } finally {

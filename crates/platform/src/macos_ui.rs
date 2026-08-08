@@ -14,63 +14,141 @@ fn simplified_chinese_locale(locale: &str) -> bool {
     locale.starts_with("zh_cn") || locale.starts_with("zh_sg") || locale.starts_with("zh_hans")
 }
 
-fn compatibility_text(prompt: &CompatibilityPrompt<'_>, chinese: bool) -> CompatibilityText {
-    let capability = match (prompt.capability, chinese) {
+fn capability_name(capability: &str, chinese: bool) -> &str {
+    match (capability, chinese) {
         ("title-isolation", true) => "自动标题隔离",
+        ("draft-routing", true) => "草稿路由",
+        ("agent-routing", true) => "Agent 路由",
+        ("permission-control", true) => "权限控制",
+        ("sidebar-decoration", true) => "侧边栏标识",
+        ("fork-control", true) => "Fork 控制",
+        ("usage-surface", true) => "Usage 显示",
+        ("settings-surface", true) => "设置入口",
+        ("compatibility-detection", true) => "兼容性检测",
         ("title-isolation", false) => "Automatic title isolation",
+        ("draft-routing", false) => "Draft routing",
+        ("agent-routing", false) => "Agent routing",
+        ("permission-control", false) => "Permission control",
+        ("sidebar-decoration", false) => "Sidebar decoration",
+        ("fork-control", false) => "Fork control",
+        ("usage-surface", false) => "Usage surface",
+        ("settings-surface", false) => "Settings surface",
+        ("compatibility-detection", false) => "Compatibility detection",
         (capability, _) => capability,
-    };
-    let update_message = match (prompt.update_availability, chinese) {
-        (CompatibilityUpdateAvailability::Current, true) => {
-            "当前 codexhost 已是最新版。兼容性更新即将发布，发布后 codexhost 会提示更新。你可以先继续使用当前版本。"
-        }
-        (CompatibilityUpdateAvailability::Unavailable, true) => {
-            "兼容性更新发布后 codexhost 会提示更新；你可以先继续使用当前版本。"
-        }
-        (CompatibilityUpdateAvailability::Current, false) => {
-            "This is the latest codexhost release. A compatibility update is coming and codexhost will notify you when it is available. You can continue with the current version for now."
-        }
-        (CompatibilityUpdateAvailability::Unavailable, false) => {
-            "codexhost will notify you when a compatibility update is available; you can continue with the current version for now."
-        }
-    };
-    if chinese {
-        CompatibilityText {
-            body: format!(
-                "检测到新的 Codex 版本。\n\ncodexhost 已完成核心兼容检查，但此 Codex 版本尚未完成完整验证，部分增强功能可能存在兼容问题。{}\n\n检测位置：{}\n原因代码：{}\n内部标识：{}\nCodex Desktop：{}\ncodexhost：{}",
-                update_message,
-                capability,
-                prompt.reason_code,
-                prompt.observed_identity,
-                prompt.desktop_version,
-                prompt.codexhost_version,
-            ),
-            continue_codexhost: "继续使用当前版本",
-            latest_release: "查看发布页面",
-            stock_codex: "使用原版 Codex",
-        }
-    } else {
-        CompatibilityText {
-            body: format!(
-                "A new Codex version was detected.\n\ncodexhost completed its core compatibility checks, but this Codex version has not completed full validation and some enhanced features may be incompatible. {}\n\nArea: {}\nReason: {}\nInternal identity: {}\nCodex Desktop: {}\ncodexhost: {}",
-                update_message,
-                capability,
-                prompt.reason_code,
-                prompt.observed_identity,
-                prompt.desktop_version,
-                prompt.codexhost_version,
-            ),
-            continue_codexhost: "Continue with current version",
-            latest_release: "View releases",
-            stock_codex: "Use stock Codex",
-        }
     }
 }
 
-fn compatibility_choice(selected: &str, text: &CompatibilityText) -> CompatibilityChoice {
+fn compatibility_text(prompt: &CompatibilityPrompt<'_>, chinese: bool) -> CompatibilityText {
+    let update_message = match (prompt.update_availability, prompt.allow_continue, chinese) {
+        (CompatibilityUpdateAvailability::Started, true, true) => {
+            "codexhost 已开始在后台准备适配更新，你可以继续使用当前版本。"
+        }
+        (CompatibilityUpdateAvailability::Started, false, true) => {
+            "codexhost 已开始在后台准备适配更新，当前受管模式将关闭。"
+        }
+        (CompatibilityUpdateAvailability::Started, true, false) => {
+            "codexhost started preparing an adapted update in the background, and you can continue with the current version."
+        }
+        (CompatibilityUpdateAvailability::Started, false, false) => {
+            "codexhost started preparing an adapted update in the background, and managed mode will close."
+        }
+        (CompatibilityUpdateAvailability::Current, true, true) => {
+            "当前 codexhost 已是最新版。适配更新发布后会提示更新，你可以先继续使用当前版本。"
+        }
+        (CompatibilityUpdateAvailability::Unavailable, true, true) => {
+            "适配更新发布后会提示更新，你可以先继续使用当前版本。"
+        }
+        (CompatibilityUpdateAvailability::Current, false, true) => {
+            "当前 codexhost 已是最新版。请查看发布页面获取后续适配版本，或使用原版 Codex。"
+        }
+        (CompatibilityUpdateAvailability::Unavailable, false, true) => {
+            "请查看发布页面获取适配版本，或使用原版 Codex。"
+        }
+        (CompatibilityUpdateAvailability::Current, true, false) => {
+            "This is the latest codexhost release. You will be notified when an adaptation is published, and you can continue with the current version."
+        }
+        (CompatibilityUpdateAvailability::Unavailable, true, false) => {
+            "You will be notified when an adaptation is published, and you can continue with the current version."
+        }
+        (CompatibilityUpdateAvailability::Current, false, false) => {
+            "This is the latest codexhost release. View releases for a future adaptation, or use stock Codex."
+        }
+        (CompatibilityUpdateAvailability::Unavailable, false, false) => {
+            "View releases for an adapted version, or use stock Codex."
+        }
+    };
+    let summary = if chinese {
+        if !prompt.allow_continue {
+            "codexhost 无法确认关键兼容边界，因此不能继续受管模式。"
+        } else if prompt.degraded {
+            "一项非关键增强功能不可用，codexhost 已将其安全禁用。"
+        } else {
+            "codexhost 已完成核心兼容检查，但此 Codex 版本尚未完成完整验证。"
+        }
+    } else if !prompt.allow_continue {
+        "codexhost cannot verify a critical compatibility boundary, so managed mode cannot continue."
+    } else if prompt.degraded {
+        "A non-critical enhancement is unavailable and has been safely disabled."
+    } else {
+        "codexhost completed its core compatibility checks, but this Codex version has not completed full validation."
+    };
+    let identity = prompt.observed_identity.map_or_else(String::new, |value| {
+        if chinese {
+            format!("\n内部标识：{value}")
+        } else {
+            format!("\nInternal identity: {value}")
+        }
+    });
+    let body = if chinese {
+        format!(
+            "{summary}{update_message}\n\n检测位置：{}\n原因代码：{}{}\nCodex Desktop：{}\ncodexhost：{}",
+            capability_name(prompt.capability, true),
+            prompt.reason_code,
+            identity,
+            prompt.desktop_version,
+            prompt.codexhost_version,
+        )
+    } else {
+        format!(
+            "{summary} {update_message}\n\nArea: {}\nReason: {}{}\nCodex Desktop: {}\ncodexhost: {}",
+            capability_name(prompt.capability, false),
+            prompt.reason_code,
+            identity,
+            prompt.desktop_version,
+            prompt.codexhost_version,
+        )
+    };
+    CompatibilityText {
+        body,
+        continue_codexhost: match (prompt.update_availability, prompt.allow_continue, chinese) {
+            (CompatibilityUpdateAvailability::Started, true, true) => "继续等待更新",
+            (CompatibilityUpdateAvailability::Started, false, true) => "关闭并安装更新",
+            (CompatibilityUpdateAvailability::Started, true, false) => "Continue while updating",
+            (CompatibilityUpdateAvailability::Started, false, false) => "Close and install update",
+            (_, _, true) => "继续使用当前版本",
+            (_, _, false) => "Continue with current version",
+        },
+        latest_release: if chinese {
+            "查看发布页面"
+        } else {
+            "View releases"
+        },
+        stock_codex: if chinese {
+            "使用原版 Codex"
+        } else {
+            "Use stock Codex"
+        },
+    }
+}
+
+fn compatibility_choice(
+    selected: &str,
+    text: &CompatibilityText,
+    allow_continue: bool,
+) -> CompatibilityChoice {
     if selected == text.latest_release {
         CompatibilityChoice::OpenLatestRelease
-    } else if selected == text.stock_codex {
+    } else if selected == text.stock_codex || !allow_continue {
         CompatibilityChoice::OpenStockCodex
     } else {
         CompatibilityChoice::ContinueCodexhost
@@ -96,16 +174,38 @@ fn user_locale() -> String {
 pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
     let locale = user_locale();
     let text = compatibility_text(prompt, simplified_chinese_locale(&locale));
-    let script = concat!(
-        "on run argv\n",
-        "set bodyText to item 1 of argv\n",
-        "set continueLabel to item 2 of argv\n",
-        "set releaseLabel to item 3 of argv\n",
-        "set stockLabel to item 4 of argv\n",
-        "set selected to button returned of (display dialog bodyText with title \"codexhost\" buttons {stockLabel, releaseLabel, continueLabel} default button continueLabel with icon note)\n",
-        "return selected\n",
-        "end run",
-    );
+    let script = if prompt.update_availability == CompatibilityUpdateAvailability::Started {
+        concat!(
+            "on run argv\n",
+            "set bodyText to item 1 of argv\n",
+            "set continueLabel to item 2 of argv\n",
+            "set selected to button returned of (display dialog bodyText with title \"codexhost\" buttons {continueLabel} default button continueLabel with icon note)\n",
+            "return selected\n",
+            "end run",
+        )
+    } else if prompt.allow_continue {
+        concat!(
+            "on run argv\n",
+            "set bodyText to item 1 of argv\n",
+            "set continueLabel to item 2 of argv\n",
+            "set releaseLabel to item 3 of argv\n",
+            "set stockLabel to item 4 of argv\n",
+            "set selected to button returned of (display dialog bodyText with title \"codexhost\" buttons {stockLabel, releaseLabel, continueLabel} default button continueLabel with icon note)\n",
+            "return selected\n",
+            "end run",
+        )
+    } else {
+        concat!(
+            "on run argv\n",
+            "set bodyText to item 1 of argv\n",
+            "set continueLabel to item 2 of argv\n",
+            "set releaseLabel to item 3 of argv\n",
+            "set stockLabel to item 4 of argv\n",
+            "set selected to button returned of (display dialog bodyText with title \"codexhost\" buttons {releaseLabel, stockLabel} default button stockLabel with icon caution)\n",
+            "return selected\n",
+            "end run",
+        )
+    };
     let output = Command::new("/usr/bin/osascript")
         .arg("-e")
         .arg(script)
@@ -117,12 +217,16 @@ pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> Compati
         .stderr(Stdio::null())
         .output();
     let Ok(output) = output else {
-        return CompatibilityChoice::ContinueCodexhost;
+        return compatibility_choice("", &text, prompt.allow_continue);
     };
     if !output.status.success() {
-        return CompatibilityChoice::ContinueCodexhost;
+        return compatibility_choice("", &text, prompt.allow_continue);
     }
-    compatibility_choice(String::from_utf8_lossy(&output.stdout).trim(), &text)
+    compatibility_choice(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        &text,
+        prompt.allow_continue,
+    )
 }
 
 #[cfg(test)]
@@ -130,68 +234,71 @@ mod tests {
     use super::{compatibility_choice, compatibility_text, simplified_chinese_locale};
     use crate::{CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability};
 
-    fn prompt() -> CompatibilityPrompt<'static> {
+    fn prompt(allow_continue: bool) -> CompatibilityPrompt<'static> {
         CompatibilityPrompt {
             desktop_version: "26.803.41515",
             codexhost_version: "0.1.0",
             capability: "title-isolation",
-            reason_code: "unreviewed-title-service-identity",
-            observed_identity: "futureClass",
+            reason_code: if allow_continue {
+                "unreviewed-title-service-identity"
+            } else {
+                "title-isolation-structure-unavailable"
+            },
+            observed_identity: allow_continue.then_some("futureClass"),
             update_availability: CompatibilityUpdateAvailability::Current,
+            allow_continue,
+            degraded: false,
         }
     }
 
     #[test]
-    fn supports_simplified_chinese_and_english_text() {
+    fn supports_simplified_chinese_and_layered_text() {
         assert!(simplified_chinese_locale("zh-CN.UTF-8"));
         assert!(simplified_chinese_locale("zh_Hans"));
         assert!(!simplified_chinese_locale("zh-TW"));
         assert!(
-            compatibility_text(&prompt(), true)
+            compatibility_text(&prompt(true), true)
                 .body
                 .contains("核心兼容检查")
         );
         assert!(
-            compatibility_text(&prompt(), false)
+            compatibility_text(&prompt(false), true)
                 .body
-                .contains("core compatibility checks")
+                .contains("不能继续受管模式")
         );
         assert!(
-            compatibility_text(&prompt(), true)
+            compatibility_text(&prompt(false), false)
                 .body
-                .contains("已是最新版")
+                .contains("cannot continue")
         );
-        let mut unavailable = prompt();
+        let mut unavailable = prompt(true);
         unavailable.update_availability = CompatibilityUpdateAvailability::Unavailable;
         let unavailable_body = compatibility_text(&unavailable, true).body;
-        assert!(unavailable_body.contains("兼容性更新发布后"));
+        assert!(unavailable_body.contains("适配更新发布后"));
         assert!(!unavailable_body.contains("暂时无法检查"));
     }
 
     #[test]
-    fn maps_all_three_fixed_choices_and_defaults_to_continue() {
-        let text = compatibility_text(&prompt(), true);
+    fn blocking_prompt_never_defaults_to_continue() {
+        let warning = compatibility_text(&prompt(true), true);
         assert_eq!(
-            compatibility_choice(text.continue_codexhost, &text),
+            compatibility_choice(warning.continue_codexhost, &warning, true),
             CompatibilityChoice::ContinueCodexhost
         );
         assert_eq!(
-            compatibility_choice(text.latest_release, &text),
+            compatibility_choice(warning.latest_release, &warning, true),
             CompatibilityChoice::OpenLatestRelease
         );
+        let blocking = compatibility_text(&prompt(false), true);
         assert_eq!(
-            compatibility_choice(text.stock_codex, &text),
+            compatibility_choice("unexpected", &blocking, false),
             CompatibilityChoice::OpenStockCodex
-        );
-        assert_eq!(
-            compatibility_choice("unexpected", &text),
-            CompatibilityChoice::ContinueCodexhost
         );
     }
 
     #[test]
     fn diagnostic_text_contains_only_bounded_compatibility_fields() {
-        let body = compatibility_text(&prompt(), true).body;
+        let body = compatibility_text(&prompt(true), true).body;
         assert!(body.contains("futureClass"));
         for forbidden in ["Prompt", "Transcript", "Thread ID", "Request ID", "/Users/"] {
             assert!(!body.contains(forbidden));

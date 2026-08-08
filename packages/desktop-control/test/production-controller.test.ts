@@ -8,7 +8,10 @@ import {
   serializeDesktopControllerReadiness,
   type DesktopControllerDependencies,
 } from "../src/production-controller.js";
-import type { RendererControlSession } from "../src/renderer-control-session.js";
+import {
+  RendererCompatibilityError,
+  type RendererControlSession,
+} from "../src/renderer-control-session.js";
 
 const attachmentNonce = "0123456789abcdef0123456789abcdef";
 
@@ -89,13 +92,29 @@ describe("production Desktop Controller", () => {
 
   it("serializes only strict and bounded readiness results", () => {
     expect(
-      serializeDesktopControllerReadiness({ schemaVersion: 1, state: "ready", warnings: [] }),
-    ).toBe('{"schemaVersion":1,"state":"ready","warnings":[]}');
+      serializeDesktopControllerReadiness({
+        schemaVersion: 2,
+        state: "compatible",
+        issues: [],
+      }),
+    ).toBe('{"schemaVersion":2,"state":"compatible","issues":[]}');
+    expect(
+      serializeDesktopControllerReadiness({
+        schemaVersion: 2,
+        state: "incompatible",
+        issues: [
+          {
+            capability: "title-isolation",
+            reason: "title-isolation-structure-unavailable",
+          },
+        ],
+      }),
+    ).toContain('"state":"incompatible"');
     expect(() =>
       serializeDesktopControllerReadiness({
-        schemaVersion: 1,
-        state: "ready",
-        warnings: [
+        schemaVersion: 2,
+        state: "compatible-with-warning",
+        issues: [
           {
             capability: "title-isolation",
             reason: "unreviewed-title-service-identity",
@@ -171,9 +190,9 @@ describe("production Desktop Controller", () => {
       shutdown: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
-      schemaVersion: 1,
-      state: "ready",
-      warnings: [warning],
+      schemaVersion: 2,
+      state: "compatible-with-warning",
+      issues: [warning],
     });
     expect(ensureInstalled).toHaveBeenCalledOnce();
     expect(server.close).toHaveBeenCalledOnce();
@@ -202,8 +221,12 @@ describe("production Desktop Controller", () => {
     const install = vi
       .fn<DesktopControllerDependencies["install"]>()
       .mockRejectedValueOnce(
-        new Error(
-          "Uncaught (in promise) TypeError: The argument 'filename' must be an absolute path string. Received undefined",
+        new RendererCompatibilityError(
+          "title-isolation",
+          "title-isolation-structure-unavailable",
+          new Error(
+            "Uncaught (in promise) TypeError: The argument 'filename' must be an absolute path string. Received undefined",
+          ),
         ),
       )
       .mockRejectedValueOnce(new Error("Promise was collected"))
@@ -223,17 +246,21 @@ describe("production Desktop Controller", () => {
     expect(install).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(250);
-    expect(ready).toHaveBeenCalledWith({ schemaVersion: 1, state: "ready", warnings: [] });
+    expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("does not signal ready or start attachment when installation fails structurally", async () => {
+  it("reports structural incompatibility without starting attachment", async () => {
     const ready = vi.fn();
     const startAttachmentServer = vi.fn(async () => attachmentServer());
     const dependencies: DesktopControllerDependencies = {
       readRenderer: vi.fn(async () => "production renderer"),
       install: vi.fn(async () => {
-        throw new Error("signature mismatch");
+        throw new RendererCompatibilityError(
+          "title-isolation",
+          "title-isolation-structure-unavailable",
+          new Error("private detail"),
+        );
       }),
       startAttachmentServer,
       ready,
@@ -241,11 +268,41 @@ describe("production Desktop Controller", () => {
       monitorIntervalMs: 1,
     };
 
-    await expect(
-      runDesktopController(controllerOptions(), new AbortController().signal, dependencies),
-    ).rejects.toThrow("signature mismatch");
-    expect(dependencies.install).toHaveBeenCalledOnce();
+    await runDesktopController(controllerOptions(), new AbortController().signal, dependencies);
+
+    expect(ready).toHaveBeenCalledWith({
+      schemaVersion: 2,
+      state: "incompatible",
+      issues: [
+        {
+          capability: "title-isolation",
+          reason: "title-isolation-structure-unavailable",
+        },
+      ],
+    });
     expect(startAttachmentServer).not.toHaveBeenCalled();
-    expect(ready).not.toHaveBeenCalled();
+  });
+
+  it("reports an unclassified inspection failure without leaking its error", async () => {
+    const ready = vi.fn();
+    const startAttachmentServer = vi.fn(async () => attachmentServer());
+    await runDesktopController(controllerOptions(), new AbortController().signal, {
+      readRenderer: vi.fn(async () => {
+        throw new Error("/private/user/path and request details");
+      }),
+      install: vi.fn(),
+      startAttachmentServer,
+      ready,
+      sleep: vi.fn(async () => {}),
+      monitorIntervalMs: 1,
+    });
+
+    expect(ready).toHaveBeenCalledWith({
+      schemaVersion: 2,
+      state: "detection-failed",
+      issues: [{ capability: "compatibility-detection", reason: "inspection-failed" }],
+    });
+    expect(JSON.stringify(ready.mock.calls)).not.toContain("private/user");
+    expect(startAttachmentServer).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@ import {
 } from "./controller-attachment-server.js";
 import {
   installRendererControlSession,
+  RendererCompatibilityError,
   type RendererControlSession,
 } from "./renderer-control-session.js";
 
@@ -19,16 +20,34 @@ export interface DesktopControllerOptions {
   attachmentNonce: string;
 }
 
-export interface DesktopControllerCompatibilityWarning {
-  capability: "title-isolation";
-  reason: "unreviewed-title-service-identity";
-  observedIdentity: string;
+export type DesktopControllerCompatibilityState =
+  "compatible" | "compatible-with-warning" | "degraded" | "incompatible" | "detection-failed";
+
+export interface DesktopControllerCompatibilityIssue {
+  capability:
+    | "title-isolation"
+    | "draft-routing"
+    | "agent-routing"
+    | "permission-control"
+    | "sidebar-decoration"
+    | "fork-control"
+    | "usage-surface"
+    | "settings-surface"
+    | "compatibility-detection";
+  reason:
+    | "unreviewed-title-service-identity"
+    | "title-isolation-structure-unavailable"
+    | "draft-routing-structure-unavailable"
+    | "agent-routing-structure-unavailable"
+    | "capability-unavailable"
+    | "inspection-failed";
+  observedIdentity?: string;
 }
 
 export interface DesktopControllerReadiness {
-  schemaVersion: 1;
-  state: "ready";
-  warnings: DesktopControllerCompatibilityWarning[];
+  schemaVersion: 2;
+  state: DesktopControllerCompatibilityState;
+  issues: DesktopControllerCompatibilityIssue[];
 }
 
 export interface DesktopControllerDependencies {
@@ -52,19 +71,72 @@ const DESKTOP_CONTROLLER_READINESS_MAX_BYTES = 512;
 const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
 
+function validCompatibilityIssue(
+  state: DesktopControllerCompatibilityState,
+  issue: DesktopControllerCompatibilityIssue,
+): boolean {
+  const keys = Object.keys(issue);
+  if (state === "compatible-with-warning") {
+    return (
+      issue.capability === "title-isolation" &&
+      issue.reason === "unreviewed-title-service-identity" &&
+      typeof issue.observedIdentity === "string" &&
+      /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(issue.observedIdentity) &&
+      keys.length === 3
+    );
+  }
+  if (state === "degraded") {
+    return (
+      [
+        "permission-control",
+        "sidebar-decoration",
+        "fork-control",
+        "usage-surface",
+        "settings-surface",
+      ].includes(issue.capability) &&
+      issue.reason === "capability-unavailable" &&
+      issue.observedIdentity === undefined &&
+      keys.length === 2
+    );
+  }
+  if (state === "incompatible") {
+    const pair = `${issue.capability}:${issue.reason}`;
+    return (
+      [
+        "title-isolation:title-isolation-structure-unavailable",
+        "draft-routing:draft-routing-structure-unavailable",
+        "agent-routing:agent-routing-structure-unavailable",
+      ].includes(pair) &&
+      issue.observedIdentity === undefined &&
+      keys.length === 2
+    );
+  }
+  return (
+    state === "detection-failed" &&
+    issue.capability === "compatibility-detection" &&
+    issue.reason === "inspection-failed" &&
+    issue.observedIdentity === undefined &&
+    keys.length === 2
+  );
+}
+
 export function serializeDesktopControllerReadiness(readiness: DesktopControllerReadiness): string {
   if (
-    readiness.schemaVersion !== 1 ||
-    readiness.state !== "ready" ||
-    !Array.isArray(readiness.warnings) ||
-    readiness.warnings.length > 1 ||
-    readiness.warnings.some(
-      (warning) =>
-        warning.capability !== "title-isolation" ||
-        warning.reason !== "unreviewed-title-service-identity" ||
-        !/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(warning.observedIdentity) ||
-        Object.keys(warning).length !== 3,
-    ) ||
+    readiness.schemaVersion !== 2 ||
+    ![
+      "compatible",
+      "compatible-with-warning",
+      "degraded",
+      "incompatible",
+      "detection-failed",
+    ].includes(readiness.state) ||
+    !Array.isArray(readiness.issues) ||
+    readiness.issues.length > 1 ||
+    (readiness.state === "compatible" && readiness.issues.length !== 0) ||
+    (readiness.state !== "compatible" &&
+      (readiness.issues.length !== 1 ||
+        !readiness.issues[0] ||
+        !validCompatibilityIssue(readiness.state, readiness.issues[0]))) ||
     Object.keys(readiness).length !== 3
   ) {
     throw new Error("Desktop Controller readiness is invalid");
@@ -179,12 +251,20 @@ export function parseDesktopControllerArguments(
 }
 
 function isTransientElectronInstallError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes("Uncaught (in promise)") ||
-    message.includes("Execution context was destroyed") ||
-    message.includes("Promise was collected")
-  );
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const message = current instanceof Error ? current.message : String(current);
+    if (
+      message.includes("Uncaught (in promise)") ||
+      message.includes("Execution context was destroyed") ||
+      message.includes("Promise was collected")
+    ) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+    if (current === undefined) break;
+  }
+  return false;
 }
 
 async function installProductionSession(
@@ -209,18 +289,36 @@ export async function runDesktopController(
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
 ): Promise<void> {
-  const rendererSource = await dependencies.readRenderer(options.rendererPath);
-  if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
-  const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
-  const session = await installProductionSession(
-    {
-      inspectorEndpoint: options.inspectorEndpoint,
-      rendererSource: `${configuration}\n${rendererSource}`,
-      enabledAgents: ["codex", "pi", "claude-code"],
-      timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
-    },
-    dependencies,
-  );
+  let session: RendererControlSession;
+  try {
+    const rendererSource = await dependencies.readRenderer(options.rendererPath);
+    if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
+    const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
+    session = await installProductionSession(
+      {
+        inspectorEndpoint: options.inspectorEndpoint,
+        rendererSource: `${configuration}\n${rendererSource}`,
+        enabledAgents: ["codex", "pi", "claude-code"],
+        timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
+      },
+      dependencies,
+    );
+  } catch (error) {
+    dependencies.ready(
+      error instanceof RendererCompatibilityError && !isTransientElectronInstallError(error)
+        ? {
+            schemaVersion: 2,
+            state: "incompatible",
+            issues: [{ capability: error.capability, reason: error.reason }],
+          }
+        : {
+            schemaVersion: 2,
+            state: "detection-failed",
+            issues: [{ capability: "compatibility-detection", reason: "inspection-failed" }],
+          },
+    );
+    return;
+  }
   let operation = Promise.resolve<unknown>(undefined);
   const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
     const next = operation.then(callback, callback);
@@ -247,10 +345,11 @@ export async function runDesktopController(
         }),
       shutdown: () => useSession(() => session.quitDesktop()),
     });
+    const issues = session.snapshot.titlePolicy.warnings;
     dependencies.ready({
-      schemaVersion: 1,
-      state: "ready",
-      warnings: session.snapshot.titlePolicy.warnings,
+      schemaVersion: 2,
+      state: issues.length === 0 ? "compatible" : "compatible-with-warning",
+      issues,
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);

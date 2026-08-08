@@ -60,6 +60,7 @@ pub enum CompatibilityChoice {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompatibilityUpdateAvailability {
+    Started,
     Current,
     Unavailable,
 }
@@ -70,14 +71,20 @@ pub struct CompatibilityPrompt<'a> {
     pub codexhost_version: &'a str,
     pub capability: &'a str,
     pub reason_code: &'a str,
-    pub observed_identity: &'a str,
+    pub observed_identity: Option<&'a str>,
     pub update_availability: CompatibilityUpdateAvailability,
+    pub allow_continue: bool,
+    pub degraded: bool,
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[must_use]
-pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
-    CompatibilityChoice::ContinueCodexhost
+pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
+    if prompt.allow_continue {
+        CompatibilityChoice::ContinueCodexhost
+    } else {
+        CompatibilityChoice::OpenStockCodex
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

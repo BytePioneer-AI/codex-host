@@ -30,9 +30,12 @@ export type {
   ElectronRendererSummary,
   InstallRendererControlOptions,
   ProductionRendererStatus,
+  RendererCompatibilityCapability,
+  RendererCompatibilityReason,
   RendererControlSession,
   RendererControlSnapshot,
 } from "./renderer-control-session.js";
+export { RendererCompatibilityError } from "./renderer-control-session.js";
 export type {
   RendererDomInspection,
   RendererDomNodeSummary,
@@ -58,7 +61,8 @@ export {
   serializeDesktopControllerReadiness,
 } from "./production-controller.js";
 export type {
-  DesktopControllerCompatibilityWarning,
+  DesktopControllerCompatibilityIssue,
+  DesktopControllerCompatibilityState,
   DesktopControllerDependencies,
   DesktopControllerOptions,
   DesktopControllerReadiness,

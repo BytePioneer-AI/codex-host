@@ -4,6 +4,7 @@ import {
   activateElectronDesktop,
   createRendererControlSession,
   inspectElectronWebContents,
+  RendererCompatibilityError,
   selectRendererWebContents,
   waitForInspectorTarget,
   waitForRendererTitlePolicyReady,
@@ -322,15 +323,18 @@ describe("Renderer Control Session", () => {
       async quitDesktop() {},
     };
 
-    await expect(
-      createRendererControlSession({
-        inspector: { command: vi.fn(), evaluate: vi.fn(), close: vi.fn() },
-        inspectorEndpoint: "http://127.0.0.1:43123",
-        rendererSource: "production renderer",
-        pollIntervalMs: 1,
-        timeoutMs: 100,
-        operations,
-      }),
-    ).rejects.toThrow("Production Renderer Adapter is unsupported: signature-mismatch");
+    const failure = createRendererControlSession({
+      inspector: { command: vi.fn(), evaluate: vi.fn(), close: vi.fn() },
+      inspectorEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations,
+    });
+    await expect(failure).rejects.toMatchObject({
+      capability: "agent-routing",
+      reason: "agent-routing-structure-unavailable",
+    });
+    await expect(failure).rejects.toBeInstanceOf(RendererCompatibilityError);
   });
 });

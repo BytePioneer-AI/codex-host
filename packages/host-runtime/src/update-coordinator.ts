@@ -32,6 +32,30 @@ export interface HostUpdateCoordinator {
   requestShutdown(): void;
 }
 
+export type CompatibilityUpdateOutcome = "update-started" | "current" | "unavailable";
+
+export async function startCompatibilityUpdate(
+  coordinator: Pick<HostUpdateCoordinator, "check" | "start">,
+): Promise<CompatibilityUpdateOutcome> {
+  try {
+    const check = await coordinator.check();
+    if (check.updateAvailable && check.installationAvailable) {
+      void coordinator.start().catch(() => undefined);
+      return "update-started";
+    }
+    if (
+      check.error === null &&
+      check.latestVersion !== null &&
+      check.currentVersion === check.latestVersion
+    ) {
+      return "current";
+    }
+  } catch {
+    // The native prompt presents a bounded fallback without exposing update errors.
+  }
+  return "unavailable";
+}
+
 export interface CreateHostUpdateCoordinatorOptions {
   hostRuntimePath: string;
   environment?: NodeJS.ProcessEnv;

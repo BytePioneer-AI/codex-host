@@ -7,44 +7,86 @@ use codexhost_platform::{DesktopIdentity, DesktopInstallation, atomic_replace_fi
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROLLER_READINESS_LINE_BYTES: usize = 513;
-const CONTROLLER_READINESS_SCHEMA_VERSION: u8 = 1;
-const ACKNOWLEDGEMENT_SCHEMA_VERSION: u8 = 1;
+const CONTROLLER_READINESS_SCHEMA_VERSION: u8 = 2;
+const ACKNOWLEDGEMENT_SCHEMA_VERSION: u8 = 2;
 const ACKNOWLEDGEMENT_FILE: &str = "compatibility-warning-v1.json";
 const MAX_ACKNOWLEDGEMENT_BYTES: usize = 2_048;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompatibilityState {
+    Compatible,
+    CompatibleWithWarning,
+    Degraded,
+    Incompatible,
+    DetectionFailed,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompatibilityCapability {
     TitleIsolation,
+    DraftRouting,
+    AgentRouting,
+    PermissionControl,
+    SidebarDecoration,
+    ForkControl,
+    UsageSurface,
+    SettingsSurface,
+    CompatibilityDetection,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompatibilityReason {
     UnreviewedTitleServiceIdentity,
+    TitleIsolationStructureUnavailable,
+    DraftRoutingStructureUnavailable,
+    AgentRoutingStructureUnavailable,
+    CapabilityUnavailable,
+    InspectionFailed,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct CompatibilityWarning {
+pub struct CompatibilityIssue {
     pub capability: CompatibilityCapability,
     pub reason: CompatibilityReason,
-    pub observed_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_identity: Option<String>,
 }
 
-impl CompatibilityWarning {
+impl CompatibilityIssue {
     fn validate(&self) -> Result<(), String> {
-        let mut bytes = self.observed_identity.bytes();
-        let Some(first) = bytes.next() else {
-            return Err("compatibility warning identity is empty".into());
+        let Some(identity) = &self.observed_identity else {
+            return Ok(());
         };
-        if self.observed_identity.len() > 64
+        let mut bytes = identity.bytes();
+        let Some(first) = bytes.next() else {
+            return Err("compatibility issue identity is empty".into());
+        };
+        if identity.len() > 64
             || !(first.is_ascii_alphabetic() || first == b'_' || first == b'$')
             || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$')
         {
-            return Err("compatibility warning identity is invalid".into());
+            return Err("compatibility issue identity is invalid".into());
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn capability_code(&self) -> &'static str {
+        match self.capability {
+            CompatibilityCapability::TitleIsolation => "title-isolation",
+            CompatibilityCapability::DraftRouting => "draft-routing",
+            CompatibilityCapability::AgentRouting => "agent-routing",
+            CompatibilityCapability::PermissionControl => "permission-control",
+            CompatibilityCapability::SidebarDecoration => "sidebar-decoration",
+            CompatibilityCapability::ForkControl => "fork-control",
+            CompatibilityCapability::UsageSurface => "usage-surface",
+            CompatibilityCapability::SettingsSurface => "settings-surface",
+            CompatibilityCapability::CompatibilityDetection => "compatibility-detection",
+        }
     }
 
     #[must_use]
@@ -53,6 +95,17 @@ impl CompatibilityWarning {
             CompatibilityReason::UnreviewedTitleServiceIdentity => {
                 "unreviewed-title-service-identity"
             }
+            CompatibilityReason::TitleIsolationStructureUnavailable => {
+                "title-isolation-structure-unavailable"
+            }
+            CompatibilityReason::DraftRoutingStructureUnavailable => {
+                "draft-routing-structure-unavailable"
+            }
+            CompatibilityReason::AgentRoutingStructureUnavailable => {
+                "agent-routing-structure-unavailable"
+            }
+            CompatibilityReason::CapabilityUnavailable => "capability-unavailable",
+            CompatibilityReason::InspectionFailed => "inspection-failed",
         }
     }
 }
@@ -61,14 +114,8 @@ impl CompatibilityWarning {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ControllerReadiness {
     schema_version: u8,
-    state: ReadyState,
-    pub warnings: Vec<CompatibilityWarning>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum ReadyState {
-    Ready,
+    state: CompatibilityState,
+    pub issues: Vec<CompatibilityIssue>,
 }
 
 impl ControllerReadiness {
@@ -79,13 +126,77 @@ impl ControllerReadiness {
                 self.schema_version
             ));
         }
-        if self.warnings.len() > 1 {
-            return Err("Desktop Controller readiness has too many warnings".into());
+        if self.issues.len() > 1 {
+            return Err("Desktop Controller readiness has too many issues".into());
         }
-        for warning in &self.warnings {
-            warning.validate()?;
+        let issue = self.issues.first();
+        let valid = match (self.state, issue) {
+            (CompatibilityState::Compatible, None) => true,
+            (CompatibilityState::CompatibleWithWarning, Some(issue)) => {
+                issue.capability == CompatibilityCapability::TitleIsolation
+                    && issue.reason == CompatibilityReason::UnreviewedTitleServiceIdentity
+                    && issue.observed_identity.is_some()
+            }
+            (CompatibilityState::Degraded, Some(issue)) => {
+                matches!(
+                    issue.capability,
+                    CompatibilityCapability::PermissionControl
+                        | CompatibilityCapability::SidebarDecoration
+                        | CompatibilityCapability::ForkControl
+                        | CompatibilityCapability::UsageSurface
+                        | CompatibilityCapability::SettingsSurface
+                ) && issue.reason == CompatibilityReason::CapabilityUnavailable
+                    && issue.observed_identity.is_none()
+            }
+            (CompatibilityState::Incompatible, Some(issue)) => {
+                matches!(
+                    (&issue.capability, &issue.reason),
+                    (
+                        CompatibilityCapability::TitleIsolation,
+                        CompatibilityReason::TitleIsolationStructureUnavailable
+                    ) | (
+                        CompatibilityCapability::DraftRouting,
+                        CompatibilityReason::DraftRoutingStructureUnavailable
+                    ) | (
+                        CompatibilityCapability::AgentRouting,
+                        CompatibilityReason::AgentRoutingStructureUnavailable
+                    )
+                ) && issue.observed_identity.is_none()
+            }
+            (CompatibilityState::DetectionFailed, Some(issue)) => {
+                issue.capability == CompatibilityCapability::CompatibilityDetection
+                    && issue.reason == CompatibilityReason::InspectionFailed
+                    && issue.observed_identity.is_none()
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err("Desktop Controller readiness state and issues do not match".into());
+        }
+        for issue in &self.issues {
+            issue.validate()?;
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn state(&self) -> CompatibilityState {
+        self.state
+    }
+
+    #[must_use]
+    pub fn issue(&self) -> Option<&CompatibilityIssue> {
+        self.issues.first()
+    }
+
+    #[must_use]
+    pub fn allows_managed_desktop(&self) -> bool {
+        matches!(
+            self.state,
+            CompatibilityState::Compatible
+                | CompatibilityState::CompatibleWithWarning
+                | CompatibilityState::Degraded
+        )
     }
 }
 
@@ -145,15 +256,15 @@ pub struct CompatibilityAcknowledgementKey {
     desktop_build: String,
     desktop_asar_integrity: String,
     codexhost_version: String,
-    warning: CompatibilityWarning,
+    issue: CompatibilityIssue,
 }
 
 impl CompatibilityAcknowledgementKey {
     pub fn new(
         installation: &DesktopInstallation,
-        warning: &CompatibilityWarning,
+        issue: &CompatibilityIssue,
     ) -> Result<Self, String> {
-        warning.validate()?;
+        issue.validate()?;
         for (label, value, maximum) in [
             ("Desktop version", installation.version.as_str(), 64_usize),
             ("Desktop build", installation.build.as_str(), 64),
@@ -181,7 +292,7 @@ impl CompatibilityAcknowledgementKey {
             desktop_build: installation.build.clone(),
             desktop_asar_integrity: installation.asar_integrity.clone(),
             codexhost_version: env!("CARGO_PKG_VERSION").into(),
-            warning: warning.clone(),
+            issue: issue.clone(),
         })
     }
 }
@@ -303,11 +414,11 @@ mod tests {
 
     use super::*;
 
-    fn warning(identity: &str) -> CompatibilityWarning {
-        CompatibilityWarning {
+    fn warning(identity: &str) -> CompatibilityIssue {
+        CompatibilityIssue {
             capability: CompatibilityCapability::TitleIsolation,
             reason: CompatibilityReason::UnreviewedTitleServiceIdentity,
-            observed_identity: identity.into(),
+            observed_identity: Some(identity.into()),
         }
     }
 
@@ -335,19 +446,34 @@ mod tests {
 
     #[test]
     fn parses_only_the_strict_bounded_readiness_schema() {
-        let mut valid = br#"{"schemaVersion":1,"state":"ready","warnings":[{"capability":"title-isolation","reason":"unreviewed-title-service-identity","observedIdentity":"futureClass"}]}"#.to_vec();
-        valid.push(b'\n');
+        let warning_line = b"{\"schemaVersion\":2,\"state\":\"compatible-with-warning\",\"issues\":[{\"capability\":\"title-isolation\",\"reason\":\"unreviewed-title-service-identity\",\"observedIdentity\":\"futureClass\"}]}\n";
         assert_eq!(
-            parse_controller_readiness_line(&valid)
-                .expect("valid readiness")
-                .warnings,
+            parse_controller_readiness_line(warning_line)
+                .expect("valid warning readiness")
+                .issues,
             vec![warning("futureClass")]
         );
+        for line in [
+            b"{\"schemaVersion\":2,\"state\":\"compatible\",\"issues\":[]}\n".as_slice(),
+            b"{\"schemaVersion\":2,\"state\":\"degraded\",\"issues\":[{\"capability\":\"usage-surface\",\"reason\":\"capability-unavailable\"}]}\n".as_slice(),
+            b"{\"schemaVersion\":2,\"state\":\"incompatible\",\"issues\":[{\"capability\":\"agent-routing\",\"reason\":\"agent-routing-structure-unavailable\"}]}\n".as_slice(),
+            b"{\"schemaVersion\":2,\"state\":\"detection-failed\",\"issues\":[{\"capability\":\"compatibility-detection\",\"reason\":\"inspection-failed\"}]}\n".as_slice(),
+        ] {
+            parse_controller_readiness_line(line).expect("valid layered readiness");
+        }
         assert!(parse_controller_readiness_line(b"ready\n").is_err());
-        let mut unknown =
-            br#"{"schemaVersion":1,"state":"ready","warnings":[],"extra":true}"#.to_vec();
-        unknown.push(b'\n');
-        assert!(parse_controller_readiness_line(&unknown).is_err());
+        assert!(
+            parse_controller_readiness_line(
+                b"{\"schemaVersion\":2,\"state\":\"compatible\",\"issues\":[],\"extra\":true}\n"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_controller_readiness_line(
+                b"{\"schemaVersion\":2,\"state\":\"incompatible\",\"issues\":[]}\n"
+            )
+            .is_err()
+        );
         assert!(
             parse_controller_readiness_line(&vec![b'a'; MAX_CONTROLLER_READINESS_LINE_BYTES + 1])
                 .is_err()

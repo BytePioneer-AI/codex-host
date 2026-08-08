@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod compatibility;
 mod desktop_attachment;
 mod installation_layout;
 mod runtime_instance;
@@ -8,7 +9,7 @@ use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
 use std::process::{Child, ExitStatus};
@@ -24,18 +25,26 @@ use codexhost_platform::launch_desktop;
 #[cfg(target_os = "macos")]
 use codexhost_platform::launch_desktop_session;
 use codexhost_platform::{
-    DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
-    canonical_existing_file, configure_background_command, desktop_process_ids,
-    desktop_root_process_ids, discover_codex_desktop, node_entrypoint_path, spawn_supervised,
+    CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity,
+    DesktopInstallation, DesktopLaunchMode, SupervisedChild, canonical_existing_file,
+    configure_background_command, desktop_process_ids, desktop_root_process_ids,
+    discover_codex_desktop, launch_stock_desktop, node_entrypoint_path,
+    open_latest_codexhost_release, prompt_compatibility_warning, spawn_supervised,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
     prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
+use compatibility::{
+    CompatibilityAcknowledgementKey, ControllerReadiness, MAX_CONTROLLER_READINESS_LINE_BYTES,
+    acknowledgement_matches, default_acknowledgement_path, parse_controller_readiness_line,
+    write_acknowledgement,
+};
 use desktop_attachment::{
-    LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
-    endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
+    CompatibilityUpdateOutcome, LauncherOwnership, RuntimeControl, acquire_launcher_ownership,
+    allocate_runtime_control, endpoint_ready, publish_runtime_descriptor,
+    request_compatibility_update, stop_stale_launcher, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
 use runtime_instance::{
@@ -53,6 +62,7 @@ const CONTROL_PORT_ENV: &str = "CODEXHOST_CONTROL_PORT";
 const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
+const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
 
@@ -107,6 +117,8 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
         }
     }
     println!("desktop_version={}", installation.version);
+    println!("desktop_build={}", installation.build);
+    println!("desktop_asar_integrity={}", installation.asar_integrity);
     println!("install_root={}", installation.install_root.display());
     println!(
         "desktop_executable={}",
@@ -329,45 +341,58 @@ fn desktop_controller_command(
     command
 }
 
+fn read_bounded_controller_line(mut input: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    while line.len() < MAX_CONTROLLER_READINESS_LINE_BYTES {
+        let mut byte = [0_u8; 1];
+        if input.read(&mut byte)? == 0 {
+            break;
+        }
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(line);
+        }
+    }
+    if line.len() == MAX_CONTROLLER_READINESS_LINE_BYTES && !line.ends_with(b"\n") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Desktop Controller readiness exceeded its size limit",
+        ));
+    }
+    Ok(line)
+}
+
 fn wait_for_controller_ready(
     controller: &mut SupervisedChild,
     timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<ControllerReadiness, Box<dyn Error>> {
     let stdout = controller
         .take_stdout()
         .ok_or("Desktop Controller stdout is unavailable")?;
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut line = String::new();
-        let result = BufReader::new(stdout)
-            .read_line(&mut line)
-            .map(|bytes| if bytes == 0 { String::new() } else { line });
-        let _ = sender.send(result);
+        let _ = sender.send(read_bounded_controller_line(stdout));
     });
     let line = receiver
         .recv_timeout(timeout)
         .map_err(|_| "Desktop Controller did not become ready before timeout")??;
-    if line.trim_end() != "ready" {
-        return Err(format!(
-            "Desktop Controller returned an invalid readiness signal: {:?}",
-            line.trim_end()
-        )
-        .into());
-    }
-    Ok(())
+    parse_controller_readiness_line(&line)
+        .map_err(|error| format!("Desktop Controller returned invalid readiness: {error}").into())
 }
 
 fn start_desktop_controller(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
-) -> Result<SupervisedChild, Box<dyn Error>> {
+) -> Result<(SupervisedChild, ControllerReadiness), Box<dyn Error>> {
     let mut controller = spawn_supervised(&mut desktop_controller_command(options, control))?;
-    if let Err(error) = wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
-        let _ = controller.force_terminate();
-        let _ = controller.wait();
-        return Err(error);
+    match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
+        Ok(readiness) => Ok((controller, readiness)),
+        Err(error) => {
+            let _ = controller.force_terminate();
+            let _ = controller.wait();
+            Err(error)
+        }
     }
-    Ok(controller)
 }
 
 #[cfg(target_os = "windows")]
@@ -443,6 +468,84 @@ fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<d
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompatibilityLaunchDecision {
+    ContinueManaged,
+    LaunchStock,
+}
+
+fn handle_compatibility_warning(
+    installation: &DesktopInstallation,
+    readiness: &ControllerReadiness,
+    control: &RuntimeControl,
+) -> Result<CompatibilityLaunchDecision, Box<dyn Error>> {
+    let Some(warning) = readiness.warnings.first() else {
+        return Ok(CompatibilityLaunchDecision::ContinueManaged);
+    };
+    let update_availability = match request_compatibility_update(control) {
+        Ok(CompatibilityUpdateOutcome::UpdateStarted) => {
+            eprintln!(
+                "codexhost compatibility update started: capability=title-isolation reason={}",
+                warning.reason_code(),
+            );
+            return Ok(CompatibilityLaunchDecision::ContinueManaged);
+        }
+        Ok(CompatibilityUpdateOutcome::Current) => CompatibilityUpdateAvailability::Current,
+        Ok(CompatibilityUpdateOutcome::Unavailable) => CompatibilityUpdateAvailability::Unavailable,
+        Err(error) => {
+            eprintln!("codexhost compatibility update check unavailable: {error}");
+            CompatibilityUpdateAvailability::Unavailable
+        }
+    };
+
+    let key = CompatibilityAcknowledgementKey::new(installation, warning)?;
+    let acknowledgement_path = default_acknowledgement_path().ok();
+    if acknowledgement_path
+        .as_deref()
+        .is_some_and(|path| acknowledgement_matches(path, &key))
+    {
+        return Ok(CompatibilityLaunchDecision::ContinueManaged);
+    }
+
+    eprintln!(
+        "codexhost compatibility warning: capability=title-isolation reason={} observed_identity={} desktop_version={} codexhost_version={CODEXHOST_VERSION}",
+        warning.reason_code(),
+        warning.observed_identity,
+        installation.version,
+    );
+    let choice = prompt_compatibility_warning(&CompatibilityPrompt {
+        desktop_version: &installation.version,
+        codexhost_version: CODEXHOST_VERSION,
+        capability: "title-isolation",
+        reason_code: warning.reason_code(),
+        observed_identity: &warning.observed_identity,
+        update_availability,
+    });
+    match choice {
+        CompatibilityChoice::ContinueCodexhost => {
+            if let Some(path) = acknowledgement_path.as_deref() {
+                let _ = write_acknowledgement(path, &key);
+            }
+            Ok(CompatibilityLaunchDecision::ContinueManaged)
+        }
+        CompatibilityChoice::OpenLatestRelease => {
+            if let Err(error) = open_latest_codexhost_release() {
+                eprintln!("codexhost could not open the fixed Releases page: {error}");
+            }
+            if let Some(path) = acknowledgement_path.as_deref() {
+                let _ = write_acknowledgement(path, &key);
+            }
+            Ok(CompatibilityLaunchDecision::ContinueManaged)
+        }
+        CompatibilityChoice::OpenStockCodex => Ok(CompatibilityLaunchDecision::LaunchStock),
+    }
+}
+
+fn notify_stock_launch() -> Result<(), Box<dyn Error>> {
+    emit_ready_line(&mut std::io::stdout())?;
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn supervise_desktop(
     installation: &DesktopInstallation,
@@ -459,12 +562,29 @@ fn supervise_desktop(
         environment,
         Duration::from_secs(30),
     )?;
-    let mut controller = start_desktop_controller(options, control)?;
+    let (mut controller, readiness) = start_desktop_controller(options, control)?;
     let desktop_pid = desktop.root_snapshot().id;
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.shutdown(Duration::from_secs(2));
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
+    }
+    let compatibility = match handle_compatibility_warning(installation, &readiness, control) {
+        Ok(decision) => decision,
+        Err(error) => {
+            let _ = stop_desktop_controller(&mut controller);
+            let _ = desktop.shutdown(Duration::from_secs(2));
+            return Err(error);
+        }
+    };
+    if compatibility == CompatibilityLaunchDecision::LaunchStock {
+        stop_desktop_controller(&mut controller)?;
+        desktop.shutdown(Duration::from_secs(2))?;
+        desktop.cleanup_escaped(Duration::from_secs(2))?;
+        desktop.disarm_cleanup();
+        let _stock = launch_stock_desktop(installation)?;
+        notify_stock_launch()?;
+        return Ok(());
     }
     let _runtime = publish_runtime_descriptor(control)?;
     notify_ready_and_detach()?;
@@ -502,8 +622,8 @@ fn supervise_desktop(
     )?;
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
-    let mut controller = match start_desktop_controller(options, control) {
-        Ok(controller) => controller,
+    let (mut controller, readiness) = match start_desktop_controller(options, control) {
+        Ok(started) => started,
         Err(error) => {
             let _ = desktop.kill();
             let _ = desktop.wait();
@@ -515,6 +635,23 @@ fn supervise_desktop(
         let _ = desktop.kill();
         let _ = desktop.wait();
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
+    }
+    let compatibility = match handle_compatibility_warning(installation, &readiness, control) {
+        Ok(decision) => decision,
+        Err(error) => {
+            let _ = stop_desktop_controller(&mut controller);
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+            return Err(error);
+        }
+    };
+    if compatibility == CompatibilityLaunchDecision::LaunchStock {
+        stop_desktop_controller(&mut controller)?;
+        let _ = desktop.kill();
+        let _ = desktop.wait();
+        let _stock = launch_stock_desktop(installation)?;
+        notify_stock_launch()?;
+        return Ok(());
     }
     let _runtime = match publish_runtime_descriptor(control) {
         Ok(runtime) => runtime,
@@ -821,7 +958,7 @@ mod tests {
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, LAUNCHER_EXECUTABLE_ENV,
         LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
         default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
-        parse_launch_options,
+        parse_launch_options, read_bounded_controller_line,
     };
     #[cfg(target_os = "windows")]
     use super::{stop_desktop_controller, wait_for_desktop_exit};
@@ -836,6 +973,27 @@ mod tests {
         let mut output = Vec::new();
         emit_ready_line(&mut output).expect("emit ready line");
         assert_eq!(output, b"ready\n");
+    }
+
+    #[test]
+    fn controller_readiness_reader_bounds_eof_and_missing_newline() {
+        assert_eq!(
+            read_bounded_controller_line(std::io::Cursor::new(Vec::<u8>::new()))
+                .expect("empty EOF"),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            read_bounded_controller_line(std::io::Cursor::new(b"partial".to_vec()))
+                .expect("partial EOF"),
+            b"partial"
+        );
+        assert!(
+            read_bounded_controller_line(std::io::Cursor::new(vec![
+                b'a';
+                crate::compatibility::MAX_CONTROLLER_READINESS_LINE_BYTES
+            ]))
+            .is_err()
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -1086,10 +1244,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn controller_must_emit_the_exact_ready_signal() {
+    fn controller_must_emit_strict_json_readiness() {
         let mut command = Command::new("/bin/sh");
         command
-            .args(["-c", "printf 'ready\\n'"])
+            .args([
+                "-c",
+                "printf '%s\\n' '{\"schemaVersion\":1,\"state\":\"ready\",\"warnings\":[]}'",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());

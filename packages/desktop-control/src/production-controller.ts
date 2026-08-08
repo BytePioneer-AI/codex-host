@@ -19,6 +19,18 @@ export interface DesktopControllerOptions {
   attachmentNonce: string;
 }
 
+export interface DesktopControllerCompatibilityWarning {
+  capability: "title-isolation";
+  reason: "unreviewed-title-service-identity";
+  observedIdentity: string;
+}
+
+export interface DesktopControllerReadiness {
+  schemaVersion: 1;
+  state: "ready";
+  warnings: DesktopControllerCompatibilityWarning[];
+}
+
 export interface DesktopControllerDependencies {
   readRenderer(filePath: string): Promise<string>;
   install(options: {
@@ -30,21 +42,46 @@ export interface DesktopControllerDependencies {
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
   ): Promise<ControllerAttachmentServer>;
-  ready(): void;
+  ready(readiness: DesktopControllerReadiness): void;
   sleep(milliseconds: number): Promise<void>;
   monitorIntervalMs: number;
 }
 
 const PRODUCTION_INSTALL_TIMEOUT_MS = 90_000;
+const DESKTOP_CONTROLLER_READINESS_MAX_BYTES = 512;
 const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
+
+export function serializeDesktopControllerReadiness(readiness: DesktopControllerReadiness): string {
+  if (
+    readiness.schemaVersion !== 1 ||
+    readiness.state !== "ready" ||
+    !Array.isArray(readiness.warnings) ||
+    readiness.warnings.length > 1 ||
+    readiness.warnings.some(
+      (warning) =>
+        warning.capability !== "title-isolation" ||
+        warning.reason !== "unreviewed-title-service-identity" ||
+        !/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(warning.observedIdentity) ||
+        Object.keys(warning).length !== 3,
+    ) ||
+    Object.keys(readiness).length !== 3
+  ) {
+    throw new Error("Desktop Controller readiness is invalid");
+  }
+  const line = JSON.stringify(readiness);
+  if (Buffer.byteLength(line, "utf8") > DESKTOP_CONTROLLER_READINESS_MAX_BYTES) {
+    throw new Error("Desktop Controller readiness exceeds its size limit");
+  }
+  return line;
+}
 
 const defaultDependencies: DesktopControllerDependencies = {
   readRenderer: (filePath) => readFile(filePath, "utf8"),
   install: installRendererControlSession,
   startAttachmentServer: startControllerAttachmentServer,
-  ready: () => {
-    process.stdout.write("ready\n");
+  ready: (readiness) => {
+    process.stdout.write(`${serializeDesktopControllerReadiness(readiness)}\n`);
   },
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   monitorIntervalMs: 500,
@@ -203,9 +240,18 @@ export async function runDesktopController(
           await session.ensureInstalled();
           await session.activateDesktop();
         }),
+      compatibilityUpdate: () =>
+        useSession(async () => {
+          await session.ensureInstalled();
+          return session.requestCompatibilityUpdate();
+        }),
       shutdown: () => useSession(() => session.quitDesktop()),
     });
-    dependencies.ready();
+    dependencies.ready({
+      schemaVersion: 1,
+      state: "ready",
+      warnings: session.snapshot.titlePolicy.warnings,
+    });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);
       if (!signal.aborted) await useSession(() => session.ensureInstalled());

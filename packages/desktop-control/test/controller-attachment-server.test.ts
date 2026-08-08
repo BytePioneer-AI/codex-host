@@ -38,13 +38,43 @@ describe("Controller attachment server", () => {
   it("accepts only the exact nonce and invokes the attachment callback", async () => {
     const port = await availablePort();
     const attach = vi.fn(async () => {});
+    const compatibilityUpdate = vi.fn(async () => "current" as const);
     const shutdown = vi.fn(async () => {});
-    const server = await startControllerAttachmentServer({ port, nonce, attach, shutdown });
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach,
+      compatibilityUpdate,
+      shutdown,
+    });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
       await expect(request(port, `ATTACH ${"0".repeat(32)}\n`)).resolves.toBe("rejected\n");
       expect(attach).toHaveBeenCalledOnce();
       expect(shutdown).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("runs only the authenticated fixed compatibility update operation", async () => {
+    const port = await availablePort();
+    const compatibilityUpdate = vi.fn(async () => "update-started" as const);
+    const server = await startControllerAttachmentServer({
+      port,
+      nonce,
+      attach: async () => {},
+      compatibilityUpdate,
+      shutdown: async () => {},
+    });
+    try {
+      await expect(request(port, `COMPATIBILITY_UPDATE ${nonce}\n`)).resolves.toBe(
+        "update-started\n",
+      );
+      await expect(request(port, `COMPATIBILITY_UPDATE ${"0".repeat(32)}\n`)).resolves.toBe(
+        "rejected\n",
+      );
+      expect(compatibilityUpdate).toHaveBeenCalledOnce();
     } finally {
       await server.close();
     }
@@ -58,6 +88,7 @@ describe("Controller attachment server", () => {
       attach: async () => {
         throw new Error("private detail");
       },
+      compatibilityUpdate: async () => "unavailable",
       shutdown: async () => {},
     });
     try {
@@ -74,6 +105,7 @@ describe("Controller attachment server", () => {
       port,
       nonce,
       attach: async () => {},
+      compatibilityUpdate: async () => "unavailable",
       shutdown: async () => {
         events.push("shutdown");
       },

@@ -17,6 +17,83 @@ use super::{
     STOCK_CODEX_PATH_ENV, canonical_existing_file,
 };
 
+const CODEXHOST_RELEASES_LATEST_URL: &str =
+    "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+
+fn remove_codexhost_environment(command: &mut Command, names: impl IntoIterator<Item = OsString>) {
+    for name in names {
+        if name == CODEX_CLI_PATH_ENV || name.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(name);
+        }
+    }
+}
+
+fn stock_desktop_command(installation: &DesktopInstallation) -> Result<Command, PlatformError> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("-n").arg(&installation.install_root);
+        command
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let mut command = Command::new(&installation.desktop_executable);
+
+    remove_codexhost_environment(&mut command, std::env::vars_os().map(|(name, _)| name));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+pub fn launch_stock_desktop(installation: &DesktopInstallation) -> Result<Child, PlatformError> {
+    stock_desktop_command(installation)?
+        .spawn()
+        .map_err(PlatformError::Io)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn latest_release_command() -> Command {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer.exe");
+        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command
+    };
+
+    configure_external_command(&mut command);
+    command
+}
+
+pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    return Err(PlatformError::Unsupported(
+        "opening the codexhost Releases page is supported on Windows and macOS only",
+    ));
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    latest_release_command().spawn()?.wait()?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn configure_external_command(command: &mut Command) {
+    remove_codexhost_environment(command, std::env::vars_os().map(|(name, _)| name));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    super::configure_background_command(command);
+}
+
 fn desktop_launch_command(
     installation: &DesktopInstallation,
     shim_path: &Path,
@@ -327,7 +404,10 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    use super::{DesktopSession, desktop_launch_command};
+    use super::{
+        CODEXHOST_RELEASES_LATEST_URL, DesktopSession, desktop_launch_command,
+        latest_release_command, remove_codexhost_environment,
+    };
     use crate::process::{ObservedProcessTree, macos_process_snapshot};
     use crate::{
         DesktopIdentity, DesktopInstallation, DesktopLaunchMode, process_exists,
@@ -344,6 +424,8 @@ mod tests {
                 bundle_identifier: "com.openai.codex".into(),
             },
             version: "1.0.0".into(),
+            build: "100".into(),
+            asar_integrity: format!("sha256:{}", "0".repeat(64)),
             install_root: "/Applications/ChatGPT.app".into(),
             desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
@@ -372,6 +454,35 @@ mod tests {
                 .any(|argument| argument.contains("remote-debugging"))
         );
         fs::remove_dir_all(directory).expect("remove launch fixture");
+    }
+
+    #[test]
+    fn latest_release_uses_only_the_fixed_github_url() {
+        let command = latest_release_command();
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [CODEXHOST_RELEASES_LATEST_URL]
+        );
+    }
+
+    #[test]
+    fn stock_launch_removes_all_codexhost_environment() {
+        let mut command = Command::new("/usr/bin/true");
+        remove_codexhost_environment(
+            &mut command,
+            [
+                OsString::from("CODEX_CLI_PATH"),
+                OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                OsString::from("UNRELATED"),
+            ],
+        );
+        let environment = command.get_envs().collect::<Vec<_>>();
+        assert!(environment.contains(&(std::ffi::OsStr::new("CODEX_CLI_PATH"), None)));
+        assert!(
+            environment.contains(&(std::ffi::OsStr::new("CODEXHOST_HOST_RUNTIME_PATH"), None,))
+        );
+        assert!(!environment.iter().any(|(name, _)| *name == "UNRELATED"));
     }
 
     #[test]

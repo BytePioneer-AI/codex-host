@@ -109,6 +109,7 @@ dependencies = [
  "libproc",
  "nix",
  "plist",
+ "sha2",
  "windows",
 ]
 

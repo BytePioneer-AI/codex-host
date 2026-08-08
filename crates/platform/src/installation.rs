@@ -11,12 +11,41 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use plist::Value;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
 use windows::Management::Deployment::PackageManager;
 #[cfg(target_os = "windows")]
 use windows::core::HSTRING;
 
 use super::{DesktopIdentity, DesktopInstallation, PlatformError};
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn sha256_file(path: &Path) -> Result<String, PlatformError> {
+    let metadata = path.metadata().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop resource '{}' is unavailable: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(PlatformError::Invalid(format!(
+            "Codex Desktop resource '{}' is not a regular file",
+            path.display()
+        )));
+    }
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{:x}", digest.finalize()))
+}
 #[cfg(target_os = "windows")]
 use super::{
     PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
@@ -208,9 +237,10 @@ fn windows_installation(
     })?;
     let desktop_executable = install_root.join("app/ChatGPT.exe");
     let packaged_codex_cli = install_root.join("app/resources/codex.exe");
-    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() {
+    let asar_path = install_root.join("app/resources/app.asar");
+    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() || !asar_path.is_file() {
         return Err(PlatformError::NotFound(format!(
-            "Codex Desktop package '{}' does not contain app/ChatGPT.exe and app/resources/codex.exe",
+            "Codex Desktop package '{}' does not contain the required executable, CLI, and app.asar resources",
             install_root.display()
         )));
     }
@@ -221,7 +251,9 @@ fn windows_installation(
             package_name: details.package_name,
             package_family_name: details.package_family_name,
         },
+        build: details.version.clone(),
         version: details.version,
+        asar_integrity: sha256_file(&asar_path)?,
         install_root,
         desktop_executable,
         packaged_codex_cli,
@@ -296,12 +328,14 @@ mod windows_tests {
         let install_root = root.join("WindowsApps/OpenAI.Codex_1.2.3.4_x64");
         let desktop = install_root.join("app/ChatGPT.exe");
         let packaged_cli = install_root.join("app/resources/codex.exe");
+        let app_asar = install_root.join("app/resources/app.asar");
         fs::create_dir_all(desktop.parent().expect("Desktop parent"))
             .expect("create Desktop directory");
         fs::create_dir_all(packaged_cli.parent().expect("CLI parent"))
             .expect("create CLI directory");
         fs::write(&desktop, b"desktop").expect("write Desktop executable");
         fs::write(&packaged_cli, b"matching codex cli").expect("write packaged CLI");
+        fs::write(&app_asar, b"reviewed app asar").expect("write app.asar");
 
         let local_app_data = root.join("LocalAppData");
         let cached_cli = local_app_data.join("OpenAI/Codex/bin/version/codex.exe");
@@ -327,6 +361,8 @@ mod windows_tests {
             }
         );
         assert_eq!(installation.version, "1.2.3.4");
+        assert_eq!(installation.build, "1.2.3.4");
+        assert!(installation.asar_integrity.starts_with("sha256:"));
         assert_eq!(
             installation.install_root,
             install_root.canonicalize().expect("canonical install root")
@@ -370,6 +406,30 @@ fn required_string<'a>(
                 bundle.display()
             ))
         })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_asar_integrity(
+    dictionary: &plist::Dictionary,
+    bundle: &Path,
+) -> Result<String, PlatformError> {
+    let official = dictionary
+        .get("ElectronAsarIntegrity")
+        .and_then(Value::as_dictionary)
+        .and_then(|entries| entries.get("Resources/app.asar"))
+        .and_then(Value::as_dictionary)
+        .and_then(|entry| {
+            let algorithm = entry.get("algorithm")?.as_string()?;
+            let hash = entry.get("hash")?.as_string()?;
+            (algorithm == "SHA256"
+                && hash.len() == 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| format!("sha256:{}", hash.to_ascii_lowercase()))
+        });
+    official.map_or_else(
+        || sha256_file(&bundle.join("Contents/Resources/app.asar")),
+        Ok,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -438,6 +498,8 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         )));
     }
     let version = required_string(dictionary, "CFBundleShortVersionString", &bundle)?.to_owned();
+    let build = required_string(dictionary, "CFBundleVersion", &bundle)?.to_owned();
+    let asar_integrity = macos_asar_integrity(dictionary, &bundle)?;
     let desktop_executable = canonical_executable(
         &bundle.join("Contents/MacOS").join(executable_name),
         "Desktop executable",
@@ -456,6 +518,8 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
             bundle_identifier: bundle_identifier.to_owned(),
         },
         version,
+        build,
+        asar_integrity,
         install_root: bundle,
         desktop_executable,
         packaged_codex_cli: packaged_codex_cli.clone(),
@@ -541,12 +605,18 @@ mod tests {
                     "<key>CFBundleIdentifier</key><string>{}</string>",
                     "<key>CFBundleExecutable</key><string>ChatGPT</string>",
                     "<key>CFBundleShortVersionString</key><string>1.2.3</string>",
+                    "<key>CFBundleVersion</key><string>456</string>",
                     "</dict></plist>"
                 ),
                 bundle_identifier
             ),
         )
         .expect("write plist");
+        fs::write(
+            bundle.join("Contents/Resources/app.asar"),
+            b"reviewed app asar",
+        )
+        .expect("write app.asar");
         for path in [
             Some(bundle.join("Contents/MacOS/ChatGPT")),
             include_cli.then(|| bundle.join("Contents/Resources/codex")),
@@ -567,6 +637,8 @@ mod tests {
             let bundle = temporary_bundle(app_name, "com.openai.codex", true);
             let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
             assert_eq!(installation.version, "1.2.3");
+            assert_eq!(installation.build, "456");
+            assert!(installation.asar_integrity.starts_with("sha256:"));
             assert_eq!(
                 installation.install_root,
                 bundle.canonicalize().expect("bundle")

@@ -44,6 +44,7 @@ export {
   readMainProcessTitlePolicyCounters,
 } from "./main-process-title-policy.js";
 export type {
+  MainProcessCompatibilityWarning,
   MainProcessTitlePolicyCounters,
   MainProcessTitlePolicyStatus,
   RendererTitlePolicyReadiness,
@@ -51,10 +52,16 @@ export type {
 export { installRendererDraftPrewarmPolicy } from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
-export { parseDesktopControllerArguments, runDesktopController } from "./production-controller.js";
+export {
+  parseDesktopControllerArguments,
+  runDesktopController,
+  serializeDesktopControllerReadiness,
+} from "./production-controller.js";
 export type {
+  DesktopControllerCompatibilityWarning,
   DesktopControllerDependencies,
   DesktopControllerOptions,
+  DesktopControllerReadiness,
 } from "./production-controller.js";
 
 export const packageMetadata = {

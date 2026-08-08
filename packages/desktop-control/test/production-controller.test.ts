@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   parseDesktopControllerArguments,
   runDesktopController,
+  serializeDesktopControllerReadiness,
   type DesktopControllerDependencies,
 } from "../src/production-controller.js";
 import type { RendererControlSession } from "../src/renderer-control-session.js";
@@ -23,6 +24,12 @@ function controllerOptions() {
 
 function attachmentServer() {
   return { close: vi.fn(async () => {}) };
+}
+
+function controllerSnapshot(
+  warnings: RendererControlSession["snapshot"]["titlePolicy"]["warnings"] = [],
+): RendererControlSession["snapshot"] {
+  return { titlePolicy: { warnings } } as RendererControlSession["snapshot"];
 }
 
 describe("production Desktop Controller", () => {
@@ -80,14 +87,39 @@ describe("production Desktop Controller", () => {
     ).toThrow("32 lowercase hexadecimal");
   });
 
-  it("signals ready, serves attachment, monitors recovery, and closes on abort", async () => {
+  it("serializes only strict and bounded readiness results", () => {
+    expect(
+      serializeDesktopControllerReadiness({ schemaVersion: 1, state: "ready", warnings: [] }),
+    ).toBe('{"schemaVersion":1,"state":"ready","warnings":[]}');
+    expect(() =>
+      serializeDesktopControllerReadiness({
+        schemaVersion: 1,
+        state: "ready",
+        warnings: [
+          {
+            capability: "title-isolation",
+            reason: "unreviewed-title-service-identity",
+            observedIdentity: "identity with spaces",
+          },
+        ],
+      }),
+    ).toThrow("readiness is invalid");
+  });
+
+  it("signals ready with sanitized warnings, serves attachment, and monitors recovery", async () => {
     const abort = new AbortController();
-    const snapshot = {} as RendererControlSession["snapshot"];
+    const warning = {
+      capability: "title-isolation" as const,
+      reason: "unreviewed-title-service-identity" as const,
+      observedIdentity: "FutureTitleService",
+    };
+    const snapshot = controllerSnapshot([warning]);
     const ensureInstalled = vi.fn(async () => {
       abort.abort();
       return snapshot;
     });
     const activateDesktop = vi.fn(async () => 1);
+    const requestCompatibilityUpdate = vi.fn(async () => "current" as const);
     const quitDesktop = vi.fn(async () => {});
     const close = vi.fn();
     const session: RendererControlSession = {
@@ -95,6 +127,7 @@ describe("production Desktop Controller", () => {
       ensureInstalled,
       activateDesktop,
       quitDesktop,
+      requestCompatibilityUpdate,
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,
@@ -103,9 +136,12 @@ describe("production Desktop Controller", () => {
     const install = vi.fn(async () => session);
     const server = attachmentServer();
     let attach: (() => Promise<void>) | undefined;
+    let compatibilityUpdate:
+      (() => Promise<"update-started" | "current" | "unavailable">) | undefined;
     let shutdown: (() => Promise<void>) | undefined;
     const startAttachmentServer = vi.fn(async (options) => {
       attach = options.attach;
+      compatibilityUpdate = options.compatibilityUpdate;
       shutdown = options.shutdown;
       return server;
     });
@@ -131,13 +167,21 @@ describe("production Desktop Controller", () => {
       port: 43124,
       nonce: attachmentNonce,
       attach: expect.any(Function),
+      compatibilityUpdate: expect.any(Function),
       shutdown: expect.any(Function),
     });
-    expect(ready).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledWith({
+      schemaVersion: 1,
+      state: "ready",
+      warnings: [warning],
+    });
     expect(ensureInstalled).toHaveBeenCalledOnce();
     expect(server.close).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(attach).toEqual(expect.any(Function));
+    expect(compatibilityUpdate).toEqual(expect.any(Function));
+    await expect(compatibilityUpdate?.()).resolves.toBe("current");
+    expect(requestCompatibilityUpdate).toHaveBeenCalledOnce();
     expect(shutdown).toEqual(expect.any(Function));
   });
 
@@ -146,10 +190,11 @@ describe("production Desktop Controller", () => {
     abort.abort();
     const close = vi.fn();
     const session: RendererControlSession = {
-      snapshot: {} as RendererControlSession["snapshot"],
+      snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
       quitDesktop: vi.fn(async () => {}),
+      requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
       close,
@@ -178,7 +223,7 @@ describe("production Desktop Controller", () => {
     expect(install).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(250);
-    expect(ready).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledWith({ schemaVersion: 1, state: "ready", warnings: [] });
     expect(close).toHaveBeenCalledOnce();
   });
 

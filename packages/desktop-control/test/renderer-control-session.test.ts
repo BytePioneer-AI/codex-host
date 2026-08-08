@@ -122,8 +122,13 @@ describe("Renderer Control Session", () => {
     expect(markReadiness).toHaveBeenCalledTimes(2);
   });
 
-  it("owns the fixed policy, reload, injection, and recovery order", async () => {
+  it("owns the fixed policy, warning, reload, injection, and recovery order", async () => {
     const calls: string[] = [];
+    const compatibilityWarning = {
+      capability: "title-isolation" as const,
+      reason: "unreviewed-title-service-identity" as const,
+      observedIdentity: "FutureTitleService",
+    };
     let binding: unknown = null;
     let selected = renderer(17, "primary", 100);
     const inspector = {
@@ -144,6 +149,7 @@ describe("Renderer Control Session", () => {
           contextClass: "WindowContext",
           serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
+          warnings: [compatibilityWarning],
         };
       },
       async markTitlePolicyReady() {
@@ -158,7 +164,11 @@ describe("Renderer Control Session", () => {
         calls.push("reload");
         binding = null;
       },
-      async execute() {
+      async execute(_inspector: unknown, _rendererId: number, source: string) {
+        if (source.includes("requestCompatibilityUpdate")) {
+          calls.push("compatibility-update");
+          return "current";
+        }
         calls.push("inject");
         binding = readyBinding();
         return null;
@@ -194,6 +204,11 @@ describe("Renderer Control Session", () => {
       "read-binding",
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
+    expect(session.snapshot.titlePolicy.warnings).toEqual([compatibilityWarning]);
+
+    calls.length = 0;
+    await expect(session.requestCompatibilityUpdate()).resolves.toBe("current");
+    expect(calls).toEqual(["compatibility-update"]);
 
     calls.length = 0;
     binding = null;
@@ -234,6 +249,7 @@ describe("Renderer Control Session", () => {
           contextClass: "WindowContext",
           serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
+          warnings: [],
         };
       },
       async markTitlePolicyReady() {
@@ -280,6 +296,7 @@ describe("Renderer Control Session", () => {
           contextClass: "WindowContext",
           serviceClass: "ThreadMetadataGenerationService",
           requiresRendererReload: true as const,
+          warnings: [],
         };
       },
       async markTitlePolicyReady() {

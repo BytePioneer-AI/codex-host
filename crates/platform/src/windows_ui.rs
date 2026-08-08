@@ -9,6 +9,8 @@ use windows::Win32::UI::Controls::{
 };
 use windows::core::PCWSTR;
 
+use super::{CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability};
+
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const SW_HIDE: i32 = 0;
 const MB_OK: u32 = 0;
@@ -20,6 +22,9 @@ const IDYES: i32 = 6;
 const IDNO: i32 = 7;
 const RESTART_BUTTON_ID: i32 = 1001;
 const RETRY_BUTTON_ID: i32 = 1002;
+const CONTINUE_CODEXHOST_BUTTON_ID: i32 = 1101;
+const OPEN_LATEST_RELEASE_BUTTON_ID: i32 = 1102;
+const OPEN_STOCK_CODEX_BUTTON_ID: i32 = 1103;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunningDesktopChoice {
@@ -203,6 +208,87 @@ pub fn prompt_running_desktop() -> RunningDesktopChoice {
     }
 }
 
+fn compatibility_choice(selected: i32) -> CompatibilityChoice {
+    match selected {
+        OPEN_LATEST_RELEASE_BUTTON_ID => CompatibilityChoice::OpenLatestRelease,
+        OPEN_STOCK_CODEX_BUTTON_ID => CompatibilityChoice::OpenStockCodex,
+        _ => CompatibilityChoice::ContinueCodexhost,
+    }
+}
+
+pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
+    let chinese = running_desktop_text_for_locale(&user_locale_name()).instruction
+        == CHINESE_RUNNING_DESKTOP_TEXT.instruction;
+    let capability = match (prompt.capability, chinese) {
+        ("title-isolation", true) => "自动标题隔离",
+        ("title-isolation", false) => "Automatic title isolation",
+        (capability, _) => capability,
+    };
+    let update_message = match (prompt.update_availability, chinese) {
+        (CompatibilityUpdateAvailability::Current, true) => {
+            "当前 codexhost 已是最新版。兼容性更新即将发布，发布后 codexhost 会提示更新。你可以先继续使用当前版本。"
+        }
+        (CompatibilityUpdateAvailability::Unavailable, true) => {
+            "兼容性更新发布后 codexhost 会提示更新；你可以先继续使用当前版本。"
+        }
+        (CompatibilityUpdateAvailability::Current, false) => {
+            "This is the latest codexhost release. A compatibility update is coming and codexhost will notify you when it is available. You can continue with the current version for now."
+        }
+        (CompatibilityUpdateAvailability::Unavailable, false) => {
+            "codexhost will notify you when a compatibility update is available; you can continue with the current version for now."
+        }
+    };
+    let (instruction, content, continue_codexhost, latest_release, stock_codex) = if chinese {
+        (
+            "codexhost 正在适配此 Codex 版本",
+            format!(
+                "codexhost 已完成核心兼容检查，但此 Codex 版本尚未完成完整验证，部分增强功能可能存在兼容问题。{}\n\n检测位置：{}\n原因代码：{}\n内部标识：{}\nCodex Desktop：{}\ncodexhost：{}",
+                update_message,
+                capability,
+                prompt.reason_code,
+                prompt.observed_identity,
+                prompt.desktop_version,
+                prompt.codexhost_version,
+            ),
+            "继续使用当前版本",
+            "查看发布页面",
+            "使用原版 Codex",
+        )
+    } else {
+        (
+            "codexhost is adapting to this Codex version",
+            format!(
+                "codexhost completed its core compatibility checks, but this Codex version has not completed full validation and some enhanced features may be incompatible. {}\n\nArea: {}\nReason: {}\nInternal identity: {}\nCodex Desktop: {}\ncodexhost: {}",
+                update_message,
+                capability,
+                prompt.reason_code,
+                prompt.observed_identity,
+                prompt.desktop_version,
+                prompt.codexhost_version,
+            ),
+            "Continue with current version",
+            "View releases",
+            "Use stock Codex",
+        )
+    };
+    match choice_dialog(
+        instruction,
+        &content,
+        &[
+            (CONTINUE_CODEXHOST_BUTTON_ID, continue_codexhost),
+            (OPEN_LATEST_RELEASE_BUTTON_ID, latest_release),
+            (OPEN_STOCK_CODEX_BUTTON_ID, stock_codex),
+        ],
+        CONTINUE_CODEXHOST_BUTTON_ID,
+    ) {
+        Ok(selected) => compatibility_choice(selected),
+        Err(_) => {
+            message_box(&content, MB_OK | MB_ICONINFORMATION);
+            CompatibilityChoice::ContinueCodexhost
+        }
+    }
+}
+
 pub fn hide_console_window() {
     unsafe {
         let window = GetConsoleWindow();
@@ -218,13 +304,40 @@ pub fn show_error_dialog(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{IDCANCEL, RESTART_BUTTON_ID, RETRY_BUTTON_ID, running_desktop_text_for_locale};
+    use super::{
+        CONTINUE_CODEXHOST_BUTTON_ID, IDCANCEL, OPEN_LATEST_RELEASE_BUTTON_ID,
+        OPEN_STOCK_CODEX_BUTTON_ID, RESTART_BUTTON_ID, RETRY_BUTTON_ID, compatibility_choice,
+        running_desktop_text_for_locale,
+    };
 
     #[test]
     fn running_desktop_actions_use_distinct_button_ids() {
         assert_ne!(RESTART_BUTTON_ID, RETRY_BUTTON_ID);
         assert_ne!(RESTART_BUTTON_ID, IDCANCEL);
         assert_ne!(RETRY_BUTTON_ID, IDCANCEL);
+        assert_ne!(CONTINUE_CODEXHOST_BUTTON_ID, OPEN_LATEST_RELEASE_BUTTON_ID);
+        assert_ne!(CONTINUE_CODEXHOST_BUTTON_ID, OPEN_STOCK_CODEX_BUTTON_ID);
+        assert_ne!(OPEN_LATEST_RELEASE_BUTTON_ID, OPEN_STOCK_CODEX_BUTTON_ID);
+    }
+
+    #[test]
+    fn maps_all_three_fixed_compatibility_choices() {
+        assert_eq!(
+            compatibility_choice(CONTINUE_CODEXHOST_BUTTON_ID),
+            crate::CompatibilityChoice::ContinueCodexhost
+        );
+        assert_eq!(
+            compatibility_choice(OPEN_LATEST_RELEASE_BUTTON_ID),
+            crate::CompatibilityChoice::OpenLatestRelease
+        );
+        assert_eq!(
+            compatibility_choice(OPEN_STOCK_CODEX_BUTTON_ID),
+            crate::CompatibilityChoice::OpenStockCodex
+        );
+        assert_eq!(
+            compatibility_choice(IDCANCEL),
+            crate::CompatibilityChoice::ContinueCodexhost
+        );
     }
 
     #[test]

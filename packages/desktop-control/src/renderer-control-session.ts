@@ -70,11 +70,14 @@ interface RendererControlOperations {
   quitDesktop(inspector: RendererInspector): Promise<void>;
 }
 
+export type CompatibilityUpdateOutcome = "update-started" | "current" | "unavailable";
+
 export interface RendererControlSession {
   readonly snapshot: RendererControlSnapshot;
   ensureInstalled(): Promise<RendererControlSnapshot>;
   activateDesktop(): Promise<number>;
   quitDesktop(): Promise<void>;
+  requestCompatibilityUpdate(): Promise<CompatibilityUpdateOutcome>;
   executeRenderer<T>(expression: string): Promise<T>;
   readTitlePolicyCounters(): Promise<MainProcessTitlePolicyCounters | null>;
   close(): void;
@@ -478,6 +481,16 @@ class InstalledRendererControlSession implements RendererControlSession {
   quitDesktop(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Renderer Control Session is closed"));
     return this.operations.quitDesktop(this.inspector);
+  }
+
+  async requestCompatibilityUpdate(): Promise<CompatibilityUpdateOutcome> {
+    const value = await this.executeRenderer<unknown>(
+      "window.__codexhostRendererBindingProbeV1?.requestCompatibilityUpdate?.() ?? 'unavailable'",
+    );
+    if (value !== "update-started" && value !== "current" && value !== "unavailable") {
+      throw new Error("Renderer returned an invalid compatibility update outcome");
+    }
+    return value;
   }
 
   executeRenderer<T>(expression: string): Promise<T> {

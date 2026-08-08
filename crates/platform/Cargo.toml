@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[dependencies]
+sha2 = "0.10.9"
+
 [lib]
 path = "src/lib.rs"
 

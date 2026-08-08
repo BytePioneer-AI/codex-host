@@ -62,6 +62,10 @@ import {
 } from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import {
+  startCompatibilityUpdate,
+  type CompatibilityUpdateOutcome,
+} from "./compatibility-update.js";
 
 const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
@@ -114,6 +118,7 @@ type ApplyAdapterAgent = (
 export interface RendererBindingProbeApi {
   status(): RendererBindingProbeStatus;
   lockedSelection(): LockedComposerSelection | null;
+  requestCompatibilityUpdate(): Promise<CompatibilityUpdateOutcome>;
   setAdapter(
     status: RendererAdapterStatus,
     dispose?: () => void,
@@ -1659,6 +1664,9 @@ export function installRendererBindingProbe(
         ...(thinkingOptionId ? { thinkingOptionId } : {}),
         ...(permissionModeId ? { permissionModeId } : {}),
       };
+    },
+    requestCompatibilityUpdate() {
+      return startCompatibilityUpdate(modelControl);
     },
     setAdapter(status, dispose, applyAgent, nextModelControl) {
       adapterDispose?.();

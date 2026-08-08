@@ -12,6 +12,8 @@ mod background;
 mod background;
 mod desktop_launch;
 mod installation;
+#[cfg(target_os = "macos")]
+mod macos_ui;
 mod process;
 mod process_supervision;
 #[cfg(target_os = "windows")]
@@ -22,10 +24,12 @@ mod windows_process;
 mod windows_ui;
 
 pub use background::detach_from_terminal;
-pub use desktop_launch::launch_desktop;
 #[cfg(target_os = "macos")]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
+pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
 pub use installation::discover_codex_desktop;
+#[cfg(target_os = "macos")]
+pub use macos_ui::prompt_compatibility_warning;
 pub use process::{
     ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
     parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
@@ -35,7 +39,8 @@ pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, pr
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
-    RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
+    RunningDesktopChoice, hide_console_window, prompt_compatibility_warning,
+    prompt_running_desktop, show_error_dialog,
 };
 
 pub const CRATE_NAME: &str = "codexhost-platform";
@@ -45,6 +50,35 @@ pub const PROBE_PACKAGE_NAME_ENV: &str = "CODEXHOST_PROBE_PACKAGE_NAME";
 pub const PROBE_PACKAGE_FAMILY_ENV: &str = "CODEXHOST_PROBE_PACKAGE_FAMILY";
 pub const PROBE_DESKTOP_VERSION_ENV: &str = "CODEXHOST_PROBE_DESKTOP_VERSION";
 pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibilityChoice {
+    ContinueCodexhost,
+    OpenLatestRelease,
+    OpenStockCodex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibilityUpdateAvailability {
+    Current,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CompatibilityPrompt<'a> {
+    pub desktop_version: &'a str,
+    pub codexhost_version: &'a str,
+    pub capability: &'a str,
+    pub reason_code: &'a str,
+    pub observed_identity: &'a str,
+    pub update_availability: CompatibilityUpdateAvailability,
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[must_use]
+pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
+    CompatibilityChoice::ContinueCodexhost
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopLaunchMode {
@@ -77,6 +111,8 @@ pub enum DesktopIdentity {
 pub struct DesktopInstallation {
     pub identity: DesktopIdentity,
     pub version: String,
+    pub build: String,
+    pub asar_integrity: String,
     pub install_root: PathBuf,
     pub desktop_executable: PathBuf,
     pub packaged_codex_cli: PathBuf,

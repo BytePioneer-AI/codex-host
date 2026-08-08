@@ -114,9 +114,6 @@ interface CreateRendererControlOptions extends InstallRendererControlOptions {
   operations?: RendererControlOperations;
 }
 
-const DRAFT_PREWARM_READY_TIMEOUT_MS = 5_000;
-const RENDERER_RELOAD_TIMEOUT_MS = 8_000;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -218,22 +215,6 @@ export async function waitForRendererTitlePolicyReady(
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
   throw new Error(`Renderer title policy ownership did not become ready${detail}`);
-}
-
-async function waitForDraftPrewarmPolicy(
-  install: () => Promise<RendererDraftPrewarmPolicyStatus>,
-  options: { timeoutMs: number; pollIntervalMs: number },
-): Promise<RendererDraftPrewarmPolicyStatus> {
-  const deadline = Date.now() + Math.min(options.timeoutMs, DRAFT_PREWARM_READY_TIMEOUT_MS);
-  do {
-    try {
-      return await install();
-    } catch {
-      if (Date.now() >= deadline) break;
-      await sleep(options.pollIntervalMs);
-    }
-  } while (Date.now() < deadline);
-  throw new Error("Renderer draft prewarm policy did not become ready");
 }
 
 export async function waitForInspectorTarget(
@@ -372,38 +353,7 @@ async function reloadRenderer(
   inspector: Pick<RendererInspector, "evaluate">,
   rendererWebContentsId: number,
 ): Promise<void> {
-  const reloaded = await inspector.evaluate<unknown>(`(() => {
-    const { webContents } = ${electronModuleExpression};
-    const contents = webContents.fromId(${rendererWebContentsId});
-    if (contents == null || contents.isDestroyed()) {
-      throw new Error('Renderer webContents is unavailable');
-    }
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timeout);
-        contents.removeListener('did-finish-load', finish);
-        contents.removeListener('did-fail-load', fail);
-        contents.removeListener('render-process-gone', fail);
-      };
-      const finish = () => {
-        cleanup();
-        resolve(true);
-      };
-      const fail = () => {
-        cleanup();
-        reject(new Error('Renderer reload failed'));
-      };
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('Renderer reload timed out'));
-      }, ${RENDERER_RELOAD_TIMEOUT_MS});
-      contents.once('did-finish-load', finish);
-      contents.once('did-fail-load', fail);
-      contents.once('render-process-gone', fail);
-      contents.reload();
-    });
-  })()`);
-  if (reloaded !== true) throw new Error("Renderer reload returned an invalid status");
+  await executeInWebContents(inspector, rendererWebContentsId, "location.reload(); null");
 }
 
 const defaultOperations: RendererControlOperations = {
@@ -520,11 +470,7 @@ class InstalledRendererControlSession implements RendererControlSession {
     const draftPrewarmPolicy = await requireCompatibilityBoundary(
       "draft-routing",
       "draft-routing-structure-unavailable",
-      () =>
-        waitForDraftPrewarmPolicy(
-          () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
-          { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
-        ),
+      () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
     );
     await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const binding = await requireCompatibilityBoundary(
@@ -621,11 +567,7 @@ export async function createRendererControlSession(
   const draftPrewarmPolicy = await requireCompatibilityBoundary(
     "draft-routing",
     "draft-routing-structure-unavailable",
-    () =>
-      waitForDraftPrewarmPolicy(
-        () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
-        { timeoutMs, pollIntervalMs },
-      ),
+    () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
   );
   await operations.execute(options.inspector, selected.id, options.rendererSource);
   const binding = await requireCompatibilityBoundary(

@@ -115,23 +115,6 @@ describe("Renderer draft prewarm policy", () => {
     });
     expect(evaluate).toHaveBeenCalledOnce();
     expect(evaluate.mock.calls[0]?.[0]).toContain("webContents.fromId(17)");
-    expect(evaluate.mock.calls[0]?.[0]).toContain("request-bridge-unavailable");
-    expect(evaluate.mock.calls[0]?.[0]).not.toContain("error?.message");
-  });
-
-  it("maps remote inspection failures to a bounded unavailable result", async () => {
-    const inspector = {
-      async evaluate<T>(): Promise<T> {
-        return {
-          state: "unavailable",
-          reason: "request-bridge-unavailable",
-        } as T;
-      },
-    };
-
-    await expect(installRendererDraftPrewarmPolicy(inspector, 17)).rejects.toThrow(
-      "request bridge is unavailable",
-    );
   });
 
   it("installs the fixed policy on the uniquely owned Host request bridge", async () => {

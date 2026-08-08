@@ -128,7 +128,6 @@ describe("Renderer Control Session", () => {
     };
     let binding: unknown = null;
     let selected = renderer(17, "primary", 100);
-    let draftPrewarmAttempts = 0;
     const inspector = {
       command: vi.fn(),
       evaluate: vi.fn(),
@@ -154,8 +153,6 @@ describe("Renderer Control Session", () => {
       },
       async installDraftPrewarmPolicy(_inspector: unknown, rendererId: number) {
         calls.push(`prewarm:${rendererId}`);
-        draftPrewarmAttempts += 1;
-        if (draftPrewarmAttempts === 1) throw new Error("Composer is still mounting");
         return { state: "ready" as const, reason: "owned-request-bridge" as const };
       },
       async reload() {
@@ -197,7 +194,6 @@ describe("Renderer Control Session", () => {
       "reload",
       "inspect",
       "title-ready:17",
-      "prewarm:17",
       "prewarm:17",
       "inject",
       "read-binding",

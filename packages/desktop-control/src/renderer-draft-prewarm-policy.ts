@@ -76,15 +76,11 @@ function mainProcessInstaller(rendererWebContentsId: number): string {
       ? mainModule.require('electron')
       : process.getBuiltinModule('module').createRequire(process.execPath)('electron');
     const contents = electron.webContents.fromId(${rendererWebContentsId});
-    try {
-      return await (${installDraftPrewarmPolicyInRenderer.toString()})(
-        contents,
-        ${JSON.stringify(FIND_REQUEST_MANAGER_EXPRESSION)},
-        ${JSON.stringify(INSTALL_RENDERER_POLICY_FUNCTION)}
-      );
-    } catch {
-      return { state: 'unavailable', reason: 'request-bridge-unavailable' };
-    }
+    return (${installDraftPrewarmPolicyInRenderer.toString()})(
+      contents,
+      ${JSON.stringify(FIND_REQUEST_MANAGER_EXPRESSION)},
+      ${JSON.stringify(INSTALL_RENDERER_POLICY_FUNCTION)}
+    );
   }`;
 }
 
@@ -97,13 +93,6 @@ export async function installRendererDraftPrewarmPolicy(
   }
   const installer = mainProcessInstaller(rendererWebContentsId);
   const value = await inspector.evaluate<unknown>(`(${installer})()`);
-  if (
-    isRecord(value) &&
-    value.state === "unavailable" &&
-    value.reason === "request-bridge-unavailable"
-  ) {
-    throw new Error("Renderer draft prewarm request bridge is unavailable");
-  }
   if (!isRecord(value) || value.state !== "ready" || value.reason !== "owned-request-bridge") {
     throw new Error("Renderer draft prewarm policy returned an invalid status");
   }

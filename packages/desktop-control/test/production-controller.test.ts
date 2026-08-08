@@ -224,9 +224,7 @@ describe("production Desktop Controller", () => {
         new RendererCompatibilityError(
           "title-isolation",
           "title-isolation-structure-unavailable",
-          new Error(
-            "Uncaught (in promise) TypeError: The argument 'filename' must be an absolute path string. Received undefined",
-          ),
+          new Error("Execution context was destroyed during Renderer reload"),
         ),
       )
       .mockRejectedValueOnce(new Error("Promise was collected"))
@@ -250,33 +248,36 @@ describe("production Desktop Controller", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("reports structural incompatibility without starting attachment", async () => {
+  it("reports a generic async structural failure without retrying or starting attachment", async () => {
     const ready = vi.fn();
     const startAttachmentServer = vi.fn(async () => attachmentServer());
-    const dependencies: DesktopControllerDependencies = {
+    const install = vi.fn(async () => {
+      throw new RendererCompatibilityError(
+        "draft-routing",
+        "draft-routing-structure-unavailable",
+        new Error("Uncaught (in promise) Error"),
+      );
+    });
+    const sleep = vi.fn(async () => {});
+
+    await runDesktopController(controllerOptions(), new AbortController().signal, {
       readRenderer: vi.fn(async () => "production renderer"),
-      install: vi.fn(async () => {
-        throw new RendererCompatibilityError(
-          "title-isolation",
-          "title-isolation-structure-unavailable",
-          new Error("private detail"),
-        );
-      }),
+      install,
       startAttachmentServer,
       ready,
-      sleep: vi.fn(async () => {}),
+      sleep,
       monitorIntervalMs: 1,
-    };
+    });
 
-    await runDesktopController(controllerOptions(), new AbortController().signal, dependencies);
-
+    expect(install).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,
       state: "incompatible",
       issues: [
         {
-          capability: "title-isolation",
-          reason: "title-isolation-structure-unavailable",
+          capability: "draft-routing",
+          reason: "draft-routing-structure-unavailable",
         },
       ],
     });

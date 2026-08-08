@@ -467,11 +467,6 @@ class InstalledRendererControlSession implements RendererControlSession {
           { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
         ),
     );
-    const draftPrewarmPolicy = await requireCompatibilityBoundary(
-      "draft-routing",
-      "draft-routing-structure-unavailable",
-      () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
-    );
     await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const binding = await requireCompatibilityBoundary(
       "agent-routing",
@@ -485,6 +480,11 @@ class InstalledRendererControlSession implements RendererControlSession {
           this.timeoutMs,
           this.pollIntervalMs,
         ),
+    );
+    const draftPrewarmPolicy = await requireCompatibilityBoundary(
+      "draft-routing",
+      "draft-routing-structure-unavailable",
+      () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
     );
     this.#snapshot = {
       ...this.#snapshot,
@@ -564,11 +564,6 @@ export async function createRendererControlSession(
         },
       ),
   );
-  const draftPrewarmPolicy = await requireCompatibilityBoundary(
-    "draft-routing",
-    "draft-routing-structure-unavailable",
-    () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
-  );
   await operations.execute(options.inspector, selected.id, options.rendererSource);
   const binding = await requireCompatibilityBoundary(
     "agent-routing",
@@ -582,6 +577,11 @@ export async function createRendererControlSession(
         timeoutMs,
         pollIntervalMs,
       ),
+  );
+  const draftPrewarmPolicy = await requireCompatibilityBoundary(
+    "draft-routing",
+    "draft-routing-structure-unavailable",
+    () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
   );
   return new InstalledRendererControlSession(
     options.inspector,

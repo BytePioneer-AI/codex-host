@@ -194,9 +194,9 @@ describe("Renderer Control Session", () => {
       "reload",
       "inspect",
       "title-ready:17",
-      "prewarm:17",
       "inject",
       "read-binding",
+      "prewarm:17",
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
     expect(session.snapshot.titlePolicy.warnings).toEqual([compatibilityWarning]);
@@ -213,9 +213,9 @@ describe("Renderer Control Session", () => {
       "inspect",
       "read-binding",
       "title-ready:19",
-      "prewarm:19",
       "inject",
       "read-binding",
+      "prewarm:19",
     ]);
     await session.quitDesktop();
     expect(calls.at(-1)).toBe("quit");

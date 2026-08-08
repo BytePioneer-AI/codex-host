@@ -45,7 +45,6 @@ export interface RendererAdapterStatus {
     | "asset-import-failed"
     | "installation-failed"
     | "title-policy-unavailable"
-    | "draft-prewarm-policy-unavailable"
     | "draft-prewarm-clear-failed"
     | "model-controller-unavailable";
   modelUpdates: number;
@@ -712,10 +711,6 @@ export function installCurrentRendererAdapter(): {
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
-    return unsupportedResult();
-  }
-  if (!isDraftPrewarmPolicyReady(window.__codexhostDraftPrewarmPolicyV1)) {
-    updateStatus("unsupported", "draft-prewarm-policy-unavailable", null);
     return unsupportedResult();
   }
   const forkControl = installRendererForkControl({

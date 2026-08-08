@@ -255,7 +255,6 @@ function isTransientElectronInstallError(error: unknown): boolean {
   for (let depth = 0; depth < 4; depth += 1) {
     const message = current instanceof Error ? current.message : String(current);
     if (
-      message.includes("Uncaught (in promise)") ||
       message.includes("Execution context was destroyed") ||
       message.includes("Promise was collected")
     ) {

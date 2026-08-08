@@ -16,8 +16,6 @@
 
 **方式一：使用 npm**
 
-> Node.js 22 或更高版本。
-
 ```bash
 npm install -g @codexhost/cli
 codexhost
@@ -26,6 +24,17 @@ codexhost
 **方式二：下载安装包**
 
 从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
+
+## 界面预览
+
+Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 —— 流式输出、工具状态、Diff、审批与提问等均实时渲染。
+
+![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](packages/renderer-extension/src/assets/readme/demo.gif)
+
+### 界面
+
+![Pi 与 Claude Code 作为独立 Thread 运行在 Codex Desktop 中](packages/renderer-extension/src/assets/readme/app-overview.png)
+
 
 ## 功能状态
 
@@ -55,3 +64,18 @@ codexhost 不走这条路：
 - **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
+
+### 一些交互
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Agent 与 Model 选择</strong></p>
+      <img src="packages/renderer-extension/src/assets/readme/agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Usage 与费用信息</strong></p>
+      <img src="packages/renderer-extension/src/assets/readme/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
+    </td>
+  </tr>
+</table>

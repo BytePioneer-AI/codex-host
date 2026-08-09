@@ -666,4 +666,25 @@ describe("mapping-store package", () => {
     );
     await first.close();
   });
+
+  it("recovers a Windows lock whose PID was reused by another executable", async () => {
+    if (process.platform !== "win32") return;
+    const directory = await temporaryStoreDirectory();
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, "store.lock"),
+      `${JSON.stringify({
+        pid: process.pid,
+        instanceId: "legacy-owner",
+        startedAt: new Date(0).toISOString(),
+        executablePath: "C:\\\\Windows\\\\System32\\\\svchost.exe",
+        processStartedAt: new Date(0).toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const store = new MappingStore({ directory, instanceId: "recovered" });
+    await store.initialize();
+    await store.close();
+  });
 });

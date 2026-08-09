@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -58,6 +59,13 @@ interface LockRecord {
   pid: number;
   instanceId: string;
   startedAt: string;
+  executablePath?: string;
+  processStartedAt?: string;
+}
+
+interface ProcessIdentity {
+  executablePath: string | null;
+  startedAt: number | null;
 }
 
 function cloneRecord(record: StoredThreadRecordV1): StoredThreadRecordV1 {
@@ -93,13 +101,78 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-function processAlive(pid: number): boolean {
+function processIdentity(pid: number): ProcessIdentity | null {
   try {
     process.kill(pid, 0);
-    return true;
   } catch (error) {
-    return systemErrorCode(error) === "EPERM";
+    if (systemErrorCode(error) !== "EPERM") return null;
   }
+
+  if (process.platform !== "win32") {
+    return { executablePath: null, startedAt: null };
+  }
+
+  try {
+    const query = [
+      "$ErrorActionPreference = 'Stop'",
+      `$process = Get-Process -Id ${pid}`,
+      "$process | Select-Object Path, StartTime | ConvertTo-Json -Compress",
+    ].join("; ");
+    const result = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", query],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+    ).trim();
+    if (!result) return { executablePath: null, startedAt: null };
+    const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
+    const executablePath = typeof parsed.Path === "string" ? parsed.Path : null;
+    const startedAt = typeof parsed.StartTime === "string" ? Date.parse(parsed.StartTime) : NaN;
+    return { executablePath, startedAt: Number.isFinite(startedAt) ? startedAt : null };
+  } catch {
+    // If process metadata cannot be queried, preserve the live-lock failure mode.
+    return { executablePath: null, startedAt: null };
+  }
+}
+
+function normalizeExecutablePath(value: string): string {
+  return process.platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
+}
+
+function isNodeExecutable(value: string): boolean {
+  const normalized = normalizeExecutablePath(value);
+  return normalized.endsWith("\\node.exe") || normalized.endsWith("/node");
+}
+
+function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
+  if (typeof lock.pid !== "number") return false;
+  const identity = processIdentity(lock.pid);
+  if (!identity) return false;
+  if (process.platform !== "win32") return true;
+
+  if (identity.executablePath && lock.executablePath) {
+    if (
+      normalizeExecutablePath(identity.executablePath) !==
+      normalizeExecutablePath(lock.executablePath)
+    ) {
+      return false;
+    }
+  } else if (
+    identity.executablePath &&
+    !lock.executablePath &&
+    !isNodeExecutable(identity.executablePath)
+  ) {
+    // Legacy locks have no executable identity. A reused PID owned by a non-Node
+    // process cannot be a live Host Runtime lock.
+    return false;
+  }
+
+  if (lock.processStartedAt && identity.startedAt !== null) {
+    const expected = Date.parse(lock.processStartedAt);
+    if (Number.isFinite(expected) && Math.abs(identity.startedAt - expected) > 5_000) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export class MappingStore {
@@ -550,6 +623,8 @@ export class MappingStore {
         pid: process.pid,
         instanceId: this.#instanceId,
         startedAt: this.#now().toISOString(),
+        executablePath: process.execPath,
+        processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
       };
       await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
       await handle.sync();
@@ -567,7 +642,7 @@ export class MappingStore {
     } catch {
       // An invalid lock cannot prove a live owner and is treated as stale.
     }
-    if (typeof existing.pid === "number" && processAlive(existing.pid)) {
+    if (typeof existing.pid === "number" && lockOwnerIsLive(existing)) {
       throw new MappingStoreError("STORE_LOCKED", "Another codexhost process owns Mapping Store");
     }
     await rename(this.#lockPath, `${this.#lockPath}.stale-${this.#now().getTime()}`).catch(

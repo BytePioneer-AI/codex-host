@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -64,6 +65,44 @@ async function npmFixture(): Promise<{
   return { root, hostRuntimePath, environment };
 }
 
+function digest(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function macFixture(): Promise<{
+  root: string;
+  hostRuntimePath: string;
+  environment: NodeJS.ProcessEnv;
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-host-mac-update-"));
+  roots.push(root);
+  const app = path.join(root, "codexhost.app");
+  const resources = path.join(app, "Contents", "Resources");
+  const hostRuntimePath = path.join(resources, "app", "host-runtime.mjs");
+  const environment = {
+    HOME: path.join(root, "home"),
+    CODEXHOST_LAUNCHER_PID: "4321",
+    CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "codexhost"),
+    CODEXHOST_CONTROL_PORT: "43124",
+    CODEXHOST_CONTROL_NONCE: "0123456789abcdef0123456789abcdef",
+  };
+  await Promise.all([
+    file(hostRuntimePath),
+    file(path.join(resources, "libexec", "codexhost-updater")),
+    file(environment.CODEXHOST_LAUNCHER_EXECUTABLE),
+    file(
+      path.join(resources, "app", "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        distribution: "installer",
+        target: "macos-arm64",
+      }),
+    ),
+  ]);
+  return { root, hostRuntimePath, environment };
+}
+
 function release(version = "1.2.3"): CodexhostLatestRelease {
   return {
     version,
@@ -115,6 +154,69 @@ describe("Host update coordinator", () => {
         nonce: "0123456789abcdef0123456789abcdef",
       }),
     );
+  });
+
+  it("returns before a macOS artifact download completes and shuts down afterward", async () => {
+    const fixture = await macFixture();
+    const bytes = Buffer.from("macos-dmg-fixture");
+    let unblockDownload!: () => void;
+    let resolveDownloadObserved!: () => void;
+    const downloadObserved = new Promise<void>((resolve) => {
+      resolveDownloadObserved = resolve;
+    });
+    const manager = createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "async-macos",
+      spawnUpdater: () => ({ pid: 778 }) as unknown as ChildProcess,
+      download: async (_source, destination, onProgress) => {
+        resolveDownloadObserved();
+        await onProgress?.({ downloadedBytes: 1, totalBytes: bytes.length });
+        await new Promise<void>((resume) => {
+          unblockDownload = resume;
+        });
+        await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+        await onProgress?.({ downloadedBytes: bytes.length, totalBytes: bytes.length });
+        return { bytes: bytes.length, finalUrl: "https://downloads.example.test/final" };
+      },
+    });
+    const shutdown = vi.fn(async () => {});
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "darwin",
+      architecture: "arm64",
+      manager,
+      fetchLatest: async () => ({
+        version: "1.2.3",
+        releaseNotes: "Release 1.2.3",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        assets: [
+          {
+            name: "codexhost-1.2.3-macos-arm64.dmg",
+            size: bytes.length,
+            digest: `sha256:${digest(bytes)}`,
+            downloadUrl:
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-macos-arm64.dmg",
+          },
+        ],
+      }),
+      shutdown,
+    });
+
+    const result = await coordinator.start();
+    expect(result.status).toMatchObject({ version: "1.2.3", installation: "macos-dmg" });
+    await downloadObserved;
+    coordinator.requestShutdown();
+    expect(shutdown).not.toHaveBeenCalled();
+    await vi.waitFor(async () =>
+      expect((await coordinator.status()).status).toMatchObject({
+        phase: "downloading",
+        downloadedBytes: 1,
+        totalBytes: bytes.length,
+      }),
+    );
+    unblockDownload();
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
   });
 
   it("starts a compatibility update without waiting for background preparation", async () => {

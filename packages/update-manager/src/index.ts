@@ -1,4 +1,9 @@
-export type { ArtifactDownloader, ArtifactDownloadResult, ArtifactSource } from "./artifact.js";
+export type {
+  ArtifactDownloadProgress,
+  ArtifactDownloader,
+  ArtifactDownloadResult,
+  ArtifactSource,
+} from "./artifact.js";
 export {
   UPDATE_RUNTIME_ENV,
   defaultUpdateStateDirectory,
@@ -41,6 +46,7 @@ export {
   type MacOsDmgUpdateOptions,
   type NpmUpdateOptions,
   type PreparedBackgroundUpdate,
+  type PreparedUpdateInfo,
   type StartedBackgroundUpdate,
   type WindowsInstallerUpdateOptions,
 } from "./update-manager.js";

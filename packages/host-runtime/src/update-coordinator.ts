@@ -77,6 +77,8 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     installation: status.installation,
     phase: status.phase,
     updatedAt: status.updatedAt,
+    ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
+    ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
   };
 }
@@ -130,6 +132,14 @@ export function createHostUpdateCoordinator(
   const shutdown = options.shutdown ?? requestControllerShutdown;
   let candidate: CodexhostLatestRelease | null = null;
   let shutdownPending: InstalledUpdateContext["controller"] | null = null;
+  let shutdownRequested = false;
+
+  const scheduleShutdown = (): void => {
+    if (!shutdownRequested || !shutdownPending) return;
+    const controller = shutdownPending;
+    shutdownPending = null;
+    setTimeout(() => void shutdown(controller).catch(() => undefined), 50).unref();
+  };
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
@@ -215,6 +225,22 @@ export function createHostUpdateCoordinator(
         if (existing) return { status: existing };
         throw new Error("Another update operation is already active");
       }
+
+      let resolvePrepared!: (info: {
+        version: string;
+        installation: BackgroundUpdateStatus["installation"];
+        statusPath: string;
+      }) => void;
+      let rejectPrepared!: (error: unknown) => void;
+      const preparedReady = new Promise<{
+        version: string;
+        installation: BackgroundUpdateStatus["installation"];
+        statusPath: string;
+      }>((resolve, reject) => {
+        resolvePrepared = resolve;
+        rejectPrepared = reject;
+      });
+
       try {
         const release = await fetchLatest();
         if (
@@ -223,32 +249,55 @@ export function createHostUpdateCoordinator(
         ) {
           throw new Error("The selected update is no longer the current GitHub Release");
         }
-        let prepared;
-        if (context.installation.kind === "npm") {
-          prepared = await manager.prepareNpm({
-            ...context.installation.options,
-            version: release.version,
-          });
-        } else {
-          const artifact = selectInstallerReleaseArtifact(release, context.metadata.target).source;
-          prepared =
-            context.installation.kind === "windows-installer"
-              ? await manager.prepareWindowsInstaller({
-                  ...context.installation.options,
-                  version: release.version,
-                  artifact,
-                })
-              : await manager.prepareMacOsDmg({
-                  ...context.installation.options,
-                  version: release.version,
-                  artifact,
-                });
-        }
-        await lock.setStatusPath(prepared.statusPath);
-        manager.start(prepared);
+        const onPrepared = async (info: {
+          version: string;
+          installation: BackgroundUpdateStatus["installation"];
+          statusPath: string;
+        }): Promise<void> => {
+          await lock.setStatusPath(info.statusPath);
+          resolvePrepared(info);
+        };
+        const prepareAndStart = async (): Promise<void> => {
+          try {
+            let prepared;
+            if (context.installation.kind === "npm") {
+              prepared = await manager.prepareNpm({
+                ...context.installation.options,
+                version: release.version,
+                onPrepared,
+              });
+            } else {
+              const artifact = selectInstallerReleaseArtifact(
+                release,
+                context.metadata.target,
+              ).source;
+              prepared =
+                context.installation.kind === "windows-installer"
+                  ? await manager.prepareWindowsInstaller({
+                      ...context.installation.options,
+                      version: release.version,
+                      artifact,
+                      onPrepared,
+                    })
+                  : await manager.prepareMacOsDmg({
+                      ...context.installation.options,
+                      version: release.version,
+                      artifact,
+                      onPrepared,
+                    });
+            }
+            manager.start(prepared);
+            shutdownPending = context.controller;
+            scheduleShutdown();
+          } catch (error) {
+            await lock.release();
+            rejectPrepared(error);
+          }
+        };
+        void prepareAndStart();
+        const prepared = await preparedReady;
         const status = await manager.readStatus(prepared.statusPath);
-        if (!status) throw new Error("Background Updater did not create status");
-        shutdownPending = context.controller;
+        if (!status) throw new Error("Background update did not create status");
         return { status: publicStatus(status) };
       } catch (error) {
         await lock.release();
@@ -267,10 +316,8 @@ export function createHostUpdateCoordinator(
     },
 
     requestShutdown(): void {
-      const controller = shutdownPending;
-      shutdownPending = null;
-      if (!controller) return;
-      setTimeout(() => void shutdown(controller).catch(() => undefined), 50).unref();
+      shutdownRequested = true;
+      scheduleShutdown();
     },
   });
 }

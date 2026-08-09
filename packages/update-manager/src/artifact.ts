@@ -11,6 +11,11 @@ export interface ArtifactSource {
   size?: number;
 }
 
+export interface ArtifactDownloadProgress {
+  downloadedBytes: number;
+  totalBytes: number | undefined;
+}
+
 export interface ArtifactDownloadResult {
   bytes: number;
   finalUrl: string;
@@ -19,6 +24,7 @@ export interface ArtifactDownloadResult {
 export type ArtifactDownloader = (
   source: ArtifactSource,
   destination: string,
+  onProgress?: (progress: ArtifactDownloadProgress) => void | Promise<void>,
 ) => Promise<ArtifactDownloadResult>;
 
 export function validateArtifact(source: ArtifactSource): ArtifactSource {
@@ -53,6 +59,7 @@ async function writeChunk(
 export async function downloadArtifact(
   source: ArtifactSource,
   destination: string,
+  onProgress?: (progress: ArtifactDownloadProgress) => void | Promise<void>,
 ): Promise<ArtifactDownloadResult> {
   const response = await fetch(source.url, {
     redirect: "follow",
@@ -78,6 +85,7 @@ export async function downloadArtifact(
         throw new Error(`update artifact exceeds ${MAX_ARTIFACT_BYTES} bytes`);
       }
       await writeChunk(file, item.value);
+      await onProgress?.({ downloadedBytes: bytes, totalBytes: source.size });
     }
     await file.sync();
   } finally {

@@ -59,7 +59,7 @@ Alternative: terminate Launcher or Desktop by PID from Host. Rejected because it
 
 The production registry adds an Updates page after Gateway. The page uses a method-specific client supplied by the binding lifecycle. On mount it checks current status and the latest Release. It renders current/latest version, bounded Release body text, an external release-notes link, one Update and Restart command, bounded waiting/failure states, and retry. It uses page `runLatest` and abort semantics, never fetches GitHub directly, and never renders arbitrary Release Markdown as HTML.
 
-Download and preparation use an indeterminate progress state because the current manager does not expose byte progress. Once shutdown begins the UI disappears; after relaunch the page discovers and polls a `restarting` operation until terminal, then reports success or failure.
+Installer download and preparation expose a bounded byte-progress state. The Node downloader reports each received chunk against GitHub's declared asset size, persists throttled progress in the discoverable status file, and the Host returns from start as soon as the operation status exists. The Host starts the temporary Updater and requests Desktop shutdown only after the artifact is fully downloaded and verified. Once shutdown begins the UI disappears; after relaunch the page discovers and polls a `restarting` operation until terminal, then reports success or failure. npm installation remains phase-only because its package installation occurs after the old application exits.
 
 ### 6. Local operation state is discoverable and bounded
 

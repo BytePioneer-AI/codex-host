@@ -8,6 +8,7 @@ export const updateSemanticVersionSchema = z.string().regex(UPDATE_SEMVER_PATTER
 export const updateInstallationSchema = z.enum(["npm", "windows-installer", "macos-dmg"]);
 export const updatePhaseSchema = z.enum([
   "prepared",
+  "downloading",
   "waiting-for-exit",
   "installing",
   "restarting",
@@ -15,13 +16,29 @@ export const updatePhaseSchema = z.enum([
   "failed",
 ]);
 
-export const updateStatusSchema = z.strictObject({
-  version: updateSemanticVersionSchema,
-  installation: updateInstallationSchema,
-  phase: updatePhaseSchema,
-  updatedAt: z.number().int().nonnegative(),
-  error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
-});
+export const updateStatusSchema = z
+  .strictObject({
+    version: updateSemanticVersionSchema,
+    installation: updateInstallationSchema,
+    phase: updatePhaseSchema,
+    updatedAt: z.number().int().nonnegative(),
+    downloadedBytes: z.number().int().nonnegative().optional(),
+    totalBytes: z.number().int().positive().optional(),
+    error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
+  })
+  .superRefine((status, context) => {
+    if (
+      status.downloadedBytes !== undefined &&
+      status.totalBytes !== undefined &&
+      status.downloadedBytes > status.totalBytes
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["downloadedBytes"],
+        message: "downloadedBytes must not exceed totalBytes",
+      });
+    }
+  });
 
 export const updateEmptyParamsSchema = z.strictObject({});
 

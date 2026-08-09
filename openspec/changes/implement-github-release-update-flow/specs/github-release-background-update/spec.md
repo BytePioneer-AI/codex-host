@@ -37,6 +37,21 @@ The update capability SHALL read strict packaged distribution metadata and resol
 - **WHEN** packaged metadata declares a target different from the running platform and architecture
 - **THEN** automatic update SHALL fail before download or process shutdown
 
+### Requirement: Installer preparation reports bounded download progress
+The Host and Update Manager SHALL persist a `downloading` status for installer artifacts with nonnegative `downloadedBytes` and a positive `totalBytes` derived from the verified GitHub asset size. Renderer SHALL be able to read that status while preparation is active. Download completion SHALL be followed by the existing size and SHA-256 verification before the operation becomes `prepared` and before Desktop shutdown is requested. npm updates MAY remain phase-only because npm installation occurs after the managed application exits.
+
+#### Scenario: macOS DMG download is active
+- **WHEN** a verified macOS Release asset is being downloaded
+- **THEN** status SHALL expose bounded downloaded and total byte counts
+- **AND** the fixed status operation SHALL remain responsive
+- **AND** the managed Desktop SHALL remain running until download and verification finish
+
+#### Scenario: Installer download fails
+- **WHEN** artifact download, size validation, or digest validation fails
+- **THEN** status SHALL become `failed` with bounded error text
+- **AND** the temporary artifact SHALL be removed
+- **AND** Host SHALL NOT request Desktop shutdown
+
 ### Requirement: Update starts once and shuts down the managed application in order
 Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL start the temporary Updater, confirm a helper PID, respond to the initiating Renderer, and only then request the authenticated Desktop Controller to quit the managed Electron application. The helper SHALL install only after the exact Launcher exits.
 

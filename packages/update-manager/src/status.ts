@@ -4,7 +4,13 @@ export const SEMVER_PATTERN =
 
 export type BackgroundUpdateInstallation = "npm" | "windows-installer" | "macos-dmg";
 export type BackgroundUpdatePhase =
-  "prepared" | "waiting-for-exit" | "installing" | "restarting" | "succeeded" | "failed";
+  | "prepared"
+  | "downloading"
+  | "waiting-for-exit"
+  | "installing"
+  | "restarting"
+  | "succeeded"
+  | "failed";
 
 export interface BackgroundUpdateStatus {
   schemaVersion: 1;
@@ -12,6 +18,8 @@ export interface BackgroundUpdateStatus {
   installation: BackgroundUpdateInstallation;
   phase: BackgroundUpdatePhase;
   updatedAt: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
   error?: string;
 }
 
@@ -39,7 +47,16 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     throw new Error("background update status must be an object");
   }
   const status = value as Record<string, unknown>;
-  const allowed = ["error", "installation", "phase", "schemaVersion", "updatedAt", "version"];
+  const allowed = [
+    "downloadedBytes",
+    "error",
+    "installation",
+    "phase",
+    "schemaVersion",
+    "totalBytes",
+    "updatedAt",
+    "version",
+  ];
   if (Object.keys(status).some((key) => !allowed.includes(key))) {
     throw new Error("background update status contains unknown fields");
   }
@@ -48,10 +65,27 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     typeof status.version !== "string" ||
     !SEMVER_PATTERN.test(status.version) ||
     !["npm", "windows-installer", "macos-dmg"].includes(String(status.installation)) ||
-    !["prepared", "waiting-for-exit", "installing", "restarting", "succeeded", "failed"].includes(
-      String(status.phase),
-    ) ||
+    ![
+      "prepared",
+      "downloading",
+      "waiting-for-exit",
+      "installing",
+      "restarting",
+      "succeeded",
+      "failed",
+    ].includes(String(status.phase)) ||
     !Number.isSafeInteger(status.updatedAt) ||
+    (status.downloadedBytes !== undefined &&
+      (typeof status.downloadedBytes !== "number" ||
+        !Number.isSafeInteger(status.downloadedBytes) ||
+        status.downloadedBytes < 0)) ||
+    (status.totalBytes !== undefined &&
+      (typeof status.totalBytes !== "number" ||
+        !Number.isSafeInteger(status.totalBytes) ||
+        status.totalBytes <= 0)) ||
+    (typeof status.downloadedBytes === "number" &&
+      typeof status.totalBytes === "number" &&
+      status.downloadedBytes > status.totalBytes) ||
     (status.error !== undefined && typeof status.error !== "string")
   ) {
     throw new Error("background update status is invalid");

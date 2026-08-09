@@ -7,6 +7,7 @@ import {
   downloadArtifact,
   validateArtifact,
   verifyDownloadedArtifact,
+  type ArtifactDownloadProgress,
   type ArtifactDownloader,
   type ArtifactSource,
 } from "./artifact.js";
@@ -20,12 +21,19 @@ import {
 
 const REQUEST_SCHEMA_VERSION = 1;
 
+export interface PreparedUpdateInfo {
+  version: string;
+  installation: BackgroundUpdateInstallation;
+  statusPath: string;
+}
+
 export interface CommonUpdateOptions {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
   updaterExecutable: string;
   stateDirectory: string;
+  onPrepared?(info: PreparedUpdateInfo): void | Promise<void>;
 }
 
 export interface NpmUpdateOptions extends CommonUpdateOptions {
@@ -169,6 +177,92 @@ export function createBackgroundUpdateManager(
   const now = dependencies.now ?? Date.now;
   const preparedRequests = new Set<string>();
 
+  async function writeStatusSnapshot(
+    statusPath: string,
+    status: BackgroundUpdateStatus,
+  ): Promise<void> {
+    const temporaryPath = path.join(path.dirname(statusPath), `.update-status-${randomId()}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(status)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      await rename(temporaryPath, statusPath);
+    } catch (error) {
+      await rm(temporaryPath, { force: true });
+      throw error;
+    }
+  }
+
+  function statusSnapshot(
+    version: string,
+    installation: BackgroundUpdateInstallation,
+    phase: BackgroundUpdateStatus["phase"],
+    progress?: ArtifactDownloadProgress,
+    error?: unknown,
+  ): BackgroundUpdateStatus {
+    return {
+      schemaVersion: 1,
+      version,
+      installation,
+      phase,
+      updatedAt: Math.floor(now() / 1000),
+      ...(progress?.downloadedBytes === undefined
+        ? {}
+        : { downloadedBytes: progress.downloadedBytes }),
+      ...(progress?.totalBytes === undefined ? {} : { totalBytes: progress.totalBytes }),
+      ...(error === undefined ? {} : { error: errorMessage(error).slice(0, 500) }),
+    };
+  }
+
+  async function writeFailedStatus(
+    statusPath: string,
+    version: string,
+    installation: BackgroundUpdateInstallation,
+    error: unknown,
+  ): Promise<void> {
+    await writeStatusSnapshot(
+      statusPath,
+      statusSnapshot(version, installation, "failed", undefined, error),
+    ).catch(() => undefined);
+  }
+
+  function progressReporter(
+    statusPath: string,
+    version: string,
+    installation: BackgroundUpdateInstallation,
+    totalBytes: number | undefined,
+  ): { update(progress: ArtifactDownloadProgress): void; flush(): Promise<void> } {
+    let lastProgress: ArtifactDownloadProgress = { downloadedBytes: 0, totalBytes };
+    let lastWriteAt = 0;
+    let queued = Promise.resolve();
+    const enqueue = (progress: ArtifactDownloadProgress, force = false): void => {
+      lastProgress = progress;
+      const currentTime = Date.now();
+      if (!force && currentTime - lastWriteAt < 250) return;
+      lastWriteAt = currentTime;
+      queued = queued
+        .then(() =>
+          writeStatusSnapshot(
+            statusPath,
+            statusSnapshot(version, installation, "downloading", lastProgress),
+          ),
+        )
+        .catch(() => undefined);
+    };
+    enqueue(lastProgress, true);
+    return {
+      update(progress) {
+        enqueue(progress);
+      },
+      async flush() {
+        enqueue(lastProgress, true);
+        await queued;
+      },
+    };
+  }
+
   async function prepareCommon(
     options: CommonUpdateOptions,
     installation: BackgroundUpdateInstallation,
@@ -194,6 +288,7 @@ export function createBackgroundUpdateManager(
     const requestPath = path.join(workDirectory, "request-v1.json");
     const statusPath = path.join(workDirectory, "status-v1.json");
     await writePrivateJson(statusPath, preparedStatus(version, installation, now()));
+    await options.onPrepared?.({ version, installation, statusPath });
     return {
       version,
       launcherPid,
@@ -206,15 +301,19 @@ export function createBackgroundUpdateManager(
   }
 
   async function prepareArtifact(
+    common: PreparedCommonUpdate,
+    installation: BackgroundUpdateInstallation,
     sourceValue: ArtifactSource,
-    workDirectory: string,
     fileName: string,
   ): Promise<{ source: ArtifactSource; artifactPath: string }> {
     const source = validateArtifact(sourceValue);
-    const temporaryPath = path.join(workDirectory, `.${fileName}.download`);
-    const artifactPath = path.join(workDirectory, fileName);
+    const temporaryPath = path.join(common.workDirectory, `.${fileName}.download`);
+    const artifactPath = path.join(common.workDirectory, fileName);
+    const progress = progressReporter(common.statusPath, common.version, installation, source.size);
     try {
-      const result = await download(source, temporaryPath);
+      const result = await download(source, temporaryPath, progress.update);
+      progress.update({ downloadedBytes: result.bytes, totalBytes: source.size });
+      await progress.flush();
       const finalUrl = new URL(result.finalUrl);
       if (finalUrl.protocol !== "https:" || finalUrl.username || finalUrl.password) {
         throw new Error("update artifact downloader returned a non-HTTPS URL");
@@ -224,6 +323,8 @@ export function createBackgroundUpdateManager(
       return { source, artifactPath };
     } catch (error) {
       await rm(temporaryPath, { force: true });
+      await progress.flush();
+      await writeFailedStatus(common.statusPath, common.version, installation, error);
       throw error;
     }
   }
@@ -242,6 +343,10 @@ export function createBackgroundUpdateManager(
       installation,
     };
     await writePrivateJson(common.requestPath, request);
+    await writeStatusSnapshot(
+      common.statusPath,
+      statusSnapshot(common.version, installation.kind, "prepared"),
+    );
     preparedRequests.add(common.requestPath);
     return Object.freeze({
       version: common.version,
@@ -256,16 +361,21 @@ export function createBackgroundUpdateManager(
   return Object.freeze({
     async prepareNpm(options: NpmUpdateOptions): Promise<PreparedBackgroundUpdate> {
       const common = await prepareCommon(options, "npm");
-      return finalize(common, {
-        kind: "npm",
-        node_path: await requireRegularFile(options.nodePath, "npm Node.js executable"),
-        npm_cli_path: await requireRegularFile(options.npmCliPath, "npm CLI"),
-        npm_launcher_path: await requireRegularFile(
-          options.npmLauncherPath,
-          "npm codexhost launcher",
-        ),
-        package_root: requireAbsolutePath(options.packageRoot, "npm platform package root"),
-      });
+      try {
+        return await finalize(common, {
+          kind: "npm",
+          node_path: await requireRegularFile(options.nodePath, "npm Node.js executable"),
+          npm_cli_path: await requireRegularFile(options.npmCliPath, "npm CLI"),
+          npm_launcher_path: await requireRegularFile(
+            options.npmLauncherPath,
+            "npm codexhost launcher",
+          ),
+          package_root: requireAbsolutePath(options.packageRoot, "npm platform package root"),
+        });
+      } catch (error) {
+        await writeFailedStatus(common.statusPath, common.version, "npm", error);
+        throw error;
+      }
     },
 
     async prepareWindowsInstaller(
@@ -273,7 +383,12 @@ export function createBackgroundUpdateManager(
     ): Promise<PreparedBackgroundUpdate> {
       if (platform !== "win32") throw new Error("Windows installer updates require Windows");
       const common = await prepareCommon(options, "windows-installer");
-      const artifact = await prepareArtifact(options.artifact, common.workDirectory, "update.exe");
+      const artifact = await prepareArtifact(
+        common,
+        "windows-installer",
+        options.artifact,
+        "update.exe",
+      );
       return finalize(
         common,
         {
@@ -293,7 +408,7 @@ export function createBackgroundUpdateManager(
       if (path.extname(appPath) !== ".app") {
         throw new Error("macOS application path must end in .app");
       }
-      const artifact = await prepareArtifact(options.artifact, common.workDirectory, "update.dmg");
+      const artifact = await prepareArtifact(common, "macos-dmg", options.artifact, "update.dmg");
       return finalize(
         common,
         {

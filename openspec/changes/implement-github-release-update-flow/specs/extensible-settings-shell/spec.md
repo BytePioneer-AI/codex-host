@@ -35,6 +35,7 @@ The production settings registry SHALL expose one Updates page backed only by a 
 #### Scenario: User starts an update
 - **WHEN** the user activates update-and-restart and the fixed start operation accepts it
 - **THEN** the page SHALL show bounded preparation or waiting state until the managed Desktop exits
+- **AND** installer preparation SHALL show downloaded and total bytes when available
 - **AND** duplicate activation SHALL remain disabled
 
 #### Scenario: Application returns after update

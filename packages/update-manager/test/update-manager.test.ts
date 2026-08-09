@@ -6,7 +6,11 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createBackgroundUpdateManager, type CommonUpdateOptions } from "../src/index.js";
+import {
+  createBackgroundUpdateManager,
+  discoverLatestUpdateStatus,
+  type CommonUpdateOptions,
+} from "../src/index.js";
 
 const roots: string[] = [];
 
@@ -107,6 +111,41 @@ describe("background update manager", () => {
     expect(() => manager.start(prepared)).toThrow("already started");
   });
 
+  it("reports artifact download progress while preparing an installer", async () => {
+    const root = await temporaryDirectory();
+    const bytes = Buffer.from("progress-artifact");
+    const progress: Array<{ downloadedBytes: number; totalBytes: number | undefined }> = [];
+    const manager = createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "progress-fixture",
+      download: async (_source, destination, onProgress) => {
+        const first = { downloadedBytes: 4, totalBytes: bytes.length };
+        const last = { downloadedBytes: bytes.length, totalBytes: bytes.length };
+        if (!onProgress) throw new Error("download progress callback is missing");
+        await onProgress(first);
+        await onProgress(last);
+        progress.push(first, last);
+        await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+        return { bytes: bytes.length, finalUrl: "https://downloads.example.test/final" };
+      },
+    });
+    const prepared = await manager.prepareMacOsDmg({
+      ...(await commonOptions(root)),
+      artifact: {
+        url: "https://downloads.example.test/codexhost.dmg",
+        sha256: sha256(bytes),
+        size: bytes.length,
+      },
+      appPath: path.join(root, "Applications", "codexhost.app"),
+      onPrepared: () => undefined,
+    });
+    expect(prepared.installation).toBe("macos-dmg");
+    expect(progress).toEqual([
+      { downloadedBytes: 4, totalBytes: bytes.length },
+      { downloadedBytes: bytes.length, totalBytes: bytes.length },
+    ]);
+  });
+
   it("downloads and verifies the Windows installer before creating a request", async () => {
     const root = await temporaryDirectory();
     const bytes = Buffer.from("signed-or-reviewed-inno-installer");
@@ -199,6 +238,33 @@ describe("background update manager", () => {
         installRoot: path.join(root, "install"),
       }),
     ).rejects.toThrow("require Windows");
+  });
+
+  it("records installer preparation failures as terminal status", async () => {
+    const root = await temporaryDirectory();
+    const common = await commonOptions(root);
+    const manager = createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "failed-download",
+      download: async () => {
+        throw new Error("GitHub download failed");
+      },
+    });
+
+    await expect(
+      manager.prepareMacOsDmg({
+        ...common,
+        artifact: {
+          url: "https://downloads.example.test/codexhost.dmg",
+          sha256: "00".repeat(32),
+          size: 10,
+        },
+        appPath: path.join(root, "Applications", "codexhost.app"),
+      }),
+    ).rejects.toThrow("GitHub download failed");
+    await expect(discoverLatestUpdateStatus(common.stateDirectory)).resolves.toMatchObject({
+      status: { phase: "failed", error: "GitHub download failed" },
+    });
   });
 
   it("strictly validates persisted status", async () => {

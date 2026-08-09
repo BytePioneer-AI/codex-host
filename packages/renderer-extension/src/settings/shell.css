@@ -401,6 +401,18 @@ button {
   color: #ef4444;
 }
 
+.settings-update-progress {
+  width: 100%;
+  height: 8px;
+  accent-color: #238be8;
+}
+
+.settings-update-progress-detail {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .settings-update-notes {
   max-height: 240px;
   padding: 14px;

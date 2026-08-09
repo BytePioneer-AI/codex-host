@@ -35,6 +35,25 @@ describe("update runtime contracts", () => {
     expect(updateStatusResultSchema.parse({ status: null })).toEqual({ status: null });
   });
 
+  it("accepts bounded download progress and rejects impossible byte counts", () => {
+    expect(
+      updateStatusSchema.parse({
+        ...status,
+        phase: "downloading",
+        downloadedBytes: 42,
+        totalBytes: 100,
+      }),
+    ).toMatchObject({ downloadedBytes: 42, totalBytes: 100 });
+    expect(
+      updateStatusSchema.safeParse({
+        ...status,
+        phase: "downloading",
+        downloadedBytes: 101,
+        totalBytes: 100,
+      }).success,
+    ).toBe(false);
+  });
+
   it("requires empty strict params for every fixed operation", () => {
     expect(updateEmptyParamsSchema.parse({})).toEqual({});
     for (const privileged of [

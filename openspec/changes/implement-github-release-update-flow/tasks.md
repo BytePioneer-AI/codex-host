@@ -26,10 +26,11 @@
 - [x] 5.1 Extend the existing method-specific Renderer client with strict check, start, and status methods.
 - [x] 5.2 Add localized Updates settings navigation and page UI for current/latest version, bounded plain-text Release body, release-notes link, update-and-restart, bounded pending states, retry, and post-restart result.
 - [x] 5.3 Add page/client/lifecycle tests covering stale request cancellation, malformed Host results, duplicate activation, terminal recovery, responsive layout, and unchanged settings disposal.
+- [x] 5.4 Add installer download progress status, asynchronous Host preparation, percentage rendering, and failure-state recovery tests.
 
 ## 6. Release and Verification
 
 - [x] 6.1 Add release-contract checks that the four published asset names remain exact and document that GitHub API asset size/digest are the update inputs without adding release files.
-- [ ] 6.2 Run focused TypeScript/Rust/release tests, `npm run check`, `npm run build`, strict OpenSpec validation, and `git diff --check`; resolve affected failures.
+- [x] 6.2 Run focused TypeScript/Rust/release tests, `npm run check`, `npm run build`, strict OpenSpec validation, and `git diff --check`; resolve affected failures.
 - [ ] 6.3 Perform real old-to-new npm and macOS arm64 upgrade/relaunch/failure recovery gates on the current host and record only observed results.
 - [ ] 6.4 Perform real Windows x64, Windows ARM64, and macOS x64 upgrade gates on native target hosts before marking those targets verified.

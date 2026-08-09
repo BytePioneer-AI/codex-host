@@ -16,6 +16,10 @@ import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
+import {
+  RendererUpdateRequestTimeoutError,
+  runBoundedRendererUpdateRequest,
+} from "./update-request.js";
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
@@ -94,7 +98,21 @@ function statusMessage(
   if (status.phase === "succeeded") return messages.updateSucceeded;
   if (status.phase === "failed") return status.error ?? messages.updateFailed;
   if (status.phase === "restarting") return messages.updateRestarting;
+  if (status.phase === "downloading") return messages.updateDownloading;
   return messages.updatePreparing;
+}
+
+function formatUpdateBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB"];
+  let scaled = value;
+  let unit = "B";
+  for (const nextUnit of units) {
+    scaled /= 1024;
+    unit = nextUnit;
+    if (scaled < 1024 || nextUnit === units.at(-1)) break;
+  }
+  return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${unit}`;
 }
 
 function updatesPage(
@@ -135,22 +153,40 @@ function updatesPage(
         panel.append(title, copy);
       };
 
+      const renderRequestFailure = (error: unknown): void => {
+        renderPendingStatus(
+          null,
+          error instanceof RendererUpdateRequestTimeoutError
+            ? messages.updateRequestTimeout
+            : error instanceof Error
+              ? error.message
+              : messages.updateFailed,
+          "failed",
+        );
+      };
+
       const scheduleStatusPoll = (client: RendererUpdateClient, resetAttempts = false): void => {
         clearPoll();
         if (resetAttempts) pollAttempts = 0;
-        if (pollAttempts >= 320) return;
+        if (pollAttempts >= 320) {
+          renderPendingStatus(null, messages.updateRequestTimeout, "failed");
+          return;
+        }
         pollAttempts += 1;
         pollTimer = document.defaultView?.setTimeout(() => {
-          void context.runLatest(() => client.readUpdateStatus(), {
-            success(result) {
-              const message = statusMessage(result.status, messages);
-              if (isPendingStatus(result.status)) scheduleStatusPoll(client);
-              if (message) renderPendingStatus(result.status, message);
+          void context.runLatest(
+            (signal) => runBoundedRendererUpdateRequest(() => client.readUpdateStatus(), signal),
+            {
+              success(result) {
+                const message = statusMessage(result.status, messages);
+                if (isPendingStatus(result.status)) scheduleStatusPoll(client);
+                if (message) renderPendingStatus(result.status, message);
+              },
+              failure(error) {
+                renderRequestFailure(error);
+              },
             },
-            failure(error) {
-              renderUnavailable(error instanceof Error ? error.message : messages.updateFailed);
-            },
-          });
+          );
         }, 750);
       };
 
@@ -164,6 +200,25 @@ function updatesPage(
         const state = document.createElement("strong");
         state.textContent = message;
         panel.append(state);
+        if (
+          status?.phase === "downloading" &&
+          status.totalBytes !== undefined &&
+          status.downloadedBytes !== undefined
+        ) {
+          const progress = document.createElement("progress");
+          progress.className = "settings-update-progress";
+          progress.max = status.totalBytes;
+          progress.value = Math.min(status.downloadedBytes, status.totalBytes);
+          progress.setAttribute("aria-label", messages.updateDownloading);
+          const detail = document.createElement("span");
+          detail.className = "settings-update-progress-detail";
+          const percent = Math.min(
+            100,
+            Math.round((status.downloadedBytes / status.totalBytes) * 1000) / 10,
+          );
+          detail.textContent = `${percent}% · ${formatUpdateBytes(status.downloadedBytes)} / ${formatUpdateBytes(status.totalBytes)}`;
+          panel.append(progress, detail);
+        }
         if (viewPhase === "failed") {
           const retry = document.createElement("button");
           retry.type = "button";
@@ -178,24 +233,23 @@ function updatesPage(
         if (pending) return;
         pending = true;
         renderPendingStatus(null, messages.updatePreparing);
-        void context.runLatest(() => client.startUpdate(), {
-          success(result) {
-            pending = false;
-            renderPendingStatus(
-              result.status,
-              statusMessage(result.status, messages) ?? messages.updatePreparing,
-            );
-            if (isPendingStatus(result.status)) scheduleStatusPoll(client, true);
+        void context.runLatest(
+          (signal) => runBoundedRendererUpdateRequest(() => client.startUpdate(), signal),
+          {
+            success(result) {
+              pending = false;
+              renderPendingStatus(
+                result.status,
+                statusMessage(result.status, messages) ?? messages.updatePreparing,
+              );
+              if (isPendingStatus(result.status)) scheduleStatusPoll(client, true);
+            },
+            failure(error) {
+              pending = false;
+              renderRequestFailure(error);
+            },
           },
-          failure(error) {
-            pending = false;
-            renderPendingStatus(
-              null,
-              error instanceof Error ? error.message : messages.updateFailed,
-              "failed",
-            );
-          },
-        });
+        );
       };
 
       const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
@@ -275,17 +329,20 @@ function updatesPage(
           return Promise.resolve();
         }
         pending = true;
-        renderPendingStatus(null, messages.updatePreparing);
-        return context.runLatest(() => client.checkUpdate(), {
-          success(result) {
-            pending = false;
-            renderCheck(result, client);
+        renderPendingStatus(null, messages.updateChecking);
+        return context.runLatest(
+          (signal) => runBoundedRendererUpdateRequest(() => client.checkUpdate(), signal),
+          {
+            success(result) {
+              pending = false;
+              renderCheck(result, client);
+            },
+            failure(error) {
+              pending = false;
+              renderRequestFailure(error);
+            },
           },
-          failure(error) {
-            pending = false;
-            renderUnavailable(error instanceof Error ? error.message : messages.updateFailed);
-          },
-        });
+        );
       };
 
       void load();

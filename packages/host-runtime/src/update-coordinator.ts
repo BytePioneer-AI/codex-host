@@ -13,6 +13,7 @@ import {
   createBackgroundUpdateManager,
   discoverLatestUpdateStatus,
   fetchLatestGitHubRelease,
+  isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
   selectInstallerReleaseArtifact,
@@ -143,7 +144,15 @@ export function createHostUpdateCoordinator(
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
-    return discovered ? publicStatus(discovered.status) : null;
+    if (!discovered) return null;
+    if (
+      discovered.status.phase !== "succeeded" &&
+      discovered.status.phase !== "failed" &&
+      !(await isUpdateOperationActive(context.common.stateDirectory))
+    ) {
+      return null;
+    }
+    return publicStatus(discovered.status);
   }
 
   async function installable(

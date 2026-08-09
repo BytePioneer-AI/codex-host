@@ -37,6 +37,11 @@ async function regularFile(filePath: string): Promise<boolean> {
   }
 }
 
+export async function isUpdateOperationActive(stateDirectory: string): Promise<boolean> {
+  if (!path.isAbsolute(stateDirectory)) throw new Error("update state directory must be absolute");
+  return regularFile(path.join(stateDirectory, LOCK_FILE));
+}
+
 export async function discoverLatestUpdateStatus(
   stateDirectory: string,
 ): Promise<DiscoveredUpdateStatus | null> {

@@ -29,6 +29,7 @@ export {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   discoverLatestUpdateStatus,
+  isUpdateOperationActive,
   recoverUpdateOperationLock,
   type DiscoveredUpdateStatus,
   type UpdateOperationLock,

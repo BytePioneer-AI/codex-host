@@ -8,6 +8,7 @@ import {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   discoverLatestUpdateStatus,
+  isUpdateOperationActive,
   recoverUpdateOperationLock,
 } from "@codexhost/update-manager";
 
@@ -49,6 +50,17 @@ describe("update operation state", () => {
       statusPath: latest,
       status: { phase: "failed", error: "permission denied" },
     });
+  });
+
+  it("reports whether a live operation lock exists", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-active-"));
+    roots.push(root);
+    await expect(isUpdateOperationActive(root)).resolves.toBe(false);
+    const lock = await acquireUpdateOperationLock(root);
+    if (!lock) throw new Error("operation lock was not acquired");
+    await expect(isUpdateOperationActive(root)).resolves.toBe(true);
+    await lock.release();
+    await expect(isUpdateOperationActive(root)).resolves.toBe(false);
   });
 
   it("allows only one atomic operation lock and recovers it after terminal status", async () => {

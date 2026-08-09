@@ -40,9 +40,9 @@ import {
 import {
   decodeClaudeTransportModelId,
   findComposerModelTarget,
-  isDraftPrewarmPolicyReady,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
+  waitForRendererDraftPrewarmPolicy,
   type LockedComposerSelection,
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
@@ -472,10 +472,7 @@ export function installRendererBindingProbe(
   };
 
   const clearDraftPrewarm = async (): Promise<void> => {
-    const policy = window.__codexhostDraftPrewarmPolicyV1;
-    if (!isDraftPrewarmPolicyReady(policy)) {
-      throw new Error("Renderer draft prewarm policy is unavailable");
-    }
+    const policy = await waitForRendererDraftPrewarmPolicy(window);
     await policy.clear();
   };
 

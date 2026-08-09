@@ -109,6 +109,14 @@ export interface RendererDraftPrewarmPolicy {
   clear(): Promise<void>;
 }
 
+interface RendererDraftPrewarmPolicyTarget {
+  __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
+  setTimeout(handler: TimerHandler, timeout?: number): number;
+}
+
+const DRAFT_PREWARM_POLICY_WAIT_TIMEOUT_MS = 10_000;
+const DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS = 25;
+
 declare global {
   interface Window {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
@@ -626,6 +634,21 @@ export function isMainProcessTitlePolicyReady(value: unknown): boolean {
 
 export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraftPrewarmPolicy {
   return isRecord(value) && value.state === "ready" && typeof value.clear === "function";
+}
+
+export async function waitForRendererDraftPrewarmPolicy(
+  target: RendererDraftPrewarmPolicyTarget,
+): Promise<RendererDraftPrewarmPolicy> {
+  const deadline = Date.now() + DRAFT_PREWARM_POLICY_WAIT_TIMEOUT_MS;
+  while (true) {
+    const policy = target.__codexhostDraftPrewarmPolicyV1;
+    if (isDraftPrewarmPolicyReady(policy)) return policy;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Renderer draft prewarm policy is unavailable");
+    await new Promise<void>((resolve) => {
+      target.setTimeout(resolve, Math.min(DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS, remaining));
+    });
+  }
 }
 
 export function modelSelectionForAgent(

@@ -178,6 +178,7 @@ export function createHostUpdateCoordinator(
       } catch (error) {
         return {
           currentVersion: "0.0.0",
+          installation: null,
           latestVersion: null,
           updateAvailable: false,
           installationAvailable: false,
@@ -203,6 +204,7 @@ export function createHostUpdateCoordinator(
         }
         return {
           currentVersion: context.metadata.version,
+          installation: context.installation.kind,
           latestVersion: release.version,
           updateAvailable,
           installationAvailable,
@@ -214,6 +216,7 @@ export function createHostUpdateCoordinator(
       } catch (error) {
         return {
           currentVersion: context.metadata.version,
+          installation: context.installation.kind,
           latestVersion: null,
           updateAvailable: false,
           installationAvailable: false,

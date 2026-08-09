@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +56,7 @@ async function createNpmMetaPackageFixture(root) {
         `${JSON.stringify(createNpmMetaPackageManifest({ version: "0.1.0" }), null, 2)}\n`,
       );
     } else if (relative === "bin/codexhost.js") {
-      await writeFile(absolute, createNpmBinLauncherSource());
+      await writeFile(absolute, createNpmBinLauncherSource({ version: "0.1.0" }));
     } else {
       await writeFile(absolute, `npm-meta-package:${relative}\n`);
     }
@@ -162,7 +163,7 @@ describe("npm package release", () => {
   });
 
   it("injects package resources when the user runs codexhost with no args", () => {
-    const source = createNpmBinLauncherSource();
+    const source = createNpmBinLauncherSource({ version: "0.1.0" });
     expect(source).toContain('"darwin-arm64": "@codexhost/cli-darwin-arm64"');
     expect(source).toContain("require.resolve");
     expect(source).toContain("--omit=optional");
@@ -177,6 +178,23 @@ describe("npm package release", () => {
     expect(source).toContain('launcherOutput.includes("ready\\n")');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it.each(["--version", "-v"])("prints the npm package version for %s", async (option) => {
+    const root = await temporaryDirectory();
+    const launcherPath = path.join(root, "codexhost.mjs");
+    try {
+      await writeFile(launcherPath, createNpmBinLauncherSource({ version: "1.2.3" }));
+      const result = spawnSync(process.execPath, [launcherPath, option], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("1.2.3\n");
+      expect(result.stderr).toBe("");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("validates the npm package allowlist without an embedded Node runtime", async () => {

@@ -36,6 +36,9 @@ describe("Renderer settings localization", () => {
     expect(chinese.interfaceLanguage).toBe("界面语言");
     expect(chinese.automaticLanguage).toBe("自动（跟随 Codex）");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
+    expect(chinese.updateInstallation).toBe("安装方式");
+    expect(chinese.updateInstallationWindowsInstaller).toBe("Windows 安装程序");
+    expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
     expect(Object.isFrozen(chinese.pageLabels)).toBe(true);

@@ -97,6 +97,7 @@ describe("Renderer fixed Model request client", () => {
       })
       .mockResolvedValueOnce({
         currentVersion: "1.2.2",
+        installation: "npm",
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,
@@ -266,6 +267,7 @@ describe("Renderer fixed Model request client", () => {
   it("rejects update results that expose privileged artifact data", async () => {
     const sendRequest = vi.fn(async () => ({
       currentVersion: "1.2.2",
+      installation: "npm",
       latestVersion: "1.2.3",
       updateAvailable: true,
       installationAvailable: true,

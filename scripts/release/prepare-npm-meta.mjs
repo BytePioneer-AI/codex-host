@@ -53,6 +53,13 @@ npm install -g ${NPM_PACKAGE_NAME}@${version}
 
 npm automatically installs the matching macOS or Windows platform package. Node.js 22 or newer and Codex Desktop are required.
 
+## Usage
+
+\`\`\`bash
+codexhost --version
+codexhost
+\`\`\`
+
 The \`codexhost\` command starts Codex Desktop and returns immediately: the packaged Launcher keeps supervising in the background and exits after you quit the Desktop. Re-running \`codexhost\` attaches to the same controlled instance.
 
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
@@ -104,7 +111,7 @@ export async function prepareNpmMetaPackage({ version, root = repositoryRoot }) 
   await mkdir(path.join(packageRoot, "bin"), { recursive: true });
   await writeFile(
     path.join(packageRoot, "bin", "codexhost.js"),
-    createNpmBinLauncherSource(),
+    createNpmBinLauncherSource({ version: packageVersion }),
     "utf8",
   );
   await chmod(path.join(packageRoot, "bin", "codexhost.js"), 0o755);

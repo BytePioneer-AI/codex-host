@@ -6,6 +6,7 @@ import { startCompatibilityUpdate } from "../src/compatibility-update.js";
 function updateCheck(overrides: Partial<UpdateCheckResult> = {}): UpdateCheckResult {
   return {
     currentVersion: "0.1.0",
+    installation: "npm",
     latestVersion: "0.1.0",
     updateAvailable: false,
     installationAvailable: false,

@@ -36,6 +36,11 @@ export interface RendererSettingsMessages {
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
   readonly updateCurrentVersion: string;
+  readonly updateInstallation: string;
+  readonly updateInstallationNpm: string;
+  readonly updateInstallationWindowsInstaller: string;
+  readonly updateInstallationMacOsDmg: string;
+  readonly updateInstallationUnknown: string;
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
@@ -71,6 +76,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
   updateCurrentVersion: "Current version",
+  updateInstallation: "Installation method",
+  updateInstallationNpm: "npm",
+  updateInstallationWindowsInstaller: "Windows installer",
+  updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationUnknown: "Unknown",
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
@@ -112,6 +122,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",
   updateCurrentVersion: "当前版本",
+  updateInstallation: "安装方式",
+  updateInstallationNpm: "npm",
+  updateInstallationWindowsInstaller: "Windows 安装程序",
+  updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationUnknown: "未知",
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",

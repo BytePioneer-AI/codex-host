@@ -229,13 +229,23 @@ export function createNpmPackageManifest({ version, target }) {
   };
 }
 
-export function createNpmBinLauncherSource() {
+export function createNpmBinLauncherSource({ version }) {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const version = ${JSON.stringify(version)};
+const userArguments = process.argv.slice(2);
+if (
+  userArguments.length === 1 &&
+  (userArguments[0] === "--version" || userArguments[0] === "-v")
+) {
+  console.log(version);
+  process.exit(0);
+}
 
 const platformPackages = ${JSON.stringify(NPM_RUNTIME_PLATFORM_PACKAGES, null, 2)};
 const platformKey = \`\${process.platform}-\${process.arch}\`;
@@ -314,7 +324,6 @@ const updateEnvironment = {
   CODEXHOST_NPM_PACKAGE_ROOT: packageRoot,
 };
 
-const userArguments = process.argv.slice(2);
 let launchArguments;
 if (userArguments.length === 0) {
   launchArguments = ["launch", "--agent", "pi"];
@@ -327,6 +336,7 @@ if (userArguments.length === 0) {
     [
       "usage:",
       "  codexhost",
+      "  codexhost --version",
       "  codexhost inspect",
       "  codexhost launch --agent <codex|pi> [launcher options]",
       "",
@@ -436,6 +446,7 @@ This package is platform-specific (\`os=${npmPackageOs(target).join(",")}\`, \`c
 
 \`\`\`bash
 codexhost
+codexhost --version
 codexhost inspect
 codexhost launch --agent pi
 codexhost launch --agent codex

@@ -52,6 +52,7 @@ const githubReleaseNotesUrlSchema = z
 
 export const updateCheckResultSchema = z.strictObject({
   currentVersion: updateSemanticVersionSchema,
+  installation: updateInstallationSchema.nullable(),
   latestVersion: updateSemanticVersionSchema.nullable(),
   updateAvailable: z.boolean(),
   installationAvailable: z.boolean(),

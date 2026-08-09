@@ -1,5 +1,6 @@
 import type {
   UpdateCheckResult,
+  UpdateInstallation,
   UpdateStartResult,
   UpdateStatus,
   UpdateStatusResult,
@@ -86,6 +87,18 @@ function versionRow(
   return row;
 }
 
+function installationLabel(
+  installation: UpdateInstallation | null,
+  messages: RendererSettingsMessages,
+): string {
+  if (installation === "npm") return messages.updateInstallationNpm;
+  if (installation === "windows-installer") {
+    return messages.updateInstallationWindowsInstaller;
+  }
+  if (installation === "macos-dmg") return messages.updateInstallationMacOsDmg;
+  return messages.updateInstallationUnknown;
+}
+
 function isPendingStatus(status: UpdateStatus | null): boolean {
   return status !== null && status.phase !== "succeeded" && status.phase !== "failed";
 }
@@ -128,10 +141,27 @@ function updatesPage(
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.updates;
+      const metadata = document.createElement("div");
+      metadata.className = "settings-update-metadata";
+      const currentVersion = document.createElement("div");
+      currentVersion.className = "settings-update-metadata__item";
+      const currentVersionLabel = document.createElement("span");
+      currentVersionLabel.textContent = messages.updateCurrentVersion;
+      const currentVersionValue = document.createElement("strong");
+      currentVersionValue.textContent = "-";
+      currentVersion.append(currentVersionLabel, currentVersionValue);
+      const installation = document.createElement("div");
+      installation.className = "settings-update-metadata__item";
+      const installationName = document.createElement("span");
+      installationName.textContent = messages.updateInstallation;
+      const installationValue = document.createElement("strong");
+      installationValue.textContent = "-";
+      installation.append(installationName, installationValue);
+      metadata.append(currentVersion, installation);
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
       panel.setAttribute("aria-live", "polite");
-      context.content.append(heading, panel);
+      context.content.append(heading, metadata, panel);
       let pollTimer: number | undefined;
       let pollAttempts = 0;
       let pending = false;
@@ -253,6 +283,8 @@ function updatesPage(
       };
 
       const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
+        currentVersionValue.textContent = `v${result.currentVersion}`;
+        installationValue.textContent = installationLabel(result.installation, messages);
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
           renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
@@ -264,9 +296,7 @@ function updatesPage(
           : result.updateAvailable
             ? "available"
             : "current";
-        panel.replaceChildren(
-          versionRow(context, messages.updateCurrentVersion, result.currentVersion),
-        );
+        panel.replaceChildren();
         if (result.latestVersion) {
           panel.append(versionRow(context, messages.updateLatestVersion, result.latestVersion));
         }

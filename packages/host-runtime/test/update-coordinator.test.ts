@@ -135,6 +135,7 @@ describe("Host update coordinator", () => {
 
     await expect(coordinator.check()).resolves.toMatchObject({
       currentVersion: "1.2.2",
+      installation: "npm",
       latestVersion: "1.2.3",
       updateAvailable: true,
       installationAvailable: true,
@@ -256,6 +257,7 @@ describe("Host update coordinator", () => {
     );
     const check = vi.fn(async () => ({
       currentVersion: "1.2.2",
+      installation: "npm" as const,
       latestVersion: "1.2.3",
       updateAvailable: true,
       installationAvailable: true,
@@ -283,6 +285,7 @@ describe("Host update coordinator", () => {
     });
     await expect(failed.check()).resolves.toMatchObject({
       currentVersion: "1.2.2",
+      installation: "npm",
       latestVersion: null,
       updateAvailable: false,
       error: "GitHub unavailable",

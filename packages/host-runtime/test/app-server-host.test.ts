@@ -264,6 +264,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const updateCoordinator: HostUpdateCoordinator = {
       check: vi.fn(async () => ({
         currentVersion: "1.2.2",
+        installation: "npm" as const,
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,

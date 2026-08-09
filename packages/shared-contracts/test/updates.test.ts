@@ -21,6 +21,7 @@ describe("update runtime contracts", () => {
     expect(
       updateCheckResultSchema.parse({
         currentVersion: "1.2.2",
+        installation: "macos-dmg",
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,
@@ -29,7 +30,11 @@ describe("update runtime contracts", () => {
         status: null,
         error: null,
       }),
-    ).toMatchObject({ latestVersion: "1.2.3", updateAvailable: true });
+    ).toMatchObject({
+      installation: "macos-dmg",
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+    });
     expect(updateStartResultSchema.parse({ status })).toEqual({ status });
     expect(updateStatusResultSchema.parse({ status })).toEqual({ status });
     expect(updateStatusResultSchema.parse({ status: null })).toEqual({ status: null });
@@ -75,6 +80,7 @@ describe("update runtime contracts", () => {
     expect(
       updateCheckResultSchema.safeParse({
         currentVersion: "1.2.2",
+        installation: "windows-installer",
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,
@@ -87,6 +93,7 @@ describe("update runtime contracts", () => {
     expect(
       updateCheckResultSchema.safeParse({
         currentVersion: "1.2.2",
+        installation: "npm",
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,
@@ -99,6 +106,7 @@ describe("update runtime contracts", () => {
     expect(
       updateCheckResultSchema.safeParse({
         currentVersion: "1.2.2",
+        installation: "npm",
         latestVersion: "1.2.3",
         updateAvailable: true,
         installationAvailable: true,

@@ -23,7 +23,7 @@ codexhost
 
 **方式二：下载安装包**
 
-从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
+从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
 
 ## 界面预览
 

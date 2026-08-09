@@ -167,32 +167,29 @@ export function mountRendererSettingsTrigger(
   updateButton.setAttribute("aria-haspopup", "dialog");
   updateButton.title = messages.updateAvailable;
   updateButton.style.display = "none";
-  updateButton.style.position = "relative";
   updateButton.style.alignItems = "center";
   updateButton.style.justifyContent = "center";
-  updateButton.style.width = "28px";
   updateButton.style.height = "28px";
-  updateButton.style.padding = "0";
-  updateButton.style.border = "0";
-  updateButton.style.borderRadius = "8px";
-  updateButton.style.background = "transparent";
-  updateButton.style.color = "inherit";
+  updateButton.style.padding = "0 10px";
+  updateButton.style.gap = "6px";
+  updateButton.style.border = "1px solid #1d4ed8";
+  updateButton.style.borderRadius = "7px";
+  updateButton.style.background = "#2563eb";
+  updateButton.style.color = "#ffffff";
   updateButton.style.cursor = available ? "pointer" : "not-allowed";
+  updateButton.style.opacity = available ? "1" : "0.5";
+  updateButton.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.18)";
   updateButton.style.outlineOffset = "2px";
   updateButton.style.setProperty("-webkit-app-region", "no-drag");
-  updateButton.append(createRendererSettingsIcon("updates", 16));
+  updateButton.append(createRendererSettingsIcon("updates", 15));
 
-  const updateIndicator = ownerDocument.createElement("span");
-  updateIndicator.setAttribute("aria-hidden", "true");
-  updateIndicator.style.position = "absolute";
-  updateIndicator.style.top = "3px";
-  updateIndicator.style.right = "3px";
-  updateIndicator.style.width = "6px";
-  updateIndicator.style.height = "6px";
-  updateIndicator.style.background = "#ef4444";
-  updateIndicator.style.border = "1px solid currentColor";
-  updateIndicator.style.borderRadius = "50%";
-  updateButton.append(updateIndicator);
+  const updateLabel = ownerDocument.createElement("span");
+  updateLabel.textContent = messages.pageLabels.updates;
+  updateLabel.style.fontSize = "12px";
+  updateLabel.style.fontWeight = "600";
+  updateLabel.style.lineHeight = "1";
+  updateLabel.style.whiteSpace = "nowrap";
+  updateButton.append(updateLabel);
 
   const onPointerEnter = (): void => {
     if (!button.disabled) button.style.background = "rgba(127, 127, 127, 0.16)";
@@ -205,10 +202,14 @@ export function mountRendererSettingsTrigger(
     if (!button.disabled) onOpen(button);
   };
   const onUpdatePointerEnter = (): void => {
-    if (!updateButton.disabled) updateButton.style.background = "rgba(127, 127, 127, 0.16)";
+    if (!updateButton.disabled) {
+      updateButton.style.background = "#1d4ed8";
+      updateButton.style.boxShadow = "0 2px 4px rgba(15, 23, 42, 0.22)";
+    }
   };
   const onUpdatePointerLeave = (): void => {
-    updateButton.style.background = "transparent";
+    updateButton.style.background = "#2563eb";
+    updateButton.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.18)";
   };
   const onUpdateClick = (event: MouseEvent): void => {
     event.stopPropagation();

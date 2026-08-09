@@ -108,6 +108,11 @@ describe("Renderer settings header trigger", () => {
     expect(control.updateButton.style.display).toBe("none");
     control.setUpdateAvailable(true);
     expect(control.updateButton.style.display).toBe("inline-flex");
+    expect(control.updateButton.style.background).toBe("#2563eb");
+    expect(control.updateButton.style.color).toBe("#ffffff");
+    expect(
+      (control.updateButton.children[1] as unknown as { textContent: string }).textContent,
+    ).toBe("Updates");
     expect(control.root.hasAttribute("data-update-available")).toBe(true);
     (control.updateButton as unknown as FakeElement).dispatch("click");
     expect(opened).toHaveBeenCalledWith(control.updateButton, "updates");

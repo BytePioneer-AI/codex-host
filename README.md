@@ -1,6 +1,6 @@
 # codexhost
 <p align="center">
-  <a href="./LICENSE"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a></p>
 
 
@@ -84,6 +84,6 @@ codexhost 不走这条路：
 
 ## License
 
-本仓库源代码以 [MIT License](./LICENSE) 发布。
+本仓库源代码以 [MIT](https://opensource.org/licenses/MIT) 许可发布。
 
 Codex Desktop、Claude Code、各模型服务及其商标归各自权利方所有；本项目不对其再授权。

@@ -22,6 +22,9 @@ import {
   runBoundedRendererUpdateRequest,
 } from "./update-request.js";
 
+export const CODEXHOST_RELEASES_LATEST_URL =
+  "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
   "model-pool",
@@ -161,7 +164,19 @@ function updatesPage(
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
       panel.setAttribute("aria-live", "polite");
-      context.content.append(heading, metadata, panel);
+      const actions = document.createElement("div");
+      actions.className = "settings-update-actions";
+      const releaseLink = document.createElement("a");
+      releaseLink.className = "settings-update-link";
+      releaseLink.href = CODEXHOST_RELEASES_LATEST_URL;
+      releaseLink.target = "_blank";
+      releaseLink.rel = "noopener noreferrer";
+      releaseLink.append(
+        messages.updateDownloadFromReleases,
+        createRendererSettingsIcon("external-link", 14),
+      );
+      actions.append(releaseLink);
+      context.content.append(heading, metadata, panel, actions);
       let pollTimer: number | undefined;
       let pollAttempts = 0;
       let pending = false;
@@ -285,6 +300,7 @@ function updatesPage(
       const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
         currentVersionValue.textContent = `v${result.currentVersion}`;
         installationValue.textContent = installationLabel(result.installation, messages);
+        if (result.releaseNotesUrl) releaseLink.href = result.releaseNotesUrl;
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
           renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
@@ -329,15 +345,6 @@ function updatesPage(
           update.append(createRendererSettingsIcon("updates", 16), messages.updateAndRestart);
           update.addEventListener("click", () => start(client));
           panel.append(update);
-        }
-        if (result.releaseNotesUrl) {
-          const notes = document.createElement("a");
-          notes.className = "settings-update-link";
-          notes.href = result.releaseNotesUrl;
-          notes.target = "_blank";
-          notes.rel = "noopener noreferrer";
-          notes.append(messages.updateViewRelease, createRendererSettingsIcon("external-link", 14));
-          panel.append(notes);
         }
         if (result.error) {
           const error = document.createElement("p");

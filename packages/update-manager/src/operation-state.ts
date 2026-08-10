@@ -140,12 +140,24 @@ export async function acquireUpdateOperationLock(
   };
 }
 
+function processIsAlive(processId: number): boolean {
+  if (!Number.isSafeInteger(processId) || processId <= 0) return false;
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 export async function recoverUpdateOperationLock(stateDirectory: string): Promise<void> {
   const lockPath = path.join(stateDirectory, LOCK_FILE);
   if (!(await regularFile(lockPath))) return;
+  let ownerPid: unknown;
   let statusPath: unknown;
   try {
     const value = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+    ownerPid = value.ownerPid;
     statusPath = value.statusPath;
   } catch {
     return;
@@ -153,7 +165,13 @@ export async function recoverUpdateOperationLock(stateDirectory: string): Promis
   if (typeof statusPath !== "string" || !path.isAbsolute(statusPath)) return;
   try {
     const status = parseUpdateStatus(JSON.parse(await readFile(statusPath, "utf8")));
-    if (TERMINAL_PHASES.has(status.phase)) await rm(lockPath, { force: true });
+    if (
+      TERMINAL_PHASES.has(status.phase) ||
+      typeof ownerPid !== "number" ||
+      !processIsAlive(ownerPid)
+    ) {
+      await rm(lockPath, { force: true });
+    }
   } catch {
     // Keep an ambiguous active lock fail-closed.
   }

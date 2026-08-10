@@ -25,6 +25,8 @@ import {
 
 const ERROR_MAX_LENGTH = 500;
 const CONTROLLER_TIMEOUT_MS = 5_000;
+const UPDATER_READY_TIMEOUT_MS = 10_000;
+const UPDATER_READY_POLL_MS = 20;
 
 export interface HostUpdateCoordinator {
   check(signal?: AbortSignal): Promise<UpdateCheckResult>;
@@ -72,6 +74,35 @@ function boundedError(error: unknown): string {
   return message.slice(0, ERROR_MAX_LENGTH) || "Update operation failed";
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForUpdaterReady(
+  manager: BackgroundUpdateManager,
+  statusPath: string,
+): Promise<void> {
+  const deadline = Date.now() + UPDATER_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const status = await manager.readStatus(statusPath);
+    switch (status?.phase) {
+      case "waiting-for-exit":
+      case "installing":
+      case "restarting":
+      case "succeeded":
+        return;
+      case "failed":
+        throw new Error(status.error ?? "Background Updater failed before Desktop shutdown");
+      case "prepared":
+        break;
+      default:
+        throw new Error("Background Updater reported an unexpected startup phase");
+    }
+    await delay(UPDATER_READY_POLL_MS);
+  }
+  throw new Error("Background Updater did not become ready before Desktop shutdown");
+}
+
 function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
   return {
     version: status.version,
@@ -117,9 +148,8 @@ export function requestControllerShutdown(controller: {
 export function createHostUpdateCoordinator(
   options: CreateHostUpdateCoordinatorOptions,
 ): HostUpdateCoordinator {
-  const manager =
-    options.manager ??
-    createBackgroundUpdateManager(options.platform ? { platform: options.platform } : {});
+  const platform = options.platform ?? process.platform;
+  const manager = options.manager ?? createBackgroundUpdateManager({ platform });
   const contextPromise = resolveInstalledUpdateContext({
     hostRuntimePath: options.hostRuntimePath,
     ...(options.environment ? { environment: options.environment } : {}),
@@ -298,7 +328,8 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            manager.start(prepared);
+            if (platform !== "darwin") manager.start(prepared);
+            await waitForUpdaterReady(manager, prepared.statusPath);
             shutdownPending = context.controller;
             scheduleShutdown();
           } catch (error) {

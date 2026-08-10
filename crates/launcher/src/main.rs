@@ -1,9 +1,13 @@
 #![forbid(unsafe_code)]
 
+#[cfg(target_os = "macos")]
+mod active_update;
 mod compatibility;
 mod desktop_attachment;
 mod installation_layout;
 mod runtime_instance;
+#[cfg(target_os = "macos")]
+mod system_proxy_environment;
 
 use std::env;
 use std::error::Error;
@@ -20,6 +24,8 @@ use std::time::Duration;
 #[cfg(not(target_os = "macos"))]
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
+use active_update::start_pending_update;
 #[cfg(not(target_os = "macos"))]
 use codexhost_platform::launch_desktop;
 #[cfg(target_os = "macos")]
@@ -52,6 +58,8 @@ use runtime_instance::{
     StartupObservation, StartupState, classify_startup, default_descriptor_path, read_descriptor,
     remove_matching_descriptor,
 };
+#[cfg(target_os = "macos")]
+use system_proxy_environment::launcher_proxy_environment;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
@@ -321,6 +329,7 @@ impl LaunchOptions {
 fn desktop_controller_command(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
+    environment: &[(OsString, OsString)],
 ) -> Command {
     let mut command = Command::new(&options.node);
     command
@@ -334,7 +343,26 @@ fn desktop_controller_command(
         .arg("--attachment-port")
         .arg(control.attachment_port.to_string())
         .arg("--attachment-nonce")
-        .arg(&control.nonce)
+        .arg(&control.nonce);
+    for (name, value) in environment {
+        if matches!(
+            name.to_str(),
+            Some(
+                "HTTP_PROXY"
+                    | "http_proxy"
+                    | "HTTPS_PROXY"
+                    | "https_proxy"
+                    | "ALL_PROXY"
+                    | "all_proxy"
+                    | "NO_PROXY"
+                    | "no_proxy"
+                    | "NODE_USE_ENV_PROXY"
+            )
+        ) {
+            command.env(name, value);
+        }
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -384,8 +412,13 @@ fn wait_for_controller_ready(
 fn start_desktop_controller(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
+    environment: &[(OsString, OsString)],
 ) -> Result<(SupervisedChild, ControllerReadiness), Box<dyn Error>> {
-    let mut controller = spawn_supervised(&mut desktop_controller_command(options, control))?;
+    let mut controller = spawn_supervised(&mut desktop_controller_command(
+        options,
+        control,
+        environment,
+    ))?;
     match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
         Ok(readiness) => Ok((controller, readiness)),
         Err(error) => {
@@ -603,7 +636,7 @@ fn supervise_desktop(
         environment,
         Duration::from_secs(30),
     )?;
-    let (mut controller, readiness) = start_desktop_controller(options, control)?;
+    let (mut controller, readiness) = start_desktop_controller(options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
     if readiness.allows_managed_desktop()
         && !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))?
@@ -639,7 +672,11 @@ fn supervise_desktop(
     }
     let _runtime = publish_runtime_descriptor(control)?;
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
         if let Some(status) = controller.try_wait()? {
             let _ = desktop.shutdown(Duration::from_secs(2));
             return Err(
@@ -673,7 +710,8 @@ fn supervise_desktop(
     )?;
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
-    let (mut controller, readiness) = match start_desktop_controller(options, control) {
+    let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
+    {
         Ok(started) => started,
         Err(error) => {
             let _ = desktop.kill();
@@ -923,7 +961,9 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
 
         let control = allocate_runtime_control()?;
         let launcher_executable = env::current_exe()?.canonicalize()?;
-        let environment = desktop_environment(&options, &control, &launcher_executable);
+        let mut environment = desktop_environment(&options, &control, &launcher_executable);
+        #[cfg(target_os = "macos")]
+        environment.extend(launcher_proxy_environment());
         let result = supervise_desktop(
             &installation,
             &options,
@@ -1016,10 +1056,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
     use super::{
-        Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, LAUNCHER_EXECUTABLE_ENV,
-        LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl, allocate_runtime_control,
-        default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
-        parse_launch_options, read_bounded_controller_line,
+        Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
+        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl,
+        allocate_runtime_control, default_launch_options, desktop_controller_command,
+        desktop_environment, emit_ready_line, parse_launch_options, read_bounded_controller_line,
     };
     #[cfg(target_os = "windows")]
     use super::{stop_desktop_controller, wait_for_desktop_exit};
@@ -1144,7 +1184,7 @@ mod tests {
     #[test]
     fn production_controller_uses_private_node_and_loopback_inspector() {
         let options = resolved_options();
-        let command = desktop_controller_command(&options, &runtime_control());
+        let command = desktop_controller_command(&options, &runtime_control(), &[]);
         assert_eq!(command.get_program(), "/opt/node");
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
@@ -1208,6 +1248,36 @@ mod tests {
         assert_eq!(
             value(CONTROL_NONCE_ENV),
             Some(&OsString::from(&control.nonce))
+        );
+    }
+
+    #[test]
+    fn controller_receives_only_the_managed_network_environment() {
+        let options = resolved_options();
+        let command = desktop_controller_command(
+            &options,
+            &runtime_control(),
+            &[
+                (
+                    OsString::from("HTTPS_PROXY"),
+                    OsString::from("http://proxy:8443"),
+                ),
+                (
+                    OsString::from(HOST_NODE_PATH_ENV),
+                    OsString::from("/private/node"),
+                ),
+            ],
+        );
+        let environment = command.get_envs().collect::<Vec<_>>();
+
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("HTTPS_PROXY"),
+            Some(std::ffi::OsStr::new("http://proxy:8443")),
+        )));
+        assert!(
+            !environment
+                .iter()
+                .any(|(name, _)| *name == HOST_NODE_PATH_ENV)
         );
     }
 
@@ -1278,7 +1348,7 @@ mod tests {
             desktop_controller: PathBuf::from(r"\\?\C:\Program Files\codexhost\controller.mjs"),
             ..resolved_options()
         };
-        let command = desktop_controller_command(&options, &runtime_control());
+        let command = desktop_controller_command(&options, &runtime_control(), &[]);
 
         assert_eq!(
             command.get_args().next(),

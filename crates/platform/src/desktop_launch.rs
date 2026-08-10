@@ -486,6 +486,47 @@ mod tests {
     }
 
     #[test]
+    fn outer_session_does_not_own_a_launcher_child() {
+        let mut desktop_command = Command::new("/bin/sleep");
+        desktop_command
+            .arg("60")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let desktop = desktop_command.spawn().expect("spawn fake Desktop root");
+        let desktop_snapshot = macos_process_snapshot(desktop.id()).expect("snapshot Desktop root");
+        let mut session = DesktopSession {
+            launch_process: desktop,
+            tree: ObservedProcessTree::new(desktop_snapshot),
+            armed: true,
+        };
+
+        let mut updater_command = Command::new("/bin/sleep");
+        updater_command
+            .arg("60")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut updater = updater_command.spawn().expect("spawn Launcher child");
+        assert!(
+            session
+                .observe()
+                .expect("observe Desktop tree")
+                .iter()
+                .all(|process| process.id != updater.id())
+        );
+
+        session
+            .shutdown(Duration::from_secs(2))
+            .expect("stop Desktop tree");
+        assert!(process_exists(updater.id()));
+        updater.kill().expect("stop Launcher child");
+        let _ = updater.wait().expect("reap Launcher child");
+    }
+
+    #[test]
     fn outer_session_cleans_a_cli_after_the_fake_shim_is_killed() {
         let mut command = Command::new("/bin/sh");
         command

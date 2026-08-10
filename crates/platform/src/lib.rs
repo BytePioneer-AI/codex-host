@@ -16,6 +16,8 @@ mod installation;
 mod macos_ui;
 mod process;
 mod process_supervision;
+#[cfg(target_os = "macos")]
+mod system_proxy;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_process;
@@ -37,6 +39,8 @@ pub use process::{
 #[cfg(target_os = "macos")]
 pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
+#[cfg(target_os = "macos")]
+pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
     RunningDesktopChoice, hide_console_window, prompt_compatibility_warning,

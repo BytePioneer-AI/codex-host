@@ -39,6 +39,8 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateInstallation).toBe("安装方式");
     expect(chinese.updateInstallationWindowsInstaller).toBe("Windows 安装程序");
     expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
+    expect(english.updateDownloadFromReleases).toBe("Download from GitHub Releases");
+    expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
     expect(Object.isFrozen(chinese.pageLabels)).toBe(true);

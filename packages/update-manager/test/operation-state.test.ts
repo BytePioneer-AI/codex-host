@@ -77,6 +77,21 @@ describe("update operation state", () => {
     await second.release();
   });
 
+  it("recovers a nonterminal operation after its transferred owner exits", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-dead-owner-"));
+    roots.push(root);
+    const statusPath = await status(root, "update-dead", "prepared", 20);
+    await writeFile(
+      path.join(root, "active-update-v1.lock"),
+      `${JSON.stringify({ ownerPid: 999_999_999, statusPath })}\n`,
+    );
+
+    await recoverUpdateOperationLock(root);
+    const recovered = await acquireUpdateOperationLock(root);
+    if (!recovered) throw new Error("dead owner operation lock was not recovered");
+    await recovered.release();
+  });
+
   it("cleans only old terminal operation directories", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-clean-"));
     roots.push(root);

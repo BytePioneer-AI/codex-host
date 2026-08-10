@@ -53,7 +53,7 @@ export interface RendererSettingsMessages {
   readonly updateSucceeded: string;
   readonly updateFailed: string;
   readonly updateRetry: string;
-  readonly updateViewRelease: string;
+  readonly updateDownloadFromReleases: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -93,7 +93,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
   updateRetry: "Retry",
-  updateViewRelease: "View release notes",
+  updateDownloadFromReleases: "Download from GitHub Releases",
   pageLabels: Object.freeze({
     connections: "Connections",
     "model-pool": "Model Pool",
@@ -139,7 +139,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
   updateRetry: "重试",
-  updateViewRelease: "查看更新日志",
+  updateDownloadFromReleases: "前往 GitHub Releases 下载",
   pageLabels: Object.freeze({
     connections: "连接",
     "model-pool": "模型池",

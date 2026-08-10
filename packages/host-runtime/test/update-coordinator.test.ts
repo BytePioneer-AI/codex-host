@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -69,6 +69,24 @@ function digest(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+async function writeUpdaterWaitingStatus(requestPath: string): Promise<void> {
+  const request = JSON.parse(await readFile(requestPath, "utf8")) as {
+    version: string;
+    status_path: string;
+    installation: { kind: "npm" | "windows-installer" | "macos-dmg" };
+  };
+  await writeFile(
+    request.status_path,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      version: request.version,
+      installation: request.installation.kind,
+      phase: "waiting-for-exit",
+      updatedAt: 11,
+    })}\n`,
+  );
+}
+
 async function macFixture(): Promise<{
   root: string;
   hostRuntimePath: string;
@@ -113,7 +131,7 @@ function release(version = "1.2.3"): CodexhostLatestRelease {
 }
 
 describe("Host update coordinator", () => {
-  it("checks, starts one npm helper, returns the active operation, then requests shutdown", async () => {
+  it("hands a macOS update to Launcher and waits for the Helper before shutdown", async () => {
     const fixture = await npmFixture();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
@@ -146,9 +164,26 @@ describe("Host update coordinator", () => {
     await expect(coordinator.start()).resolves.toMatchObject({
       status: { version: "1.2.3", phase: "prepared" },
     });
-    expect(spawnUpdater).toHaveBeenCalledOnce();
-
+    const home = fixture.environment.HOME;
+    if (!home) throw new Error("fixture HOME is missing");
+    const updaterRequestPath = path.join(
+      home,
+      "Library",
+      "Application Support",
+      "codexhost",
+      "updates",
+      "update-1.2.3-one",
+      "request-v1.json",
+    );
+    await vi.waitFor(async () =>
+      expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
+    );
+    expect(spawnUpdater).not.toHaveBeenCalled();
     coordinator.requestShutdown();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(shutdown).not.toHaveBeenCalled();
+
+    await writeUpdaterWaitingStatus(updaterRequestPath);
     await vi.waitFor(() =>
       expect(shutdown).toHaveBeenCalledWith({
         port: 43124,
@@ -168,7 +203,7 @@ describe("Host update coordinator", () => {
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
       randomId: () => "async-macos",
-      spawnUpdater: () => ({ pid: 778 }) as unknown as ChildProcess,
+      spawnUpdater: vi.fn(() => ({ pid: 778 }) as unknown as ChildProcess),
       download: async (_source, destination, onProgress) => {
         resolveDownloadObserved();
         await onProgress?.({ downloadedBytes: 1, totalBytes: bytes.length });
@@ -217,6 +252,19 @@ describe("Host update coordinator", () => {
       }),
     );
     unblockDownload();
+    const home = fixture.environment.HOME;
+    if (!home) throw new Error("fixture HOME is missing");
+    const requestPath = path.join(
+      home,
+      "Library",
+      "Application Support",
+      "codexhost",
+      "updates",
+      "update-1.2.3-async-macos",
+      "request-v1.json",
+    );
+    await vi.waitFor(async () => expect(await readFile(requestPath, "utf8")).not.toEqual(""));
+    await writeUpdaterWaitingStatus(requestPath);
     await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
   });
 

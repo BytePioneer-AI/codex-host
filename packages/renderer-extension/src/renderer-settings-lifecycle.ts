@@ -11,6 +11,9 @@ import {
   type RendererSettingsHeaderTriggerControl,
 } from "./settings/trigger.js";
 
+const UPDATE_CHECK_TIMEOUT_MS = 5_000;
+const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
+
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
 }
@@ -31,6 +34,9 @@ export function installRendererSettingsLifecycle(
   let trigger: RendererSettingsHeaderTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
   let checkedUpdateClient: RendererUpdateClient | null = null;
+  let retryUpdateClient: RendererUpdateClient | null = null;
+  let updateRetryTimer: number | null = null;
+  let updateRetryAttempt = 0;
   let updateCheckGeneration = 0;
   let updateAvailable = false;
   let openGeneration = 0;
@@ -109,20 +115,71 @@ export function installRendererSettingsLifecycle(
     return request;
   };
 
+  const clearUpdateRetry = (): void => {
+    if (updateRetryTimer === null) return;
+    ownerWindow.clearTimeout(updateRetryTimer);
+    updateRetryTimer = null;
+  };
+
+  const scheduleUpdateRetry = (client: RendererUpdateClient): void => {
+    if (disposed || updateRetryTimer !== null) return;
+    const delay = UPDATE_RETRY_DELAYS_MS[updateRetryAttempt];
+    if (delay === undefined) return;
+    updateRetryAttempt += 1;
+    updateRetryTimer = ownerWindow.setTimeout(() => {
+      updateRetryTimer = null;
+      if (disposed || options.getUpdateClient?.() !== client) return;
+      refreshUpdateIndicator();
+    }, delay);
+  };
+
+  const checkUpdateWithTimeout = (client: RendererUpdateClient) =>
+    new Promise<Awaited<ReturnType<RendererUpdateClient["checkUpdate"]>>>((resolve, reject) => {
+      const timeout = ownerWindow.setTimeout(
+        () => reject(new Error("Update indicator check timed out")),
+        UPDATE_CHECK_TIMEOUT_MS,
+      );
+      void client.checkUpdate().then(
+        (result) => {
+          ownerWindow.clearTimeout(timeout);
+          resolve(result);
+        },
+        (error: unknown) => {
+          ownerWindow.clearTimeout(timeout);
+          reject(error);
+        },
+      );
+    });
+
   const refreshUpdateIndicator = (): void => {
     const client = options.getUpdateClient?.() ?? null;
     if (!client || checkedUpdateClient === client) return;
+    if (retryUpdateClient !== client) {
+      clearUpdateRetry();
+      retryUpdateClient = client;
+      updateRetryAttempt = 0;
+    }
     checkedUpdateClient = client;
     const generation = ++updateCheckGeneration;
-    void client
-      .checkUpdate()
+    void checkUpdateWithTimeout(client)
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
         updateAvailable = result.updateAvailable;
         trigger?.setUpdateAvailable(updateAvailable);
+        if (result.error === null) {
+          updateRetryAttempt = 0;
+          clearUpdateRetry();
+          return;
+        }
+        checkedUpdateClient = null;
+        scheduleUpdateRetry(client);
       })
       .catch(() => {
-        // Version discovery remains available from the Updates page for an explicit retry.
+        if (disposed || generation !== updateCheckGeneration || checkedUpdateClient !== client) {
+          return;
+        }
+        checkedUpdateClient = null;
+        scheduleUpdateRetry(client);
       });
   };
 
@@ -145,6 +202,7 @@ export function installRendererSettingsLifecycle(
       openGeneration += 1;
       updateCheckGeneration += 1;
       lifecycleController.abort();
+      clearUpdateRetry();
       trigger?.dispose();
       shell?.dispose();
       trigger = null;

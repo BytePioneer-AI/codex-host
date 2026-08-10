@@ -266,6 +266,10 @@ function isTransientElectronInstallError(error: unknown): boolean {
   return false;
 }
 
+function shouldRetryInstallError(error: unknown): boolean {
+  return !(error instanceof RendererCompatibilityError) || isTransientElectronInstallError(error);
+}
+
 async function installProductionSession(
   options: Parameters<DesktopControllerDependencies["install"]>[0],
   dependencies: DesktopControllerDependencies,
@@ -274,7 +278,7 @@ async function installProductionSession(
     try {
       return await dependencies.install(options);
     } catch (error) {
-      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !isTransientElectronInstallError(error)) {
+      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !shouldRetryInstallError(error)) {
         throw error;
       }
       await dependencies.sleep(TRANSIENT_INSTALL_RETRY_MS);

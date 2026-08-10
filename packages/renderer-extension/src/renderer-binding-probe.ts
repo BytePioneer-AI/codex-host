@@ -1671,6 +1671,15 @@ export function installRendererBindingProbe(
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
+      const installedModelControl = modelControl;
+      queueMicrotask(() => {
+        if (disposed || modelControl !== installedModelControl) return;
+        try {
+          settingsLifecycle.refresh();
+        } catch {
+          // Auxiliary settings UI must not affect Agent routing compatibility.
+        }
+      });
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailability();
       const connected = connectedComposers();

@@ -248,6 +248,43 @@ describe("production Desktop Controller", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("retries an unclassified inspection failure during cold startup", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const close = vi.fn();
+    const session: RendererControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(),
+      activateDesktop: vi.fn(async () => 1),
+      quitDesktop: vi.fn(async () => {}),
+      requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
+      executeRenderer: vi.fn(),
+      readTitlePolicyCounters: vi.fn(),
+      close,
+    };
+    const install = vi
+      .fn<DesktopControllerDependencies["install"]>()
+      .mockRejectedValueOnce(new Error("Inspector target is not ready"))
+      .mockResolvedValueOnce(session);
+    const ready = vi.fn();
+    const sleep = vi.fn(async () => {});
+
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer: vi.fn(async () => attachmentServer()),
+      ready,
+      sleep,
+      monitorIntervalMs: 1,
+    });
+
+    expect(install).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(250);
+    expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("reports a generic async structural failure without retrying or starting attachment", async () => {
     const ready = vi.fn();
     const startAttachmentServer = vi.fn(async () => attachmentServer());

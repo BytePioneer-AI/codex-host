@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -13,6 +14,7 @@ use crate::request::{
     Installation, MacOsInstallation, NpmInstallation, UpdateRequest, WindowsInstallation,
     validate_version,
 };
+#[cfg(target_os = "macos")]
 use crate::status::unix_seconds;
 
 const NPM_PACKAGE_NAME: &str = "@codexhost/cli";

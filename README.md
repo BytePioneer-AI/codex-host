@@ -1,6 +1,6 @@
 <div align="center">
 
-# codexhost
+# CodexHost
 
 **在 [Codex Desktop](https://openai.com/codex/) 中运行 Pi 和 Claude Code**
 
@@ -8,7 +8,7 @@
 
 但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
 
-**codexhost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
+**CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
 
 <p>
   <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
@@ -62,11 +62,12 @@ codexhost
 
 
 
-## 怎么做的
+<details>
+<summary><strong>怎么做的</strong></summary>
 
 多数「多 Agent 客户端」通过 [ACP](https://agentclientprotocol.com/) 协议接入不同 Harness。接入快，但工具、审批、权限、Diff、提问等原生能力会先被削平，再在 UI 里补一层近似实现。
 
-codexhost 不走这条路：
+CodexHost 不走这条路：
 
 - **Desktop 侧**：用 CDP / Electron Inspector 在官方 Codex Desktop 上增强 Agent 选择与会话界面，不重做聊天壳，也不改官方安装包
 - **协议侧**：用 CLI Shim 透明接入官方 app-server；Codex 请求原样转发
@@ -74,7 +75,7 @@ codexhost 不走这条路：
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 
-
+</details>
 
 ### 交互展示
 

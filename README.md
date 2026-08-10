@@ -1,29 +1,21 @@
+<div align="center">
+
 # codexhost
-<p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
-  <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a></p>
 
-
-在 [Codex Desktop](https://openai.com/codex/) 中运行 **Pi** 和 **Claude Code**。
+**在 [Codex Desktop](https://openai.com/codex/) 中运行 Pi 和 Claude Code**
 
 我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**：有人更依赖 **Claude Code** 在复杂任务上的规划与落地，有人选择 **Pi** 的极简可控与 token 效率（我非常喜欢 Pi）。想用它们，通常只能换到另一个客户端，会话和文件上下文随之割裂。
+但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
 
-**Codex-Host** 使用 Codex Desktop 作为主界面，让你在开始任务时选择真正执行任务的 Agent。Pi 与 Claude Code 使用各自本机已有的模型、认证和配置；选 Codex 时，体验也与官方 App 一致。
+**codexhost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
 
-## 快速使用
+<p>
+  <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
+  <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
+</p>
 
-**方式一：使用 npm**
-
-```bash
-npm install -g @codexhost/cli
-codexhost
-```
-
-**方式二：下载安装包**
-
-从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
+</div>
 
 ## 界面预览
 
@@ -53,6 +45,23 @@ Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 ——
 | 斜杠命令 | 原生 | 🚧 | 🚧 |
 | 修订上一条消息 | 原生 | ✅ | 🚧 |
 
+
+
+## 快速使用
+
+**方式一：使用 npm**
+
+```bash
+npm install -g @codexhost/cli
+codexhost
+```
+
+**方式二：下载安装包**
+
+从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
+
+
+
 ## 怎么做的
 
 多数「多 Agent 客户端」通过 [ACP](https://agentclientprotocol.com/) 协议接入不同 Harness。接入快，但工具、审批、权限、Diff、提问等原生能力会先被削平，再在 UI 里补一层近似实现。
@@ -67,7 +76,7 @@ codexhost 不走这条路：
 
 
 
-### 其他交互
+### 交互展示
 
 <table>
   <tr>
@@ -80,10 +89,10 @@ codexhost 不走这条路：
       <img src="packages/renderer-extension/src/assets/readme/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Mermaid 图表可视化渲染</strong></p>
+      <img src="packages/renderer-extension/src/assets/readme/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+    </td>
+  </tr>
 </table>
-
-## License
-
-本仓库源代码以 [MIT](https://opensource.org/licenses/MIT) 许可发布。
-
-Codex Desktop、Claude Code、各模型服务及其商标归各自权利方所有；本项目不对其再授权。

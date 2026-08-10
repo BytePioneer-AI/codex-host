@@ -11,10 +11,7 @@ import {
   type CodexhostLatestRelease,
 } from "@codexhost/update-manager";
 
-import {
-  createHostUpdateCoordinator,
-  startCompatibilityUpdate,
-} from "../src/update-coordinator.js";
+import { createHostUpdateCoordinator } from "../src/update-coordinator.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true }))));
@@ -293,31 +290,6 @@ describe("Host update coordinator", () => {
     });
 
     await expect(coordinator.check()).resolves.toMatchObject({ status: null });
-  });
-
-  it("starts a compatibility update without waiting for background preparation", async () => {
-    let resolveStart: (() => void) | undefined;
-    const start = vi.fn(
-      () =>
-        new Promise<never>(() => {
-          resolveStart = () => undefined;
-        }),
-    );
-    const check = vi.fn(async () => ({
-      currentVersion: "1.2.2",
-      installation: "npm" as const,
-      latestVersion: "1.2.3",
-      updateAvailable: true,
-      installationAvailable: true,
-      releaseNotes: null,
-      releaseNotesUrl: null,
-      status: null,
-      error: null,
-    }));
-
-    await expect(startCompatibilityUpdate({ check, start })).resolves.toBe("update-started");
-    expect(start).toHaveBeenCalledOnce();
-    expect(resolveStart).toEqual(expect.any(Function));
   });
 
   it("keeps GitHub failures non-blocking and reports no same-version update", async () => {

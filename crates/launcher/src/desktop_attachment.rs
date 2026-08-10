@@ -2,18 +2,12 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codexhost_platform::{
-    configure_background_command, descendant_executable_exists, desktop_root_process_ids,
-    node_entrypoint_path,
-};
+use codexhost_platform::{descendant_executable_exists, desktop_root_process_ids};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
@@ -146,70 +140,6 @@ pub(super) fn request_compatibility_update(
         return Err("Desktop Controller compatibility update response is too long".into());
     }
     compatibility_update_outcome(&response)
-}
-
-pub(super) fn request_compatibility_update_without_renderer(
-    node_path: &Path,
-    host_runtime_path: &Path,
-    environment: &[(OsString, OsString)],
-) -> Result<CompatibilityUpdateOutcome, Box<dyn Error>> {
-    let mut command = Command::new(node_path);
-    command
-        .arg(node_entrypoint_path(host_runtime_path))
-        .arg("--codexhost-compatibility-update")
-        .envs(environment.iter().cloned())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    configure_background_command(&mut command);
-    let mut child = command.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Host Runtime compatibility update stdout is unavailable")?;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut response = String::new();
-        let result = BufReader::new(stdout)
-            .take(33)
-            .read_line(&mut response)
-            .map(|_| response);
-        let _ = sender.send(result);
-    });
-    let response = match receiver.recv_timeout(Duration::from_secs(25)) {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error.into());
-        }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("Host Runtime compatibility update timed out".into());
-        }
-    };
-    if response.len() > 32 {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("Host Runtime compatibility update response is too long".into());
-    }
-    let outcome = match compatibility_update_outcome(&response) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    if outcome == CompatibilityUpdateOutcome::UpdateStarted {
-        thread::spawn(move || {
-            let _ = child.wait();
-        });
-    } else {
-        let _ = child.wait();
-    }
-    Ok(outcome)
 }
 
 pub(super) fn publish_runtime_descriptor(

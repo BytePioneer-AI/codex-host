@@ -50,8 +50,7 @@ use compatibility::{
 use desktop_attachment::{
     CompatibilityUpdateOutcome, LauncherOwnership, RuntimeControl, acquire_launcher_ownership,
     allocate_runtime_control, endpoint_ready, publish_runtime_descriptor,
-    request_compatibility_update, request_compatibility_update_without_renderer,
-    stop_stale_launcher, wait_for_host_chain,
+    request_compatibility_update, stop_stale_launcher, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
 use runtime_instance::{
@@ -506,15 +505,12 @@ fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<d
 enum CompatibilityLaunchDecision {
     ContinueManaged,
     LaunchStock,
-    StopManaged,
 }
 
 fn handle_compatibility_result(
     installation: &DesktopInstallation,
-    options: &ResolvedLaunchOptions,
     readiness: &ControllerReadiness,
     control: &RuntimeControl,
-    environment: &[(OsString, OsString)],
 ) -> Result<CompatibilityLaunchDecision, Box<dyn Error>> {
     if readiness.state() == CompatibilityState::Compatible {
         return Ok(CompatibilityLaunchDecision::ContinueManaged);
@@ -522,17 +518,7 @@ fn handle_compatibility_result(
     let issue = readiness
         .issue()
         .ok_or("Desktop Controller compatibility result is missing its issue")?;
-    let allows_managed = readiness.allows_managed_desktop();
-    let update = if allows_managed {
-        request_compatibility_update(control)
-    } else {
-        request_compatibility_update_without_renderer(
-            &options.node,
-            &options.host_runtime,
-            environment,
-        )
-    };
-    let update_availability = match update {
+    let update_availability = match request_compatibility_update(control) {
         Ok(CompatibilityUpdateOutcome::UpdateStarted) => {
             eprintln!(
                 "codexhost compatibility update started: capability={} reason={}",
@@ -549,9 +535,7 @@ fn handle_compatibility_result(
         }
     };
 
-    let acknowledgement = allows_managed
-        .then(|| CompatibilityAcknowledgementKey::new(installation, issue))
-        .transpose()?;
+    let acknowledgement = Some(CompatibilityAcknowledgementKey::new(installation, issue)?);
     let acknowledgement_path = default_acknowledgement_path().ok();
     if acknowledgement.as_ref().is_some_and(|key| {
         acknowledgement_path
@@ -575,18 +559,13 @@ fn handle_compatibility_result(
         reason_code: issue.reason_code(),
         observed_identity: issue.observed_identity.as_deref(),
         update_availability,
-        allow_continue: allows_managed,
         degraded: readiness.state() == CompatibilityState::Degraded,
     });
     if update_availability == CompatibilityUpdateAvailability::Started {
-        return Ok(if allows_managed {
-            CompatibilityLaunchDecision::ContinueManaged
-        } else {
-            CompatibilityLaunchDecision::StopManaged
-        });
+        return Ok(CompatibilityLaunchDecision::ContinueManaged);
     }
     match choice {
-        CompatibilityChoice::ContinueCodexhost if allows_managed => {
+        CompatibilityChoice::ContinueCodexhost => {
             if let (Some(path), Some(key)) =
                 (acknowledgement_path.as_deref(), acknowledgement.as_ref())
             {
@@ -598,20 +577,14 @@ fn handle_compatibility_result(
             if let Err(error) = open_latest_codexhost_release() {
                 eprintln!("codexhost could not open the fixed Releases page: {error}");
             }
-            if allows_managed {
-                if let (Some(path), Some(key)) =
-                    (acknowledgement_path.as_deref(), acknowledgement.as_ref())
-                {
-                    let _ = write_acknowledgement(path, key);
-                }
-                Ok(CompatibilityLaunchDecision::ContinueManaged)
-            } else {
-                Ok(CompatibilityLaunchDecision::StopManaged)
+            if let (Some(path), Some(key)) =
+                (acknowledgement_path.as_deref(), acknowledgement.as_ref())
+            {
+                let _ = write_acknowledgement(path, key);
             }
+            Ok(CompatibilityLaunchDecision::ContinueManaged)
         }
-        CompatibilityChoice::ContinueCodexhost | CompatibilityChoice::OpenStockCodex => {
-            Ok(CompatibilityLaunchDecision::LaunchStock)
-        }
+        CompatibilityChoice::OpenStockCodex => Ok(CompatibilityLaunchDecision::LaunchStock),
     }
 }
 
@@ -638,20 +611,12 @@ fn supervise_desktop(
     )?;
     let (mut controller, readiness) = start_desktop_controller(options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
-    if readiness.allows_managed_desktop()
-        && !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))?
-    {
+    if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.shutdown(Duration::from_secs(2));
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
-    let compatibility = match handle_compatibility_result(
-        installation,
-        options,
-        &readiness,
-        control,
-        environment,
-    ) {
+    let compatibility = match handle_compatibility_result(installation, &readiness, control) {
         Ok(decision) => decision,
         Err(error) => {
             let _ = stop_desktop_controller(&mut controller);
@@ -719,21 +684,13 @@ fn supervise_desktop(
             return Err(error);
         }
     };
-    if readiness.allows_managed_desktop()
-        && !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))?
-    {
+    if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.kill();
         let _ = desktop.wait();
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
-    let compatibility = match handle_compatibility_result(
-        installation,
-        options,
-        &readiness,
-        control,
-        environment,
-    ) {
+    let compatibility = match handle_compatibility_result(installation, &readiness, control) {
         Ok(decision) => decision,
         Err(error) => {
             let _ = stop_desktop_controller(&mut controller);
@@ -961,9 +918,13 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
 
         let control = allocate_runtime_control()?;
         let launcher_executable = env::current_exe()?.canonicalize()?;
-        let mut environment = desktop_environment(&options, &control, &launcher_executable);
+        let environment = desktop_environment(&options, &control, &launcher_executable);
         #[cfg(target_os = "macos")]
-        environment.extend(launcher_proxy_environment());
+        let environment = {
+            let mut environment = environment;
+            environment.extend(launcher_proxy_environment());
+            environment
+        };
         let result = supervise_desktop(
             &installation,
             &options,

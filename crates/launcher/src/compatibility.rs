@@ -18,33 +18,24 @@ pub enum CompatibilityState {
     Compatible,
     CompatibleWithWarning,
     Degraded,
-    Incompatible,
-    DetectionFailed,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompatibilityCapability {
     TitleIsolation,
-    DraftRouting,
-    AgentRouting,
     PermissionControl,
     SidebarDecoration,
     ForkControl,
     UsageSurface,
     SettingsSurface,
-    CompatibilityDetection,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompatibilityReason {
     UnreviewedTitleServiceIdentity,
-    TitleIsolationStructureUnavailable,
-    DraftRoutingStructureUnavailable,
-    AgentRoutingStructureUnavailable,
     CapabilityUnavailable,
-    InspectionFailed,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -78,14 +69,11 @@ impl CompatibilityIssue {
     pub fn capability_code(&self) -> &'static str {
         match self.capability {
             CompatibilityCapability::TitleIsolation => "title-isolation",
-            CompatibilityCapability::DraftRouting => "draft-routing",
-            CompatibilityCapability::AgentRouting => "agent-routing",
             CompatibilityCapability::PermissionControl => "permission-control",
             CompatibilityCapability::SidebarDecoration => "sidebar-decoration",
             CompatibilityCapability::ForkControl => "fork-control",
             CompatibilityCapability::UsageSurface => "usage-surface",
             CompatibilityCapability::SettingsSurface => "settings-surface",
-            CompatibilityCapability::CompatibilityDetection => "compatibility-detection",
         }
     }
 
@@ -95,17 +83,7 @@ impl CompatibilityIssue {
             CompatibilityReason::UnreviewedTitleServiceIdentity => {
                 "unreviewed-title-service-identity"
             }
-            CompatibilityReason::TitleIsolationStructureUnavailable => {
-                "title-isolation-structure-unavailable"
-            }
-            CompatibilityReason::DraftRoutingStructureUnavailable => {
-                "draft-routing-structure-unavailable"
-            }
-            CompatibilityReason::AgentRoutingStructureUnavailable => {
-                "agent-routing-structure-unavailable"
-            }
             CompatibilityReason::CapabilityUnavailable => "capability-unavailable",
-            CompatibilityReason::InspectionFailed => "inspection-failed",
         }
     }
 }
@@ -148,26 +126,6 @@ impl ControllerReadiness {
                 ) && issue.reason == CompatibilityReason::CapabilityUnavailable
                     && issue.observed_identity.is_none()
             }
-            (CompatibilityState::Incompatible, Some(issue)) => {
-                matches!(
-                    (&issue.capability, &issue.reason),
-                    (
-                        CompatibilityCapability::TitleIsolation,
-                        CompatibilityReason::TitleIsolationStructureUnavailable
-                    ) | (
-                        CompatibilityCapability::DraftRouting,
-                        CompatibilityReason::DraftRoutingStructureUnavailable
-                    ) | (
-                        CompatibilityCapability::AgentRouting,
-                        CompatibilityReason::AgentRoutingStructureUnavailable
-                    )
-                ) && issue.observed_identity.is_none()
-            }
-            (CompatibilityState::DetectionFailed, Some(issue)) => {
-                issue.capability == CompatibilityCapability::CompatibilityDetection
-                    && issue.reason == CompatibilityReason::InspectionFailed
-                    && issue.observed_identity.is_none()
-            }
             _ => false,
         };
         if !valid {
@@ -187,16 +145,6 @@ impl ControllerReadiness {
     #[must_use]
     pub fn issue(&self) -> Option<&CompatibilityIssue> {
         self.issues.first()
-    }
-
-    #[must_use]
-    pub fn allows_managed_desktop(&self) -> bool {
-        matches!(
-            self.state,
-            CompatibilityState::Compatible
-                | CompatibilityState::CompatibleWithWarning
-                | CompatibilityState::Degraded
-        )
     }
 }
 
@@ -456,10 +404,14 @@ mod tests {
         for line in [
             b"{\"schemaVersion\":2,\"state\":\"compatible\",\"issues\":[]}\n".as_slice(),
             b"{\"schemaVersion\":2,\"state\":\"degraded\",\"issues\":[{\"capability\":\"usage-surface\",\"reason\":\"capability-unavailable\"}]}\n".as_slice(),
+        ] {
+            parse_controller_readiness_line(line).expect("valid layered readiness");
+        }
+        for removed in [
             b"{\"schemaVersion\":2,\"state\":\"incompatible\",\"issues\":[{\"capability\":\"agent-routing\",\"reason\":\"agent-routing-structure-unavailable\"}]}\n".as_slice(),
             b"{\"schemaVersion\":2,\"state\":\"detection-failed\",\"issues\":[{\"capability\":\"compatibility-detection\",\"reason\":\"inspection-failed\"}]}\n".as_slice(),
         ] {
-            parse_controller_readiness_line(line).expect("valid layered readiness");
+            assert!(parse_controller_readiness_line(removed).is_err());
         }
         assert!(parse_controller_readiness_line(b"ready\n").is_err());
         assert!(

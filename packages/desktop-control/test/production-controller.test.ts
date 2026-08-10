@@ -8,10 +8,7 @@ import {
   serializeDesktopControllerReadiness,
   type DesktopControllerDependencies,
 } from "../src/production-controller.js";
-import {
-  RendererCompatibilityError,
-  type RendererControlSession,
-} from "../src/renderer-control-session.js";
+import type { RendererControlSession } from "../src/renderer-control-session.js";
 
 const attachmentNonce = "0123456789abcdef0123456789abcdef";
 
@@ -98,18 +95,13 @@ describe("production Desktop Controller", () => {
         issues: [],
       }),
     ).toBe('{"schemaVersion":2,"state":"compatible","issues":[]}');
-    expect(
+    expect(() =>
       serializeDesktopControllerReadiness({
         schemaVersion: 2,
         state: "incompatible",
-        issues: [
-          {
-            capability: "title-isolation",
-            reason: "title-isolation-structure-unavailable",
-          },
-        ],
-      }),
-    ).toContain('"state":"incompatible"');
+        issues: [],
+      } as never),
+    ).toThrow("readiness is invalid");
     expect(() =>
       serializeDesktopControllerReadiness({
         schemaVersion: 2,
@@ -221,11 +213,9 @@ describe("production Desktop Controller", () => {
     const install = vi
       .fn<DesktopControllerDependencies["install"]>()
       .mockRejectedValueOnce(
-        new RendererCompatibilityError(
-          "title-isolation",
-          "title-isolation-structure-unavailable",
-          new Error("Execution context was destroyed during Renderer reload"),
-        ),
+        new Error("Renderer installation failed", {
+          cause: new Error("Execution context was destroyed during Renderer reload"),
+        }),
       )
       .mockRejectedValueOnce(new Error("Promise was collected"))
       .mockResolvedValueOnce(session);
@@ -248,9 +238,8 @@ describe("production Desktop Controller", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("retries an unclassified inspection failure during cold startup", async () => {
+  it("recovers an unclassified inspection failure after managed readiness", async () => {
     const abort = new AbortController();
-    abort.abort();
     const close = vi.fn();
     const session: RendererControlSession = {
       snapshot: controllerSnapshot(),
@@ -267,7 +256,11 @@ describe("production Desktop Controller", () => {
       .mockRejectedValueOnce(new Error("Inspector target is not ready"))
       .mockResolvedValueOnce(session);
     const ready = vi.fn();
-    const sleep = vi.fn(async () => {});
+    let currentTime = 0;
+    const sleep = vi.fn(async (milliseconds: number) => {
+      if (milliseconds === 1) currentTime += 30_000;
+      if (install.mock.calls.length >= 2) abort.abort();
+    });
 
     await runDesktopController(controllerOptions(), abort.signal, {
       readRenderer: vi.fn(async () => "production renderer"),
@@ -275,56 +268,46 @@ describe("production Desktop Controller", () => {
       startAttachmentServer: vi.fn(async () => attachmentServer()),
       ready,
       sleep,
+      now: () => currentTime,
       monitorIntervalMs: 1,
     });
 
     expect(install).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledOnce();
-    expect(sleep).toHaveBeenCalledWith(250);
+    expect(sleep).toHaveBeenCalledWith(1);
     expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("reports a generic async structural failure without retrying or starting attachment", async () => {
+  it("suppresses a structural installation failure and starts attachment", async () => {
+    const abort = new AbortController();
+    abort.abort();
     const ready = vi.fn();
     const startAttachmentServer = vi.fn(async () => attachmentServer());
     const install = vi.fn(async () => {
-      throw new RendererCompatibilityError(
-        "draft-routing",
-        "draft-routing-structure-unavailable",
-        new Error("Uncaught (in promise) Error"),
-      );
+      throw new Error("Production Renderer Adapter is unsupported: signature-mismatch");
     });
-    const sleep = vi.fn(async () => {});
 
-    await runDesktopController(controllerOptions(), new AbortController().signal, {
+    await runDesktopController(controllerOptions(), abort.signal, {
       readRenderer: vi.fn(async () => "production renderer"),
       install,
       startAttachmentServer,
       ready,
-      sleep,
+      sleep: vi.fn(async () => {}),
       monitorIntervalMs: 1,
     });
 
     expect(install).toHaveBeenCalledOnce();
-    expect(sleep).not.toHaveBeenCalled();
-    expect(ready).toHaveBeenCalledWith({
-      schemaVersion: 2,
-      state: "incompatible",
-      issues: [
-        {
-          capability: "draft-routing",
-          reason: "draft-routing-structure-unavailable",
-        },
-      ],
-    });
-    expect(startAttachmentServer).not.toHaveBeenCalled();
+    expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
+    expect(JSON.stringify(ready.mock.calls)).not.toContain("signature-mismatch");
+    expect(startAttachmentServer).toHaveBeenCalledOnce();
   });
 
-  it("reports an unclassified inspection failure without leaking its error", async () => {
+  it("suppresses an unclassified inspection failure without leaking its error", async () => {
+    const abort = new AbortController();
+    abort.abort();
     const ready = vi.fn();
     const startAttachmentServer = vi.fn(async () => attachmentServer());
-    await runDesktopController(controllerOptions(), new AbortController().signal, {
+    await runDesktopController(controllerOptions(), abort.signal, {
       readRenderer: vi.fn(async () => {
         throw new Error("/private/user/path and request details");
       }),
@@ -335,12 +318,103 @@ describe("production Desktop Controller", () => {
       monitorIntervalMs: 1,
     });
 
-    expect(ready).toHaveBeenCalledWith({
-      schemaVersion: 2,
-      state: "detection-failed",
-      issues: [{ capability: "compatibility-detection", reason: "inspection-failed" }],
-    });
+    expect(ready).toHaveBeenCalledWith({ schemaVersion: 2, state: "compatible", issues: [] });
     expect(JSON.stringify(ready.mock.calls)).not.toContain("private/user");
-    expect(startAttachmentServer).not.toHaveBeenCalled();
+    expect(startAttachmentServer).toHaveBeenCalledOnce();
+  });
+
+  it("installs on demand when attachment arrives during recovery", async () => {
+    const abort = new AbortController();
+    const activateDesktop = vi.fn(async () => 1);
+    const close = vi.fn();
+    const session: RendererControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(),
+      activateDesktop,
+      quitDesktop: vi.fn(async () => {}),
+      requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
+      executeRenderer: vi.fn(),
+      readTitlePolicyCounters: vi.fn(),
+      close,
+    };
+    const install = vi
+      .fn<DesktopControllerDependencies["install"]>()
+      .mockRejectedValueOnce(new Error("Composer is not ready"))
+      .mockResolvedValueOnce(session);
+    let attach: (() => Promise<void>) | undefined;
+    const startAttachmentServer = vi.fn(async (options) => {
+      attach = options.attach;
+      return attachmentServer();
+    });
+    const sleep = vi.fn(async () => {
+      await attach?.();
+      abort.abort();
+    });
+
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer,
+      ready: vi.fn(),
+      sleep,
+      monitorIntervalMs: 1,
+    });
+
+    expect(install).toHaveBeenCalledTimes(2);
+    expect(activateDesktop).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("replaces a ready Session after Renderer recovery fails", async () => {
+    const abort = new AbortController();
+    const firstClose = vi.fn();
+    const secondClose = vi.fn();
+    const first: RendererControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(async () => {
+        throw new Error("Renderer binding disappeared");
+      }),
+      activateDesktop: vi.fn(async () => 1),
+      quitDesktop: vi.fn(async () => {}),
+      requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
+      executeRenderer: vi.fn(),
+      readTitlePolicyCounters: vi.fn(),
+      close: firstClose,
+    };
+    const second: RendererControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(),
+      activateDesktop: vi.fn(async () => 1),
+      quitDesktop: vi.fn(async () => {}),
+      requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
+      executeRenderer: vi.fn(),
+      readTitlePolicyCounters: vi.fn(),
+      close: secondClose,
+    };
+    const install = vi
+      .fn<DesktopControllerDependencies["install"]>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    let monitorCycles = 0;
+    let currentTime = 0;
+    const sleep = vi.fn(async () => {
+      monitorCycles += 1;
+      currentTime += 30_000;
+      if (monitorCycles === 3) abort.abort();
+    });
+
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer: vi.fn(async () => attachmentServer()),
+      ready: vi.fn(),
+      sleep,
+      now: () => currentTime,
+      monitorIntervalMs: 1,
+    });
+
+    expect(install).toHaveBeenCalledTimes(2);
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(secondClose).toHaveBeenCalledOnce();
   });
 });

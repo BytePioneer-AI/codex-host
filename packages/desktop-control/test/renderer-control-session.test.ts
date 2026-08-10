@@ -4,7 +4,6 @@ import {
   activateElectronDesktop,
   createRendererControlSession,
   inspectElectronWebContents,
-  RendererCompatibilityError,
   selectRendererWebContents,
   waitForInspectorTarget,
   waitForRendererTitlePolicyReady,
@@ -321,10 +320,8 @@ describe("Renderer Control Session", () => {
       timeoutMs: 100,
       operations,
     });
-    await expect(failure).rejects.toMatchObject({
-      capability: "agent-routing",
-      reason: "agent-routing-structure-unavailable",
-    });
-    await expect(failure).rejects.toBeInstanceOf(RendererCompatibilityError);
+    await expect(failure).rejects.toThrow(
+      "Production Renderer Adapter is unsupported: signature-mismatch",
+    );
   });
 });

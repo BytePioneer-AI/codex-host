@@ -502,8 +502,21 @@ A Claude draft selection SHALL update the provider preference and its bounded re
 - **THEN** the Existing Thread SHALL retain its prior mode and remain usable
 - **AND** the provider preference SHALL remain the user's last selected default for future Claude drafts
 
+### Requirement: Renderer prerequisites SHALL gate only external capability availability
+Renderer Model target uniqueness、Adapter readiness、Draft Prewarm clearing和Title Policy ownership SHALL保持外部Agent切换与提交的必要条件。失败 MUST使对应外部能力不可用，但 SHALL NOT终止受管Desktop或成为Launcher兼容提示。
+
+#### Scenario: Agent Model target在恢复期间不可用
+- **WHEN** Adapter无法识别唯一受支持Composer Model target
+- **THEN** Pi和Claude Code切换或提交 SHALL保持不可用
+- **AND** Controller SHALL继续后台恢复且官方Codex保持可用
+
+#### Scenario: 外部选择清理Draft Prewarm失败
+- **WHEN** 外部Agent切换无法清除owned Draft prewarm
+- **THEN** 切换 SHALL失败且Adapter SHALL保持外部提交不可用
+- **AND** 受管Desktop SHALL继续运行并允许后续恢复
+
 ### Requirement: 未评审标题服务标识 SHALL NOT 单独阻断安全安装
-主进程标题策略 SHALL 把服务必要结构与已评审压缩身份分开判断。只有在标题服务路径、prototype `generateTitle`、已评审函数结构和Renderer ownership安装均成立时，未知压缩类名 MAY被分类为有界warning并继续安装；任何必要结构失败 MUST保持现有fail-closed行为。
+主进程标题策略 SHALL 把服务必要结构与已评审压缩身份分开判断。只有在标题服务路径、prototype `generateTitle`、已评审函数结构和Renderer ownership安装均成立时，未知压缩类名 MAY被分类为有界warning并继续安装。必要结构失败 SHALL使外部Agent能力保持不可用并进入Controller后台恢复，但 MUST NOT终止受管Desktop或产生Launcher兼容错误。
 
 #### Scenario: 只有压缩类名变化
 - **WHEN** `threadMetadataGeneration`服务来自已评审AppHost路径，prototype `generateTitle`及其函数结构匹配，Renderer ownership可以唯一建立，但`constructor.name`不在已评审集合
@@ -514,8 +527,8 @@ A Claude draft selection SHALL update the provider preference and its bounded re
 
 #### Scenario: 必要标题结构失败
 - **WHEN** 服务路径、service prototype、`generateTitle`函数、已评审函数结构或Renderer ownership任一缺失、歧义或不匹配
-- **THEN** 标题策略 SHALL拒绝安装并保持fail closed
-- **AND** 用户选择或确认缓存 MUST NOT覆盖该失败
+- **THEN** 标题策略 SHALL拒绝本次外部能力安装并保持Pi与Claude Code不可用
+- **AND** Controller SHALL保留受管Desktop并后台重试，不得向Launcher发送阻断兼容结果
 
 #### Scenario: 已评审标识完整匹配
 - **WHEN** 必要标题结构通过且服务压缩类名位于已评审集合

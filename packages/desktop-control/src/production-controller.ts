@@ -8,7 +8,6 @@ import {
 } from "./controller-attachment-server.js";
 import {
   installRendererControlSession,
-  RendererCompatibilityError,
   type RendererControlSession,
 } from "./renderer-control-session.js";
 
@@ -21,26 +20,17 @@ export interface DesktopControllerOptions {
 }
 
 export type DesktopControllerCompatibilityState =
-  "compatible" | "compatible-with-warning" | "degraded" | "incompatible" | "detection-failed";
+  "compatible" | "compatible-with-warning" | "degraded";
 
 export interface DesktopControllerCompatibilityIssue {
   capability:
     | "title-isolation"
-    | "draft-routing"
-    | "agent-routing"
     | "permission-control"
     | "sidebar-decoration"
     | "fork-control"
     | "usage-surface"
-    | "settings-surface"
-    | "compatibility-detection";
-  reason:
-    | "unreviewed-title-service-identity"
-    | "title-isolation-structure-unavailable"
-    | "draft-routing-structure-unavailable"
-    | "agent-routing-structure-unavailable"
-    | "capability-unavailable"
-    | "inspection-failed";
+    | "settings-surface";
+  reason: "unreviewed-title-service-identity" | "capability-unavailable";
   observedIdentity?: string;
 }
 
@@ -63,6 +53,7 @@ export interface DesktopControllerDependencies {
   ): Promise<ControllerAttachmentServer>;
   ready(readiness: DesktopControllerReadiness): void;
   sleep(milliseconds: number): Promise<void>;
+  now?(): number;
   monitorIntervalMs: number;
 }
 
@@ -70,6 +61,8 @@ const PRODUCTION_INSTALL_TIMEOUT_MS = 90_000;
 const DESKTOP_CONTROLLER_READINESS_MAX_BYTES = 512;
 const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
+const RECOVERY_RETRY_INITIAL_MS = 30_000;
+const RECOVERY_RETRY_MAX_MS = 300_000;
 
 function validCompatibilityIssue(
   state: DesktopControllerCompatibilityState,
@@ -99,37 +92,13 @@ function validCompatibilityIssue(
       keys.length === 2
     );
   }
-  if (state === "incompatible") {
-    const pair = `${issue.capability}:${issue.reason}`;
-    return (
-      [
-        "title-isolation:title-isolation-structure-unavailable",
-        "draft-routing:draft-routing-structure-unavailable",
-        "agent-routing:agent-routing-structure-unavailable",
-      ].includes(pair) &&
-      issue.observedIdentity === undefined &&
-      keys.length === 2
-    );
-  }
-  return (
-    state === "detection-failed" &&
-    issue.capability === "compatibility-detection" &&
-    issue.reason === "inspection-failed" &&
-    issue.observedIdentity === undefined &&
-    keys.length === 2
-  );
+  return false;
 }
 
 export function serializeDesktopControllerReadiness(readiness: DesktopControllerReadiness): string {
   if (
     readiness.schemaVersion !== 2 ||
-    ![
-      "compatible",
-      "compatible-with-warning",
-      "degraded",
-      "incompatible",
-      "detection-failed",
-    ].includes(readiness.state) ||
+    !["compatible", "compatible-with-warning", "degraded"].includes(readiness.state) ||
     !Array.isArray(readiness.issues) ||
     readiness.issues.length > 1 ||
     (readiness.state === "compatible" && readiness.issues.length !== 0) ||
@@ -266,10 +235,6 @@ function isTransientElectronInstallError(error: unknown): boolean {
   return false;
 }
 
-function shouldRetryInstallError(error: unknown): boolean {
-  return !(error instanceof RendererCompatibilityError) || isTransientElectronInstallError(error);
-}
-
 async function installProductionSession(
   options: Parameters<DesktopControllerDependencies["install"]>[0],
   dependencies: DesktopControllerDependencies,
@@ -278,7 +243,7 @@ async function installProductionSession(
     try {
       return await dependencies.install(options);
     } catch (error) {
-      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !shouldRetryInstallError(error)) {
+      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !isTransientElectronInstallError(error)) {
         throw error;
       }
       await dependencies.sleep(TRANSIENT_INSTALL_RETRY_MS);
@@ -292,12 +257,23 @@ export async function runDesktopController(
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
 ): Promise<void> {
-  let session: RendererControlSession;
-  try {
+  const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
+  const now = dependencies.now ?? Date.now;
+  let session: RendererControlSession | undefined;
+  let nextRecoveryAt = 0;
+  let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
+  const recordRecoveryFailure = (): void => {
+    nextRecoveryAt = now() + recoveryDelayMs;
+    recoveryDelayMs = Math.min(recoveryDelayMs * 2, RECOVERY_RETRY_MAX_MS);
+  };
+  const recordRecoverySuccess = (): void => {
+    nextRecoveryAt = 0;
+    recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
+  };
+  const createSession = async (): Promise<RendererControlSession> => {
     const rendererSource = await dependencies.readRenderer(options.rendererPath);
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
-    const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
-    session = await installProductionSession(
+    return installProductionSession(
       {
         inspectorEndpoint: options.inspectorEndpoint,
         rendererSource: `${configuration}\n${rendererSource}`,
@@ -306,22 +282,15 @@ export async function runDesktopController(
       },
       dependencies,
     );
-  } catch (error) {
-    dependencies.ready(
-      error instanceof RendererCompatibilityError && !isTransientElectronInstallError(error)
-        ? {
-            schemaVersion: 2,
-            state: "incompatible",
-            issues: [{ capability: error.capability, reason: error.reason }],
-          }
-        : {
-            schemaVersion: 2,
-            state: "detection-failed",
-            issues: [{ capability: "compatibility-detection", reason: "inspection-failed" }],
-          },
-    );
-    return;
+  };
+  try {
+    session = await createSession();
+    recordRecoverySuccess();
+  } catch {
+    session = undefined;
+    recordRecoveryFailure();
   }
+
   let operation = Promise.resolve<unknown>(undefined);
   const useSession = <T>(callback: () => Promise<T>): Promise<T> => {
     const next = operation.then(callback, callback);
@@ -331,6 +300,27 @@ export async function runDesktopController(
     );
     return next;
   };
+  const resetSession = (): void => {
+    session?.close();
+    session = undefined;
+  };
+  const ensureSession = async (): Promise<RendererControlSession> => {
+    if (!session) session = await createSession();
+    else await session.ensureInstalled();
+    return session;
+  };
+  const recoverSession = async (): Promise<RendererControlSession> => {
+    try {
+      const current = await ensureSession();
+      recordRecoverySuccess();
+      return current;
+    } catch (error) {
+      resetSession();
+      recordRecoveryFailure();
+      throw error;
+    }
+  };
+
   let attachmentServer: ControllerAttachmentServer | undefined;
   try {
     attachmentServer = await dependencies.startAttachmentServer({
@@ -338,17 +328,21 @@ export async function runDesktopController(
       nonce: options.attachmentNonce,
       attach: () =>
         useSession(async () => {
-          await session.ensureInstalled();
-          await session.activateDesktop();
+          const current = await recoverSession();
+          await current.activateDesktop();
         }),
       compatibilityUpdate: () =>
         useSession(async () => {
-          await session.ensureInstalled();
-          return session.requestCompatibilityUpdate();
+          const current = await recoverSession();
+          return current.requestCompatibilityUpdate();
         }),
-      shutdown: () => useSession(() => session.quitDesktop()),
+      shutdown: () =>
+        useSession(async () => {
+          const current = await recoverSession();
+          await current.quitDesktop();
+        }),
     });
-    const issues = session.snapshot.titlePolicy.warnings;
+    const issues = session?.snapshot.titlePolicy.warnings ?? [];
     dependencies.ready({
       schemaVersion: 2,
       state: issues.length === 0 ? "compatible" : "compatible-with-warning",
@@ -356,11 +350,19 @@ export async function runDesktopController(
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);
-      if (!signal.aborted) await useSession(() => session.ensureInstalled());
+      if (signal.aborted) continue;
+      await useSession(async () => {
+        if (!session && now() < nextRecoveryAt) return;
+        try {
+          await recoverSession();
+        } catch {
+          // Renderer integration remains unavailable until a later bounded retry succeeds.
+        }
+      });
     }
   } finally {
     await attachmentServer?.close();
     await operation;
-    session.close();
+    resetSession();
   }
 }

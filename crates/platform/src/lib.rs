@@ -77,18 +77,13 @@ pub struct CompatibilityPrompt<'a> {
     pub reason_code: &'a str,
     pub observed_identity: Option<&'a str>,
     pub update_availability: CompatibilityUpdateAvailability,
-    pub allow_continue: bool,
     pub degraded: bool,
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[must_use]
-pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
-    if prompt.allow_continue {
-        CompatibilityChoice::ContinueCodexhost
-    } else {
-        CompatibilityChoice::OpenStockCodex
-    }
+pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
+    CompatibilityChoice::ContinueCodexhost
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

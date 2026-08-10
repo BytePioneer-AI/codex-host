@@ -67,8 +67,8 @@ export function auditHostBundleSource(source) {
   if (forbidden.length > 0) {
     throw new Error(`release Host Bundle contains forbidden references: ${forbidden.join(", ")}`);
   }
-  if (!source.includes("--codexhost-compatibility-update")) {
-    throw new Error("release Host Bundle is missing the fixed compatibility update command");
+  if (source.includes("--codexhost-compatibility-update")) {
+    throw new Error("release Host Bundle contains the removed compatibility update command");
   }
 }
 

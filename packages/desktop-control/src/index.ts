@@ -30,12 +30,9 @@ export type {
   ElectronRendererSummary,
   InstallRendererControlOptions,
   ProductionRendererStatus,
-  RendererCompatibilityCapability,
-  RendererCompatibilityReason,
   RendererControlSession,
   RendererControlSnapshot,
 } from "./renderer-control-session.js";
-export { RendererCompatibilityError } from "./renderer-control-session.js";
 export type {
   RendererDomInspection,
   RendererDomNodeSummary,

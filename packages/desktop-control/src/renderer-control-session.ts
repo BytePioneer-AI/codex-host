@@ -73,22 +73,6 @@ interface RendererControlOperations {
 }
 
 export type CompatibilityUpdateOutcome = "update-started" | "current" | "unavailable";
-export type RendererCompatibilityCapability = "title-isolation" | "draft-routing" | "agent-routing";
-export type RendererCompatibilityReason =
-  | "title-isolation-structure-unavailable"
-  | "draft-routing-structure-unavailable"
-  | "agent-routing-structure-unavailable";
-
-export class RendererCompatibilityError extends Error {
-  constructor(
-    readonly capability: RendererCompatibilityCapability,
-    readonly reason: RendererCompatibilityReason,
-    cause: unknown,
-  ) {
-    super(`Renderer compatibility boundary unavailable: ${capability}`, { cause });
-    this.name = "RendererCompatibilityError";
-  }
-}
 
 export interface RendererControlSession {
   readonly snapshot: RendererControlSnapshot;
@@ -120,19 +104,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function requireCompatibilityBoundary<T>(
-  capability: RendererCompatibilityCapability,
-  reason: RendererCompatibilityReason,
-  operation: () => Promise<T> | T,
-): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error instanceof RendererCompatibilityError) throw error;
-    throw new RendererCompatibilityError(capability, reason, error);
-  }
 }
 
 function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
@@ -449,42 +420,27 @@ class InstalledRendererControlSession implements RendererControlSession {
       .readBinding(this.inspector, selected.id)
       .catch(() => null);
     if (existing !== null) {
-      const binding = await requireCompatibilityBoundary(
-        "agent-routing",
-        "agent-routing-structure-unavailable",
-        () => validateBindingStatus(existing, this.enabledAgents),
-      );
+      const binding = validateBindingStatus(existing, this.enabledAgents);
       this.#snapshot = { ...this.#snapshot, renderer: selected, binding };
       return this.#snapshot;
     }
 
-    const titlePolicyReadiness = await requireCompatibilityBoundary(
-      "title-isolation",
-      "title-isolation-structure-unavailable",
-      () =>
-        waitForRendererTitlePolicyReady(
-          () => this.operations.markTitlePolicyReady(this.inspector, selected.id),
-          { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
-        ),
+    const titlePolicyReadiness = await waitForRendererTitlePolicyReady(
+      () => this.operations.markTitlePolicyReady(this.inspector, selected.id),
+      { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
     );
     await this.operations.execute(this.inspector, selected.id, this.rendererSource);
-    const binding = await requireCompatibilityBoundary(
-      "agent-routing",
-      "agent-routing-structure-unavailable",
-      () =>
-        waitForBinding(
-          this.inspector,
-          this.operations,
-          selected.id,
-          this.enabledAgents,
-          this.timeoutMs,
-          this.pollIntervalMs,
-        ),
+    const binding = await waitForBinding(
+      this.inspector,
+      this.operations,
+      selected.id,
+      this.enabledAgents,
+      this.timeoutMs,
+      this.pollIntervalMs,
     );
-    const draftPrewarmPolicy = await requireCompatibilityBoundary(
-      "draft-routing",
-      "draft-routing-structure-unavailable",
-      () => this.operations.installDraftPrewarmPolicy(this.inspector, selected.id),
+    const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(
+      this.inspector,
+      selected.id,
     );
     this.#snapshot = {
       ...this.#snapshot,
@@ -545,43 +501,28 @@ export async function createRendererControlSession(
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const operations = options.operations ?? defaultOperations;
   const initial = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
-  const titlePolicy = await requireCompatibilityBoundary(
-    "title-isolation",
-    "title-isolation-structure-unavailable",
-    () => operations.installTitlePolicy(options.inspector, initial.id),
-  );
+  const titlePolicy = await operations.installTitlePolicy(options.inspector, initial.id);
   await operations.reload(options.inspector, initial.id);
   const selected = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
-  const titlePolicyReadiness = await requireCompatibilityBoundary(
-    "title-isolation",
-    "title-isolation-structure-unavailable",
-    () =>
-      waitForRendererTitlePolicyReady(
-        () => operations.markTitlePolicyReady(options.inspector, selected.id),
-        {
-          timeoutMs,
-          pollIntervalMs,
-        },
-      ),
+  const titlePolicyReadiness = await waitForRendererTitlePolicyReady(
+    () => operations.markTitlePolicyReady(options.inspector, selected.id),
+    {
+      timeoutMs,
+      pollIntervalMs,
+    },
   );
   await operations.execute(options.inspector, selected.id, options.rendererSource);
-  const binding = await requireCompatibilityBoundary(
-    "agent-routing",
-    "agent-routing-structure-unavailable",
-    () =>
-      waitForBinding(
-        options.inspector,
-        operations,
-        selected.id,
-        enabledAgents,
-        timeoutMs,
-        pollIntervalMs,
-      ),
+  const binding = await waitForBinding(
+    options.inspector,
+    operations,
+    selected.id,
+    enabledAgents,
+    timeoutMs,
+    pollIntervalMs,
   );
-  const draftPrewarmPolicy = await requireCompatibilityBoundary(
-    "draft-routing",
-    "draft-routing-structure-unavailable",
-    () => operations.installDraftPrewarmPolicy(options.inspector, selected.id),
+  const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(
+    options.inspector,
+    selected.id,
   );
   return new InstalledRendererControlSession(
     options.inspector,

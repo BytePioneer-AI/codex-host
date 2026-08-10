@@ -15,13 +15,8 @@ export {
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
-export {
-  createHostUpdateCoordinator,
-  requestControllerShutdown,
-  startCompatibilityUpdate,
-} from "./update-coordinator.js";
+export { createHostUpdateCoordinator, requestControllerShutdown } from "./update-coordinator.js";
 export type {
-  CompatibilityUpdateOutcome,
   CreateHostUpdateCoordinatorOptions,
   HostUpdateCoordinator,
 } from "./update-coordinator.js";

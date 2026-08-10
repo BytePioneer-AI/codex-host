@@ -6,6 +6,22 @@
 
 ## Requirements
 
+### Requirement: Recoverable Renderer installation failures SHALL NOT be compatibility guidance
+Launcher compatibility guidance SHALL NOT present Title Policy structure failure、Agent routing structure failure、Draft routing structure failure或未分类inspection failure为用户可见兼容问题。这些失败 MUST NOT触发兼容专用更新入口或自动切换原版Codex。
+
+#### Scenario: Controller正在恢复Renderer能力
+- **WHEN** 当前Controller无法完成Title、Agent、Draft或inspection安装但保持运行重试
+- **THEN** Launcher SHALL继续受管codexhost启动且不显示兼容弹窗
+- **AND** SHALL NOT因该状态调用兼容专用更新检查
+
+### Requirement: Production readiness SHALL omit removed blocking outcomes
+当前生产Controller payload SHALL NOT序列化`incompatible`或`detection-failed`，也 SHALL NOT输出`title-isolation-structure-unavailable`、`agent-routing-structure-unavailable`、`draft-routing-structure-unavailable`或`inspection-failed`issue。
+
+#### Scenario: 初始安装抛出结构错误
+- **WHEN** Renderer Session初始安装失败
+- **THEN** 该错误 SHALL成为Controller内部恢复状态而不是readiness issue
+- **AND** 首个生产readiness行 SHALL不包含已删除capability或reason
+
 ### Requirement: 未评审内部标识 SHALL 显示可继续的兼容提示
 当必要标题结构和完整生产安装链均已通过，但标题服务内部标识尚未评审时，Launcher SHALL 将该状态呈现为信息性兼容 warning，而不是崩溃、空 readiness 或结构失败。提示 MUST 明确核心检查已通过但当前 Codex build 尚未完成完整验证，MUST NOT 声称完全兼容。
 

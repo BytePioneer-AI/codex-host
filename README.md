@@ -1,14 +1,14 @@
 # codexhost
-
 <p align="center">
-  <img src="packages/renderer-extension/src/assets/codexhost-readme.svg" alt="Codex、Claude Code 与 Pi" width="480">
-</p>
+  <a href="./LICENSE"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
+  <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a></p>
 
-在 [Codex Desktop](https://openai.com/codex/) 中运行 [Pi](https://github.com/badlogic/pi-mono) 和 Claude Code。
 
-我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验。
+在 [Codex Desktop](https://openai.com/codex/) 中运行 **Pi** 和 **Claude Code**。
 
-但 Codex 并不是唯一优秀的 Agent Harness：有人更依赖 **Claude Code** 在复杂任务上的规划与落地，有人选择 **Pi** 的极简可控与 token 效率（我非常喜欢 Pi）。想用它们，通常只能换到另一个客户端，会话和文件上下文随之割裂。
+我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
+
+但 **Codex** 并不是唯一优秀的 **Agent Harness**：有人更依赖 **Claude Code** 在复杂任务上的规划与落地，有人选择 **Pi** 的极简可控与 token 效率（我非常喜欢 Pi）。想用它们，通常只能换到另一个客户端，会话和文件上下文随之割裂。
 
 **Codex-Host** 使用 Codex Desktop 作为主界面，让你在开始任务时选择真正执行任务的 Agent。Pi 与 Claude Code 使用各自本机已有的模型、认证和配置；选 Codex 时，体验也与官方 App 一致。
 
@@ -65,7 +65,9 @@ codexhost 不走这条路：
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 
-### 一些交互
+
+
+### 其他交互
 
 <table>
   <tr>
@@ -79,3 +81,9 @@ codexhost 不走这条路：
     </td>
   </tr>
 </table>
+
+## License
+
+本仓库源代码以 [MIT License](./LICENSE) 发布。
+
+Codex Desktop、Claude Code、各模型服务及其商标归各自权利方所有；本项目不对其再授权。

@@ -7,14 +7,11 @@ This repository contains the product and technical baselines for `codexhost` and
 - `docs/产品需求文档.md` is the current product baseline: scope, MVP requirements, and acceptance criteria.
 - `docs/领域术语表.md` defines the shared domain language, including Harness, Model, Provider, Thread, and Native Session.
 
-- `docs/工程落地文档.md` defines the toolchain, workspace layout, module dependencies, and build outputs.
-- `docs/开发步骤清单.md` defines implementation priority, technical gates, development batches, and completion criteria.
-
 If documents conflict, report the conflict explicitly. Follow the PRD as the current delivery baseline.
 
-Use `docs/开发步骤清单.md`, active OpenSpec changes, source code, and tests to determine the current implementation status. Do not infer implemented capabilities solely from package names, directory structure, or module presence.
+Use active OpenSpec changes, source code, and tests to determine the current implementation status. Do not infer implemented capabilities solely from package names, directory structure, or module presence.
 
-Before implementing a planned change, follow `docs/开发步骤清单.md` section “实施前上下文规则”. Read the relevant main OpenSpec spec, predecessor archived `design.md`, verification record, owning source modules, and tests. The checklist is a navigation and status index, not a substitute for those design and evidence sources. If they conflict, report the conflict explicitly before implementation.
+Before implementing a planned change, read the relevant main OpenSpec spec, predecessor archived `design.md`, verification record, owning source modules, and tests. If they conflict, report the conflict explicitly before implementation.
 
 ## Code Layout
 

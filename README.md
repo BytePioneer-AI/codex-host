@@ -13,6 +13,8 @@
 <p>
   <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
+<p><a href="docs/README.en.md">English</a></p>
+
 </p>
 
 </div>

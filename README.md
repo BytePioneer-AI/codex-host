@@ -2,7 +2,7 @@
 
 # CodexHost
 
-**在 [Codex Desktop](https://openai.com/codex/) 中运行 Pi 和 Claude Code**
+**在 Codex Desktop 中运行 Pi 和 Claude Code**
 
 我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
 

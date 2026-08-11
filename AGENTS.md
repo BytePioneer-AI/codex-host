@@ -7,13 +7,12 @@
 - `packages/shared-contracts/` contains browser-safe shared types and runtime schemas. It must not depend on Node.js-only capabilities.
 - `packages/renderer-extension/` is TypeScript built to browser JavaScript. It must not import Node.js built-ins, Electron private APIs, or Harness SDKs.
 - `scripts/release/` contains shared build-time release infrastructure plus platform-specific macOS and Windows packaging definitions. This path is not an application Runtime package. `tools/` contains development-only Node.js utilities and technical Gate tooling. `tests/e2e/`, `tests/differential/`, `tests/fixtures/`, and `tests/release/` contain Playwright tests, protocol differential tests, reviewed fixtures, and release infrastructure tests. Package-level `test/` directories contain Vitest tests; crate-level `tests/` directories contain Rust integration tests.
-- `openspec/` tracks specifications and proposed, active, or archived changes. `docs/` remains the product and architecture authority. `.github/workflows/` contains Windows/macOS CI.
 - Generated and local-only paths defined by `.gitignore`, including dependencies, build outputs, reports, logs, downloads, `.pi/`, `.codexhost/`, and `reference/`, must not be committed.
 
 ## Coding Style & Naming Conventions
 
 - Write the brand as lowercase `codexhost`.
-- Follow `docs/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
+- Follow `docsp/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
 - Name new documentation with concise Chinese titles, for example `Pi适配器设计文档.md`. Retain established technical terms such as Pi, Harness, Adapter, RPC, and SDK when translation would reduce precision.
 - TypeScript uses Strict Mode, ESLint, and Prettier. Rust uses rustfmt and Clippy.
 

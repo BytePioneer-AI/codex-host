@@ -57,5 +57,5 @@
 - [ ] 7.3 Run the current-build Desktop collision Gate and prove by sanitized route evidence that mouse, keyboard, and manual `/compact` cannot emit an official Codex compact action in a Pi Composer.
 - [ ] 7.4 Run the real Pi Desktop Gate for draft and existing Thread catalogs, Extension/Prompt/Skill execution, unknown slash ownership, compact/autocompact, same Native Session continuation, and stale-result isolation.
 - [ ] 7.5 Run the symmetric Codex Gate and prove stock commands are restored, no Pi catalog is queried or injected, and official Codex behavior remains transparent.
-- [ ] 7.6 Update the Renderer verification record, affected architecture/Adapter docs, and `docs/开发步骤清单.md` only with behaviors and Gates actually completed.
+- [ ] 7.6 Update the Renderer verification record, affected architecture/Adapter docs, and `docsp/开发步骤清单.md` only with behaviors and Gates actually completed.
 - [ ] 7.7 Run full repository checks required for this cross-package change, `openspec validate project-pi-slash-commands-into-codex-renderer --strict`, and `git diff --check`; record any skipped real platform Gate and its reason.

@@ -13,9 +13,9 @@
 <p>
   <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
-<p><a href="docs/README.en.md">English</a></p>
-
 </p>
+
+<p><a href="docs/README.en.md">English</a></p>
 
 </div>
 
@@ -28,7 +28,6 @@ Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 ——
 ### 界面
 
 ![Pi 与 Claude Code 作为独立 Thread 运行在 Codex Desktop 中](packages/renderer-extension/src/assets/readme/app-overview.png)
-
 
 ## 功能状态
 
@@ -47,8 +46,6 @@ Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 ——
 | 斜杠命令 | 原生 | 🚧 | 🚧 |
 | 修订上一条消息 | 原生 | ✅ | 🚧 |
 
-
-
 ## 快速使用
 
 **方式一：使用 npm**
@@ -61,8 +58,6 @@ codexhost
 **方式二：下载安装包**
 
 从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
-
-
 
 <details>
 <summary><h3>怎么做的</h3></summary>

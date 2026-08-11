@@ -14,12 +14,17 @@ import {
   type ThreadPermissionModeSelectParams,
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
+  type ThreadUsageInspection,
   type ThreadUsageInspectionParams,
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
-import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
+import {
+  createRendererModelClient,
+  createThreadUsageSubscriptionRelay,
+  type RendererModelClient,
+} from "./renderer-model-client.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
@@ -73,6 +78,10 @@ export function transitionRendererAdapterStatus(
 }
 
 interface PrewarmTarget {
+  addNotificationCallback?: (
+    method: string | readonly string[],
+    callback: (notification: unknown) => void,
+  ) => () => void;
   prewarmThreadStart?: (params: unknown, options?: unknown) => Promise<unknown> | unknown;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
   requestClient?: PrewarmTarget;
@@ -709,9 +718,11 @@ export function installCurrentRendererAdapter(): {
     applyAgent: () => false,
     dispose() {},
   });
+  const usageSubscription = createThreadUsageSubscriptionRelay();
   const currentModelClient = (): RendererModelClient => {
     const client = createRendererModelClient(findActivePrewarmTargets(document));
     if (!client) throw new Error("Renderer Model request manager is unavailable");
+    usageSubscription.connect(client);
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
@@ -720,6 +731,8 @@ export function installCurrentRendererAdapter(): {
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
     inspectThreadUsage: (input: ThreadUsageInspectionParams) =>
       currentModelClient().inspectThreadUsage(input),
+    subscribeThreadUsage: (listener: (update: ThreadUsageInspection) => void) =>
+      usageSubscription.subscribe(listener),
     listThreadOwnership: (input: ThreadOwnershipListParams) =>
       currentModelClient().listThreadOwnership(input),
     selectThreadModel: (input: ThreadModelSelectParams) =>
@@ -816,6 +829,7 @@ export function installCurrentRendererAdapter(): {
       disposed = true;
       observer.disconnect();
       forkControl.dispose();
+      usageSubscription.dispose();
       modelController = null;
       officialSelection = null;
       hasOfficialSelection = false;

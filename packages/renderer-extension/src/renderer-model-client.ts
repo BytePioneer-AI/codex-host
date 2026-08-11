@@ -5,6 +5,7 @@ import {
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelSelectionStateSchema,
+  hostThreadIdSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
@@ -46,11 +47,30 @@ export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
+export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
+  if (!isRecord(notification) || notification.method !== THREAD_TOKEN_USAGE_UPDATED_METHOD) {
+    return null;
+  }
+  const params = notification.params;
+  if (!isRecord(params)) return null;
+  const parsed = hostThreadIdSchema.safeParse(params.threadId);
+  return parsed.success ? parsed.data : null;
+}
+
 interface RequestManagerCandidate {
+  addNotificationCallback?: (
+    method: string | readonly string[],
+    callback: (notification: unknown) => void,
+  ) => () => void;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
 }
 
@@ -60,6 +80,7 @@ export interface RendererModelClient {
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
+  subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -70,11 +91,50 @@ export interface RendererModelClient {
   readUpdateStatus(): Promise<UpdateStatusResult>;
 }
 
+export function createThreadUsageSubscriptionRelay(): {
+  connect(client: Pick<RendererModelClient, "subscribeThreadUsage">): void;
+  subscribe(listener: (update: ThreadUsageInspection) => void): () => void;
+  dispose(): void;
+} {
+  const listeners = new Set<(update: ThreadUsageInspection) => void>();
+  let removeNotificationCallback: (() => void) | null = null;
+  return {
+    connect(client) {
+      if (removeNotificationCallback || listeners.size === 0) return;
+      try {
+        removeNotificationCallback =
+          client.subscribeThreadUsage?.((update) => {
+            for (const listener of listeners) listener(update);
+          }) ?? null;
+      } catch {
+        removeNotificationCallback = null;
+      }
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size > 0) return;
+        removeNotificationCallback?.();
+        removeNotificationCallback = null;
+      };
+    },
+    dispose() {
+      removeNotificationCallback?.();
+      removeNotificationCallback = null;
+      listeners.clear();
+    },
+  };
+}
+
 export function createRendererModelClient(
   candidates: readonly RequestManagerCandidate[],
 ): RendererModelClient | null {
   const managers = candidates.filter(
-    (candidate): candidate is Required<Pick<RequestManagerCandidate, "sendRequest">> =>
+    (
+      candidate,
+    ): candidate is RequestManagerCandidate &
+      Required<Pick<RequestManagerCandidate, "sendRequest">> =>
       typeof candidate.sendRequest === "function",
   );
   const manager = managers[0];
@@ -141,6 +201,31 @@ export function createRendererModelClient(
       return result;
     },
     inspectThreadUsage,
+    subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
+      if (typeof manager.addNotificationCallback !== "function") return () => undefined;
+      let disposed = false;
+      const generations = new Map<ThreadUsageInspectionParams["threadId"], number>();
+      const removeNotificationCallback = manager.addNotificationCallback(
+        THREAD_TOKEN_USAGE_UPDATED_METHOD,
+        (notification) => {
+          const threadId = notifiedThreadId(notification);
+          if (!threadId) return;
+          const generation = (generations.get(threadId) ?? 0) + 1;
+          generations.set(threadId, generation);
+          void inspectThreadUsage({ threadId })
+            .then((update) => {
+              if (!disposed && generations.get(threadId) === generation) listener(update);
+            })
+            .catch(() => undefined);
+        },
+      );
+      return () => {
+        if (disposed) return;
+        disposed = true;
+        generations.clear();
+        removeNotificationCallback();
+      };
+    },
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,

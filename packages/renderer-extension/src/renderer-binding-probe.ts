@@ -7,6 +7,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type ThreadInspection,
+  type ThreadUsageInspection,
   type ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -29,7 +30,6 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   mountComposerAgentControl,
-  nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
   renderComposerAgentControl,
   sendButtonWithin,
@@ -340,6 +340,7 @@ export function installRendererBindingProbe(
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
+  let usageNotificationDispose: (() => void) | null = null;
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
   });
@@ -406,6 +407,16 @@ export function installRendererBindingProbe(
       mounted.permissionModeView,
       mounted.usage,
     );
+  };
+
+  const applyThreadUsageUpdate = (update: ThreadUsageInspection): void => {
+    for (const mounted of mountedByComposer.values()) {
+      if (threadIdFromComposerModelTarget(mounted.modelTarget) !== update.threadId) continue;
+      mounted.usageRequestGeneration += 1;
+      mounted.usage = update.usage;
+      usageRefreshAttempts.delete(mounted.composer);
+      renderMounted(mounted);
+    }
   };
 
   const refreshThreadUsage = async (mounted: MountedComposer): Promise<void> => {
@@ -498,6 +509,7 @@ export function installRendererBindingProbe(
       return;
     }
     const generation = controller.beginOwnershipRequest(mounted.composer);
+    const usageGeneration = mounted.usageRequestGeneration;
     mounted.ownershipStatus = "loading";
     renderMounted(mounted);
     try {
@@ -512,7 +524,9 @@ export function installRendererBindingProbe(
       }
       const { agent, model, thinkingOptionId, permissionModeId } =
         restoredThreadOwnership(inspection);
-      mounted.usage = inspection.owner === "external" ? (inspection.usage ?? null) : null;
+      if (mounted.usageRequestGeneration === usageGeneration) {
+        mounted.usage = inspection.owner === "external" ? (inspection.usage ?? null) : null;
+      }
       const restored = controller.restore(
         mounted.composer,
         agent,
@@ -1570,16 +1584,6 @@ export function installRendererBindingProbe(
 
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
-    for (const mounted of mountedByComposer.values()) {
-      const anchor = nativeContextUsageControlForComposer(mounted.composer);
-      if (!anchor) continue;
-      const changed = mutations.some((mutation) => {
-        const target =
-          mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-        return target === anchor || target === anchor.parentElement || anchor.contains(target);
-      });
-      if (changed) scheduleThreadUsageRefresh(mounted);
-    }
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onAdapterStatus = () => {
@@ -1666,10 +1670,18 @@ export function installRendererBindingProbe(
       return startCompatibilityUpdate(modelControl);
     },
     setAdapter(status, dispose, applyAgent, nextModelControl) {
+      usageNotificationDispose?.();
+      usageNotificationDispose = null;
       adapterDispose?.();
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
+      try {
+        usageNotificationDispose =
+          modelControl?.subscribeThreadUsage?.(applyThreadUsageUpdate) ?? null;
+      } catch {
+        usageNotificationDispose = null;
+      }
       adapterStatus = status;
       const installedModelControl = modelControl;
       queueMicrotask(() => {
@@ -1704,6 +1716,8 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      usageNotificationDispose?.();
+      usageNotificationDispose = null;
       adapterDispose?.();
       adapterDispose = null;
       applyAdapterAgent = null;

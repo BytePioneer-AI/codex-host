@@ -5,6 +5,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type ThreadUsageInspection,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,11 +17,13 @@ import {
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
+  THREAD_TOKEN_USAGE_UPDATED_METHOD,
   THREAD_USAGE_INSPECT_METHOD,
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
   createRendererModelClient,
+  createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
@@ -57,6 +60,14 @@ const inspection = {
 
 describe("Renderer fixed Model request client", () => {
   it("calls only the fixed inspect and select methods with validated params", async () => {
+    let usageNotification: ((notification: unknown) => void) | undefined;
+    const removeUsageNotification = vi.fn();
+    const addNotificationCallback = vi.fn(
+      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
+        usageNotification = callback;
+        return removeUsageNotification;
+      },
+    );
     const sendRequest = vi
       .fn<(method: string, params: unknown) => Promise<unknown>>()
       .mockResolvedValueOnce(inspection)
@@ -96,6 +107,10 @@ describe("Renderer fixed Model request client", () => {
         usage: { cacheHitRatePercent: 99.9, totalCostUsd: 0.168 },
       })
       .mockResolvedValueOnce({
+        threadId: "thread-1",
+        usage: { cacheHitRatePercent: 97.9, totalCostUsd: 5.913 },
+      })
+      .mockResolvedValueOnce({
         currentVersion: "1.2.2",
         installation: "npm",
         latestVersion: "1.2.3",
@@ -116,7 +131,7 @@ describe("Renderer fixed Model request client", () => {
         },
       })
       .mockResolvedValueOnce({ status: null });
-    const client = createRendererModelClient([{ sendRequest }]);
+    const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
@@ -130,6 +145,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "startUpdate",
+      "subscribeThreadUsage",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -215,12 +231,63 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(8, THREAD_USAGE_INSPECT_METHOD, {
       threadId: "thread-1",
     });
+    const onUsage = vi.fn();
+    const unsubscribe = client.subscribeThreadUsage?.(onUsage);
+    expect(addNotificationCallback).toHaveBeenCalledWith(
+      THREAD_TOKEN_USAGE_UPDATED_METHOD,
+      expect.any(Function),
+    );
+    usageNotification?.({
+      method: THREAD_TOKEN_USAGE_UPDATED_METHOD,
+      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: {} },
+    });
+    usageNotification?.({
+      method: THREAD_TOKEN_USAGE_UPDATED_METHOD,
+      params: { threadId: "", turnId: "turn-1", tokenUsage: {} },
+    });
+    await vi.waitFor(() => expect(onUsage).toHaveBeenCalledOnce());
+    expect(onUsage).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      usage: { cacheHitRatePercent: 97.9, totalCostUsd: 5.913 },
+    });
+    unsubscribe?.();
+    expect(removeUsageNotification).toHaveBeenCalledOnce();
     await expect(client.checkUpdate()).resolves.toMatchObject({ latestVersion: "1.2.3" });
     await expect(client.startUpdate()).resolves.toMatchObject({ status: { phase: "prepared" } });
     await expect(client.readUpdateStatus()).resolves.toEqual({ status: null });
-    expect(sendRequest).toHaveBeenNthCalledWith(9, UPDATE_CHECK_METHOD, {});
-    expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_START_METHOD, {});
-    expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_STATUS_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(9, THREAD_USAGE_INSPECT_METHOD, {
+      threadId: "thread-1",
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("defers Usage notification registration until a request manager is available", () => {
+    const relay = createThreadUsageSubscriptionRelay();
+    const listener = vi.fn();
+    const unsubscribe = relay.subscribe(listener);
+    const unavailable = vi.fn(() => {
+      throw new Error("Request manager is unavailable");
+    });
+    let notify: ((update: ThreadUsageInspection) => void) | undefined;
+    const removeNotification = vi.fn();
+    const subscribeThreadUsage = vi.fn((callback: typeof notify) => {
+      notify = callback;
+      return removeNotification;
+    });
+
+    expect(unavailable).not.toHaveBeenCalled();
+    relay.connect({ subscribeThreadUsage: unavailable });
+    relay.connect({ subscribeThreadUsage });
+    expect(unavailable).toHaveBeenCalledOnce();
+    expect(subscribeThreadUsage).toHaveBeenCalledOnce();
+    notify?.({ threadId: hostThreadIdSchema.parse("thread-1"), usage: null });
+    expect(listener).toHaveBeenCalledWith({ threadId: "thread-1", usage: null });
+
+    unsubscribe();
+    expect(removeNotification).toHaveBeenCalledOnce();
+    relay.dispose();
   });
 
   it("fails closed when request manager ownership is absent or ambiguous", () => {

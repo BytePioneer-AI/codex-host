@@ -63,7 +63,7 @@ codexhost
 
 
 <details>
-<summary><strong style="font-size: 1.25em;">怎么做的</strong></summary>
+<summary><h3>怎么做的</h3></summary>
 
 多数「多 Agent 客户端」通过 [ACP](https://agentclientprotocol.com/) 协议接入不同 Harness。接入快，但工具、审批、权限、Diff、提问等原生能力会先被削平，再在 UI 里补一层近似实现。
 

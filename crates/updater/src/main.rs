@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codexhost_platform::{PlatformError, process_executable_path, process_exists};
+use codexhost_platform::{process_executable_path, process_exists};
 use serde::Deserialize;
 
 use install::{install, relaunch};
@@ -95,23 +95,16 @@ fn runtime_descriptor_path(request: &UpdateRequest) -> Result<PathBuf, Box<dyn E
         .join(RUNTIME_DESCRIPTOR_FILE))
 }
 
-fn expected_launcher_executable(request: &UpdateRequest) -> PathBuf {
-    match &request.installation {
-        request::Installation::Npm(npm) => npm.node_path.clone(),
-        request::Installation::WindowsInstaller(windows) => {
-            windows.install_root.join("bin").join("codexhost.exe")
-        }
-        request::Installation::MacosDmg(macos) => macos
-            .app_path
-            .join("Contents")
-            .join("MacOS")
-            .join("codexhost"),
-    }
+fn relaunched_launcher_is_ready(
+    descriptor_launcher_pid: u32,
+    previous_launcher_pid: u32,
+    process_is_alive: impl FnOnce(u32) -> bool,
+) -> bool {
+    descriptor_launcher_pid != previous_launcher_pid && process_is_alive(descriptor_launcher_pid)
 }
 
 fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
     let descriptor_path = runtime_descriptor_path(request)?;
-    let expected_executable = expected_launcher_executable(request).canonicalize()?;
     let started = Instant::now();
     while started.elapsed() < RELAUNCH_TIMEOUT {
         let bytes = match fs::symlink_metadata(&descriptor_path) {
@@ -141,12 +134,8 @@ fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
         {
             return Err("runtime descriptor is invalid".into());
         }
-        if descriptor.launcher_pid != request.wait_pid {
-            match process_executable_path(descriptor.launcher_pid) {
-                Ok(path) if path.canonicalize()? == expected_executable => return Ok(()),
-                Ok(_) | Err(PlatformError::NotFound(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
+        if relaunched_launcher_is_ready(descriptor.launcher_pid, request.wait_pid, process_exists) {
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -193,5 +182,25 @@ fn main() -> ExitCode {
             eprintln!("codexhost updater: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relaunched_launcher_is_ready;
+
+    #[test]
+    fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {
+        assert!(relaunched_launcher_is_ready(42, 41, |pid| pid == 42));
+    }
+
+    #[test]
+    fn rejects_the_previous_launcher_descriptor() {
+        assert!(!relaunched_launcher_is_ready(41, 41, |_| true));
+    }
+
+    #[test]
+    fn rejects_a_relaunched_launcher_that_has_exited() {
+        assert!(!relaunched_launcher_is_ready(42, 41, |_| false));
     }
 }

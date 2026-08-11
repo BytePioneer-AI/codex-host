@@ -96,11 +96,6 @@ fn install_npm(request: &UpdateRequest, npm: &NpmInstallation) -> Result<(), Box
             .args(["install", "--global", "--no-audit", "--no-fund"])
             .arg(format!("{NPM_PACKAGE_NAME}@{}", request.version)),
         "npm update",
-    )?;
-    verify_distribution(
-        &npm.package_root.join("app").join(DISTRIBUTION_FILE),
-        &request.version,
-        "npm",
     )
 }
 

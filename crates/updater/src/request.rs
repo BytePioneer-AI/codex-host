@@ -31,7 +31,6 @@ pub(crate) struct NpmInstallation {
     pub(crate) node_path: PathBuf,
     pub(crate) npm_cli_path: PathBuf,
     pub(crate) npm_launcher_path: PathBuf,
-    pub(crate) package_root: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,7 +143,6 @@ impl UpdateRequest {
                 require_absolute_file(&npm.node_path, "npm Node.js executable")?;
                 require_absolute_file(&npm.npm_cli_path, "npm CLI")?;
                 require_absolute_file(&npm.npm_launcher_path, "npm codexhost launcher")?;
-                require_absolute_path(&npm.package_root, "npm platform package root")?;
             }
             Installation::WindowsInstaller(windows) => {
                 if !cfg!(target_os = "windows") {
@@ -197,7 +195,7 @@ mod tests {
 
     #[test]
     fn request_rejects_unknown_installation_fields() {
-        let request = br#"{"schema_version":1,"version":"1.2.3","wait_pid":2,"wait_executable":"/tmp/launcher","status_path":"/tmp/status","installation":{"kind":"npm","node_path":"/tmp/node","npm_cli_path":"/tmp/npm","npm_launcher_path":"/tmp/codexhost.js","package_root":"/tmp/package","extra":true}}"#;
+        let request = br#"{"schema_version":1,"version":"1.2.3","wait_pid":2,"wait_executable":"/tmp/launcher","status_path":"/tmp/status","installation":{"kind":"npm","node_path":"/tmp/node","npm_cli_path":"/tmp/npm","npm_launcher_path":"/tmp/codexhost.js","extra":true}}"#;
         assert!(serde_json::from_slice::<UpdateRequest>(request).is_err());
     }
 }

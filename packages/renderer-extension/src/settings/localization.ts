@@ -48,6 +48,9 @@ export interface RendererSettingsMessages {
   readonly updateChecking: string;
   readonly updateDownloading: string;
   readonly updatePreparing: string;
+  readonly updateWaitingForExit: string;
+  readonly updateInstalling: string;
+  readonly updateInstallingNpm: string;
   readonly updateRequestTimeout: string;
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
@@ -88,6 +91,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
   updatePreparing: "Preparing update...",
+  updateWaitingForExit: "Waiting for the application to close...",
+  updateInstalling: "Installing update...",
+  updateInstallingNpm: "Installing update through npm...",
   updateRequestTimeout: "The update service did not respond. Try again.",
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
@@ -134,6 +140,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
   updatePreparing: "正在准备更新...",
+  updateWaitingForExit: "正在等待应用退出...",
+  updateInstalling: "正在安装更新...",
+  updateInstallingNpm: "正在通过 npm 安装...",
   updateRequestTimeout: "更新服务未响应，请重试。",
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",

@@ -113,6 +113,10 @@ function statusMessage(
   if (!status) return null;
   if (status.phase === "succeeded") return messages.updateSucceeded;
   if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "waiting-for-exit") return messages.updateWaitingForExit;
+  if (status.phase === "installing") {
+    return status.installation === "npm" ? messages.updateInstallingNpm : messages.updateInstalling;
+  }
   if (status.phase === "restarting") return messages.updateRestarting;
   if (status.phase === "downloading") return messages.updateDownloading;
   return messages.updatePreparing;

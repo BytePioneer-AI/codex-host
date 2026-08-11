@@ -1,4 +1,4 @@
-import type { UpdateCheckResult } from "@codexhost/shared-contracts";
+import type { UpdateCheckResult, UpdateStatus } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
@@ -7,6 +7,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import {
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
@@ -73,7 +74,7 @@ function elementWithClass(root: FakeElement, className: string): FakeElement {
   return element;
 }
 
-function updateCheck(): UpdateCheckResult {
+function updateCheck(status: UpdateStatus | null = null): UpdateCheckResult {
   return {
     currentVersion: "1.2.2",
     installation: "npm",
@@ -82,12 +83,69 @@ function updateCheck(): UpdateCheckResult {
     installationAvailable: true,
     releaseNotes: "Safer updates",
     releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
-    status: null,
+    status,
     error: null,
   };
 }
 
+function updateStatus(
+  phase: UpdateStatus["phase"],
+  installation: UpdateStatus["installation"] = "npm",
+): UpdateStatus {
+  return {
+    version: "1.2.3",
+    installation,
+    phase,
+    updatedAt: 1_700_000_000,
+    error: null,
+  };
+}
+
+function visibleText(root: FakeElement): string {
+  return descendants(root)
+    .map(({ textContent }) => textContent)
+    .filter(Boolean)
+    .join(" ");
+}
+
 describe("Renderer Updates page", () => {
+  it.each([
+    [updateStatus("prepared"), "正在准备更新..."],
+    [updateStatus("waiting-for-exit"), "正在等待应用退出..."],
+    [updateStatus("installing"), "正在通过 npm 安装..."],
+    [updateStatus("installing", "windows-installer"), "正在安装更新..."],
+    [updateStatus("restarting"), "正在重启以完成更新..."],
+    [updateStatus("succeeded"), "更新安装成功。"],
+    [updateStatus("failed"), "更新失败。"],
+  ])("renders a distinct localized update status for $0.phase", async (status, expected) => {
+    const client = {
+      checkUpdate: vi.fn(async () => updateCheck(status)),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(expected);
+    });
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("keeps a manual GitHub Releases download available before discovery and after update failure", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck()),

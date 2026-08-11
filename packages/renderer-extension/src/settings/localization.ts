@@ -56,6 +56,7 @@ export interface RendererSettingsMessages {
   readonly updateSucceeded: string;
   readonly updateFailed: string;
   readonly updateRetry: string;
+  readonly updateManualNpmDescription: string;
   readonly updateDownloadFromReleases: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
@@ -99,6 +100,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
   updateRetry: "Retry",
+  updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
   updateDownloadFromReleases: "Download from GitHub Releases",
   pageLabels: Object.freeze({
     connections: "Connections",
@@ -148,6 +150,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
   updateRetry: "重试",
+  updateManualNpmDescription: "如需手动更新，请先退出 codexhost，然后在终端运行：",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   pageLabels: Object.freeze({
     connections: "连接",

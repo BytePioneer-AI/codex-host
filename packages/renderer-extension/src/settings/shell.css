@@ -472,6 +472,32 @@ button {
   font-size: 15px;
 }
 
+.settings-update-manual {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  margin-top: 14px;
+  padding-inline: 4px;
+}
+
+.settings-update-manual[hidden] {
+  display: none;
+}
+
+.settings-update-manual span {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-update-manual code {
+  overflow-wrap: anywhere;
+  color: var(--settings-text);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .settings-update-actions {
   display: flex;
   min-width: 0;

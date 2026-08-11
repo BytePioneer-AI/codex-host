@@ -1,18 +1,5 @@
 # Repository Guidelines
 
-## Project Purpose & Structure
-
-This repository contains the product and technical baselines for `codexhost` and its implementation workspace. The product aims to run Pi inside the Codex Desktop shell, with additional Harnesses planned later.
-
-- `docs/产品需求文档.md` is the current product baseline: scope, MVP requirements, and acceptance criteria.
-- `docs/领域术语表.md` defines the shared domain language, including Harness, Model, Provider, Thread, and Native Session.
-
-If documents conflict, report the conflict explicitly. Follow the PRD as the current delivery baseline.
-
-Use active OpenSpec changes, source code, and tests to determine the current implementation status. Do not infer implemented capabilities solely from package names, directory structure, or module presence.
-
-Before implementing a planned change, read the relevant main OpenSpec spec, predecessor archived `design.md`, verification record, owning source modules, and tests. If they conflict, report the conflict explicitly before implementation.
-
 ## Code Layout
 
 - `crates/` is the Rust Cargo Workspace. `launcher`, `shim`, and `updater` are binary crates; `platform` is their shared Windows/macOS platform library. Rust owns native launch, process, update installation, and platform integration, not Host protocol or Harness semantics.

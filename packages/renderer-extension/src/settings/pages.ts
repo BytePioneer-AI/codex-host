@@ -24,6 +24,7 @@ import {
 
 export const CODEXHOST_RELEASES_LATEST_URL =
   "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+export const CODEXHOST_NPM_MANUAL_UPDATE_COMMAND = "npm install -g @codexhost/cli@latest";
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
@@ -168,6 +169,14 @@ function updatesPage(
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
       panel.setAttribute("aria-live", "polite");
+      const manualNpm = document.createElement("div");
+      manualNpm.className = "settings-update-manual";
+      manualNpm.hidden = true;
+      const manualNpmDescription = document.createElement("span");
+      manualNpmDescription.textContent = messages.updateManualNpmDescription;
+      const manualNpmCommand = document.createElement("code");
+      manualNpmCommand.textContent = CODEXHOST_NPM_MANUAL_UPDATE_COMMAND;
+      manualNpm.append(manualNpmDescription, manualNpmCommand);
       const actions = document.createElement("div");
       actions.className = "settings-update-actions";
       const releaseLink = document.createElement("a");
@@ -180,7 +189,7 @@ function updatesPage(
         createRendererSettingsIcon("external-link", 14),
       );
       actions.append(releaseLink);
-      context.content.append(heading, metadata, panel, actions);
+      context.content.append(heading, metadata, panel, manualNpm, actions);
       let pollTimer: number | undefined;
       let pollAttempts = 0;
       let pending = false;
@@ -304,6 +313,7 @@ function updatesPage(
       const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
         currentVersionValue.textContent = `v${result.currentVersion}`;
         installationValue.textContent = installationLabel(result.installation, messages);
+        manualNpm.hidden = result.installation !== "npm";
         if (result.releaseNotesUrl) releaseLink.href = result.releaseNotesUrl;
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {

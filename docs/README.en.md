@@ -23,11 +23,11 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
 
 Pi and Claude Code run as independent sessions in the same Codex Desktop window. Streaming output, tool status, diffs, approvals, and questions are rendered in real time.
 
-![Full demo of Pi and Claude Code running in Codex Desktop](../packages/renderer-extension/src/assets/readme/demo.gif)
+![Full demo of Pi and Claude Code running in Codex Desktop](imgs/demo.gif)
 
 ### Interface
 
-![Pi and Claude Code running as independent threads in Codex Desktop](../packages/renderer-extension/src/assets/readme/app-overview.png)
+![Pi and Claude Code running as independent threads in Codex Desktop](imgs/app-overview.png)
 
 ## Feature Status
 
@@ -80,17 +80,17 @@ The goal is fidelity, not merely making the conversation work. Streaming, tool s
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent and Model selection</strong></p>
-      <img src="../packages/renderer-extension/src/assets/readme/agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it">
+      <img src="imgs/agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage and cost information</strong></p>
-      <img src="../packages/renderer-extension/src/assets/readme/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
+      <img src="imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
       <p><strong>Mermaid diagram rendering</strong></p>
-      <img src="../packages/renderer-extension/src/assets/readme/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
+      <img src="imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
     </td>
   </tr>
 </table>

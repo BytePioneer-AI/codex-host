@@ -2,18 +2,43 @@
 
 ## Code Layout
 
-- `crates/` is the Rust Cargo Workspace. `launcher`, `shim`, and `updater` are binary crates; `platform` is their shared Windows/macOS platform library. Rust owns native launch, process, update installation, and platform integration, not Host protocol or Harness semantics.
-- `packages/` is the npm/TypeScript Workspace. `protocol-core`, `mapping-store`, `harness-adapter`, `desktop-control`, `update-manager`, `host-runtime`, and Harness adapters are Node.js modules for protocol routing, metadata persistence, Harness abstraction, Desktop control, background update preparation, composition, and Harness integration.
-- `packages/shared-contracts/` contains browser-safe shared types and runtime schemas. It must not depend on Node.js-only capabilities.
-- `packages/renderer-extension/` is TypeScript built to browser JavaScript. It must not import Node.js built-ins, Electron private APIs, or Harness SDKs.
-- `scripts/release/` contains shared build-time release infrastructure plus platform-specific macOS and Windows packaging definitions. This path is not an application Runtime package. `tools/` contains development-only Node.js utilities and technical Gate tooling. `tests/e2e/`, `tests/differential/`, `tests/fixtures/`, and `tests/release/` contain Playwright tests, protocol differential tests, reviewed fixtures, and release infrastructure tests. Package-level `test/` directories contain Vitest tests; crate-level `tests/` directories contain Rust integration tests.
-- Generated and local-only paths defined by `.gitignore`, including dependencies, build outputs, reports, logs, downloads, `.pi/`, `.codexhost/`, and `reference/`, must not be committed.
+### Native Rust
+
+- `crates/`
+  - `launcher/`: native application launch
+  - `shim/`: process proxying
+  - `updater/`: update installation
+  - `platform/`: shared Windows/macOS integration
+
+### TypeScript Workspace
+
+- `packages/`
+  - `protocol-core/`: Host protocol routing and projection
+  - `mapping-store/`: external Thread metadata persistence
+  - `harness-adapter/`: Harness abstraction
+  - `adapters/`: Pi and Claude Code Harness integrations
+  - `desktop-control/`: Desktop interaction
+  - `host-runtime/`: runtime composition
+  - `update-manager/`: background update preparation
+  - `shared-contracts/`: browser-safe types and runtime schemas
+  - `renderer-extension/`: browser JavaScript extension
+
+### Build and Release
+
+- `scripts/release/`: release preparation, packaging, and publishing
+- `tools/`: development utilities and technical Gates
+
+## Boundary Rules
+
+- Rust owns native launch, process management, update installation, and platform integration. It must not own Host protocol or Harness semantics.
+- `shared-contracts` must not depend on Node.js-only capabilities.
+- `renderer-extension` must not import Node.js built-ins, Electron private APIs, or Harness SDKs.
+- Harness-specific protocol details must remain inside the corresponding Adapter.
 
 ## Coding Style & Naming Conventions
 
 - Write the brand as lowercase `codexhost`.
-- Follow `docsp/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
-- Name new documentation with concise Chinese titles, for example `Pi适配器设计文档.md`. Retain established technical terms such as Pi, Harness, Adapter, RPC, and SDK when translation would reduce precision.
+- Follow `docs/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
 - TypeScript uses Strict Mode, ESLint, and Prettier. Rust uses rustfmt and Clippy.
 
 ## Implementation Principles

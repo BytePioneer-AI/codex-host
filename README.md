@@ -23,11 +23,11 @@
 
 Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 —— 流式输出、工具状态、Diff、审批与提问等均实时渲染。
 
-![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](packages/renderer-extension/src/assets/readme/demo.gif)
+![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](docs/imgs/demo.gif)
 
 ### 界面
 
-![Pi 与 Claude Code 作为独立 Thread 运行在 Codex Desktop 中](packages/renderer-extension/src/assets/readme/app-overview.png)
+![Pi 与 Claude Code 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
 
 ## 功能状态
 
@@ -80,17 +80,17 @@ CodexHost 不走这条路：
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="packages/renderer-extension/src/assets/readme/agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model">
+      <img src="docs/imgs/agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
-      <img src="packages/renderer-extension/src/assets/readme/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
+      <img src="docs/imgs/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
       <p><strong>Mermaid 图表可视化渲染</strong></p>
-      <img src="packages/renderer-extension/src/assets/readme/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+      <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
     </td>
   </tr>
 </table>

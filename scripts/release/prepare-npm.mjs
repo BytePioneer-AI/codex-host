@@ -239,6 +239,13 @@ import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
 const userArguments = process.argv.slice(2);
+const startupTraceStartedAt = Date.now();
+function startupTrace(stage) {
+  if (process.env.CODEXHOST_STARTUP_TRACE !== "1") return;
+  console.error(
+    "[codexhost startup +" + (Date.now() - startupTraceStartedAt) + "ms] npm: " + stage,
+  );
+}
 if (
   userArguments.length === 1 &&
   (userArguments[0] === "--version" || userArguments[0] === "-v")
@@ -246,6 +253,7 @@ if (
   console.log(version);
   process.exit(0);
 }
+startupTrace("entry");
 
 const platformPackages = ${JSON.stringify(NPM_RUNTIME_PLATFORM_PACKAGES, null, 2)};
 const platformKey = \`\${process.platform}-\${process.arch}\`;
@@ -279,6 +287,7 @@ try {
   }
 }
 
+startupTrace("platform package resolved");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);
 const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuffix}\`);
@@ -381,6 +390,7 @@ if (launchArguments[0] === "launch") {
   // The Launcher prints "ready" once the Desktop, Controller, and Host chain
   // are up, then detaches from the terminal to keep supervising. Return
   // success immediately so the terminal is not held open by this command.
+  startupTrace("spawning Launcher");
   const child = spawn(launcher, launchArguments, {
     env: updateEnvironment,
     stdio: ["ignore", "pipe", "inherit"],
@@ -390,16 +400,24 @@ if (launchArguments[0] === "launch") {
   const finish = (code) => {
     if (finished) return;
     finished = true;
+    startupTrace("Launcher finished startup with code " + code);
     process.exit(code);
   };
   child.stdout.setEncoding("utf8");
   let launcherOutput = "";
   child.stdout.on("data", (chunk) => {
     launcherOutput += chunk;
-    if (launcherOutput.includes("ready\\n")) finish(0);
+    if (launcherOutput.includes("ready\\n")) {
+      startupTrace("received Launcher ready");
+      finish(0);
+    }
   });
-  child.on("error", (error) => fail(error.message));
+  child.on("error", (error) => {
+    startupTrace("Launcher spawn failed: " + error.message);
+    fail(error.message);
+  });
   child.on("exit", (code, signal) => {
+    startupTrace("Launcher exited before ready");
     if (signal) {
       process.kill(process.pid, signal);
       return;

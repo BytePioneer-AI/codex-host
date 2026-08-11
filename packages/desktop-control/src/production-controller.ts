@@ -63,6 +63,16 @@ const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
 const RECOVERY_RETRY_INITIAL_MS = 30_000;
 const RECOVERY_RETRY_MAX_MS = 300_000;
+const startupTraceStartedAt = Date.now();
+
+function startupTrace(stage: string, detail?: unknown): void {
+  if (process.env.CODEXHOST_STARTUP_TRACE !== "1") return;
+  const suffix =
+    detail === undefined ? "" : `: ${detail instanceof Error ? detail.message : String(detail)}`;
+  console.error(
+    `[codexhost startup +${Date.now() - startupTraceStartedAt}ms] controller: ${stage}${suffix}`,
+  );
+}
 
 function validCompatibilityIssue(
   state: DesktopControllerCompatibilityState,
@@ -271,9 +281,11 @@ export async function runDesktopController(
     recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
   };
   const createSession = async (): Promise<RendererControlSession> => {
+    startupTrace("reading Renderer bundle");
     const rendererSource = await dependencies.readRenderer(options.rendererPath);
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
-    return installProductionSession(
+    startupTrace("installing Renderer Session");
+    const installed = await installProductionSession(
       {
         inspectorEndpoint: options.inspectorEndpoint,
         rendererSource: `${configuration}\n${rendererSource}`,
@@ -282,11 +294,15 @@ export async function runDesktopController(
       },
       dependencies,
     );
+    startupTrace("Renderer Session installed");
+    return installed;
   };
+  startupTrace("initialization started");
   try {
     session = await createSession();
     recordRecoverySuccess();
-  } catch {
+  } catch (error) {
+    startupTrace("initial Renderer Session unavailable", error);
     session = undefined;
     recordRecoveryFailure();
   }
@@ -323,6 +339,7 @@ export async function runDesktopController(
 
   let attachmentServer: ControllerAttachmentServer | undefined;
   try {
+    startupTrace("starting attachment server");
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
@@ -342,7 +359,9 @@ export async function runDesktopController(
           await current.quitDesktop();
         }),
     });
+    startupTrace("attachment server ready");
     const issues = session?.snapshot.titlePolicy.warnings ?? [];
+    startupTrace("publishing readiness");
     dependencies.ready({
       schemaVersion: 2,
       state: issues.length === 0 ? "compatible" : "compatible-with-warning",

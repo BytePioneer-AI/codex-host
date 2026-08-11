@@ -18,11 +18,9 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
 use std::process::{Child, ExitStatus};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::thread;
-use std::time::Duration;
-#[cfg(not(target_os = "macos"))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use active_update::start_pending_update;
@@ -70,6 +68,7 @@ const CONTROL_PORT_ENV: &str = "CODEXHOST_CONTROL_PORT";
 const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
+const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
@@ -92,6 +91,15 @@ fn usage() {
     );
 }
 
+fn startup_trace(stage: &str) {
+    if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    static STARTED: OnceLock<Instant> = OnceLock::new();
+    let elapsed = STARTED.get_or_init(Instant::now).elapsed().as_millis();
+    eprintln!("[codexhost startup +{elapsed}ms] launcher: {stage}");
+}
+
 /// Emits the exact startup-success signal consumed by the npm/dev wrappers so
 /// they can return immediately instead of holding the terminal open.
 fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
@@ -104,6 +112,7 @@ fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
 /// the command returns. Startup failures must not reach this point: they exit
 /// non-zero on stderr exactly like before.
 fn notify_ready_and_detach() -> Result<(), Box<dyn Error>> {
+    startup_trace("publishing ready");
     emit_ready_line(&mut std::io::stdout())?;
     codexhost_platform::detach_from_terminal()?;
     Ok(())
@@ -347,7 +356,8 @@ fn desktop_controller_command(
         if matches!(
             name.to_str(),
             Some(
-                "HTTP_PROXY"
+                "CODEXHOST_STARTUP_TRACE"
+                    | "HTTP_PROXY"
                     | "http_proxy"
                     | "HTTPS_PROXY"
                     | "https_proxy"
@@ -413,13 +423,18 @@ fn start_desktop_controller(
     control: &RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Result<(SupervisedChild, ControllerReadiness), Box<dyn Error>> {
+    startup_trace("spawning Desktop Controller");
     let mut controller = spawn_supervised(&mut desktop_controller_command(
         options,
         control,
         environment,
     ))?;
+    startup_trace("waiting for Desktop Controller readiness");
     match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
-        Ok(readiness) => Ok((controller, readiness)),
+        Ok(readiness) => {
+            startup_trace("Desktop Controller ready");
+            Ok((controller, readiness))
+        }
         Err(error) => {
             let _ = controller.force_terminate();
             let _ = controller.wait();
@@ -601,6 +616,7 @@ fn supervise_desktop(
     environment: &[(OsString, OsString)],
     control: &RuntimeControl,
 ) -> Result<(), Box<dyn Error>> {
+    startup_trace("launching Codex Desktop");
     let mut desktop = launch_desktop_session(
         installation,
         &options.shim,
@@ -609,13 +625,16 @@ fn supervise_desktop(
         environment,
         Duration::from_secs(30),
     )?;
+    startup_trace("Codex Desktop launched");
     let (mut controller, readiness) = start_desktop_controller(options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
+    startup_trace("waiting for Host chain");
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.shutdown(Duration::from_secs(2));
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
+    startup_trace("Host chain ready");
     let compatibility = match handle_compatibility_result(installation, &readiness, control) {
         Ok(decision) => decision,
         Err(error) => {
@@ -636,6 +655,7 @@ fn supervise_desktop(
         return Ok(());
     }
     let _runtime = publish_runtime_descriptor(control)?;
+    startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     let mut started_update_request = None;
     loop {
@@ -666,6 +686,7 @@ fn supervise_desktop(
     environment: &[(OsString, OsString)],
     control: &RuntimeControl,
 ) -> Result<(), Box<dyn Error>> {
+    startup_trace("launching Codex Desktop");
     let mut desktop = launch_desktop(
         installation,
         &options.shim,
@@ -673,6 +694,7 @@ fn supervise_desktop(
         desktop_arguments,
         environment,
     )?;
+    startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
     let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
@@ -684,12 +706,14 @@ fn supervise_desktop(
             return Err(error);
         }
     };
+    startup_trace("waiting for Host chain");
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.kill();
         let _ = desktop.wait();
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
+    startup_trace("Host chain ready");
     let compatibility = match handle_compatibility_result(installation, &readiness, control) {
         Ok(decision) => decision,
         Err(error) => {
@@ -718,6 +742,7 @@ fn supervise_desktop(
             return Err(error);
         }
     };
+    startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     loop {
         if let Some(status) = controller.try_wait()? {
@@ -789,6 +814,9 @@ fn desktop_environment(
             node_entrypoint_path(pi).into_os_string(),
         ));
     }
+    if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
+    }
     environment
 }
 
@@ -854,12 +882,22 @@ fn force_stop_external_desktop(
 }
 
 fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(), Box<dyn Error>> {
+    startup_trace("launch requested");
     let options = options.resolve()?;
+    startup_trace("resources resolved");
+    startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(Duration::from_secs(120))? {
-        LauncherOwnership::Acquired(guard) => guard,
-        LauncherOwnership::Attached => return Ok(()),
+        LauncherOwnership::Acquired(guard) => {
+            startup_trace("Launcher ownership acquired");
+            guard
+        }
+        LauncherOwnership::Attached => {
+            startup_trace("attached to existing controlled Desktop");
+            return Ok(());
+        }
     };
     let installation = discover_codex_desktop()?;
+    startup_trace("Codex Desktop installation discovered");
 
     loop {
         let roots = desktop_root_process_ids()?;
@@ -1019,8 +1057,9 @@ mod tests {
     use super::{
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl,
-        allocate_runtime_control, default_launch_options, desktop_controller_command,
-        desktop_environment, emit_ready_line, parse_launch_options, read_bounded_controller_line,
+        STARTUP_TRACE_ENV, allocate_runtime_control, default_launch_options,
+        desktop_controller_command, desktop_environment, emit_ready_line, parse_launch_options,
+        read_bounded_controller_line,
     };
     #[cfg(target_os = "windows")]
     use super::{stop_desktop_controller, wait_for_desktop_exit};
@@ -1227,6 +1266,7 @@ mod tests {
                     OsString::from(HOST_NODE_PATH_ENV),
                     OsString::from("/private/node"),
                 ),
+                (OsString::from(STARTUP_TRACE_ENV), OsString::from("1")),
             ],
         );
         let environment = command.get_envs().collect::<Vec<_>>();
@@ -1234,6 +1274,10 @@ mod tests {
         assert!(environment.contains(&(
             std::ffi::OsStr::new("HTTPS_PROXY"),
             Some(std::ffi::OsStr::new("http://proxy:8443")),
+        )));
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new(STARTUP_TRACE_ENV),
+            Some(std::ffi::OsStr::new("1")),
         )));
         assert!(
             !environment

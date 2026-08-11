@@ -493,6 +493,15 @@ class InstalledRendererControlSession implements RendererControlSession {
   }
 }
 
+const startupTraceStartedAt = Date.now();
+
+function startupTrace(stage: string): void {
+  if (process.env.CODEXHOST_STARTUP_TRACE !== "1") return;
+  console.error(
+    `[codexhost startup +${Date.now() - startupTraceStartedAt}ms] renderer-session: ${stage}`,
+  );
+}
+
 export async function createRendererControlSession(
   options: CreateRendererControlOptions,
 ): Promise<RendererControlSession> {
@@ -500,10 +509,15 @@ export async function createRendererControlSession(
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const operations = options.operations ?? defaultOperations;
+  startupTrace("waiting for initial Renderer");
   const initial = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
+  startupTrace("installing title policy");
   const titlePolicy = await operations.installTitlePolicy(options.inspector, initial.id);
+  startupTrace("reloading Renderer");
   await operations.reload(options.inspector, initial.id);
+  startupTrace("waiting for reloaded Renderer");
   const selected = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
+  startupTrace("waiting for title policy readiness");
   const titlePolicyReadiness = await waitForRendererTitlePolicyReady(
     () => operations.markTitlePolicyReady(options.inspector, selected.id),
     {
@@ -511,7 +525,9 @@ export async function createRendererControlSession(
       pollIntervalMs,
     },
   );
+  startupTrace("injecting Renderer bundle");
   await operations.execute(options.inspector, selected.id, options.rendererSource);
+  startupTrace("waiting for Renderer binding");
   const binding = await waitForBinding(
     options.inspector,
     operations,
@@ -520,6 +536,7 @@ export async function createRendererControlSession(
     timeoutMs,
     pollIntervalMs,
   );
+  startupTrace("installing draft prewarm policy");
   const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(
     options.inspector,
     selected.id,
@@ -546,12 +563,15 @@ export async function installRendererControlSession(
 ): Promise<RendererControlSession> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
+  startupTrace("waiting for Electron Inspector target");
   const target = await waitForInspectorTarget(options.inspectorEndpoint, {
     timeoutMs,
     pollIntervalMs,
   });
+  startupTrace("connecting to Electron Inspector");
   const inspector = await CdpClient.connect(target.webSocketDebuggerUrl);
   try {
+    startupTrace("enabling Inspector Runtime domain");
     await inspector.command("Runtime.enable");
     return await createRendererControlSession({
       ...options,

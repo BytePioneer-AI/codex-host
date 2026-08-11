@@ -69,6 +69,7 @@ const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
+const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
 const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
@@ -510,9 +511,24 @@ fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<d
         }
         return Ok(());
     }
+
+    startup_trace("stopping Desktop Controller");
     controller.terminate()?;
+    let started = Instant::now();
+    while started.elapsed() < CONTROLLER_STOP_GRACE {
+        if controller.try_wait()?.is_some() {
+            startup_trace("Desktop Controller stopped");
+            controller.disarm_cleanup();
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    startup_trace("Desktop Controller did not stop gracefully; forcing termination");
+    controller.force_terminate()?;
     let _ = controller.wait()?;
     controller.disarm_cleanup();
+    startup_trace("Desktop Controller force-stopped");
     Ok(())
 }
 
@@ -1044,6 +1060,8 @@ mod tests {
     use std::thread;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use std::time::Duration;
+    #[cfg(target_os = "macos")]
+    use std::time::Instant;
 
     #[cfg(target_os = "windows")]
     use codexhost_platform::configure_background_command;
@@ -1052,8 +1070,12 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use super::PI_COMMAND_ENV;
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    use super::stop_desktop_controller;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
+    #[cfg(target_os = "windows")]
+    use super::wait_for_desktop_exit;
     use super::{
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl,
@@ -1061,8 +1083,6 @@ mod tests {
         desktop_controller_command, desktop_environment, emit_ready_line, parse_launch_options,
         read_bounded_controller_line,
     };
-    #[cfg(target_os = "windows")]
-    use super::{stop_desktop_controller, wait_for_desktop_exit};
 
     #[test]
     fn no_argument_launch_defaults_to_codex() {
@@ -1106,6 +1126,22 @@ mod tests {
         let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
 
         stop_desktop_controller(&mut controller).expect("stop owned Controller");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn force_stops_a_controller_that_ignores_graceful_termination() {
+        let mut command = Command::new("/bin/bash");
+        command.args(["-c", "trap '' TERM; while :; do sleep 1; done"]);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
+        thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        stop_desktop_controller(&mut controller).expect("force-stop owned Controller");
+
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(controller.try_wait().expect("Controller status").is_some());
     }
 
     #[cfg(target_os = "windows")]

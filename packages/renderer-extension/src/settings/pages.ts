@@ -44,21 +44,15 @@ export interface RendererUpdateClient {
 }
 
 function appendUnavailableStatus(content: HTMLElement, messages: RendererSettingsMessages): void {
-  const heading = content.ownerDocument.createElement("div");
-  heading.className = "settings-section-label";
-  heading.textContent = messages.availability;
-
   const status = content.ownerDocument.createElement("div");
   status.className = "settings-empty";
 
   const copy = content.ownerDocument.createElement("div");
   const title = content.ownerDocument.createElement("strong");
-  title.textContent = messages.notAvailable;
-  const detail = content.ownerDocument.createElement("span");
-  detail.textContent = messages.runtimeCapabilityNotInstalled;
-  copy.append(title, detail);
+  title.textContent = messages.inDevelopment;
+  copy.append(title);
   status.append(copy);
-  content.append(heading, status);
+  content.append(status);
 }
 
 function unavailablePage(

@@ -14,6 +14,7 @@ import {
 import { createDefaultRendererSettingsRegistry } from "./pages.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
+export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
 
 export interface RendererSettingsShell {
   readonly root: HTMLElement;
@@ -92,13 +93,27 @@ export function mountRendererSettingsShell(
   brandCopy.append(brandName, brandTitle);
   brand.append(brandMark, brandCopy);
 
+  const headerActions = ownerDocument.createElement("div");
+  headerActions.className = "settings-header-actions";
+  const starLink = ownerDocument.createElement("a");
+  starLink.className = "settings-icon-button settings-star-link";
+  starLink.href = CODEXHOST_GITHUB_REPOSITORY_URL;
+  starLink.target = "_blank";
+  starLink.rel = "noopener noreferrer";
+  starLink.setAttribute("aria-label", messages.starOnGitHub);
+  starLink.title = messages.starOnGitHub;
+  const starLabel = ownerDocument.createElement("span");
+  starLabel.textContent = messages.starOnGitHub;
+  starLink.append(createRendererSettingsIcon("star", 16), starLabel);
+
   const closeButton = ownerDocument.createElement("button");
   closeButton.type = "button";
   closeButton.className = "settings-icon-button";
   closeButton.setAttribute("aria-label", messages.close);
   closeButton.title = messages.close;
   closeButton.append(createRendererSettingsIcon("close", 18));
-  header.append(brand, closeButton);
+  headerActions.append(starLink, closeButton);
+  header.append(brand, headerActions);
 
   const layout = ownerDocument.createElement("div");
   layout.className = "settings-layout";

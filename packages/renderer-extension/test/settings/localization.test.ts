@@ -33,8 +33,6 @@ describe("Renderer settings localization", () => {
 
     expect(english.title).toBe("Settings");
     expect(chinese.title).toBe("设置");
-    expect(chinese.interfaceLanguage).toBe("界面语言");
-    expect(chinese.automaticLanguage).toBe("自动（跟随 Codex）");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
     expect(chinese.updateInstallation).toBe("安装方式");
     expect(chinese.updateInstallationWindowsInstaller).toBe("Windows 安装程序");

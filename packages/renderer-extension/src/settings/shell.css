@@ -101,6 +101,31 @@ button {
   border-bottom: 1px solid var(--settings-border);
 }
 
+.settings-header-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.settings-icon-button.settings-star-link {
+  width: auto;
+  gap: 6px;
+  padding-inline: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  text-decoration: none;
+  border: 2px dashed #f5c542;
+  white-space: nowrap;
+}
+
+.settings-star-link .codexhost-settings-icon {
+  color: #f5c542;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
 .settings-brand {
   display: flex;
   align-items: center;
@@ -567,6 +592,15 @@ button {
   .settings-header {
     height: 56px;
     padding-inline: 14px;
+  }
+
+  .settings-icon-button.settings-star-link {
+    width: 28px;
+    padding: 0;
+  }
+
+  .settings-star-link span {
+    display: none;
   }
 
   .settings-sidebar {

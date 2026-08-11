@@ -21,15 +21,10 @@ export interface RendererSettingsMessages {
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
-  readonly interfaceLanguage: string;
-  readonly automaticLanguage: string;
-  readonly englishLanguage: string;
-  readonly simplifiedChineseLanguage: string;
-  readonly otherCodexLanguage: string;
-  readonly languageUpdateFailed: string;
+  readonly starOnGitHub: string;
   readonly sectionsLabel: string;
   readonly pageUnavailable: string;
-  readonly availability: string;
+  readonly inDevelopment: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
   readonly openSettings: string;
@@ -65,15 +60,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   locale: "en",
   title: "Settings",
   close: "Close settings",
-  interfaceLanguage: "Interface language",
-  automaticLanguage: "Automatic (follow Codex)",
-  englishLanguage: "English",
-  simplifiedChineseLanguage: "Simplified Chinese",
-  otherCodexLanguage: "Other Codex language",
-  languageUpdateFailed: "Could not update the language setting.",
+  starOnGitHub: "Give us a Star~",
   sectionsLabel: "Settings sections",
   pageUnavailable: "Page unavailable",
-  availability: "Availability",
+  inDevelopment: "In development",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
   openSettings: "Open codexhost settings",
@@ -115,15 +105,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
-  interfaceLanguage: "界面语言",
-  automaticLanguage: "自动（跟随 Codex）",
-  englishLanguage: "English",
-  simplifiedChineseLanguage: "简体中文",
-  otherCodexLanguage: "其他 Codex 语言",
-  languageUpdateFailed: "无法更新语言设置。",
+  starOnGitHub: "点个 Star~",
   sectionsLabel: "设置分类",
   pageUnavailable: "页面不可用",
-  availability: "可用性",
+  inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
   openSettings: "打开 codexhost 设置",

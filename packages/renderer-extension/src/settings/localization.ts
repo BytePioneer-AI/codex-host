@@ -135,7 +135,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
   updateRetry: "重试",
-  updateManualNpmDescription: "如需手动更新，请先退出 codexhost，然后在终端运行：",
+  updateManualNpmDescription:
+    "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   pageLabels: Object.freeze({
     connections: "连接",

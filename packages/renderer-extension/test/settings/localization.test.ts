@@ -39,6 +39,9 @@ describe("Renderer settings localization", () => {
     expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
     expect(chinese.updateWaitingForExit).toBe("正在等待应用退出...");
     expect(chinese.updateInstallingNpm).toBe("正在通过 npm 安装...");
+    expect(chinese.updateManualNpmDescription).toBe(
+      "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+    );
     expect(english.updateInstalling).toBe("Installing update...");
     expect(english.updateDownloadFromReleases).toBe("Download from GitHub Releases");
     expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");

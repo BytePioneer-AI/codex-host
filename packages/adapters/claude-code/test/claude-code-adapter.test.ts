@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   harnessPermissionModeIdSchema,
@@ -487,7 +489,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(opened.value.execute(textTurn("continued"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        cwd: "/synthetic",
+        cwd: path.resolve("/synthetic"),
         sessionId: "source-session",
         openMode: "resume",
       }),
@@ -661,7 +663,7 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(dependencies.forkSession).toHaveBeenCalledWith({
       checkpointId: "source-assistant-1",
-      cwd: "/synthetic",
+      cwd: path.resolve("/synthetic"),
       sourceSessionId: "source-session",
     });
     expect(dependencies.deleteSession).not.toHaveBeenCalled();
@@ -778,7 +780,7 @@ describe("Claude Code HarnessAdapter", () => {
       adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
     ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
     expect(dependencies.deleteSession).toHaveBeenCalledWith({
-      cwd: "/synthetic",
+      cwd: path.resolve("/synthetic"),
       sessionId: "derived-session",
     });
     expect(dependencies.createTransport).not.toHaveBeenCalled();
@@ -1089,7 +1091,11 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
-      item: { type: "commandExecution", command: "printf complete", cwd: "/synthetic" },
+      item: {
+        type: "commandExecution",
+        command: "printf complete",
+        cwd: path.resolve("/synthetic"),
+      },
     });
     transport.event({ type: "tool.progress", callId: "bash-1", elapsedMs: 20 });
     transport.event({

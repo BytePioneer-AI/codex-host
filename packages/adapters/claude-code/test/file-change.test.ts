@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { parseClaudeNativeFileChange, projectClaudeFileChange } from "../src/file-change.js";
@@ -98,9 +100,13 @@ describe("Claude native File Changes", () => {
         { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] },
       ],
     });
+    const expectedPath = path.resolve("/other/sample.txt").replaceAll("\\", "/");
+    const absoluteDisplayPath = path.posix.isAbsolute(expectedPath);
+    const oldHeader = absoluteDisplayPath ? expectedPath : `a/${expectedPath}`;
+    const newHeader = absoluteDisplayPath ? expectedPath : `b/${expectedPath}`;
     expect(projectClaudeFileChange(requireChange(native), "/workspace")).toMatchObject({
-      path: "/other/sample.txt",
-      unifiedDiff: expect.stringContaining("--- /other/sample.txt\n+++ /other/sample.txt"),
+      path: expectedPath,
+      unifiedDiff: expect.stringContaining(`--- ${oldHeader}\n+++ ${newHeader}`),
     });
   });
 });

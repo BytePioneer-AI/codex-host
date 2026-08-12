@@ -61,6 +61,12 @@ codexhost
 
 从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
 
+macOS 安装后，如果首次打开时提示 Apple 无法验证该应用，请在终端执行：
+```bash
+xattr -dr com.apple.quarantine /Applications/codexhost.app
+```
+然后重新打开 `codexhost`。
+
 <details>
 <summary><h3>怎么做的</h3></summary>
 

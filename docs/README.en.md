@@ -59,6 +59,12 @@ codexhost
 
 Download the latest installer from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases), then choose the file matching your operating system and CPU architecture.
 
+After installing on macOS, if Apple says it cannot verify the app when you first open it, run the following command in Terminal:
+```bash
+xattr -dr com.apple.quarantine /Applications/codexhost.app
+```
+Then open `codexhost` again.
+
 <details>
 <summary><h3>How it works</h3></summary>
 

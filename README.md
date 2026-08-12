@@ -96,3 +96,8 @@ CodexHost 不走这条路：
     </td>
   </tr>
 </table>
+
+## 鸣谢
+
+- 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。
+- 感谢 [Paseo](https://github.com/getpaseo/paseo) 项目在多 Harness 接入思路与架构设计方面带来的启发与参考。

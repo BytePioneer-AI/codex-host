@@ -46,16 +46,6 @@ function assistantText(message: Record<string, unknown>): string | null {
     .join("");
 }
 
-function assistantReasoning(message: Record<string, unknown>): string | null {
-  const content = assistantContent(message);
-  if (!content) return null;
-  const blocks = content.filter(
-    (block): block is Record<string, unknown> =>
-      isRecord(block) && block.type === "thinking" && typeof block.thinking === "string",
-  );
-  return blocks.length > 0 ? blocks.map((block) => block.thinking as string).join("") : null;
-}
-
 function assistantError(message: unknown): string | null {
   return isRecord(message) && message.type === "assistant" && typeof message.error === "string"
     ? message.error
@@ -116,7 +106,6 @@ export class ClaudeNativeTurnAccumulator {
   #messageOrdinal = 0;
   #messages = new Map<string, AssistantMessageState>();
   #protocolConflict = false;
-  #reasoningConflict = false;
   #textConflict = false;
   #tools = new Map<string, string>();
 
@@ -158,8 +147,6 @@ export class ClaudeNativeTurnAccumulator {
     let terminal: ClaudeTransportTurnResult;
     if (this.#protocolConflict) {
       terminal = failure("protocol");
-    } else if (this.#reasoningConflict) {
-      terminal = failure("reasoningConflict");
     } else if (this.#textConflict) {
       terminal = failure("textConflict");
     } else if (includesAuthenticationFailure(message, this.#assistantErrors)) {
@@ -207,7 +194,6 @@ export class ClaudeNativeTurnAccumulator {
     const state = this.#messageState(messageId);
     if (event.type !== "content_block_delta" || !isRecord(event.delta)) return;
     if (state.completed) {
-      if (event.delta.type === "thinking_delta") this.#reasoningConflict = true;
       if (event.delta.type === "text_delta") this.#textConflict = true;
       return;
     }
@@ -230,19 +216,7 @@ export class ClaudeNativeTurnAccumulator {
     const state = this.#messageState(messageId);
     if (state.completed) return;
 
-    const completeReasoning = assistantReasoning(message);
-    if (completeReasoning !== null) {
-      if (completeReasoning.startsWith(state.reasoning)) {
-        const suffix = completeReasoning.slice(state.reasoning.length);
-        if (suffix.length > 0) {
-          state.reasoning += suffix;
-          events.push({ type: "reasoning.delta", messageId, delta: suffix });
-        }
-      } else if (completeReasoning !== state.reasoning) {
-        this.#reasoningConflict = true;
-      }
-    }
-    if (state.reasoning.length > 0 && !this.#reasoningConflict) {
+    if (state.reasoning.length > 0) {
       events.push({ type: "reasoning.completed", messageId });
     }
 
@@ -283,7 +257,7 @@ export class ClaudeNativeTurnAccumulator {
       });
     }
 
-    if (!this.#protocolConflict && !this.#reasoningConflict && !this.#textConflict) {
+    if (!this.#protocolConflict && !this.#textConflict) {
       events.push({
         type: "message.completed",
         messageId,

@@ -162,12 +162,10 @@ function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
     message:
       kind === "textConflict"
         ? "Claude Code returned inconsistent streamed text"
-        : kind === "reasoningConflict"
-          ? "Claude Code returned inconsistent streamed reasoning"
-          : kind === "cancellationUnproven"
-            ? "Claude Code cancellation could not be proven"
-            : "Claude Code Turn failed",
-    retryable: kind !== "textConflict" && kind !== "reasoningConflict",
+        : kind === "cancellationUnproven"
+          ? "Claude Code cancellation could not be proven"
+          : "Claude Code Turn failed",
+    retryable: kind !== "textConflict",
   };
 }
 

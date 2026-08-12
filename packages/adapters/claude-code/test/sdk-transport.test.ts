@@ -623,7 +623,6 @@ describe("ClaudeSdkTransport Question callbacks", () => {
     await expect(turn).resolves.toEqual({ status: "succeeded" });
     expect(events).toEqual([
       { type: "reasoning.delta", messageId: assistantId, delta: "visible" },
-      { type: "reasoning.delta", messageId: assistantId, delta: " reasoning" },
       { type: "reasoning.completed", messageId: assistantId },
       { type: "text.delta", messageId: assistantId, delta: "answer" },
       { type: "message.completed", messageId: assistantId, checkpointId: assistantId },

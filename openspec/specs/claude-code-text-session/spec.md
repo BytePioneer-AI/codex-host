@@ -132,7 +132,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 ### Requirement: Claude text streaming has one complete ordered lifecycle
 
-Every accepted Claude text Turn SHALL emit one Turn start, retain the established Agent Message lifecycle, emit zero or more Reasoning Item lifecycles only for explicit visible Claude thinking, emit one terminal for every started Item, and emit one Turn terminal. Partial and complete Assistant text and visible thinking SHALL be reconciled within the native Assistant response that produced them; complete content from a later response in the same Tool loop SHALL NOT be treated as a cumulative snapshot of the Host Turn. Unknown native message types and all unsupported non-text content MUST NOT cross the HarnessAdapter seam.
+Every accepted Claude text Turn SHALL emit one Turn start, retain the established Agent Message lifecycle, emit zero or more Reasoning Item lifecycles only for explicit streamed Claude thinking, emit one terminal for every started Item, and emit one Turn terminal. Partial and complete Assistant text SHALL be reconciled within the native Assistant response that produced them; complete content from a later response in the same Tool loop SHALL NOT be treated as a cumulative snapshot of the Host Turn. Live Reasoning SHALL use only `thinking_delta` text and SHALL ignore complete Assistant `thinking` blocks. Unknown native message types and all unsupported non-text content MUST NOT cross the HarnessAdapter seam.
 
 #### Scenario: Partial text and full Assistant agree
 
@@ -157,28 +157,28 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 - **THEN** every started Item and the Turn SHALL fail exactly once
 - **AND** the Adapter SHALL NOT replay or replace the visible text silently
 
-#### Scenario: Partial thinking and full Assistant agree
+#### Scenario: Streamed thinking has a complete Assistant counterpart
 
 - **WHEN** SDK stream events emit non-empty `thinking_delta` text for one Assistant message and the complete `thinking` blocks contain that prefix plus a suffix
-- **THEN** the Adapter SHALL append the visible reasoning characters exactly once through one Reasoning Item for that message
-- **AND** it SHALL append only the missing suffix before Item completion
+- **THEN** the Adapter SHALL append only the `thinking_delta` text through one Reasoning Item for that message
+- **AND** it SHALL ignore the complete `thinking` blocks without appending their suffix
 
 #### Scenario: Thinking streaming is unavailable
 
 - **WHEN** no partial thinking event is emitted but a complete Assistant message contains non-empty visible thinking text
-- **THEN** the Adapter SHALL publish that text once through a complete Reasoning Item
+- **THEN** the Adapter SHALL emit no Reasoning Item from the complete `thinking` blocks
 
 #### Scenario: One Turn contains multiple Assistant messages
 
-- **WHEN** a Claude Tool loop or retry produces visible thinking in more than one native Assistant message
+- **WHEN** a Claude Tool loop or retry produces `thinking_delta` text in more than one native Assistant message
 - **THEN** the Adapter SHALL keep those messages as ordered distinct Reasoning Item lifecycles
-- **AND** complete-message reconciliation for one message SHALL NOT compare against or replay another message's text
+- **AND** complete Assistant `thinking` blocks SHALL NOT compare against, extend, or replay either message's text
 
-#### Scenario: Native thinking conflicts
+#### Scenario: Complete thinking differs from streamed thinking
 
 - **WHEN** complete visible thinking for one Assistant message cannot be reconciled with the thinking already emitted for that message
-- **THEN** every started Item and the Turn SHALL fail exactly once
-- **AND** the Adapter SHALL NOT silently replace or duplicate visible Reasoning
+- **THEN** the Adapter SHALL ignore the complete thinking without replacing or duplicating visible Reasoning
+- **AND** the complete thinking difference SHALL NOT affect the Turn outcome
 
 #### Scenario: Claude emits unsupported thinking forms
 

@@ -350,7 +350,7 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "failed", kind: "textConflict" });
   });
 
-  it("reconciles visible thinking when stream and complete wrapper UUIDs differ", () => {
+  it("uses only streamed thinking when the complete wrapper contains more thinking", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(thinkingPartial("visible ", "assistant-thinking")).events).toEqual([
@@ -371,7 +371,6 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      { type: "reasoning.delta", messageId: "assistant-thinking", delta: "reasoning" },
       { type: "reasoning.completed", messageId: "assistant-thinking" },
       { type: "text.delta", messageId: "assistant-thinking", delta: "answer" },
       {
@@ -383,7 +382,7 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
-  it("publishes final-only thinking and ignores protected thinking forms", () => {
+  it("ignores final-only and protected thinking forms", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(
@@ -398,12 +397,6 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      {
-        type: "reasoning.delta",
-        messageId: "final-only-thinking",
-        delta: "displayable",
-      },
-      { type: "reasoning.completed", messageId: "final-only-thinking" },
       { type: "text.delta", messageId: "final-only-thinking", delta: "answer" },
       {
         type: "message.completed",
@@ -413,36 +406,7 @@ describe("Claude native Turn interpretation", () => {
     ]);
   });
 
-  it("keeps reasoning reconciliation isolated across Assistant messages", () => {
-    const turn = new ClaudeNativeTurnAccumulator();
-
-    expect(
-      turn.consume(assistantBlocks([{ type: "thinking", thinking: "first" }], "assistant-first"))
-        .events,
-    ).toEqual([
-      { type: "reasoning.delta", messageId: "assistant-first", delta: "first" },
-      { type: "reasoning.completed", messageId: "assistant-first" },
-      {
-        type: "message.completed",
-        messageId: "assistant-first",
-        checkpointId: "assistant-first",
-      },
-    ]);
-    expect(
-      turn.consume(assistantBlocks([{ type: "thinking", thinking: "second" }], "assistant-second"))
-        .events,
-    ).toEqual([
-      { type: "reasoning.delta", messageId: "assistant-second", delta: "second" },
-      { type: "reasoning.completed", messageId: "assistant-second" },
-      {
-        type: "message.completed",
-        messageId: "assistant-second",
-        checkpointId: "assistant-second",
-      },
-    ]);
-  });
-
-  it("fails rather than replacing conflicting complete reasoning", () => {
+  it("ignores conflicting complete reasoning without failing the Turn", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     turn.consume(thinkingPartial("streamed", "reasoning-conflict"));
@@ -453,11 +417,15 @@ describe("Claude native Turn interpretation", () => {
           "reasoning-conflict",
         ),
       ).events,
-    ).toEqual([]);
-    expect(turn.consume(result()).terminal).toEqual({
-      status: "failed",
-      kind: "reasoningConflict",
-    });
+    ).toEqual([
+      { type: "reasoning.completed", messageId: "reasoning-conflict" },
+      {
+        type: "message.completed",
+        messageId: "reasoning-conflict",
+        checkpointId: "reasoning-conflict",
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
   it("does not trust subtype success when native error fields disagree", () => {

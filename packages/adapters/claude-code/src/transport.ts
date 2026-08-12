@@ -5,12 +5,7 @@ import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
 
 export type ClaudeTransportFailureKind =
-  | "authentication"
-  | "cancellationUnproven"
-  | "native"
-  | "protocol"
-  | "reasoningConflict"
-  | "textConflict";
+  "authentication" | "cancellationUnproven" | "native" | "protocol" | "textConflict";
 
 export type ClaudeTransportTurnResult =
   | { status: "succeeded" }

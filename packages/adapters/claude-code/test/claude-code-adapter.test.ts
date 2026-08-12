@@ -1029,42 +1029,6 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("fails active Reasoning when complete native reasoning conflicts", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("reasoning-conflict"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.reasoning("assistant-conflict", "visible");
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    transport.finish({ status: "failed", kind: "reasoningConflict" });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "item.completed",
-      snapshot: {
-        item: { type: "reasoning", text: "visible" },
-        outcome: { status: "failed", error: { retryable: false } },
-      },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "item.completed",
-      snapshot: { item: { type: "agentMessage" }, outcome: { status: "failed" } },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "turn.completed",
-      outcome: {
-        status: "failed",
-        error: { message: "Claude Code returned inconsistent streamed reasoning" },
-      },
-    });
-    await session.close();
-  });
-
   it("projects bounded Bash and failed Generic Tool lifecycles in native order", async () => {
     const { adapter, transports } = fixture({ toolOutputLimit: 4 });
     const session = await openSession(adapter);

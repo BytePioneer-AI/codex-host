@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
@@ -627,6 +628,28 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("adds the Host Node runtime to the Pi process PATH", async () => {
+    const spawnProcess = vi.fn((options: PiRpcProcessOptions) => {
+      expect(options.environment.PATH?.split(path.delimiter)).toContain(
+        path.dirname(process.execPath),
+      );
+      return new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams;
+    });
+    const rpc = new PiRpcSession(
+      {
+        cwd: process.cwd(),
+        environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        commandTimeoutMs: 2_000,
+        closeTimeoutMs: 500,
+      },
+      { spawn: spawnProcess },
+    );
+
+    await rpc.start();
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    await rpc.close();
+  });
+
   it("rejects native state without stable Session identity", async () => {
     const rpc = session("missing-session-id");
 
@@ -650,7 +673,7 @@ describe("Pi RPC Turn aggregation", () => {
       },
       {
         platform: "win32",
-        isFile: (candidate) => candidate === piCommand,
+        isExecutable: (candidate) => candidate === piCommand,
       },
     );
 
@@ -658,6 +681,22 @@ describe("Pi RPC Turn aggregation", () => {
     expect(invocation.arguments.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
     expect(invocation.arguments.at(-1)).toContain(`"${piCommand}" "--mode" "rpc"`);
     expect(invocation.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("finds a user npm installation when a Finder-style PATH omits it", () => {
+    const piCommand = "/Users/test/.npm-global/bin/pi";
+    const invocation = piRpcProcessCommand(
+      {
+        cwd: process.cwd(),
+        environment: { HOME: "/Users/test", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      },
+      {
+        platform: "darwin",
+        isExecutable: (candidate) => candidate === piCommand,
+      },
+    );
+
+    expect(invocation.command).toBe(piCommand);
   });
 
   it("builds mutually exclusive Native Session resume and Fork argv", async () => {

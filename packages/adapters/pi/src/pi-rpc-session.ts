@@ -1,6 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
 import path from "node:path";
 
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
@@ -12,6 +11,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { PiSessionHistory } from "./pi-history.js";
 import {
   latestPiCacheHitRatePercent,
@@ -355,46 +355,8 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
 
 interface PiProcessCommandDependencies {
   platform: NodeJS.Platform;
-  isFile(filePath: string): boolean;
-}
-
-function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
-  return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-}
-
-function isRegularFile(filePath: string): boolean {
-  try {
-    return statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function resolveWindowsCommand(
-  command: string,
-  environment: NodeJS.ProcessEnv,
-  isFile: (filePath: string) => boolean,
-): string {
-  if (path.win32.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return command;
-  }
-  const extensions = path.win32.extname(command)
-    ? [""]
-    : (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
-        .split(";")
-        .map((extension) => extension.trim())
-        .filter((extension) => extension.length > 0);
-  const pathValue = environmentValue(environment, "PATH");
-  if (!pathValue) return command;
-  for (const rawDirectory of pathValue.split(path.win32.delimiter)) {
-    const directory = rawDirectory.trim().replace(/^"|"$/gu, "");
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = path.win32.join(directory, `${command}${extension}`);
-      if (isFile(candidate)) return candidate;
-    }
-  }
-  return command;
+  homeDirectory: string;
+  isExecutable(filePath: string): boolean;
 }
 
 export function piRpcProcessCommand(
@@ -412,15 +374,17 @@ export function piRpcProcessCommand(
     throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
   }
   const platform = dependencies.platform ?? process.platform;
-  const selectedCommand = options.command ?? options.environment.PI_COMMAND ?? "pi";
-  const command =
-    platform === "win32"
-      ? resolveWindowsCommand(
-          selectedCommand,
-          options.environment,
-          dependencies.isFile ?? isRegularFile,
-        )
-      : selectedCommand;
+  const command = resolvePiExecutable(
+    {
+      ...(options.command ? { command: options.command } : {}),
+      environment: options.environment,
+    },
+    {
+      platform,
+      ...(dependencies.homeDirectory ? { homeDirectory: dependencies.homeDirectory } : {}),
+      ...(dependencies.isExecutable ? { isExecutable: dependencies.isExecutable } : {}),
+    },
+  );
   const sessionArguments = options.forkSessionFile
     ? ["--fork", options.forkSessionFile]
     : options.sessionFile
@@ -503,12 +467,12 @@ export class PiRpcSession {
     const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
       ...(this.#options.command ? { command: this.#options.command } : {}),
-      environment: {
+      environment: withNodeRuntimeOnPath({
         ...process.env,
         ...this.#options.environment,
         PI_SKIP_VERSION_CHECK: "1",
         PI_TELEMETRY: "0",
-      },
+      }),
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),

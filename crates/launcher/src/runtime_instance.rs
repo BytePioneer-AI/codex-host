@@ -259,21 +259,20 @@ pub fn remove_matching_descriptor(path: &Path, expected: &RuntimeDescriptor) -> 
     {
         use crate::secure_storage::{SecureFileOpen, open_secure_file};
 
-        // Re-open the exact final component without following a symlink before
-        // unlinking it. A replacement after the read is therefore either an
-        // owned regular descriptor or rejected, never an arbitrary target.
+        // Keep the descriptor open through unlink. `remove_secure_file`
+        // compares its inode to this exact verified object, so a concurrent
+        // replacement cannot turn cleanup into deletion of another file.
         let mut file = open_secure_file(path, SecureFileOpen::ReadExisting)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         if RuntimeDescriptor::parse(&bytes).ok().as_ref() != Some(expected) {
             return Ok(false);
         }
-    }
-    #[cfg(target_os = "linux")]
-    match remove_secure_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+        match remove_secure_file(path, &file) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
     }
     #[cfg(not(target_os = "linux"))]
     match fs::remove_file(path) {

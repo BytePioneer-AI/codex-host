@@ -220,13 +220,25 @@ pub(crate) fn open_secure_file(path: &Path, how: SecureFileOpen) -> io::Result<F
     Ok(file)
 }
 
-/// Removes one owned private regular file relative to a verified, non-symlink
-/// parent directory. Callers compare contents through `open_secure_file` before
-/// invoking this so a replacement is never unlinked by pathname alone.
+/// Removes the exact owned private regular file that was just read through an
+/// already-open descriptor. The directory entry's device and inode must still
+/// match that descriptor before `unlinkat`, so a pathname replacement is never
+/// deleted by mistake.
 #[cfg(target_os = "linux")]
-pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_secure_file(path: &Path, expected: &File) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
     use rustix::fs::AtFlags;
 
+    let expected_metadata = expected.metadata()?;
+    if !expected_metadata.file_type().is_file()
+        || expected_metadata.uid() != rustix::process::geteuid().as_raw()
+        || expected_metadata.permissions().mode() & 0o777 != 0o600
+    {
+        return Err(permission_denied(
+            "codexhost storage file is not an owned 0600 regular file",
+        ));
+    }
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -241,22 +253,13 @@ pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
             "codexhost storage path has no file name",
         )
     })?;
-    let metadata =
+    let current =
         rustix::fs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(rustix_error)?;
-    if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::RegularFile
-        || metadata.st_uid != rustix::process::geteuid().as_raw()
-        || metadata.st_mode & 0o777 != 0o600
-    {
-        return Err(permission_denied(
-            "codexhost storage file changed before secure removal",
-        ));
-    }
-    let reopened =
-        rustix::fs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(rustix_error)?;
-    if reopened.st_dev != metadata.st_dev
-        || reopened.st_ino != metadata.st_ino
-        || reopened.st_uid != metadata.st_uid
-        || reopened.st_mode != metadata.st_mode
+    if rustix::fs::FileType::from_raw_mode(current.st_mode) != rustix::fs::FileType::RegularFile
+        || current.st_uid != expected_metadata.uid()
+        || current.st_mode & 0o777 != 0o600
+        || current.st_dev != expected_metadata.dev()
+        || current.st_ino != expected_metadata.ino()
     {
         return Err(permission_denied(
             "codexhost storage file changed before secure removal",

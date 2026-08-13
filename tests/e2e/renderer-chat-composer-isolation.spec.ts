@@ -50,15 +50,8 @@ async function installChatComposer(page: Page): Promise<void> {
   await page.evaluate(() => new Promise((resolve) => queueMicrotask(resolve)));
 }
 
-test("ordinary Chat composers remain untouched", async ({ page }) => {
-  await installChatComposer(page);
-
-  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
-  await expect(page.locator("[data-codexhost-model-control]")).toHaveCount(0);
-  await expect(page.locator("[data-codexhost-permission-mode-control]")).toHaveCount(0);
-  await expect(page.locator("[data-chat-composer] button[type=submit]")).toBeEnabled();
-
-  const results = await page.locator('[role="textbox"]').evaluate((editor) => {
+async function dispatchInputIntents(page: Page): Promise<unknown> {
+  return page.locator('[role="textbox"]').evaluate((editor) => {
     const dispatch = (event: Event) => {
       const accepted = editor.dispatchEvent(event);
       return { accepted, prevented: event.defaultPrevented };
@@ -79,10 +72,45 @@ test("ordinary Chat composers remain untouched", async ({ page }) => {
       ),
     };
   });
+}
 
-  expect(results).toEqual({
-    backspace: { accepted: true, prevented: false },
-    paste: { accepted: true, prevented: false },
-    beforeInput: { accepted: true, prevented: false },
+const unmodifiedInputResults = {
+  backspace: { accepted: true, prevented: false },
+  paste: { accepted: true, prevented: false },
+  beforeInput: { accepted: true, prevented: false },
+};
+
+test("ordinary Chat composers remain untouched", async ({ page }) => {
+  await installChatComposer(page);
+
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
+  await expect(page.locator("[data-codexhost-model-control]")).toHaveCount(0);
+  await expect(page.locator("[data-codexhost-permission-mode-control]")).toHaveCount(0);
+  await expect(page.locator("[data-chat-composer] button[type=submit]")).toBeEnabled();
+
+  expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
+});
+
+test("a composer stops affecting input when the Codex marker is removed", async ({ page }) => {
+  await page.setContent(`
+    <!doctype html>
+    <body>
+      <form data-codex-composer-root data-mode="work">
+        <div contenteditable="true" role="textbox">draft</div>
+        <button type="submit" aria-label="Send">Send</button>
+      </form>
+    </body>
+  `);
+  await page.addScriptTag({ content: browserBundle });
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(1);
+
+  await page.locator("[data-mode=work]").evaluate((composer) => {
+    composer.removeAttribute("data-codex-composer-root");
+    composer.setAttribute("data-chat-composer", "true");
+    composer.setAttribute("data-mode", "chat");
   });
+
+  await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
+  await expect(page.locator("[data-mode=chat] button[type=submit]")).toBeEnabled();
+  expect(await dispatchInputIntents(page)).toEqual(unmodifiedInputResults);
 });

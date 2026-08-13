@@ -64,9 +64,19 @@ test("ordinary Chat composers remain untouched", async ({ page }) => {
       return { accepted, prevented: event.defaultPrevented };
     };
     return {
-      backspace: dispatch(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true })),
-      paste: dispatch(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true })),
-      beforeInput: dispatch(new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true })),
+      backspace: dispatch(
+        new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }),
+      ),
+      paste: dispatch(
+        new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true }),
+      ),
+      beforeInput: dispatch(
+        new InputEvent("beforeinput", {
+          inputType: "deleteContentBackward",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
     };
   });
 

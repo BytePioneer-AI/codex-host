@@ -110,31 +110,11 @@ export function isComposerSubmissionKey(event: KeyboardEvent): boolean {
 }
 
 export function composerForEditor(editor: Element): Element | null {
-  const codexComposer = editor.closest(CODEX_COMPOSER_SELECTOR);
-  if (codexComposer) return codexComposer;
-  const form = editor.closest("form");
-  if (form && sendButtonWithin(form)) return form;
-  let candidate = editor.parentElement;
-  for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-    if (sendButtonWithin(candidate)) return candidate;
-    candidate = candidate.parentElement;
-  }
-  return null;
+  return editor.closest(CODEX_COMPOSER_SELECTOR);
 }
 
 export function composerForElement(element: Element): Element | null {
-  const codexComposer = element.closest(CODEX_COMPOSER_SELECTOR);
-  if (codexComposer) return codexComposer;
-  const mounted = element.closest(`[${CONTROL_ATTRIBUTE}]`);
-  if (mounted) return mounted.parentElement;
-  const editor = editorForElement(element);
-  if (editor) return composerForEditor(editor);
-  let candidate: Element | null = element;
-  for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-    if (candidate.querySelector(`[${CONTROL_ATTRIBUTE}]`)) return candidate;
-    candidate = candidate.parentElement;
-  }
-  return null;
+  return element.closest(CODEX_COMPOSER_SELECTOR);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

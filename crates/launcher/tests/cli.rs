@@ -8,6 +8,25 @@ fn launcher_path() -> PathBuf {
 }
 
 #[test]
+fn windows_packaged_desktop_uses_appx_activation() {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../platform/src");
+    let launch_source =
+        fs::read_to_string(platform_root.join("desktop_launch.rs")).expect("read launch source");
+    let packaged_source =
+        fs::read_to_string(platform_root.join("windows_desktop.rs")).expect("read AppX source");
+
+    let windows_branch = launch_source
+        .split("#[cfg(target_os = \"windows\")]\npub fn launch_desktop")
+        .nth(1)
+        .expect("Windows launch branch");
+    assert!(windows_branch.contains("activate_packaged_desktop"));
+    assert!(!windows_branch.contains("Command::new(&installation.desktop_executable)"));
+    assert!(packaged_source.contains("ActivateApplication"));
+    assert!(packaged_source.contains("EnableDebugging"));
+    assert!(packaged_source.contains("DisableDebugging"));
+}
+
+#[test]
 fn production_launcher_uses_the_three_state_running_desktop_flow() {
     let source = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
         .expect("read Launcher source");

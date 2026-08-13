@@ -20,15 +20,20 @@ mod process_supervision;
 mod system_proxy;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_desktop;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
 
 pub use background::detach_from_terminal;
+pub use desktop_launch::{
+    DesktopProcess, launch_desktop, launch_stock_desktop, open_latest_codexhost_release,
+};
 #[cfg(target_os = "macos")]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
-pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
 pub use installation::discover_codex_desktop;
 #[cfg(target_os = "macos")]
 pub use macos_ui::prompt_compatibility_warning;
@@ -52,6 +57,8 @@ pub const CODEX_CLI_PATH_ENV: &str = "CODEX_CLI_PATH";
 pub const STOCK_CODEX_PATH_ENV: &str = "CODEXHOST_STOCK_CODEX_PATH";
 pub const PROBE_PACKAGE_NAME_ENV: &str = "CODEXHOST_PROBE_PACKAGE_NAME";
 pub const PROBE_PACKAGE_FAMILY_ENV: &str = "CODEXHOST_PROBE_PACKAGE_FAMILY";
+pub const PROBE_PACKAGE_FULL_NAME_ENV: &str = "CODEXHOST_PROBE_PACKAGE_FULL_NAME";
+pub const PROBE_APP_USER_MODEL_ID_ENV: &str = "CODEXHOST_PROBE_APP_USER_MODEL_ID";
 pub const PROBE_DESKTOP_VERSION_ENV: &str = "CODEXHOST_PROBE_DESKTOP_VERSION";
 pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
 
@@ -107,6 +114,8 @@ pub enum DesktopIdentity {
     WindowsPackage {
         package_name: String,
         package_family_name: String,
+        package_full_name: String,
+        app_user_model_id: String,
     },
     MacOsBundle {
         bundle_identifier: String,

@@ -15,8 +15,10 @@ use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+use std::process::Child;
 #[cfg(not(target_os = "macos"))]
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
@@ -24,6 +26,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use active_update::start_pending_update;
+#[cfg(not(target_os = "macos"))]
+use codexhost_platform::DesktopProcess;
 #[cfg(not(target_os = "macos"))]
 use codexhost_platform::launch_desktop;
 #[cfg(target_os = "macos")]
@@ -124,10 +128,14 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
         DesktopIdentity::WindowsPackage {
             package_name,
             package_family_name,
+            package_full_name,
+            app_user_model_id,
         } => {
             println!("platform=windows");
             println!("package_name={package_name}");
             println!("package_family_name={package_family_name}");
+            println!("package_full_name={package_full_name}");
+            println!("app_user_model_id={app_user_model_id}");
         }
         DesktopIdentity::MacOsBundle { bundle_identifier } => {
             println!("platform=macos");
@@ -446,7 +454,7 @@ fn start_desktop_controller(
 
 #[cfg(target_os = "windows")]
 fn wait_for_launched_desktop_ownership(
-    desktop: &mut Child,
+    desktop: &mut DesktopProcess,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let desktop_pid = desktop.id();
@@ -488,7 +496,7 @@ fn wait_for_launched_desktop_ownership(
 
 #[cfg(not(target_os = "macos"))]
 fn wait_for_desktop_exit(
-    desktop: &mut Child,
+    desktop: &mut DesktopProcess,
     timeout: Duration,
 ) -> std::io::Result<Option<ExitStatus>> {
     let started = Instant::now();
@@ -695,6 +703,24 @@ fn supervise_desktop(
 }
 
 #[cfg(not(target_os = "macos"))]
+fn launch_owned_desktop(
+    installation: &DesktopInstallation,
+    options: &ResolvedLaunchOptions,
+    desktop_arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+) -> Result<DesktopProcess, Box<dyn Error>> {
+    let mut desktop = launch_desktop(
+        installation,
+        &options.shim,
+        DesktopLaunchMode::DirectExecutable,
+        desktop_arguments,
+        environment,
+    )?;
+    wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
+    Ok(desktop)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn supervise_desktop(
     installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
@@ -703,16 +729,9 @@ fn supervise_desktop(
     control: &RuntimeControl,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launching Codex Desktop");
-    let mut desktop = launch_desktop(
-        installation,
-        &options.shim,
-        DesktopLaunchMode::DirectExecutable,
-        desktop_arguments,
-        environment,
-    )?;
+    let mut desktop = launch_owned_desktop(installation, options, desktop_arguments, environment)?;
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
-    wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
     let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
     {
         Ok(started) => started,
@@ -1074,8 +1093,6 @@ mod tests {
     use super::stop_desktop_controller;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
-    #[cfg(target_os = "windows")]
-    use super::wait_for_desktop_exit;
     use super::{
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl,
@@ -1142,20 +1159,6 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(controller.try_wait().expect("Controller status").is_some());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn observes_a_normal_desktop_exit_during_controller_shutdown() {
-        let mut desktop = Command::new("cmd.exe")
-            .args(["/d", "/c", "exit", "0"])
-            .spawn()
-            .expect("spawn exiting Desktop fixture");
-
-        let status = wait_for_desktop_exit(&mut desktop, Duration::from_secs(1))
-            .expect("observe Desktop exit")
-            .expect("Desktop exited before timeout");
-        assert!(status.success());
     }
 
     #[test]

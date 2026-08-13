@@ -185,6 +185,7 @@ impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
             DesktopIdentity::WindowsPackage {
                 package_name,
                 package_family_name,
+                ..
             } => Self::WindowsPackage {
                 package_name: package_name.clone(),
                 package_family_name: package_family_name.clone(),

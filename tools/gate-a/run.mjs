@@ -70,21 +70,28 @@ $package = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descendin
 if ($null -eq $package) { throw 'OpenAI.Codex AppX package is not installed' }
 $package.Name
 $package.PackageFamilyName
+$package.PackageFullName
+$manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+$applications = @($manifest.Package.Applications.Application)
+if ($applications.Count -ne 1 -or [string]::IsNullOrWhiteSpace($applications[0].Id)) { throw 'Codex AppX package must expose exactly one application identity' }
+"$($package.PackageFamilyName)!$($applications[0].Id)"
 $package.Version.ToString()
 $package.InstallLocation
 `;
   const result = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
   if (result.status !== 0) throw new Error(`AppX discovery failed: ${result.stderr.trim()}`);
   const values = result.stdout.replaceAll("\r", "").trim().split("\n");
-  if (values.length !== 4 || values.some((value) => value.length === 0)) {
+  if (values.length !== 6 || values.some((value) => value.length === 0)) {
     throw new Error("AppX discovery returned an unexpected result");
   }
   cachedLauncherEnvironment = {
     ...process.env,
     CODEXHOST_PROBE_PACKAGE_NAME: values[0],
     CODEXHOST_PROBE_PACKAGE_FAMILY: values[1],
-    CODEXHOST_PROBE_DESKTOP_VERSION: values[2],
-    CODEXHOST_PROBE_INSTALL_ROOT: values[3],
+    CODEXHOST_PROBE_PACKAGE_FULL_NAME: values[2],
+    CODEXHOST_PROBE_APP_USER_MODEL_ID: values[3],
+    CODEXHOST_PROBE_DESKTOP_VERSION: values[4],
+    CODEXHOST_PROBE_INSTALL_ROOT: values[5],
   };
   return cachedLauncherEnvironment;
 }

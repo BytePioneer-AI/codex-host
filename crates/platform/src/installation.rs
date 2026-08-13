@@ -48,8 +48,8 @@ fn sha256_file(path: &Path) -> Result<String, PlatformError> {
 }
 #[cfg(target_os = "windows")]
 use super::{
-    PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
-    PROBE_PACKAGE_NAME_ENV,
+    PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+    PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
 };
 
 #[cfg(target_os = "windows")]
@@ -88,6 +88,8 @@ const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
 struct WindowsPackageDetails {
     package_name: String,
     package_family_name: String,
+    package_full_name: String,
+    app_user_model_id: String,
     version: String,
     install_root: PathBuf,
 }
@@ -127,6 +129,14 @@ fn probe_package_details(
     let values = [
         (PROBE_PACKAGE_NAME_ENV, value(PROBE_PACKAGE_NAME_ENV)),
         (PROBE_PACKAGE_FAMILY_ENV, value(PROBE_PACKAGE_FAMILY_ENV)),
+        (
+            PROBE_PACKAGE_FULL_NAME_ENV,
+            value(PROBE_PACKAGE_FULL_NAME_ENV),
+        ),
+        (
+            PROBE_APP_USER_MODEL_ID_ENV,
+            value(PROBE_APP_USER_MODEL_ID_ENV),
+        ),
         (PROBE_DESKTOP_VERSION_ENV, value(PROBE_DESKTOP_VERSION_ENV)),
         (PROBE_INSTALL_ROOT_ENV, value(PROBE_INSTALL_ROOT_ENV)),
     ];
@@ -154,8 +164,10 @@ fn probe_package_details(
     Ok(Some(WindowsPackageDetails {
         package_name: text(0),
         package_family_name: text(1),
-        version: text(2),
-        install_root: PathBuf::from(values[3].1.as_ref().expect("complete Gate A override")),
+        package_full_name: text(2),
+        app_user_model_id: text(3),
+        version: text(4),
+        install_root: PathBuf::from(values[5].1.as_ref().expect("complete Gate A override")),
     }))
 }
 
@@ -196,6 +208,27 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
             .FamilyName()
             .map_err(|error| windows_api_error("cannot read Codex package family", error))?
             .to_string_lossy();
+        let package_full_name = id
+            .FullName()
+            .map_err(|error| windows_api_error("cannot read AppX package full name", error))?
+            .to_string_lossy();
+        let app_entries = package.GetAppListEntries().map_err(|error| {
+            windows_api_error("cannot enumerate Codex package applications", error)
+        })?;
+        if app_entries
+            .Size()
+            .map_err(|error| windows_api_error("cannot count Codex package applications", error))?
+            != 1
+        {
+            return Err(PlatformError::Invalid(
+                "Codex AppX package must expose exactly one application entry".into(),
+            ));
+        }
+        let app_user_model_id = app_entries
+            .GetAt(0)
+            .and_then(|entry| entry.AppUserModelId())
+            .map_err(|error| windows_api_error("cannot read Codex AppUserModelId", error))?
+            .to_string_lossy();
         let install_root = package
             .InstalledLocation()
             .and_then(|folder| folder.Path())
@@ -205,6 +238,8 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
             WindowsPackageDetails {
                 package_name,
                 package_family_name,
+                package_full_name,
+                app_user_model_id,
                 version: format!(
                     "{}.{}.{}.{}",
                     version_key[0], version_key[1], version_key[2], version_key[3]
@@ -250,6 +285,8 @@ fn windows_installation(
         identity: DesktopIdentity::WindowsPackage {
             package_name: details.package_name,
             package_family_name: details.package_family_name,
+            package_full_name: details.package_full_name,
+            app_user_model_id: details.app_user_model_id,
         },
         build: details.version.clone(),
         version: details.version,
@@ -283,8 +320,8 @@ mod windows_tests {
     use super::{WindowsPackageDetails, probe_package_details, windows_installation};
     use crate::{DesktopIdentity, PlatformError, temporary_directory};
     use crate::{
-        PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
-        PROBE_PACKAGE_NAME_ENV,
+        PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+        PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
     };
 
     #[test]
@@ -307,6 +344,14 @@ mod windows_tests {
                 PROBE_PACKAGE_FAMILY_ENV,
                 OsString::from("OpenAI.Codex_family"),
             ),
+            (
+                PROBE_PACKAGE_FULL_NAME_ENV,
+                OsString::from("OpenAI.Codex_1.2.3.4_x64_family"),
+            ),
+            (
+                PROBE_APP_USER_MODEL_ID_ENV,
+                OsString::from("OpenAI.Codex_family!App"),
+            ),
             (PROBE_DESKTOP_VERSION_ENV, OsString::from("1.2.3.4")),
             (PROBE_INSTALL_ROOT_ENV, OsString::from("C:\\Codex")),
         ]);
@@ -316,6 +361,8 @@ mod windows_tests {
             Some(WindowsPackageDetails {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
+                package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                app_user_model_id: "OpenAI.Codex_family!App".into(),
                 version: "1.2.3.4".into(),
                 install_root: PathBuf::from("C:\\Codex"),
             })
@@ -346,6 +393,8 @@ mod windows_tests {
             WindowsPackageDetails {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
+                package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                app_user_model_id: "OpenAI.Codex_family!App".into(),
                 version: "1.2.3.4".into(),
                 install_root: install_root.clone(),
             },
@@ -358,6 +407,8 @@ mod windows_tests {
             DesktopIdentity::WindowsPackage {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
+                package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                app_user_model_id: "OpenAI.Codex_family!App".into(),
             }
         );
         assert_eq!(installation.version, "1.2.3.4");

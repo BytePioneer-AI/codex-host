@@ -62,6 +62,7 @@ describe("Codex Question wire projection", () => {
             ],
           },
         ],
+        isBlocking: true,
         autoResolutionMs: 10_000,
       },
     });
@@ -94,6 +95,7 @@ describe("Codex Question wire projection", () => {
 
     expect(projected.request).toMatchObject({
       params: {
+        isBlocking: true,
         autoResolutionMs: null,
         questions: [
           {

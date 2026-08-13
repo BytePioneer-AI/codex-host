@@ -82,6 +82,7 @@ export function projectCodexQuestionRequest(input: {
         turnId: interaction.turnId,
         itemId: input.itemId,
         questions,
+        isBlocking: true,
         autoResolutionMs,
       },
     },

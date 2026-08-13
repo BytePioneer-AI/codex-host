@@ -232,7 +232,7 @@ export function createNpmPackageManifest({ version, target }) {
 export function createNpmBinLauncherSource({ version }) {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -310,20 +310,81 @@ for (const [label, filePath] of [
   if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
 }
 
-const npmCliCandidates = [
-  process.env.npm_execpath,
-  process.platform === "win32"
-    ? path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+function existingFile(filePath) {
+  return typeof filePath === "string" && filePath.length > 0 && existsSync(filePath)
+    ? filePath
+    : undefined;
+}
+function officialNpmCliPath(nodePath) {
+  return process.platform === "win32"
+    ? path.join(path.dirname(nodePath), "node_modules", "npm", "bin", "npm-cli.js")
     : path.join(
-        path.dirname(path.dirname(process.execPath)),
+        path.dirname(path.dirname(nodePath)),
         "lib",
         "node_modules",
         "npm",
         "bin",
         "npm-cli.js",
-      ),
-].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
-const npmCliPath = npmCliCandidates.find((candidate) => existsSync(candidate));
+      );
+}
+function homebrewNpmCliPath(nodePath) {
+  if (process.platform === "win32") return undefined;
+  const segments = nodePath.split(path.sep);
+  const cellarIndex = segments.lastIndexOf("Cellar");
+  if (
+    cellarIndex >= 1 &&
+    segments[cellarIndex + 1] === "node" &&
+    segments.at(-2) === "bin" &&
+    segments.at(-1) === "node"
+  ) {
+    const brewPrefix = segments.slice(0, cellarIndex).join(path.sep);
+    return (
+      existingFile(
+        path.join(brewPrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+      ) ??
+      existingFile(
+        path.join(
+          path.dirname(path.dirname(nodePath)),
+          "libexec",
+          "lib",
+          "node_modules",
+          "npm",
+          "bin",
+          "npm-cli.js",
+        ),
+      )
+    );
+  }
+  const brewPrefix = process.env.HOMEBREW_PREFIX;
+  if (typeof brewPrefix === "string" && brewPrefix.length > 0) {
+    return existingFile(
+      path.join(brewPrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    );
+  }
+  return undefined;
+}
+function pathNpmCliPath() {
+  const pathValue = process.env.PATH;
+  if (typeof pathValue !== "string" || pathValue.length === 0) return undefined;
+  const npmName = process.platform === "win32" ? "npm.cmd" : "npm";
+  for (const directory of pathValue.split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, npmName);
+    if (!existsSync(candidate)) continue;
+    try {
+      const resolved = realpathSync(candidate);
+      if (path.basename(resolved) === "npm-cli.js") return resolved;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+const npmCliPath =
+  existingFile(process.env.npm_execpath) ??
+  existingFile(officialNpmCliPath(process.execPath)) ??
+  homebrewNpmCliPath(process.execPath) ??
+  pathNpmCliPath();
 if (!npmCliPath) fail("could not locate the npm CLI used to update this global installation");
 const updateEnvironment = {
   ...process.env,

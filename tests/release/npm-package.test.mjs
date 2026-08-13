@@ -1,5 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -44,6 +54,98 @@ async function createNpmPackageFixture(root, target) {
     }
     await writeFile(absolute, `npm-package:${relative}\n`);
   }
+}
+
+async function writeExecutable(filePath, contents) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, contents);
+  await chmod(filePath, 0o755);
+}
+
+async function createHomebrewNodeLayout(root) {
+  const brewPrefix = path.join(root, "opt", "homebrew");
+  const cellarNode = path.join(brewPrefix, "Cellar", "node", "26.7.0", "bin", "node");
+  const prefixNpm = path.join(brewPrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const libexecNpm = path.join(
+    brewPrefix,
+    "Cellar",
+    "node",
+    "26.7.0",
+    "libexec",
+    "lib",
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
+  );
+  await mkdir(path.dirname(cellarNode), { recursive: true });
+  try {
+    await link(process.execPath, cellarNode);
+  } catch {
+    await copyFile(process.execPath, cellarNode);
+    await chmod(cellarNode, 0o755);
+  }
+  await writeExecutable(prefixNpm, '#!/usr/bin/env node\nconsole.log("homebrew-prefix-npm");\n');
+  await writeExecutable(libexecNpm, '#!/usr/bin/env node\nconsole.log("homebrew-libexec-npm");\n');
+  await mkdir(path.join(brewPrefix, "bin"), { recursive: true });
+  await symlink(
+    path.relative(path.join(brewPrefix, "bin"), cellarNode),
+    path.join(brewPrefix, "bin", "node"),
+  );
+  await symlink(
+    path.relative(path.join(brewPrefix, "bin"), prefixNpm),
+    path.join(brewPrefix, "bin", "npm"),
+  );
+  return { brewPrefix, cellarNode, prefixNpm, libexecNpm };
+}
+
+async function createGlobalCodexhostInstall(prefix) {
+  const platformPackage =
+    process.platform === "win32"
+      ? `@codexhost/cli-win32-${process.arch}`
+      : `@codexhost/cli-darwin-${process.arch}`;
+  const packageRoot = path.join(prefix, "lib", "node_modules", platformPackage);
+  const launcherPath = path.join(
+    prefix,
+    "lib",
+    "node_modules",
+    "@codexhost",
+    "cli",
+    "bin",
+    "codexhost.js",
+  );
+  const userBin = path.join(prefix, "bin", "codexhost");
+  await writeExecutable(launcherPath, createNpmBinLauncherSource({ version: "0.1.5" }));
+  await mkdir(path.dirname(userBin), { recursive: true });
+  await symlink(path.relative(path.dirname(userBin), launcherPath), userBin);
+  await mkdir(packageRoot, { recursive: true });
+  await writeFile(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: platformPackage, version: "0.1.5" })}\n`,
+  );
+  const executableSuffix = process.platform === "win32" ? ".exe" : "";
+  for (const relative of [
+    path.join("bin", `codexhost${executableSuffix}`),
+    path.join("libexec", `codexhost-shim${executableSuffix}`),
+    path.join("app", "host-runtime.mjs"),
+    path.join("app", "desktop-controller.mjs"),
+    path.join("app", "renderer-extension.js"),
+  ]) {
+    await writeExecutable(path.join(packageRoot, relative), `fixture:${relative}\n`);
+  }
+  return { launcherPath, userBin, packageRoot };
+}
+
+function spawnCodexhost(nodePath, launcherPath, args, extraEnv = {}) {
+  const environment = { ...process.env, ...extraEnv };
+  delete environment.npm_execpath;
+  delete environment.HOMEBREW_PREFIX;
+  if (extraEnv.PATH === undefined) environment.PATH = path.dirname(nodePath);
+  return spawnSync(nodePath, [launcherPath, ...args], {
+    encoding: "utf8",
+    env: environment,
+    windowsHide: true,
+  });
 }
 
 async function createNpmMetaPackageFixture(root) {
@@ -179,6 +281,23 @@ describe("npm package release", () => {
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "locates Homebrew npm when Node and npm do not share an official prefix",
+    async () => {
+      const root = await temporaryDirectory();
+      try {
+        const { brewPrefix, cellarNode } = await createHomebrewNodeLayout(root);
+        const { userBin } = await createGlobalCodexhostInstall(brewPrefix);
+        const result = spawnCodexhost(cellarNode, userBin, ["--help"]);
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe("");
+        expect(result.stdout).toContain("usage:");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["--version", "-v"])("prints the npm package version for %s", async (option) => {
     const root = await temporaryDirectory();

@@ -50,10 +50,23 @@ export const RELEASE_TARGETS = Object.freeze({
     nodeArchiveRoot: `node-v${NODE_VERSION}-win-arm64`,
     nodeExecutable: "node.exe",
   }),
+  "linux-x64": Object.freeze({
+    id: "linux-x64",
+    hostPlatform: "linux",
+    rustTarget: "x86_64-unknown-linux-gnu",
+    packageArchitecture: "x64",
+    executableSuffix: "",
+  }),
 });
 
 export function supportedReleaseTargets() {
   return Object.keys(RELEASE_TARGETS);
+}
+
+export function installerReleaseTargets() {
+  return supportedReleaseTargets().filter(
+    (target) => RELEASE_TARGETS[target].installerArchitecture !== undefined,
+  );
 }
 
 export function releaseTarget(name) {
@@ -80,6 +93,7 @@ export function hostReleaseTargetId(platform = process.platform, arch = process.
   if (platform === "darwin" && arch === "x64") return "macos-x64";
   if (platform === "win32" && arch === "x64") return "windows-x64";
   if (platform === "win32" && arch === "arm64") return "windows-arm64";
+  if (platform === "linux" && arch === "x64") return "linux-x64";
   throw new Error(`unsupported npm release host: ${platform}/${arch}`);
 }
 
@@ -90,7 +104,7 @@ export function hostReleaseTarget(platform = process.platform, arch = process.ar
 export function releaseUsage() {
   return [
     "usage: npm run release:package -- --target <target>",
-    `targets: ${supportedReleaseTargets().join(", ")}`,
+    `targets: ${installerReleaseTargets().join(", ")}`,
   ].join("\n");
 }
 
@@ -122,5 +136,10 @@ export function parseReleaseArguments(arguments_, hostPlatform = process.platfor
     throw new Error(`unknown release option: ${argument}`);
   }
   if (targetName === undefined) throw new Error("--target is required");
+  if (!installerReleaseTargets().includes(targetName)) {
+    throw new Error(
+      `release target '${targetName}' has no installer; expected one of: ${installerReleaseTargets().join(", ")}`,
+    );
+  }
   return { help: false, target: releaseTargetForHost(targetName, hostPlatform) };
 }

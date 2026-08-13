@@ -68,9 +68,11 @@ npm install -g @codexhost/cli
 codexhost
 ```
 
+npm supports macOS, Windows, and [x64 Linux](linux.md).
+
 **Option 2: Download an installer**
 
-Download the latest installer from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases), then choose the file matching your operating system and CPU architecture.
+Download the latest installer from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases), then choose the file matching your operating system and CPU architecture. Installers currently support macOS and Windows.
 
 After installing on macOS, if Apple says it cannot verify the app when you first open it, run the following command in Terminal:
 ```bash

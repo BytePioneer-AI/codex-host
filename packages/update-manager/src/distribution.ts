@@ -8,7 +8,7 @@ import type {
   WindowsInstallerUpdateOptions,
 } from "./update-manager.js";
 import { requireSemanticVersion } from "./status.js";
-import type { InstallerReleaseTarget } from "./github-release.js";
+import type { ReleaseTarget } from "./github-release.js";
 
 export const UPDATE_RUNTIME_ENV = Object.freeze({
   launcherPid: "CODEXHOST_LAUNCHER_PID",
@@ -25,7 +25,7 @@ export interface DistributionMetadata {
   schemaVersion: 1;
   version: string;
   distribution: "npm" | "installer";
-  target: InstallerReleaseTarget;
+  target: ReleaseTarget;
 }
 
 export interface InstalledUpdateContext {
@@ -62,7 +62,7 @@ export function parseDistributionMetadata(value: unknown): DistributionMetadata 
   if (
     metadata.schemaVersion !== 1 ||
     (metadata.distribution !== "npm" && metadata.distribution !== "installer") ||
-    !["macos-arm64", "macos-x64", "windows-x64", "windows-arm64"].includes(
+    !["macos-arm64", "macos-x64", "windows-x64", "windows-arm64", "linux-x64"].includes(
       String(metadata.target),
     ) ||
     typeof metadata.version !== "string"
@@ -73,7 +73,7 @@ export function parseDistributionMetadata(value: unknown): DistributionMetadata 
     schemaVersion: 1,
     version: requireSemanticVersion(metadata.version),
     distribution: metadata.distribution,
-    target: metadata.target as InstallerReleaseTarget,
+    target: metadata.target as ReleaseTarget,
   };
 }
 
@@ -89,11 +89,12 @@ function positiveEnvironmentInteger(environment: NodeJS.ProcessEnv, name: string
   return value;
 }
 
-function expectedTarget(platform: NodeJS.Platform, architecture: string): InstallerReleaseTarget {
+function expectedTarget(platform: NodeJS.Platform, architecture: string): ReleaseTarget {
   if (platform === "darwin" && architecture === "arm64") return "macos-arm64";
   if (platform === "darwin" && architecture === "x64") return "macos-x64";
   if (platform === "win32" && architecture === "arm64") return "windows-arm64";
   if (platform === "win32" && architecture === "x64") return "windows-x64";
+  if (platform === "linux" && architecture === "x64") return "linux-x64";
   throw new Error(`unsupported update host ${platform}/${architecture}`);
 }
 

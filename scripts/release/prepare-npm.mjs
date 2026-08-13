@@ -24,12 +24,14 @@ export const NPM_PLATFORM_PACKAGE_NAMES = Object.freeze({
   "macos-x64": "@codexhost/cli-darwin-x64",
   "windows-x64": "@codexhost/cli-win32-x64",
   "windows-arm64": "@codexhost/cli-win32-arm64",
+  "linux-x64": "@codexhost/cli-linux-x64",
 });
 export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "darwin-arm64": NPM_PLATFORM_PACKAGE_NAMES["macos-arm64"],
   "darwin-x64": NPM_PLATFORM_PACKAGE_NAMES["macos-x64"],
   "win32-x64": NPM_PLATFORM_PACKAGE_NAMES["windows-x64"],
   "win32-arm64": NPM_PLATFORM_PACKAGE_NAMES["windows-arm64"],
+  "linux-x64": NPM_PLATFORM_PACKAGE_NAMES["linux-x64"],
 });
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
@@ -165,13 +167,15 @@ function packageManifest(value, packageName) {
 export function npmPackageOs(target) {
   if (target.hostPlatform === "darwin") return ["darwin"];
   if (target.hostPlatform === "win32") return ["win32"];
+  if (target.hostPlatform === "linux") return ["linux"];
   throw new Error(`unsupported npm package platform: ${target.hostPlatform}`);
 }
 
 export function npmPackageCpu(target) {
-  if (target.installerArchitecture === "arm64") return ["arm64"];
-  if (target.installerArchitecture === "x64") return ["x64"];
-  throw new Error(`unsupported npm package architecture: ${target.installerArchitecture}`);
+  const architecture = target.packageArchitecture ?? target.installerArchitecture;
+  if (architecture === "arm64") return ["arm64"];
+  if (architecture === "x64") return ["x64"];
+  throw new Error(`unsupported npm package architecture: ${architecture}`);
 }
 
 export function expectedNpmPackagePaths(target) {
@@ -539,7 +543,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 ## Requirements
 
 - Node.js 22 or 24 (Node 20 and older are not supported)
-- Official Codex Desktop for macOS or Windows
+- Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter
 

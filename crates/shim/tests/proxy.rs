@@ -1,13 +1,11 @@
 use std::fs;
-use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::thread;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -96,6 +94,42 @@ fn preserves_arbitrary_bytes_and_chunk_boundaries() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, input);
+}
+
+#[test]
+fn forwards_response_before_stdin_eof() {
+    let mut shim = Command::new(shim_path())
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env("FAKE_CODEX_STREAM_RESPONSE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn streaming shim");
+    let mut stdin = shim.stdin.take().expect("shim stdin");
+    stdin.write_all(b"x").expect("write streaming request");
+
+    let mut stdout = shim.stdout.take().expect("shim stdout");
+    let reader = thread::spawn(move || {
+        let mut response = [0_u8; 8];
+        stdout
+            .read_exact(&mut response)
+            .expect("read streaming response");
+        response
+    });
+    let started = Instant::now();
+    while !reader.is_finished() && started.elapsed() < Duration::from_secs(2) {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !reader.is_finished() {
+        drop(stdin);
+        let _ = shim.kill();
+        let _ = shim.wait();
+        panic!("Shim did not forward a response while stdin remained open");
+    }
+    assert_eq!(reader.join().expect("join response reader"), *b"response");
+    drop(stdin);
+    assert!(shim.wait().expect("wait for streaming shim").success());
 }
 
 #[test]

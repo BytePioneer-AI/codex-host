@@ -177,6 +177,11 @@ enum AcknowledgedDesktopIdentity {
     MacOsBundle {
         bundle_identifier: String,
     },
+    LinuxPackage {
+        package_name: String,
+        brand: String,
+        flavor: String,
+    },
 }
 
 impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
@@ -191,6 +196,15 @@ impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
             },
             DesktopIdentity::MacOsBundle { bundle_identifier } => Self::MacOsBundle {
                 bundle_identifier: bundle_identifier.clone(),
+            },
+            DesktopIdentity::LinuxPackage {
+                package_name,
+                brand,
+                flavor,
+            } => Self::LinuxPackage {
+                package_name: package_name.clone(),
+                brand: brand.clone(),
+                flavor: flavor.clone(),
             },
         }
     }
@@ -272,10 +286,16 @@ pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
         .map(|home| home.join("Library").join("Application Support"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     let root = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "compatibility acknowledgement paths support Windows, macOS, and Linux only",
+    ));
 
     Ok(root.join("codexhost").join(ACKNOWLEDGEMENT_FILE))
 }
@@ -379,6 +399,7 @@ mod tests {
             build: "6321".into(),
             asar_integrity: format!("sha256:{}", "a".repeat(64)),
             install_root: "/Applications/ChatGPT.app".into(),
+            desktop_launcher: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
             executable_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),

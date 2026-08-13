@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 use std::process::{Child, ExitStatus};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{OnceLock, mpsc};
@@ -24,21 +24,21 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 use codexhost_platform::launch_desktop;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::{DesktopSession, launch_desktop_session};
 use codexhost_platform::{
     CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity,
     DesktopInstallation, DesktopLaunchMode, SupervisedChild, canonical_existing_file,
-    configure_background_command, desktop_process_ids, desktop_root_process_ids,
+    configure_background_command, desktop_root_process_ids_for_installation,
     discover_codex_desktop, launch_stock_desktop, node_entrypoint_path,
     open_latest_codexhost_release, prompt_compatibility_warning, spawn_supervised,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
-    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    RunningDesktopChoice, desktop_root_process_ids, hide_console_window, process_executable_path,
+    process_exists, prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{
     CompatibilityAcknowledgementKey, CompatibilityState, ControllerReadiness,
@@ -71,19 +71,21 @@ const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
 const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug)]
 struct UnmanagedDesktopConflict;
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Display for UnmanagedDesktopConflict {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(UNMANAGED_DESKTOP_MESSAGE)
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
@@ -133,11 +135,25 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
             println!("platform=macos");
             println!("bundle_identifier={bundle_identifier}");
         }
+        DesktopIdentity::LinuxPackage {
+            package_name,
+            brand,
+            flavor,
+        } => {
+            println!("platform=linux");
+            println!("package_name={package_name}");
+            println!("package_brand={brand}");
+            println!("package_flavor={flavor}");
+        }
     }
     println!("desktop_version={}", installation.version);
     println!("desktop_build={}", installation.build);
     println!("desktop_asar_integrity={}", installation.asar_integrity);
     println!("install_root={}", installation.install_root.display());
+    println!(
+        "desktop_launcher={}",
+        installation.desktop_launcher.display()
+    );
     println!(
         "desktop_executable={}",
         installation.desktop_executable.display()
@@ -160,7 +176,7 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
 
 fn inspect() -> Result<(), Box<dyn Error>> {
     let installation = discover_codex_desktop()?;
-    let process_ids = desktop_process_ids()?;
+    let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     print_installation(&installation, &process_ids);
     Ok(())
 }
@@ -478,15 +494,7 @@ fn wait_for_launched_desktop_ownership(
     }
 }
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-fn wait_for_launched_desktop_ownership(
-    _desktop: &mut Child,
-    _timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn wait_for_desktop_exit(
     desktop: &mut Child,
     timeout: Duration,
@@ -518,7 +526,7 @@ fn should_stop_desktop_for_update(helper_started: bool) -> bool {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn stop_managed_desktop_for_update(
     desktop: &mut DesktopSession,
     controller: &mut SupervisedChild,
@@ -662,7 +670,7 @@ fn notify_stock_launch() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn supervise_desktop(
     installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
@@ -674,7 +682,11 @@ fn supervise_desktop(
     let mut desktop = launch_desktop_session(
         installation,
         &options.shim,
-        DesktopLaunchMode::LaunchServices,
+        if cfg!(target_os = "macos") {
+            DesktopLaunchMode::LaunchServices
+        } else {
+            DesktopLaunchMode::DirectExecutable
+        },
         desktop_arguments,
         environment,
         Duration::from_secs(30),
@@ -711,12 +723,18 @@ fn supervise_desktop(
     let _runtime = publish_runtime_descriptor(control)?;
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    #[cfg(target_os = "macos")]
     let mut started_update_request = None;
     loop {
+        #[cfg(target_os = "macos")]
         if let Err(error) = start_pending_update(&mut started_update_request) {
             eprintln!("codexhost launcher: pending update could not be started: {error}");
         }
-        if should_stop_desktop_for_update(started_update_request.is_some()) {
+        #[cfg(target_os = "macos")]
+        let helper_started = started_update_request.is_some();
+        #[cfg(target_os = "linux")]
+        let helper_started = false;
+        if should_stop_desktop_for_update(helper_started) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
@@ -741,7 +759,7 @@ fn supervise_desktop(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn supervise_desktop(
     installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
@@ -892,20 +910,6 @@ fn desktop_environment(
     environment
 }
 
-/// Forcefully stop a Desktop that codexhost does not own (an official instance
-/// or a controlled instance whose Launcher exited), then relaunch cleanly.
-fn stop_external_desktop(installation: &DesktopInstallation) -> Result<(), Box<dyn Error>> {
-    #[cfg(target_os = "macos")]
-    {
-        codexhost_platform::force_stop_desktop(installation, Duration::from_secs(10))?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        force_stop_external_desktop(installation, Duration::from_secs(10))?;
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "windows")]
 fn windows_executable_key(path: &Path) -> String {
     node_entrypoint_path(path)
@@ -922,7 +926,7 @@ fn force_stop_external_desktop(
     let expected = windows_executable_key(&installation.desktop_executable);
     let started = Instant::now();
     loop {
-        let process_ids = desktop_process_ids()?;
+        let process_ids = codexhost_platform::desktop_process_ids_for_installation(installation)?;
         if process_ids.is_empty() {
             return Ok(());
         }
@@ -957,8 +961,11 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
     startup_trace("launch requested");
     let options = options.resolve()?;
     startup_trace("resources resolved");
+    let installation = discover_codex_desktop()?;
+    startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
-    let _launcher_guard = match acquire_launcher_ownership(Duration::from_secs(120))? {
+    let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
+    {
         LauncherOwnership::Acquired(guard) => {
             startup_trace("Launcher ownership acquired");
             guard
@@ -968,11 +975,9 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
             return Ok(());
         }
     };
-    let installation = discover_codex_desktop()?;
-    startup_trace("Codex Desktop installation discovered");
 
     loop {
-        let roots = desktop_root_process_ids()?;
+        let roots = desktop_root_process_ids_for_installation(&installation)?;
         let descriptor_path = default_descriptor_path()?;
         let descriptor = read_descriptor(&descriptor_path).ok().flatten();
         let descriptor_present = descriptor_path.exists();
@@ -995,26 +1000,39 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
                 }
             }
             StartupState::Attach => {
+                #[cfg(target_os = "linux")]
+                {
+                    return Err(Box::new(UnmanagedDesktopConflict));
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    codexhost_platform::force_stop_desktop(&installation, Duration::from_secs(10))?;
+                    continue;
+                }
                 #[cfg(target_os = "windows")]
-                if interactive_running_desktop {
-                    match prompt_running_desktop() {
-                        RunningDesktopChoice::Restart => {
-                            force_stop_external_desktop(&installation, Duration::from_secs(10))?;
-                            continue;
+                {
+                    if interactive_running_desktop {
+                        match prompt_running_desktop() {
+                            RunningDesktopChoice::Restart => {
+                                force_stop_external_desktop(
+                                    &installation,
+                                    Duration::from_secs(10),
+                                )?;
+                                continue;
+                            }
+                            RunningDesktopChoice::Retry => continue,
+                            RunningDesktopChoice::Cancel => return Ok(()),
                         }
-                        RunningDesktopChoice::Retry => continue,
-                        RunningDesktopChoice::Cancel => return Ok(()),
                     }
+                    // A Desktop is running without a live codexhost owner (an official
+                    // instance or a controlled instance whose Launcher exited). Drop the
+                    // stale runtime descriptor, force-stop the Desktop, and relaunch.
+                    if let Some(descriptor) = &descriptor {
+                        let _ = remove_matching_descriptor(&descriptor_path, descriptor);
+                    }
+                    force_stop_external_desktop(&installation, Duration::from_secs(10))?;
+                    continue;
                 }
-                // A Desktop is running without a live codexhost owner (an official
-                // instance or a controlled instance whose Launcher exited). Drop the
-                // stale runtime descriptor, force-stop the Desktop, and relaunch
-                // cleanly instead of refusing, matching the dev runner behavior.
-                if let Some(descriptor) = &descriptor {
-                    let _ = remove_matching_descriptor(&descriptor_path, descriptor);
-                }
-                stop_external_desktop(&installation)?;
-                continue;
             }
             StartupState::CleanLaunch => {
                 if descriptor_present && control_endpoint_ready {
@@ -1042,6 +1060,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
             &environment,
             &control,
         );
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         match result {
             Err(error)
                 if interactive_running_desktop
@@ -1051,6 +1070,8 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
             }
             result => return result,
         }
+        #[cfg(target_os = "macos")]
+        return result;
     }
 }
 

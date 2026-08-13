@@ -65,7 +65,7 @@ fn run_signal_observer() -> bool {
 #[allow(clippy::zombie_processes)]
 fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     if env::var_os("FAKE_CODEX_CRASH").is_some() {
         use std::os::unix::process::CommandExt;
 
@@ -89,6 +89,21 @@ fn main() {
             "FAKE_CODEX_CHILD_DELAY_MS",
             60_000,
         )));
+        return;
+    }
+
+    if env::var_os("FAKE_CODEX_STREAM_RESPONSE").is_some() {
+        let mut request = [0_u8; 1];
+        io::stdin()
+            .read_exact(&mut request)
+            .expect("read streaming request byte");
+        io::stdout()
+            .write_all(b"response")
+            .expect("write streaming response");
+        io::stdout().flush().expect("flush streaming response");
+        io::stdin()
+            .read_to_end(&mut Vec::new())
+            .expect("wait for streaming stdin EOF");
         return;
     }
 

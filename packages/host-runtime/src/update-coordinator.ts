@@ -89,9 +89,11 @@ export function createHostUpdateCoordinator(
     context: InstalledUpdateContext,
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
-    if (context.metadata.distribution === "npm") return true;
+    if (context.installation.kind === "npm") return true;
+    const target = context.metadata.target;
+    if (target === "linux-x64") return false;
     try {
-      selectInstallerReleaseArtifact(release, context.metadata.target);
+      selectInstallerReleaseArtifact(release, target);
       return true;
     } catch {
       return false;
@@ -209,10 +211,11 @@ export function createHostUpdateCoordinator(
                 onPrepared,
               });
             } else {
-              const artifact = selectInstallerReleaseArtifact(
-                release,
-                context.metadata.target,
-              ).source;
+              const target = context.metadata.target;
+              if (target === "linux-x64") {
+                throw new Error("Linux installer updates are unsupported");
+              }
+              const artifact = selectInstallerReleaseArtifact(release, target).source;
               prepared =
                 context.installation.kind === "windows-installer"
                   ? await manager.prepareWindowsInstaller({

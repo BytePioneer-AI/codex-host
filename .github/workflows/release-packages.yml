@@ -133,6 +133,9 @@ jobs:
           - target: windows-arm64
             runner: windows-latest
             rustTarget: aarch64-pc-windows-msvc
+          - target: linux-x64
+            runner: ubuntu-latest
+            rustTarget: x86_64-unknown-linux-gnu
 
     steps:
       - name: Checkout release tag
@@ -168,9 +171,11 @@ jobs:
         run: npm ci
 
       - name: Build installer package
+        if: runner.os != 'Linux'
         run: npm run release:package -- --target ${{ matrix.target }}
 
-      - name: Build npm package
+      - name: Build npm package from installer outputs
+        if: runner.os != 'Linux'
         shell: bash
         run: >
           npm run release:npm --
@@ -178,6 +183,13 @@ jobs:
           --version ${{ needs.prepare.outputs.version }}
           --pack
           --skip-build
+
+      - name: Build and smoke-test Linux npm package
+        if: runner.os == 'Linux'
+        run: >
+          node scripts/release/smoke-npm-package.mjs
+          --target ${{ matrix.target }}
+          --version ${{ needs.prepare.outputs.version }}
 
       - name: Build npm meta package
         if: matrix.target == 'macos-arm64'

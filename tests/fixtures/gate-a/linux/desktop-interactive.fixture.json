@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux",
+  "capturedAt": "2026-08-13",
+  "desktopVersion": "26.803.81509",
+  "codexCliVersion": "0.147.0-alpha.6.6",
+  "linuxVersion": "Linux 7.1.5+deb14-amd64",
+  "architecture": "x64",
+  "launchMode": "direct-executable",
+  "scenarios": {
+    "isolatedLaunch": true,
+    "processScopedEnvironment": true,
+    "newThread": true,
+    "continueThread": true,
+    "streamingReply": true,
+    "toolExecution": true,
+    "userCancel": true,
+    "desktopNormalExit": true,
+    "stdinEof": true,
+    "officialCliCrash": true,
+    "shimTermination": true,
+    "noOrphanProcesses": true,
+    "chatComposerIsolation": true,
+    "chatInputEditing": true,
+    "workChatWorkTransition": true,
+    "piAgentSelection": true,
+    "piModelSelection": true,
+    "piAuthoritativeSession": true,
+    "claudeCodeDiscovery": true,
+    "nativeCodexSelection": true
+  },
+  "privacyReview": "Only version identifiers and boolean scenario outcomes are retained; prompts, model text, command output, credentials, transcripts, thread identifiers, process identifiers, screenshots, and local paths are excluded. Pi routing was corroborated against the authoritative Pi session record; no session identifier or content is retained."
+}

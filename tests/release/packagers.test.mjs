@@ -54,10 +54,21 @@ describe("platform packagers", () => {
     expect(workflow).toContain("codexhost-*.exe");
     expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
+    expect(workflow).toContain("Build npm package from installer outputs");
+    expect(workflow).toContain("Build and smoke-test Linux npm package");
+    const linuxPackageStep = workflow.slice(
+      workflow.indexOf("Build and smoke-test Linux npm package"),
+    );
+    const linuxPackageCommand = linuxPackageStep.slice(0, linuxPackageStep.indexOf("- name:", 1));
+    expect(linuxPackageCommand).toContain("scripts/release/smoke-npm-package.mjs");
+    expect(linuxPackageCommand).not.toContain("--skip-build");
     expect(workflow).toContain("--skip-build");
     expect(workflow).toContain("--pack");
     expect(workflow).toContain("codexhost-cli-*-${{ matrix.target }}.tgz");
     expect(workflow).toContain("Build installer package");
+    expect(workflow).toContain("if: runner.os != 'Linux'");
+    expect(workflow).toContain("target: linux-x64");
+    expect(workflow).toContain("rustTarget: x86_64-unknown-linux-gnu");
     expect(workflow).toContain("Build npm package");
     expect(workflow).toContain("release:npm:meta");
     expect(workflow).toContain("release:npm:publish");

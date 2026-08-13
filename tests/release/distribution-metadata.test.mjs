@@ -58,11 +58,18 @@ describe("release distribution metadata", () => {
         target: "macos-arm64",
       }),
     ).toThrow("installer or npm");
-    expect(() =>
+    expect(
       createDistributionMetadata({
         version: "1.2.3",
         distribution: "npm",
         target: "linux-x64",
+      }),
+    ).toMatchObject({ target: "linux-x64" });
+    expect(() =>
+      createDistributionMetadata({
+        version: "1.2.3",
+        distribution: "npm",
+        target: "linux-arm64",
       }),
     ).toThrow("target is invalid");
   });

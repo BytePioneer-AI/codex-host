@@ -109,10 +109,16 @@ pub fn default_descriptor_path() -> io::Result<PathBuf> {
         .map(|home| home.join("Library").join("Application Support"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     let root = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "runtime descriptor paths support Windows, macOS, and Linux only",
+    ));
 
     Ok(root.join("codexhost").join(RUNTIME_DESCRIPTOR_FILE))
 }

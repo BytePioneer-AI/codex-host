@@ -5,23 +5,23 @@ use super::PlatformError;
 /// Detach the current process from its controlling terminal so it can keep
 /// supervising the Desktop after the invoking command returns.
 ///
-/// On macOS the process becomes a new session leader without a controlling
+/// On Unix the process becomes a new session leader without a controlling
 /// terminal and redirects its standard streams to `/dev/null`, so terminal
 /// close (SIGHUP) and Ctrl+C (SIGINT to the foreground process group) can no
 /// longer reach it. On Windows the process ignores console control events
 /// (Ctrl+C, break, and console close). The Launcher must call this only after
 /// startup is complete, so Ctrl+C during startup still cancels the launch.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
     use nix::errno::Errno;
     use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, getsid, setsid};
 
-    // LaunchServices launches an application bundle as its own process-group
-    // leader (PGID == PID) without a controlling terminal. `setsid` refuses to
+    // A caller may already be its own process-group leader (PGID == PID)
+    // without a controlling terminal. `setsid` refuses to
     // create a new session for a group leader with EPERM, but such a process is
     // already detached: terminal close (SIGHUP) and Ctrl+C cannot reach it, and
     // the stdio redirection below still applies. Tolerate that case so a
-    // double-click launch keeps supervising instead of tearing the Desktop down.
+    // detached launch keeps supervising instead of tearing the Desktop down.
     let pid = getpid();
     let already_detached = getsid(None).map(|session| session == pid).unwrap_or(false);
     if !already_detached {
@@ -70,12 +70,14 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
-    Ok(())
+    Err(PlatformError::Unsupported(
+        "background detachment currently supports Windows, macOS, and Linux only",
+    ))
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::io;
     use std::process::Command;

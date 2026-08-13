@@ -1,14 +1,14 @@
+use super::{DesktopInstallation, PlatformError};
+#[cfg(target_os = "windows")]
+use super::{node_entrypoint_path, windows_process};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::thread;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
-use super::PlatformError;
-#[cfg(target_os = "macos")]
-use super::{DesktopInstallation, discover_codex_desktop};
-#[cfg(target_os = "windows")]
-use super::{node_entrypoint_path, windows_process};
+#[cfg(target_os = "linux")]
+static LINUX_CLOCK_TICKS_PER_SECOND: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessSnapshot {
@@ -20,7 +20,7 @@ pub struct ProcessSnapshot {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn macos_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+pub(crate) fn unix_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::{pidinfo, pidpath};
 
@@ -46,9 +46,80 @@ pub(crate) fn macos_process_snapshot(process_id: u32) -> Result<ProcessSnapshot,
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
+    let path = format!("/proc/{process_id}/stat");
+    let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            PlatformError::NotFound(format!("cannot inspect PID {process_id}: {error}"))
+        }
+        _ => PlatformError::Io(error),
+    })?;
+    let command_end = text.rfind(')').ok_or_else(|| {
+        PlatformError::Invalid(format!("PID {process_id} stat has no command terminator"))
+    })?;
+    let fields = text
+        .get(command_end + 2..)
+        .ok_or_else(|| PlatformError::Invalid(format!("PID {process_id} stat is truncated")))?
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>();
+    if fields.len() < 20 {
+        return Err(PlatformError::Invalid(format!(
+            "PID {process_id} stat has too few fields"
+        )));
+    }
+    let parse = |index: usize, name: &str| {
+        fields[index].parse::<u64>().map_err(|error| {
+            PlatformError::Invalid(format!("PID {process_id} has invalid {name}: {error}"))
+        })
+    };
+    let parent_id = u32::try_from(parse(1, "parent PID")?)
+        .map_err(|_| PlatformError::Invalid(format!("PID {process_id} parent PID exceeds u32")))?;
+    let process_group_id = u32::try_from(parse(2, "process group")?).map_err(|_| {
+        PlatformError::Invalid(format!("PID {process_id} process group exceeds u32"))
+    })?;
+    let start_ticks = parse(19, "start time")?;
+    let ticks_per_second = if let Some(ticks) = LINUX_CLOCK_TICKS_PER_SECOND.get() {
+        *ticks
+    } else {
+        let ticks = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+            .map_err(|error| PlatformError::Io(std::io::Error::from_raw_os_error(error as i32)))?
+            .and_then(|ticks| u64::try_from(ticks).ok())
+            .filter(|ticks| *ticks > 0)
+            .ok_or_else(|| PlatformError::Invalid("Linux clock tick rate is unavailable".into()))?;
+        let _ = LINUX_CLOCK_TICKS_PER_SECOND.set(ticks);
+        ticks
+    };
+    let started_at_micros = start_ticks
+        .saturating_mul(1_000_000)
+        .checked_div(ticks_per_second)
+        .ok_or_else(|| PlatformError::Invalid("Linux clock tick rate is zero".into()))?;
+    Ok((parent_id, process_group_id, started_at_micros))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn unix_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+    let (parent_id, process_group_id, started_at_micros) = linux_stat_fields(process_id)?;
+    let executable = std::fs::read_link(format!("/proc/{process_id}/exe")).map_err(|error| {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                PlatformError::NotFound(format!("cannot resolve PID {process_id}: {error}"))
+            }
+            _ => PlatformError::Io(error),
+        }
+    })?;
+    Ok(ProcessSnapshot {
+        id: process_id,
+        parent_id,
+        process_group_id,
+        executable,
+        started_at_micros,
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
-    macos_process_snapshot(process_id)
+    unix_process_snapshot(process_id)
 }
 
 #[cfg(target_os = "macos")]
@@ -57,21 +128,31 @@ pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
 
     Ok(pids_by_type(ProcFilter::All)?
         .into_iter()
-        .filter_map(|process_id| macos_process_snapshot(process_id).ok())
+        .filter_map(|process_id| unix_process_snapshot(process_id).ok())
         .collect())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let entries = std::fs::read_dir("/proc")?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|process_id| unix_process_snapshot(process_id).ok())
+        .collect())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn same_process_instance(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     expected.id == current.id && expected.started_at_micros == current.started_at_micros
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn same_process_identity(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     same_process_instance(expected, current) && expected.executable == current.executable
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn descendant_snapshots(roots: &[u32], snapshots: &[ProcessSnapshot]) -> Vec<ProcessSnapshot> {
     let mut owned_ids = roots.to_vec();
     let mut descendants = Vec::new();
@@ -90,14 +171,21 @@ fn descendant_snapshots(roots: &[u32], snapshots: &[ProcessSnapshot]) -> Vec<Pro
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn desktop_process_tree_from_snapshots(
     desktop_executable: &Path,
     snapshots: &[ProcessSnapshot],
 ) -> Vec<ProcessSnapshot> {
-    let roots = snapshots
+    let matching_ids = snapshots
         .iter()
         .filter(|process| process.executable == desktop_executable)
+        .map(|process| process.id)
+        .collect::<Vec<_>>();
+    let roots = snapshots
+        .iter()
+        .filter(|process| {
+            process.executable == desktop_executable && !matching_ids.contains(&process.parent_id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let root_ids = roots.iter().map(|process| process.id).collect::<Vec<_>>();
@@ -107,7 +195,21 @@ fn desktop_process_tree_from_snapshots(
     tree
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn desktop_root_snapshots(
+    desktop_executable: &Path,
+    snapshots: &[ProcessSnapshot],
+) -> Vec<ProcessSnapshot> {
+    let tree = desktop_process_tree_from_snapshots(desktop_executable, snapshots);
+    let tree_ids = tree.iter().map(|process| process.id).collect::<Vec<_>>();
+    tree.into_iter()
+        .filter(|process| {
+            process.executable == desktop_executable && !tree_ids.contains(&process.parent_id)
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn desktop_process_tree(
     installation: &DesktopInstallation,
 ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
@@ -117,13 +219,13 @@ pub fn desktop_process_tree(
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) struct ObservedProcessTree {
     pub(crate) root: ProcessSnapshot,
     known: Vec<ProcessSnapshot>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ObservedProcessTree {
     pub(crate) fn new(root: ProcessSnapshot) -> Self {
         Self {
@@ -212,31 +314,69 @@ impl ObservedProcessTree {
         processes: &[ProcessSnapshot],
         signal: nix::sys::signal::Signal,
     ) -> Result<(), PlatformError> {
+        #[cfg(target_os = "macos")]
         use nix::errno::Errno;
+        #[cfg(target_os = "macos")]
         use nix::sys::signal::kill;
+        #[cfg(target_os = "macos")]
         use nix::unistd::Pid;
 
         for expected in processes {
-            let current = match macos_process_snapshot(expected.id) {
-                Ok(current) => current,
-                Err(PlatformError::NotFound(_)) => continue,
-                Err(error) => return Err(error),
-            };
-            if !same_process_identity(expected, &current) {
-                return Err(PlatformError::Invalid(format!(
-                    "PID {} identity changed before signal delivery",
-                    expected.id
-                )));
-            }
-            let process_id = i32::try_from(expected.id).map_err(|_| {
-                PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
-            })?;
-            if let Err(error) = kill(Pid::from_raw(process_id), signal)
-                && error != Errno::ESRCH
+            #[cfg(target_os = "linux")]
             {
-                return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
-                    error as i32,
-                )));
+                use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
+
+                let process_id = Pid::from_raw(expected.id as i32).ok_or_else(|| {
+                    PlatformError::Invalid(format!("PID {} is invalid", expected.id))
+                })?;
+                let descriptor = match pidfd_open(process_id, PidfdFlags::empty()) {
+                    Ok(descriptor) => descriptor,
+                    Err(error) if error == rustix::io::Errno::SRCH => continue,
+                    Err(error) => return Err(PlatformError::Io(error.into())),
+                };
+                let current = match unix_process_snapshot(expected.id) {
+                    Ok(current) => current,
+                    Err(PlatformError::NotFound(_)) => continue,
+                    Err(error) => return Err(error),
+                };
+                if !same_process_identity(expected, &current) {
+                    return Err(PlatformError::Invalid(format!(
+                        "PID {} identity changed before signal delivery",
+                        expected.id
+                    )));
+                }
+                let signal = Signal::from_named_raw(signal as i32).ok_or_else(|| {
+                    PlatformError::Invalid(format!("unsupported Unix signal {signal}"))
+                })?;
+                if let Err(error) = pidfd_send_signal(descriptor, signal)
+                    && error != rustix::io::Errno::SRCH
+                {
+                    return Err(PlatformError::Io(error.into()));
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let current = match unix_process_snapshot(expected.id) {
+                    Ok(current) => current,
+                    Err(PlatformError::NotFound(_)) => continue,
+                    Err(error) => return Err(error),
+                };
+                if !same_process_identity(expected, &current) {
+                    return Err(PlatformError::Invalid(format!(
+                        "PID {} identity changed before signal delivery",
+                        expected.id
+                    )));
+                }
+                let process_id = i32::try_from(expected.id).map_err(|_| {
+                    PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
+                })?;
+                if let Err(error) = kill(Pid::from_raw(process_id), signal)
+                    && error != Errno::ESRCH
+                {
+                    return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
+                        error as i32,
+                    )));
+                }
             }
         }
         Ok(())
@@ -279,31 +419,83 @@ pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
         .collect())
 }
 
-#[cfg(target_os = "macos")]
-pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
-    let installation = discover_codex_desktop()?;
-    Ok(desktop_process_tree(&installation)?
+#[cfg(target_os = "windows")]
+pub fn desktop_process_ids_for_installation(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    let expected = windows_executable_key(&installation.desktop_executable);
+    Ok(windows_process::process_entries()?
+        .into_iter()
+        .filter(|process| {
+            windows_process::process_image_path(process.id)
+                .is_ok_and(|path| windows_executable_key(&path) == expected)
+        })
+        .map(|process| process.id)
+        .collect())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn desktop_process_ids_for_installation(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    Ok(desktop_process_tree(installation)?
         .into_iter()
         .filter(|process| process.executable == installation.desktop_executable)
         .map(|process| process.id)
         .collect())
 }
 
-#[cfg(target_os = "macos")]
-pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
-    desktop_process_ids()
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn desktop_process_ids_for_installation(
+    _installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
     Err(PlatformError::Unsupported(
-        "Desktop process discovery currently supports Windows and macOS only",
+        "Desktop process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
-    desktop_process_ids()
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn desktop_root_snapshots_for_installation(
+    installation: &DesktopInstallation,
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    Ok(desktop_root_snapshots(
+        &installation.desktop_executable,
+        &process_snapshots()?,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+pub fn desktop_root_process_ids_for_installation(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    let entries = windows_process::process_entries()?;
+    let desktop_ids = desktop_process_ids_for_installation(installation)?;
+    Ok(entries
+        .into_iter()
+        .filter(|process| {
+            desktop_ids.contains(&process.id) && !desktop_ids.contains(&process.parent_id)
+        })
+        .map(|process| process.id)
+        .collect())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn desktop_root_process_ids_for_installation(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    Ok(desktop_root_snapshots_for_installation(installation)?
+        .into_iter()
+        .map(|process| process.id)
+        .collect())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn desktop_root_process_ids_for_installation(
+    _installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    Err(PlatformError::Unsupported(
+        "Desktop process discovery currently supports Windows, macOS, and Linux only",
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -340,7 +532,7 @@ pub fn descendant_executable_exists(
     }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn descendant_executable_exists(
     root_process_id: u32,
     executable: &Path,
@@ -351,13 +543,13 @@ pub fn descendant_executable_exists(
         .any(|process| process.executable == executable))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn descendant_executable_exists(
     _root_process_id: u32,
     _executable: &Path,
 ) -> Result<bool, PlatformError> {
     Err(PlatformError::Unsupported(
-        "descendant process discovery currently supports Windows and macOS only",
+        "descendant process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -369,15 +561,15 @@ pub fn parent_process_id(process_id: u32) -> Result<Option<u32>, PlatformError> 
         .map(|process| process.parent_id))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn parent_process_id(process_id: u32) -> Result<Option<u32>, PlatformError> {
-    macos_process_snapshot(process_id).map(|process| Some(process.parent_id))
+    unix_process_snapshot(process_id).map(|process| Some(process.parent_id))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn parent_process_id(_process_id: u32) -> Result<Option<u32>, PlatformError> {
     Err(PlatformError::Unsupported(
-        "parent process discovery currently supports Windows and macOS only",
+        "parent process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -386,15 +578,15 @@ pub fn process_executable_path(process_id: u32) -> Result<PathBuf, PlatformError
     windows_process::process_image_path(process_id).map_err(PlatformError::Io)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn process_executable_path(process_id: u32) -> Result<PathBuf, PlatformError> {
     process_snapshot(process_id).map(|process| process.executable)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn process_executable_path(_process_id: u32) -> Result<PathBuf, PlatformError> {
     Err(PlatformError::Unsupported(
-        "process executable discovery currently supports Windows and macOS only",
+        "process executable discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -423,72 +615,48 @@ pub fn process_exists(process_id: u32) -> bool {
     i32::try_from(process_id).is_ok_and(|process_id| pidpath(process_id).is_ok())
 }
 
-#[cfg(target_os = "macos")]
-fn signal_processes_checked(
-    snapshots: &[ProcessSnapshot],
-    signal: nix::sys::signal::Signal,
-) -> Result<(), PlatformError> {
-    use nix::errno::Errno;
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-
-    for expected in snapshots {
-        let current = match macos_process_snapshot(expected.id) {
-            Ok(current) => current,
-            Err(PlatformError::NotFound(_)) => continue,
-            Err(error) => return Err(error),
-        };
-        if !same_process_identity(expected, &current) {
-            return Err(PlatformError::Invalid(format!(
-                "PID {} identity changed before signal delivery",
-                expected.id
-            )));
-        }
-        let process_id = i32::try_from(expected.id)
-            .map_err(|_| PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id)))?;
-        if let Err(error) = kill(Pid::from_raw(process_id), signal)
-            && error != Errno::ESRCH
-        {
-            return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
-                error as i32,
-            )));
-        }
+#[cfg(target_os = "linux")]
+pub fn process_exists(process_id: u32) -> bool {
+    let Some(process_id) = i32::try_from(process_id)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return false;
+    };
+    match rustix::process::test_kill_process(process_id) {
+        Ok(()) | Err(rustix::io::Errno::PERM) => true,
+        Err(_) => false,
     }
-    Ok(())
 }
 
-/// Forcefully stop the entire Desktop process tree, including descendants such
-/// as the injected Shim, Host Runtime, and app-server. The Desktop is verified
-/// by identity before every signal so a reused PID is never terminated.
+/// Forcefully stop an unmanaged macOS Desktop process tree, verifying every
+/// process identity before signal delivery.
 #[cfg(target_os = "macos")]
 pub fn force_stop_desktop(
     installation: &DesktopInstallation,
     grace: Duration,
 ) -> Result<(), PlatformError> {
-    let members = desktop_process_tree(installation)?;
-    if members.is_empty() {
+    let tree = desktop_process_tree(installation)?;
+    if tree.is_empty() {
         return Ok(());
     }
-    signal_processes_checked(&members, nix::sys::signal::Signal::SIGTERM)?;
-    let mut survivors = members;
+    let mut observed = ObservedProcessTree::new(tree[0].clone());
+    observed.signal_processes(&tree, nix::sys::signal::Signal::SIGTERM)?;
     let started = Instant::now();
-    loop {
-        survivors.retain(|process| process_exists(process.id));
+    let survivors = loop {
+        let survivors = observed.observe()?;
         if survivors.is_empty() {
             return Ok(());
         }
         if started.elapsed() >= grace {
-            break;
+            break survivors;
         }
         thread::sleep(Duration::from_millis(20));
-    }
-    signal_processes_checked(&survivors, nix::sys::signal::Signal::SIGKILL)?;
+    };
+    observed.signal_processes(&survivors, nix::sys::signal::Signal::SIGKILL)?;
     let forced_at = Instant::now();
     loop {
-        let still_alive = survivors
-            .iter()
-            .filter(|process| process_exists(process.id))
-            .collect::<Vec<_>>();
+        let still_alive = observed.observe()?;
         if still_alive.is_empty() {
             return Ok(());
         }
@@ -506,7 +674,7 @@ pub fn force_stop_desktop(
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn process_exists(_process_id: u32) -> bool {
     false
 }
@@ -526,13 +694,13 @@ mod windows_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::path::Path;
 
     use super::{
-        ProcessSnapshot, desktop_process_tree_from_snapshots, process_snapshot,
-        same_process_identity, same_process_instance,
+        ObservedProcessTree, ProcessSnapshot, desktop_process_tree_from_snapshots,
+        desktop_root_snapshots, process_snapshot, same_process_identity, same_process_instance,
     };
 
     fn snapshot(
@@ -551,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_the_current_macos_process_with_native_libproc() {
+    fn snapshots_the_current_unix_process() {
         let snapshot = process_snapshot(std::process::id()).expect("current process snapshot");
         assert_eq!(snapshot.id, std::process::id());
         assert!(snapshot.parent_id > 0);
@@ -565,12 +733,7 @@ mod tests {
         let target = "/Applications/Codex.app/Contents/MacOS/ChatGPT";
         let snapshots = [
             snapshot(10, 1, target, 100),
-            snapshot(
-                11,
-                10,
-                "/Applications/Codex.app/Contents/Frameworks/Helper",
-                101,
-            ),
+            snapshot(11, 10, target, 101),
             snapshot(
                 12,
                 11,
@@ -585,6 +748,13 @@ mod tests {
             tree.iter().map(|process| process.id).collect::<Vec<_>>(),
             [10, 11, 12]
         );
+        assert_eq!(
+            desktop_root_snapshots(Path::new(target), &snapshots)
+                .iter()
+                .map(|process| process.id)
+                .collect::<Vec<_>>(),
+            [10]
+        );
     }
 
     #[test]
@@ -597,21 +767,31 @@ mod tests {
         assert!(!same_process_instance(&original, &reused));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn terminates_a_spawned_process_by_identity() {
+    fn pidfd_signal_targets_the_observed_process_instance() {
         use std::process::Command;
+        use std::thread;
+        use std::time::{Duration, Instant};
 
-        use nix::sys::signal::Signal;
-
-        use super::signal_processes_checked;
-
-        let mut child = Command::new("/bin/sleep")
-            .arg("60")
+        let mut child = Command::new("sleep")
+            .arg("30")
             .spawn()
             .expect("spawn sleep");
-        let snapshot = process_snapshot(child.id()).expect("snapshot sleep process");
-        signal_processes_checked(&[snapshot], Signal::SIGTERM).expect("terminate sleep");
-        let status = child.wait().expect("wait for sleep exit");
-        assert!(!status.success());
+        let observed = process_snapshot(child.id()).expect("snapshot child");
+        let tree = ObservedProcessTree::new(observed.clone());
+        tree.signal_processes(&[observed], nix::sys::signal::Signal::SIGTERM)
+            .expect("signal observed child");
+        let started = Instant::now();
+        loop {
+            if child.try_wait().expect("wait child").is_some() {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "pidfd signal did not terminate child"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }

@@ -69,7 +69,7 @@ function sanitizeText(value, roots) {
 export function sanitizeCapture(record) {
   const schemaVersion = integer(record.schema_version, "schema_version");
   const platform = record.platform;
-  if (!["windows", "macos"].includes(platform)) {
+  if (!["windows", "macos", "linux"].includes(platform)) {
     throw new Error(`unsupported capture platform '${platform}'`);
   }
   if (record.record_type === "invocation") {
@@ -86,13 +86,13 @@ export function sanitizeCapture(record) {
       throw new Error("invalid invocation args");
     }
     const platformFields =
-      platform === "macos"
-        ? {
+      platform === "windows"
+        ? {}
+        : {
             architecture: record.architecture,
             processGroupId: integer(record.process_group_id, "process_group_id"),
             launchMode: record.launch_mode,
-          }
-        : {};
+          };
     return probeInvocationSchema.parse({
       schemaVersion,
       platform,
@@ -111,11 +111,11 @@ export function sanitizeCapture(record) {
   }
   if (record.record_type === "exit") {
     const platformFields =
-      platform === "macos"
-        ? {
+      platform === "windows"
+        ? {}
+        : {
             exitSignal: integer(record.exit_signal, "exit_signal", { nullable: true }),
-          }
-        : {};
+          };
     return probeExitSchema.parse({
       schemaVersion,
       platform,

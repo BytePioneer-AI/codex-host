@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { parseRawCapture, sanitizeCaptureFile } from "./capture.mjs";
 import {
   desktopInteractiveEvidenceSchema,
   differentialResultSchema,
@@ -16,10 +17,13 @@ import { runDifferential } from "../../tests/differential/codex-transparent-prox
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const gatePlatform = process.platform === "win32" ? "windows" : process.platform;
-if (!["windows", "darwin"].includes(gatePlatform)) {
-  throw new Error("Gate A currently supports Windows and macOS only");
+if (!["windows", "darwin", "linux"].includes(gatePlatform)) {
+  throw new Error("Gate A currently supports Windows, macOS, and Linux only");
 }
-const platformName = gatePlatform === "darwin" ? "macos" : "windows";
+if (gatePlatform === "linux" && process.arch !== "x64") {
+  throw new Error("Gate A Linux support currently requires x64");
+}
+const platformName = gatePlatform === "darwin" ? "macos" : gatePlatform;
 const launcherPath = path.join(repositoryRoot, "target", "debug", `codexhost${executableSuffix}`);
 const shimPath = path.join(repositoryRoot, "target", "debug", `codexhost-shim${executableSuffix}`);
 const probePath = path.join(
@@ -35,6 +39,14 @@ const probeShimPath = path.join(
   `codexhost-shim-probe${executableSuffix}`,
 );
 const localOutput = path.join(repositoryRoot, ".codexhost", "gate-a", platformName);
+const invocationEvidencePath = path.join(
+  repositoryRoot,
+  "tests",
+  "fixtures",
+  "gate-a",
+  platformName,
+  "desktop-shim-invocation.fixture.json",
+);
 const interactiveEvidencePath = path.join(
   repositoryRoot,
   "tests",
@@ -131,6 +143,7 @@ function parseInspection(stdout) {
     "platform",
     "desktop_version",
     "install_root",
+    "desktop_launcher",
     "desktop_executable",
     "packaged_codex_cli",
     "executable_codex_cli",
@@ -182,12 +195,19 @@ function writeGateReport({
           gate: "windows-codex-transparent-proxy",
           windowsVersion: `${os.type()} ${os.release()} ${os.arch()}`,
         }
-      : {
-          platform: "macos",
-          gate: "macos-codex-transparent-proxy",
-          macosVersion: `${os.type()} ${os.release()}`,
-          architecture: os.arch(),
-        };
+      : platformName === "macos"
+        ? {
+            platform: "macos",
+            gate: "macos-codex-transparent-proxy",
+            macosVersion: `${os.type()} ${os.release()}`,
+            architecture: os.arch(),
+          }
+        : {
+            platform: "linux",
+            gate: "linux-codex-transparent-proxy",
+            linuxVersion: `${os.type()} ${os.release()}`,
+            architecture: "x64",
+          };
   const report = gateReportSchema.parse({
     schemaVersion: 1,
     ...platformFields,
@@ -220,6 +240,15 @@ function preflight() {
   return inspection;
 }
 
+function rawCapturePaths() {
+  const captureDirectory = path.join(localOutput, "raw");
+  if (!fs.existsSync(captureDirectory)) return [];
+  return fs
+    .readdirSync(captureDirectory)
+    .map((entry) => path.join(captureDirectory, entry))
+    .filter((entry) => fs.statSync(entry).isFile());
+}
+
 function probe(launchModeArgument) {
   const inspection = inspect();
   if (inspection.desktop_process_ids) {
@@ -230,6 +259,7 @@ function probe(launchModeArgument) {
   requireProbeBinaries();
   const captureDirectory = path.join(localOutput, "raw");
   fs.mkdirSync(captureDirectory, { recursive: true });
+  const before = new Set(rawCapturePaths());
   console.error("[gate:a] launching isolated Codex Desktop probe");
   const launchArguments = ["--shim", probeShimPath];
   if (platformName === "macos") {
@@ -240,6 +270,8 @@ function probe(launchModeArgument) {
       );
     }
     launchArguments.push("--launch-mode", launchMode, "--exit-after-capture");
+  } else if (platformName === "linux") {
+    launchArguments.push("--launch-mode", "direct-executable", "--shutdown-after-capture");
   }
   launchArguments.push("--output", captureDirectory, "--wait-seconds", "30");
   const result = run(probePath, launchArguments, {
@@ -247,7 +279,21 @@ function probe(launchModeArgument) {
     stdio: ["ignore", "inherit", "inherit"],
   });
   if (result.status !== 0) throw new Error("Launch Probe failed");
-  console.error("[gate:a] Shim invocation captured");
+  const captures = rawCapturePaths()
+    .filter((capture) => !before.has(capture))
+    .map((capture) => ({ path: capture, record: parseRawCapture(fs.readFileSync(capture)) }));
+  const invocations = captures.filter(({ record }) => record.record_type === "invocation");
+  const exits = captures.filter(({ record }) => record.record_type === "exit");
+  if (invocations.length !== 1 || exits.length !== 1) {
+    throw new Error(
+      `Launch Probe produced ${invocations.length} invocation and ${exits.length} exit captures; expected one of each`,
+    );
+  }
+  if (exits[0].record.process_id !== invocations[0].record.process_id) {
+    throw new Error("Launch Probe invocation and exit captures belong to different Shim processes");
+  }
+  sanitizeCaptureFile(invocations[0].path, invocationEvidencePath);
+  console.error("[gate:a] Shim invocation captured and Desktop cleaned up");
   return inspection;
 }
 
@@ -258,6 +304,7 @@ async function differential(inspection = inspect(), { live = false } = {}) {
     stockCodexPath: inspection.executable_codex_cli,
     shimPath,
     outputPath,
+    temporaryParent: path.join(localOutput, "work"),
     live,
   });
   console.log(JSON.stringify(result, null, 2));
@@ -395,23 +442,40 @@ function finalize() {
   if (interactive.desktopVersion !== inspection.desktop_version) {
     throw new Error("interactive evidence Desktop version does not match the installed version");
   }
+  const installedCodexVersion = codexVersion(inspection.executable_codex_cli);
+  const installedBareCodexVersion = installedCodexVersion.replace(/^codex-cli\s+/u, "");
+  if (interactive.codexCliVersion !== installedBareCodexVersion) {
+    throw new Error("interactive evidence Codex CLI version does not match the installed version");
+  }
+  const expectedSystemVersion = `${os.type()} ${os.release()}`;
+  if (platformName === "linux" && interactive.linuxVersion !== expectedSystemVersion) {
+    throw new Error("interactive evidence Linux version does not match the current host");
+  }
+  const invocationPath = invocationEvidencePath;
+  const invocation = probeInvocationSchema.parse(
+    JSON.parse(fs.readFileSync(invocationPath, "utf8")),
+  );
+  if (invocation.desktopVersion !== inspection.desktop_version) {
+    throw new Error("reviewed Shim evidence Desktop version does not match the installed version");
+  }
   const { report, outputPath } = writeGateReport({
     inspection,
     status: "PASS",
     evidence: [
       path.relative(repositoryRoot, interactiveEvidencePath),
       path.relative(repositoryRoot, differentialPath),
-      "tests/fixtures/gate-a/windows/desktop-shim-invocation.fixture.json",
+      path.relative(repositoryRoot, invocationPath),
     ],
     completedScenarios: [
       ...Object.keys(interactive.scenarios),
       ...expectedScenarios.map((scenario) => `official CLI differential: ${scenario}`),
     ],
     blockedScenarios: [],
-    impact:
-      "Windows Codex Desktop transparent proxy launch, protocol forwarding, interaction, and lifecycle invariants passed for the recorded versions.",
+    impact: `${platformName === "linux" ? "Linux ChatGPT" : "Windows Codex"} Desktop transparent proxy launch, protocol forwarding, interaction, and lifecycle invariants passed for the recorded versions.`,
     nextDecision:
-      "Gate A may be used as the verified native boundary for a separately proposed Protocol Core change.",
+      platformName === "linux"
+        ? "The Linux Gate may be used as verified evidence for Linux x64 release readiness."
+        : "Gate A may be used as the verified native boundary for a separately proposed Protocol Core change.",
   });
   console.log(JSON.stringify(report, null, 2));
   console.error(`Gate A PASS report: ${outputPath}`);
@@ -428,10 +492,10 @@ async function gate() {
       inspection,
       status: "BLOCKED",
       evidence: ["Launcher inspect detected existing Codex Desktop processes"],
-      completedScenarios: [
-        "AppX installation discovery",
-        "Desktop-managed official CLI byte match",
-      ],
+      completedScenarios:
+        platformName === "linux"
+          ? ["official Linux installation discovery", "Desktop-managed official CLI byte match"]
+          : ["AppX installation discovery", "Desktop-managed official CLI byte match"],
       blockedScenarios: [
         "isolated CODEX_CLI_PATH launch",
         "Desktop create/continue/stream/tool/cancel",

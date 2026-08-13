@@ -1,16 +1,17 @@
 use std::ffi::OsString;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::thread;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::process::{
-    ObservedProcessTree, ProcessSnapshot, desktop_process_tree, process_snapshots,
+    ObservedProcessTree, ProcessSnapshot, desktop_process_tree,
+    desktop_root_snapshots_for_installation,
 };
 use super::{
     CODEX_CLI_PATH_ENV, DesktopInstallation, DesktopLaunchMode, PlatformError,
@@ -36,8 +37,13 @@ fn stock_desktop_command(installation: &DesktopInstallation) -> Result<Command, 
         command
     };
 
-    #[cfg(not(target_os = "macos"))]
-    let mut command = Command::new(&installation.desktop_executable);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let mut command = Command::new(&installation.desktop_launcher);
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    return Err(PlatformError::Unsupported(
+        "stock Desktop launch currently supports Windows, macOS, and Linux only",
+    ));
 
     remove_codexhost_environment(&mut command, std::env::vars_os().map(|(name, _)| name));
     command
@@ -53,7 +59,7 @@ pub fn launch_stock_desktop(installation: &DesktopInstallation) -> Result<Child,
         .map_err(PlatformError::Io)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn latest_release_command() -> Command {
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -69,22 +75,29 @@ fn latest_release_command() -> Command {
         command
     };
 
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command
+    };
+
     configure_external_command(&mut command);
     command
 }
 
 pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     return Err(PlatformError::Unsupported(
-        "opening the codexhost Releases page is supported on Windows and macOS only",
+        "opening the codexhost Releases page is supported on Windows, macOS, and Linux only",
     ));
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     latest_release_command().spawn()?.wait()?;
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn configure_external_command(command: &mut Command) {
     remove_codexhost_environment(command, std::env::vars_os().map(|(name, _)| name));
     command
@@ -146,17 +159,24 @@ fn desktop_launch_command(
         }
     };
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let mut command = {
         if mode != DesktopLaunchMode::DirectExecutable {
             return Err(PlatformError::Unsupported(
                 "LaunchServices is available on macOS only",
             ));
         }
-        let mut command = Command::new(&installation.desktop_executable);
+        let mut command = Command::new(&installation.desktop_launcher);
         command.args(additional_arguments).envs(environment);
+        #[cfg(target_os = "linux")]
+        command.process_group(0);
         command
     };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    return Err(PlatformError::Unsupported(
+        "managed Desktop launch currently supports Windows, macOS, and Linux only",
+    ));
 
     command
         .stdin(Stdio::null())
@@ -183,7 +203,7 @@ pub fn launch_desktop(
     .map_err(PlatformError::Io)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunchMode) {
     if mode == DesktopLaunchMode::DirectExecutable {
         use nix::sys::signal::{Signal, killpg};
@@ -197,14 +217,14 @@ fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunch
     let _ = launch_process.wait();
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct DesktopSession {
     launch_process: Child,
     tree: ObservedProcessTree,
     armed: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl DesktopSession {
     #[must_use]
     pub fn root_snapshot(&self) -> &ProcessSnapshot {
@@ -311,7 +331,7 @@ impl DesktopSession {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for DesktopSession {
     fn drop(&mut self) {
         if self.armed {
@@ -320,7 +340,7 @@ impl Drop for DesktopSession {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn launch_desktop_session(
     installation: &DesktopInstallation,
     shim_path: &Path,
@@ -344,10 +364,7 @@ pub fn launch_desktop_session(
     .spawn()?;
     let started = Instant::now();
     loop {
-        let roots = process_snapshots()?
-            .into_iter()
-            .filter(|process| process.executable == installation.desktop_executable)
-            .collect::<Vec<_>>();
+        let roots = desktop_root_snapshots_for_installation(installation)?;
         match roots.as_slice() {
             [root] => {
                 if mode == DesktopLaunchMode::DirectExecutable && root.process_group_id != root.id {
@@ -395,38 +412,95 @@ pub fn launch_desktop_session(
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::ffi::OsString;
+    #[cfg(target_os = "macos")]
     use std::fs;
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
+    #[cfg(target_os = "macos")]
+    use super::desktop_launch_command;
     use super::{
-        CODEXHOST_RELEASES_LATEST_URL, DesktopSession, desktop_launch_command,
-        latest_release_command, remove_codexhost_environment,
+        CODEXHOST_RELEASES_LATEST_URL, DesktopSession, latest_release_command,
+        remove_codexhost_environment,
     };
-    use crate::process::{ObservedProcessTree, macos_process_snapshot};
-    use crate::{
-        DesktopIdentity, DesktopInstallation, DesktopLaunchMode, process_exists,
-        temporary_directory,
-    };
+    #[cfg(target_os = "linux")]
+    use super::{desktop_launch_command, stock_desktop_command};
+    use crate::process::{ObservedProcessTree, unix_process_snapshot};
+    use crate::process_exists;
+    #[cfg(target_os = "linux")]
+    use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode};
+    #[cfg(target_os = "macos")]
+    use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode, temporary_directory};
 
+    #[cfg(target_os = "linux")]
+    fn linux_installation() -> DesktopInstallation {
+        DesktopInstallation {
+            identity: DesktopIdentity::LinuxPackage {
+                package_name: "chatgpt".into(),
+                brand: "chatgpt".into(),
+                flavor: "prod".into(),
+            },
+            version: "26.803.81509".into(),
+            build: "26.803.81509".into(),
+            asar_integrity: format!("sha256:{}", "0".repeat(64)),
+            install_root: "/usr/lib/chatgpt".into(),
+            desktop_launcher: "/usr/bin/chatgpt".into(),
+            desktop_executable: "/usr/lib/chatgpt/ChatGPT".into(),
+            packaged_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
+            executable_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_launches_through_the_official_launcher_but_tracks_the_desktop_executable() {
+        let installation = linux_installation();
+        let stock = stock_desktop_command(&installation).expect("stock Desktop command");
+        assert_eq!(stock.get_program(), installation.desktop_launcher);
+        let managed = desktop_launch_command(
+            &installation,
+            Path::new("/usr/bin/true"),
+            DesktopLaunchMode::DirectExecutable,
+            &[],
+            &[],
+        )
+        .expect("managed Desktop command");
+        assert_eq!(managed.get_program(), installation.desktop_launcher);
+        assert_ne!(
+            installation.desktop_launcher,
+            installation.desktop_executable
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn launch_services_forwards_only_the_ephemeral_inspector_argument() {
         let directory = temporary_directory("codexhost-desktop-launch-args");
         let shim = directory.join("codexhost-shim");
         fs::write(&shim, b"shim").expect("write fake Shim");
         let installation = DesktopInstallation {
+            #[cfg(target_os = "macos")]
             identity: DesktopIdentity::MacOsBundle {
                 bundle_identifier: "com.openai.codex".into(),
+            },
+            #[cfg(target_os = "linux")]
+            identity: DesktopIdentity::LinuxPackage {
+                package_name: "chatgpt".into(),
+                brand: "chatgpt".into(),
+                flavor: "prod".into(),
             },
             version: "1.0.0".into(),
             build: "100".into(),
             asar_integrity: format!("sha256:{}", "0".repeat(64)),
             install_root: "/Applications/ChatGPT.app".into(),
+            desktop_launcher: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
             executable_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
@@ -459,7 +533,10 @@ mod tests {
     #[test]
     fn latest_release_uses_only_the_fixed_github_url() {
         let command = latest_release_command();
+        #[cfg(target_os = "macos")]
         assert_eq!(command.get_program(), "/usr/bin/open");
+        #[cfg(target_os = "linux")]
+        assert_eq!(command.get_program(), "xdg-open");
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [CODEXHOST_RELEASES_LATEST_URL]
@@ -495,7 +572,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let desktop = desktop_command.spawn().expect("spawn fake Desktop root");
-        let desktop_snapshot = macos_process_snapshot(desktop.id()).expect("snapshot Desktop root");
+        let desktop_snapshot = unix_process_snapshot(desktop.id()).expect("snapshot Desktop root");
         let mut session = DesktopSession {
             launch_process: desktop,
             tree: ObservedProcessTree::new(desktop_snapshot),
@@ -542,7 +619,7 @@ mod tests {
             .read_line(&mut child_line)
             .expect("read fake child PID");
         let child_id = child_line.trim().parse::<u32>().expect("fake child PID");
-        let root_snapshot = macos_process_snapshot(root.id()).expect("snapshot ready fake root");
+        let root_snapshot = unix_process_snapshot(root.id()).expect("snapshot ready fake root");
         let mut session = DesktopSession {
             launch_process: root,
             tree: ObservedProcessTree::new(root_snapshot),

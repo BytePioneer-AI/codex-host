@@ -1,25 +1,33 @@
 #[cfg(target_os = "macos")]
 use std::env;
 use std::error::Error;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::fs::{self, File};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::io::Read;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use codexhost_platform::configure_background_command;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use serde::Deserialize;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use sha2::{Digest, Sha256};
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use crate::request::validate_version;
 use crate::request::{
     Installation, MacOsInstallation, NpmInstallation, UpdateRequest, WindowsInstallation,
-    validate_version,
 };
 #[cfg(target_os = "macos")]
 use crate::status::unix_seconds;
 
 const NPM_PACKAGE_NAME: &str = "@codexhost/cli";
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const DISTRIBUTION_FILE: &str = "codexhost-distribution.json";
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DistributionMetadata {
@@ -29,6 +37,7 @@ struct DistributionMetadata {
     target: String,
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -47,6 +56,7 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
         .collect())
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     let actual = sha256_file(path)?;
     if actual != expected {
@@ -57,6 +67,7 @@ fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Error>> {
     let metadata = serde_json::from_slice::<DistributionMetadata>(&fs::read(path)?)?;
     if metadata.schema_version != 1 || metadata.target.is_empty() {
@@ -66,6 +77,7 @@ fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Er
     Ok(metadata)
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn verify_distribution(
     path: &Path,
     version: &str,
@@ -252,7 +264,7 @@ pub(crate) fn relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
 mod tests {
     use super::DistributionMetadata;
 

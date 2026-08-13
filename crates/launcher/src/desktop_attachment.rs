@@ -7,7 +7,9 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codexhost_platform::{descendant_executable_exists, desktop_root_process_ids};
+use codexhost_platform::{
+    DesktopInstallation, descendant_executable_exists, desktop_root_process_ids_for_installation,
+};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
@@ -54,6 +56,7 @@ pub(super) enum LauncherOwnership {
 }
 
 pub(super) fn acquire_launcher_ownership(
+    installation: &DesktopInstallation,
     timeout: Duration,
 ) -> Result<LauncherOwnership, Box<dyn Error>> {
     let guard_path = default_guard_path()?;
@@ -69,7 +72,7 @@ pub(super) fn acquire_launcher_ownership(
             if try_activate_controlled_instance(descriptor)? {
                 return Ok(LauncherOwnership::Attached);
             }
-            if desktop_root_process_ids()?.is_empty() {
+            if desktop_root_process_ids_for_installation(installation)?.is_empty() {
                 stop_stale_launcher(descriptor)?;
                 let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
             }

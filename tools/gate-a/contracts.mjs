@@ -26,6 +26,12 @@ export const probeInvocationSchema = z.discriminatedUnion("platform", [
     processGroupId: z.number().int().positive(),
     launchMode: z.enum(["launch-services", "direct-executable"]),
   }),
+  invocationBase.extend({
+    platform: z.literal("linux"),
+    architecture: z.literal("x64"),
+    processGroupId: z.number().int().positive(),
+    launchMode: z.literal("direct-executable"),
+  }),
 ]);
 
 const exitBase = z.object({
@@ -43,6 +49,10 @@ export const probeExitSchema = z.discriminatedUnion("platform", [
   exitBase.extend({ platform: z.literal("windows") }),
   exitBase.extend({
     platform: z.literal("macos"),
+    exitSignal: z.number().int().positive().nullable(),
+  }),
+  exitBase.extend({
+    platform: z.literal("linux"),
     exitSignal: z.number().int().positive().nullable(),
   }),
 ]);
@@ -129,6 +139,17 @@ const interactiveScenariosSchema = z.object({
   noOrphanProcesses: z.literal(true),
 });
 
+const linuxInteractiveScenariosSchema = interactiveScenariosSchema.extend({
+  chatComposerIsolation: z.literal(true),
+  chatInputEditing: z.literal(true),
+  workChatWorkTransition: z.literal(true),
+  piAgentSelection: z.literal(true),
+  piModelSelection: z.literal(true),
+  piAuthoritativeSession: z.literal(true),
+  claudeCodeDiscovery: z.literal(true),
+  nativeCodexSelection: z.literal(true),
+});
+
 const interactiveBase = z.object({
   schemaVersion: z.literal(PROBE_SCHEMA_VERSION),
   capturedAt: z.string(),
@@ -148,6 +169,13 @@ export const desktopInteractiveEvidenceSchema = z.discriminatedUnion("platform",
     macosVersion: z.string(),
     architecture: z.string().min(1),
     launchMode: z.enum(["launch-services", "direct-executable"]),
+  }),
+  interactiveBase.extend({
+    platform: z.literal("linux"),
+    linuxVersion: z.string(),
+    architecture: z.literal("x64"),
+    launchMode: z.literal("direct-executable"),
+    scenarios: linuxInteractiveScenariosSchema,
   }),
 ]);
 
@@ -176,5 +204,11 @@ export const gateReportSchema = z.discriminatedUnion("platform", [
     gate: z.literal("macos-codex-transparent-proxy"),
     macosVersion: z.string(),
     architecture: z.string().min(1),
+  }),
+  gateReportBase.extend({
+    platform: z.literal("linux"),
+    gate: z.literal("linux-codex-transparent-proxy"),
+    linuxVersion: z.string(),
+    architecture: z.literal("x64"),
   }),
 ]);

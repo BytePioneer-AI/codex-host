@@ -12,6 +12,8 @@ mod background;
 mod background;
 mod desktop_launch;
 mod installation;
+#[cfg(target_os = "linux")]
+mod linux_installation;
 #[cfg(target_os = "macos")]
 mod macos_ui;
 mod process;
@@ -26,18 +28,29 @@ mod windows_process;
 mod windows_ui;
 
 pub use background::detach_from_terminal;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
+#[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
+#[cfg(target_os = "linux")]
+pub use linux_installation::discover_codex_desktop;
 #[cfg(target_os = "macos")]
 pub use macos_ui::prompt_compatibility_warning;
-pub use process::{
-    ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
-    parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
-};
 #[cfg(target_os = "macos")]
-pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};
+pub use process::force_stop_desktop;
+pub use process::{
+    ProcessSnapshot, descendant_executable_exists, desktop_process_ids_for_installation,
+    desktop_root_process_ids_for_installation, parent_process_id, process_executable_path,
+    process_exists, terminate_process_by_id,
+};
+#[cfg(target_os = "windows")]
+pub use process::{desktop_process_ids, desktop_root_process_ids};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use process::{
+    desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshot,
+    process_snapshots,
+};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
@@ -111,6 +124,11 @@ pub enum DesktopIdentity {
     MacOsBundle {
         bundle_identifier: String,
     },
+    LinuxPackage {
+        package_name: String,
+        brand: String,
+        flavor: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +138,7 @@ pub struct DesktopInstallation {
     pub build: String,
     pub asar_integrity: String,
     pub install_root: PathBuf,
+    pub desktop_launcher: PathBuf,
     pub desktop_executable: PathBuf,
     pub packaged_codex_cli: PathBuf,
     pub executable_codex_cli: PathBuf,

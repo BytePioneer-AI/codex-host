@@ -367,8 +367,15 @@ function copyCodexProfile(sourceHome, codexHomes) {
   }
 }
 
-export async function runDifferential({ stockCodexPath, shimPath, outputPath, live = false }) {
-  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-gate-a-"));
+export async function runDifferential({
+  stockCodexPath,
+  shimPath,
+  outputPath,
+  temporaryParent = os.tmpdir(),
+  live = false,
+}) {
+  fs.mkdirSync(temporaryParent, { recursive: true });
+  const temporaryRoot = fs.mkdtempSync(path.join(temporaryParent, "codexhost-gate-a-"));
   const directCodexHome = path.join(temporaryRoot, "direct-codex-home");
   const shimCodexHome = path.join(temporaryRoot, "shim-codex-home");
   fs.mkdirSync(directCodexHome, { recursive: true });

@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
@@ -63,6 +65,7 @@ function fixture(
   openMode: "create" | "resume" = "create",
   permissionMode: ClaudeSdkTransportOptions["permissionMode"] = "default",
   thinkingOptionId = harnessThinkingOptionIdSchema.parse("auto"),
+  environment?: NodeJS.ProcessEnv,
 ) {
   const fakeQuery = new FakeQuery();
   let queryInput: QueryInput | undefined;
@@ -74,6 +77,7 @@ function fixture(
   const onPermissionModeChanged = vi.fn();
   const transport = new ClaudeSdkTransport({
     command: process.execPath,
+    ...(environment ? { environment } : {}),
     cwd: process.cwd(),
     sessionId: "00000000-0000-4000-8000-000000000001",
     openMode,
@@ -412,6 +416,20 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
   });
 });
 
+describe("ClaudeSdkTransport process environment", () => {
+  it("adds the Host Node runtime to the Claude process PATH", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    });
+
+    await value.transport.start();
+    expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
+      path.dirname(process.execPath),
+    );
+    await value.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport Permission Mode control", () => {
   it("passes the initial mode once, acknowledges bypass support, and delegates later switching", async () => {
     const value = fixture("create", "auto");
@@ -541,6 +559,7 @@ describe("ClaudeSdkTransport Model control", () => {
     const value = fixture();
     const inspector = new ClaudeSdkModelInspector({
       command: process.execPath,
+      environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
       cwd: process.cwd(),
       closeTimeoutMs: 100,
       queryFactory: value.queryFactory,
@@ -565,6 +584,9 @@ describe("ClaudeSdkTransport Model control", () => {
       tools: [],
       settingSources: ["user"],
     });
+    expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
+      path.dirname(process.execPath),
+    );
     expect(options(value)).not.toHaveProperty("sessionId");
     expect(options(value)).not.toHaveProperty("resume");
   });

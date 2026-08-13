@@ -11,7 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
-import { resolveClaudeCodeExecutable } from "./command.js";
+import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
@@ -367,10 +367,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,
-        env: {
+        env: withNodeRuntimeOnPath({
           ...this.#environment,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
-        },
+        }),
         spawnClaudeCodeProcess: (options) => this.#spawn(options),
       },
     });
@@ -738,10 +738,10 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
         tools: [],
         persistSession: false,
         includePartialMessages: false,
-        env: {
+        env: withNodeRuntimeOnPath({
           ...this.#environment,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
-        },
+        }),
         spawnClaudeCodeProcess: (options) => this.#spawn(options),
       },
     });

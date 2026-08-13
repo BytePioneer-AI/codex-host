@@ -38,6 +38,22 @@ describe("Claude Code executable resolution", () => {
     ).toBe(executable);
   });
 
+  it("finds a user npm installation when a Finder-style PATH omits it", () => {
+    const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
+    directories.push(homeDirectory);
+    const executable = path.join(homeDirectory, ".npm-global", "bin", "claude");
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.writeFileSync(executable, "#!/usr/bin/env node\nexit 0\n", { mode: 0o700 });
+
+    expect(
+      resolveClaudeCodeExecutable({
+        environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        homeDirectory,
+        platform: "darwin",
+      }),
+    ).toBe(executable);
+  });
+
   it("finds a user NVM installation when a Finder-style PATH omits it", () => {
     const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
     directories.push(homeDirectory);

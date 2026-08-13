@@ -69,6 +69,7 @@ function userInstallCandidates(
     ];
   }
   return [
+    path.join(homeDirectory, ".npm-global", "bin", "claude"),
     path.join(homeDirectory, ".local", "bin", "claude"),
     path.join(homeDirectory, ".claude", "local", "claude"),
     ...nvmCandidates(homeDirectory),
@@ -98,4 +99,21 @@ export function resolveClaudeCodeExecutable(
   const executable = resolutionCandidates.find((candidate) => isExecutable(candidate, platform));
   if (!executable) throw new ClaudeCodeExecutableError("Claude Code is not installed");
   return path.resolve(executable);
+}
+
+export function withNodeRuntimeOnPath(
+  environment: NodeJS.ProcessEnv,
+  runtimeExecutable = process.execPath,
+  platform = process.platform,
+): NodeJS.ProcessEnv {
+  const pathKey = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
+  const delimiter = platform === "win32" ? ";" : ":";
+  const runtimeDirectory = path.dirname(runtimeExecutable);
+  const directories = (environment[pathKey] ?? "").split(delimiter).filter(Boolean);
+  const equal =
+    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
+  if (!directories.some((directory) => equal(directory) === equal(runtimeDirectory))) {
+    directories.unshift(runtimeDirectory);
+  }
+  return { ...environment, [pathKey]: directories.join(delimiter) };
 }

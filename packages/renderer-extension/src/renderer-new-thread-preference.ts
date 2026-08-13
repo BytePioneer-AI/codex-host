@@ -64,12 +64,14 @@ function readPreference(storage: PreferenceStorage | null): NewThreadPreference 
     const externalByAgent = isRecord(parsed.externalByAgent) ? parsed.externalByAgent : {};
     const pi = parseExternalConfiguration(externalByAgent.pi);
     const claudeCode = parseExternalConfiguration(externalByAgent["claude-code"]);
+    const grok = parseExternalConfiguration(externalByAgent.grok);
     return {
       version: 1,
       lastAgent: parsed.lastAgent as RendererAgent,
       externalByAgent: {
         ...(pi ? { pi } : {}),
         ...(claudeCode ? { "claude-code": claudeCode } : {}),
+        ...(grok ? { grok } : {}),
       },
     };
   } catch {

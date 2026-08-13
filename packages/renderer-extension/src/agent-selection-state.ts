@@ -4,8 +4,8 @@ import type {
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
-export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
+export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code", "grok"] as const;
+export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code", "grok"] as const;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
 export type RendererAgentAvailability =
@@ -20,6 +20,8 @@ export interface DraftComposerState {
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
   claudeThinkingOptionId?: HarnessThinkingOptionId;
+  grokModel?: HarnessModelRef;
+  grokThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -176,19 +178,17 @@ export class DraftAgentController<Composer extends object> {
     state.phase = "locked";
     if (agent === "pi" && model) state.piModel = model;
     if (agent === "claude-code" && model) state.claudeModel = model;
-    if (agent === "pi" && thinkingOptionId) {
-      state.piThinkingOptionId = thinkingOptionId;
-    } else if (agent === "pi") {
-      delete state.piThinkingOptionId;
-    }
-    if (agent === "claude-code" && thinkingOptionId) {
+    if (agent === "grok" && model) state.grokModel = model;
+    if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
+    else if (agent === "pi") delete state.piThinkingOptionId;
+    if (agent === "claude-code" && thinkingOptionId)
       state.claudeThinkingOptionId = thinkingOptionId;
-    } else if (agent === "claude-code") {
-      delete state.claudeThinkingOptionId;
-    }
+    else if (agent === "claude-code") delete state.claudeThinkingOptionId;
+    if (agent === "grok" && thinkingOptionId) state.grokThinkingOptionId = thinkingOptionId;
+    else if (agent === "grok") delete state.grokThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
-      for (const candidate of ["pi", "claude-code"] as const) {
+      for (const candidate of ["pi", "claude-code", "grok"] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
       }
@@ -204,7 +204,9 @@ export class DraftAgentController<Composer extends object> {
 
   modelForAgent(composer: Composer, agent: RendererAgent): HarnessModelRef | undefined {
     const state = this.#state(composer);
-    return agent === "pi" ? state.piModel : agent === "claude-code" ? state.claudeModel : undefined;
+    if (agent === "pi") return state.piModel;
+    if (agent === "claude-code") return state.claudeModel;
+    return agent === "grok" ? state.grokModel : undefined;
   }
 
   thinkingOptionForAgent(
@@ -212,7 +214,9 @@ export class DraftAgentController<Composer extends object> {
     agent: ExternalRendererAgent,
   ): HarnessThinkingOptionId | undefined {
     const state = this.#state(composer);
-    return agent === "pi" ? state.piThinkingOptionId : state.claudeThinkingOptionId;
+    if (agent === "pi") return state.piThinkingOptionId;
+    if (agent === "claude-code") return state.claudeThinkingOptionId;
+    return state.grokThinkingOptionId;
   }
 
   permissionModeForAgent(
@@ -242,7 +246,8 @@ export class DraftAgentController<Composer extends object> {
   ): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     if (agent === "pi") state.piModel = model;
-    else state.claudeModel = model;
+    else if (agent === "claude-code") state.claudeModel = model;
+    else state.grokModel = model;
     return state;
   }
 
@@ -270,8 +275,11 @@ export class DraftAgentController<Composer extends object> {
     const state = this.#state(composer);
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
-    else if (thinkingOptionId) state.claudeThinkingOptionId = thinkingOptionId;
-    else delete state.claudeThinkingOptionId;
+    else if (agent === "claude-code" && thinkingOptionId) {
+      state.claudeThinkingOptionId = thinkingOptionId;
+    } else if (agent === "claude-code") delete state.claudeThinkingOptionId;
+    else if (thinkingOptionId) state.grokThinkingOptionId = thinkingOptionId;
+    else delete state.grokThinkingOptionId;
     return state;
   }
 

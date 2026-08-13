@@ -1,10 +1,12 @@
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { GrokAdapter } from "@codexhost/adapter-grok";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
+export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -35,6 +37,13 @@ export function createExternalHarnessAdapters(
         ...(environment[CLAUDE_CODE_COMMAND_ENV]
           ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
           : {}),
+        environment,
+      }),
+    ],
+    [
+      "grok",
+      new GrokAdapter({
+        ...(environment[GROK_COMMAND_ENV] ? { command: environment[GROK_COMMAND_ENV] } : {}),
         environment,
       }),
     ],

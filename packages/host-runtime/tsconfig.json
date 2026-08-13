@@ -15,7 +15,8 @@
     { "path": "../shared-contracts/tsconfig.json" },
     { "path": "../update-manager/tsconfig.json" },
     { "path": "../adapters/pi/tsconfig.json" },
-    { "path": "../adapters/claude-code/tsconfig.json" }
+    { "path": "../adapters/claude-code/tsconfig.json" },
+    { "path": "../adapters/grok/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

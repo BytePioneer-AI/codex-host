@@ -10,6 +10,7 @@ import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
+  grok: "https://grok.com/",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

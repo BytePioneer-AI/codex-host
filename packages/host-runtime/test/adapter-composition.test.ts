@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import {
   CLAUDE_CODE_COMMAND_ENV,
+  GROK_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchClaudeCodeModelCatalog,
 } from "../src/index.js";
@@ -34,11 +35,25 @@ describe("Host external Harness composition", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("registers Pi and Claude Code by default without resolving executables", async () => {
+  it("registers Pi, Claude Code, and Grok by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 
-    expect([...adapters.keys()]).toEqual(["pi", "claude-code"]);
+    expect([...adapters.keys()]).toEqual(["pi", "claude-code", "grok"]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
+    expect(adapters.get("grok")?.harnessId).toBe("grok");
+    await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
+  });
+
+  it("preserves an explicit user-installed Grok command", async () => {
+    const adapters = createExternalHarnessAdapters({
+      PATH: "",
+      [GROK_COMMAND_ENV]: "/synthetic/grok",
+    });
+
+    await expect(adapters.get("grok")?.inspect()).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled" },
+    });
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 

@@ -1,10 +1,12 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
+import grokAgentIconUrl from "./assets/grok-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   codex: "Codex",
   pi: "Pi",
   "claude-code": "Claude Code",
+  grok: "Grok",
 };
 
 const PI_PATHS = [
@@ -57,5 +59,16 @@ export function createRendererAgentIcon(
     return image;
   }
   if (agent === "pi") return createSvgIcon(PI_PATHS, "currentColor", size, ownerDocument);
-  return createSvgIcon([{ d: CLAUDE_PATH }], "#d97757", size, ownerDocument);
+  if (agent === "claude-code") {
+    return createSvgIcon([{ d: CLAUDE_PATH }], "#d97757", size, ownerDocument);
+  }
+  const image = ownerDocument.createElement("img");
+  image.src = grokAgentIconUrl;
+  image.alt = "";
+  image.draggable = false;
+  image.style.width = `${size}px`;
+  image.style.height = `${size}px`;
+  image.style.objectFit = "contain";
+  image.style.flex = "none";
+  return image;
 }

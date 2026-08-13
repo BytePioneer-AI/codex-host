@@ -205,6 +205,10 @@ describe("Renderer Control Session", () => {
     expect(calls).toEqual(["compatibility-update"]);
 
     calls.length = 0;
+    await expect(session.ensureInstalled()).resolves.toMatchObject({ renderer: { id: 17 } });
+    expect(calls).toEqual(["inspect", "read-binding", "prewarm:17"]);
+
+    calls.length = 0;
     binding = null;
     selected = renderer(19, "primary", 120);
     await expect(session.ensureInstalled()).resolves.toMatchObject({ renderer: { id: 19 } });

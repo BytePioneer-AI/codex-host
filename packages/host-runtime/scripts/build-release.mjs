@@ -11,7 +11,12 @@ const forbiddenInputFragments = [
   "/tools/",
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
-const allowedRuntimePackages = new Set(["@anthropic-ai/claude-agent-sdk", "diff", "zod"]);
+const allowedRuntimePackages = new Set([
+  "@agentclientprotocol/sdk",
+  "@anthropic-ai/claude-agent-sdk",
+  "diff",
+  "zod",
+]);
 
 function normalizedInputPath(value) {
   return `/${value.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "")}/`;
@@ -41,6 +46,8 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/host-runtime/src/adapter-composition.ts/",
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
+    "/packages/adapters/grok/",
+    "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {

@@ -18,7 +18,9 @@ does not depend on a local extension path or a network request.
 
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
-VS Code extension as inline vector paths.
+VS Code extension as inline vector paths. `grok-agent.png` is a cropped and
+resized copy of the Grok mark served by `grok.com`, provided from a captured
+first-party page asset so the Renderer does not make a network request.
 
 `codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
 `pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.

@@ -30,6 +30,8 @@ export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_TRANSPORT_MODEL_ID}@`;
+export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
+export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -136,11 +138,14 @@ declare global {
 function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
   if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   return null;
 }
 
 function isTransportModelId(model: unknown): boolean {
-  return isPiTransportModelId(model) || isClaudeTransportModelId(model);
+  return (
+    isPiTransportModelId(model) || isClaudeTransportModelId(model) || isGrokTransportModelId(model)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -186,6 +191,43 @@ export function claudeTransportModelId(
   return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
+export function grokTransportModelId(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("Grok transport Thinking requires a Model Ref");
+    return GROK_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@@${parsedThinking}` : ""}`;
+}
+
+export function decodeGrokTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+} | null {
+  if (value === GROK_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(GROK_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(GROK_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length !== 1 && components.length !== 3) return null;
+  const [modelId, emptyPermissionMode, thinkingOptionId] = components;
+  if (components.length === 3 && (emptyPermissionMode !== "" || !thinkingOptionId)) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return {
+    model: model.data,
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
 export function decodeClaudeTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
@@ -215,6 +257,10 @@ export function decodeClaudeTransportModelId(value: unknown): {
     ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
     ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
+}
+
+export function isGrokTransportModelId(value: unknown): value is string {
+  return decodeGrokTransportModelId(value) !== null;
 }
 
 export function isClaudeTransportModelId(value: unknown): value is string {
@@ -673,7 +719,9 @@ export function modelSelectionForAgent(
       ? piTransportModelId(model, thinkingOptionId)
       : agent === "claude-code"
         ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : transportModelIdForAgent(agent);
+        : agent === "grok"
+          ? grokTransportModelId(model, thinkingOptionId)
+          : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

@@ -199,7 +199,9 @@ function unixSeconds(): number {
 }
 
 function approvalServerName(harnessId: ExternalHarnessId): string {
-  return harnessId === "claude-code" ? "Claude Code" : "Pi";
+  if (harnessId === "claude-code") return "Claude Code";
+  if (harnessId === "grok") return "Grok";
+  return "Pi";
 }
 
 const HOST_APPROVAL_REQUEST_ID_MIN = -2_000_000;

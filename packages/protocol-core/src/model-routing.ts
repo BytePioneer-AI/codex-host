@@ -12,7 +12,9 @@ export const PI_NATIVE_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_NATIVE_TRANSPORT_MODEL_PREFIX = `${PI_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
-export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code"] as const;
+export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
+export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code", "grok"] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
@@ -20,6 +22,7 @@ export type RoutedHarnessId = "codex" | ExternalHarnessId;
 const transportModelByHarness = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -123,6 +126,50 @@ export function encodeClaudeTransportModel(
   return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
+export function encodeGrokTransportModel(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("Grok transport Thinking requires a Model Ref");
+    return GROK_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@@${parsedThinking}` : ""}`;
+}
+
+export function decodeGrokTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === GROK_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(GROK_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(GROK_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length !== 1 && components.length !== 3) {
+    throw new Error("Grok transport configuration has an invalid component count");
+  }
+  const [modelId, emptyPermissionMode, thinkingOptionId] = components;
+  if (components.length === 3 && (emptyPermissionMode !== "" || !thinkingOptionId)) {
+    throw new Error("Grok transport configuration has an invalid Thinking option");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Grok transport Model contains an invalid Model Ref");
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Grok transport configuration contains an invalid Thinking option");
+  }
+  return {
+    model: model.data,
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
 export function decodeClaudeTransportSelection(
   value: unknown,
 ): ExternalConfigurationSelection | null {
@@ -177,6 +224,11 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    case "grok":
+      if (selection.permissionModeId) {
+        throw new Error("Grok transport does not support Permission Mode selection");
+      }
+      return encodeGrokTransportModel(selection.model, selection.thinkingOptionId);
   }
 }
 
@@ -189,6 +241,8 @@ export function decodeExternalTransportSelection(
       return decodePiTransportSelection(value);
     case "claude-code":
       return decodeClaudeTransportSelection(value);
+    case "grok":
+      return decodeGrokTransportSelection(value);
   }
 }
 
@@ -222,6 +276,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...claudeSelection,
+    };
+  }
+  const grokSelection = decodeGrokTransportSelection(request.params.model);
+  if (grokSelection !== null) {
+    return {
+      harnessId: "grok",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...grokSelection,
     };
   }
 

@@ -1496,20 +1496,24 @@ export class AppServerHost {
     const params: JsonObject = {
       ...(fork.sandbox ? { sandbox: fork.sandbox } : {}),
     };
-    await this.#writer.json(
-      rpcEnvelope(request, {
-        result: threadForkResult(result.responseThread, {
-          model: result.derived.transportModelId,
-          cwd: result.derived.cwd,
-          ...(fork.runtimeWorkspaceRoots
-            ? { runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots }
-            : {}),
-          ...(fork.approvalPolicy ? { approvalPolicy: fork.approvalPolicy } : {}),
-          sandbox: sandboxResult(params),
-          ...(fork.serviceTier ? { serviceTier: fork.serviceTier } : {}),
-        }),
+    const response = rpcEnvelope(request, {
+      result: threadForkResult(result.responseThread, {
+        model: result.derived.transportModelId,
+        cwd: result.derived.cwd,
+        ...(fork.runtimeWorkspaceRoots
+          ? { runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots }
+          : {}),
+        ...(fork.approvalPolicy ? { approvalPolicy: fork.approvalPolicy } : {}),
+        sandbox: sandboxResult(params),
+        ...(fork.serviceTier ? { serviceTier: fork.serviceTier } : {}),
       }),
-    );
+    });
+    if (result.derived.cwd !== source.cwd) {
+      await this.#notifyExternalThreadStarted(result.thread);
+      await this.#writer.json(response);
+      return;
+    }
+    await this.#writer.json(response);
     await this.#notifyExternalThreadStarted(result.thread);
   }
 

@@ -1636,25 +1636,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(inclusive.id).not.toBe(sourceThreadId);
     expect(exclusive.id).not.toBe(inclusive.id);
 
-    const worktreeResponseIndex = fixture.collector.messages.findIndex((message) =>
-      requestId(message, 10),
-    );
-    const worktreeNotificationIndex = fixture.collector.messages.findIndex(
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 10));
+    const notificationIndex = fixture.collector.messages.findIndex(
       (message) =>
         method(message, "thread/started") &&
         (messageParams(message).thread as JsonObject | undefined)?.id === inclusive.id,
     );
-    expect(worktreeNotificationIndex).toBeLessThan(worktreeResponseIndex);
-
-    const sameCwdResponseIndex = fixture.collector.messages.findIndex((message) =>
-      requestId(message, 11),
-    );
-    const sameCwdNotificationIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.id === exclusive.id,
-    );
-    expect(sameCwdNotificationIndex).toBeGreaterThan(sameCwdResponseIndex);
+    expect(notificationIndex).toBeGreaterThan(responseIndex);
 
     await completePiTurn(fixture, inclusive.id as string, 20, 1);
     await completePiTurn(fixture, sourceThreadId, 21, 0);

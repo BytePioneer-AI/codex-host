@@ -143,7 +143,7 @@ pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn same_process_instance(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
+pub(crate) fn same_process_instance(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     expected.id == current.id && expected.started_at_micros == current.started_at_micros
 }
 
@@ -153,7 +153,10 @@ fn same_process_identity(expected: &ProcessSnapshot, current: &ProcessSnapshot) 
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn descendant_snapshots(roots: &[u32], snapshots: &[ProcessSnapshot]) -> Vec<ProcessSnapshot> {
+pub(crate) fn descendant_snapshots(
+    roots: &[u32],
+    snapshots: &[ProcessSnapshot],
+) -> Vec<ProcessSnapshot> {
     let mut owned_ids = roots.to_vec();
     let mut descendants = Vec::new();
     loop {
@@ -223,15 +226,33 @@ pub fn desktop_process_tree(
 pub(crate) struct ObservedProcessTree {
     pub(crate) root: ProcessSnapshot,
     known: Vec<ProcessSnapshot>,
+    process_group_id: Option<u32>,
+    process_group_started_at_micros: u64,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ObservedProcessTree {
     pub(crate) fn new(root: ProcessSnapshot) -> Self {
+        let process_group_id = (root.process_group_id == root.id).then_some(root.process_group_id);
+        Self::new_with_process_group(root, process_group_id, None)
+    }
+
+    pub(crate) fn new_with_process_group(
+        root: ProcessSnapshot,
+        process_group_id: Option<u32>,
+        process_group_started_at_micros: Option<u64>,
+    ) -> Self {
         Self {
+            process_group_id,
+            process_group_started_at_micros: process_group_started_at_micros
+                .unwrap_or(root.started_at_micros),
             known: vec![root.clone()],
             root,
         }
+    }
+
+    pub(crate) fn process_group_id(&self) -> u32 {
+        self.process_group_id.unwrap_or(self.root.process_group_id)
     }
 
     pub(crate) fn observe(&mut self) -> Result<Vec<ProcessSnapshot>, PlatformError> {
@@ -258,18 +279,41 @@ impl ObservedProcessTree {
             .iter()
             .map(|process| process.id)
             .collect::<Vec<_>>();
-        let mut observed = if self.root.process_group_id == self.root.id {
-            snapshots
-                .iter()
-                .filter(|process| {
-                    process.started_at_micros >= self.root.started_at_micros
-                        && process.process_group_id == self.root.process_group_id
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let mut observed = self
+            .process_group_id
+            .map_or_else(Vec::new, |process_group_id| {
+                snapshots
+                    .iter()
+                    .filter(|process| {
+                        process.started_at_micros >= self.process_group_started_at_micros
+                            && process.process_group_id == process_group_id
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+        // The Linux managed-launch group is private when it is created, but a
+        // later foreign member still must not silently become owned. The root
+        // itself (exec path) and known descendants prove lineage; a same-PGID
+        // process that cannot be traced from either is rejected before any
+        // lifecycle signal can reach it.
+        #[cfg(target_os = "linux")]
+        if self.process_group_id.is_some() {
+            let permitted = descendant_snapshots(&known_ids, &snapshots);
+            if let Some(foreign) = observed.iter().find(|process| {
+                !self
+                    .known
+                    .iter()
+                    .any(|known| same_process_instance(known, process))
+                    && !permitted
+                        .iter()
+                        .any(|descendant| same_process_instance(descendant, process))
+            }) {
+                return Err(PlatformError::Invalid(format!(
+                    "unattributed PID {} joined the managed Desktop process group",
+                    foreign.id
+                )));
+            }
+        }
         observed.extend(descendant_snapshots(&known_ids, &snapshots));
         for process in observed {
             if !self.known.iter().any(|known| known.id == process.id) {
@@ -389,6 +433,35 @@ impl ObservedProcessTree {
         let live = self.observe()?;
         self.signal_processes(&live, signal)
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn signal_processes_exact(
+    processes: &[ProcessSnapshot],
+    signal: nix::sys::signal::Signal,
+) -> Result<(), PlatformError> {
+    let snapshots = process_snapshots()?;
+    let live = processes
+        .iter()
+        .filter_map(
+            |expected| match snapshots.iter().find(|current| current.id == expected.id) {
+                Some(current) if same_process_identity(expected, current) => {
+                    Some(Ok(expected.clone()))
+                }
+                Some(_) => Some(Err(PlatformError::Invalid(format!(
+                    "PID {} identity changed before cleanup",
+                    expected.id
+                )))),
+                None => None,
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(root) = live.first().cloned() else {
+        return Ok(());
+    };
+    // This is a one-shot exact-identity operation rather than supervision of
+    // a new process group. Do not discover additional same-PGID processes.
+    ObservedProcessTree::new_with_process_group(root, None, None).signal_processes(&live, signal)
 }
 
 #[cfg(target_os = "windows")]

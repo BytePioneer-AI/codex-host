@@ -8,10 +8,14 @@ use std::thread;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+use super::process::desktop_root_snapshots_for_installation;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::process::{ObservedProcessTree, ProcessSnapshot, desktop_process_tree};
+#[cfg(target_os = "linux")]
 use super::process::{
-    ObservedProcessTree, ProcessSnapshot, desktop_process_tree,
-    desktop_root_snapshots_for_installation,
+    descendant_snapshots, desktop_root_snapshots, process_snapshot, process_snapshots,
+    same_process_instance, signal_processes_exact,
 };
 use super::{
     CODEX_CLI_PATH_ENV, DesktopInstallation, DesktopLaunchMode, PlatformError,
@@ -203,7 +207,99 @@ pub fn launch_desktop(
     .map_err(PlatformError::Io)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
+fn remember_processes(known: &mut Vec<ProcessSnapshot>, processes: &[ProcessSnapshot]) {
+    for process in processes {
+        if let Some(existing) = known.iter_mut().find(|existing| existing.id == process.id) {
+            *existing = process.clone();
+        } else {
+            known.push(process.clone());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_failed_desktop_launch(
+    launch_process: &mut Child,
+    observed_members: &[ProcessSnapshot],
+) -> Result<(), PlatformError> {
+    signal_processes_exact(observed_members, nix::sys::signal::Signal::SIGKILL)?;
+    let _ = launch_process.wait();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_failed_desktop_launch_preserving_conflict(
+    launch_process: &mut Child,
+    observed_members: &[ProcessSnapshot],
+    conflict: PlatformError,
+) -> PlatformError {
+    match cleanup_failed_desktop_launch(launch_process, observed_members) {
+        Ok(()) => conflict,
+        Err(cleanup_error) => PlatformError::Invalid(format!(
+            "{conflict}; additionally failed to clean up this launch: {cleanup_error}"
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_managed_desktop_root(
+    launcher_instance: &ProcessSnapshot,
+    launcher_process_group_id: u32,
+    observed_descendants: &[ProcessSnapshot],
+    root: &ProcessSnapshot,
+) -> bool {
+    root.process_group_id == launcher_process_group_id
+        && root.started_at_micros >= launcher_instance.started_at_micros
+        // An exec preserves PID/start time but replaces the executable, while
+        // a forking wrapper produces a descendant. Exact instance identity is
+        // essential: a same-PID process after reuse is never owned.
+        && (same_process_instance(root, launcher_instance)
+            || observed_descendants
+                .iter()
+                .any(|descendant| same_process_instance(root, descendant)))
+}
+
+/// Select the Desktop root that can be attributed to this exact Launcher
+/// instance. `roots` are only the matching Desktop executable roots; a root
+/// from another process group or another launcher lineage is a conflict, never
+/// a candidate for managed cleanup.
+#[cfg(target_os = "linux")]
+fn select_managed_desktop_root(
+    launcher_instance: &ProcessSnapshot,
+    launcher_process_group_id: u32,
+    observed_descendants: &[ProcessSnapshot],
+    roots: &[ProcessSnapshot],
+) -> Result<Option<ProcessSnapshot>, PlatformError> {
+    let managed = roots
+        .iter()
+        .filter(|root| {
+            is_managed_desktop_root(
+                launcher_instance,
+                launcher_process_group_id,
+                observed_descendants,
+                root,
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if managed.len() > 1 {
+        return Err(PlatformError::Invalid(format!(
+            "managed Desktop launch created multiple root processes: {}",
+            managed
+                .iter()
+                .map(|process| process.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    if roots.len() > managed.len() {
+        return Err(PlatformError::UnmanagedDesktopConflict);
+    }
+    Ok(managed.into_iter().next())
+}
+
+#[cfg(target_os = "macos")]
 fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunchMode) {
     if mode == DesktopLaunchMode::DirectExecutable {
         use nix::sys::signal::{Signal, killpg};
@@ -354,59 +450,212 @@ pub fn launch_desktop_session(
             "Codex Desktop is already running; refusing to reuse or terminate it".into(),
         ));
     }
-    let mut launch_process = desktop_launch_command(
-        installation,
-        shim_path,
-        mode,
-        additional_arguments,
-        additional_environment,
-    )?
-    .spawn()?;
-    let started = Instant::now();
-    loop {
-        let roots = desktop_root_snapshots_for_installation(installation)?;
-        match roots.as_slice() {
-            [root] => {
-                if mode == DesktopLaunchMode::DirectExecutable && root.process_group_id != root.id {
-                    cleanup_failed_desktop_launch(&mut launch_process, mode);
-                    return Err(PlatformError::Invalid(format!(
-                        "Desktop root PID {} did not become process-group leader",
-                        root.id
-                    )));
-                }
-                return Ok(DesktopSession {
-                    launch_process,
-                    tree: ObservedProcessTree::new(root.clone()),
-                    armed: true,
-                });
+    #[cfg(target_os = "linux")]
+    {
+        let mut launch_process = desktop_launch_command(
+            installation,
+            shim_path,
+            mode,
+            additional_arguments,
+            additional_environment,
+        )?
+        .spawn()?;
+        let launcher_instance = match process_snapshot(launch_process.id()) {
+            Ok(launcher) => launcher,
+            Err(error) => {
+                let _ = launch_process.kill();
+                let _ = launch_process.wait();
+                return Err(error);
             }
-            [] if started.elapsed() < start_timeout => {
-                if let Some(status) = launch_process.try_wait()?
-                    && !status.success()
-                {
-                    return Err(PlatformError::Invalid(format!(
-                        "Desktop launch process exited before creating the App instance: {status}"
-                    )));
+        };
+        let launcher_process_group_id = launcher_instance.process_group_id;
+        if mode != DesktopLaunchMode::DirectExecutable {
+            let _ = cleanup_failed_desktop_launch(
+                &mut launch_process,
+                std::slice::from_ref(&launcher_instance),
+            );
+            return Err(PlatformError::Unsupported(
+                "managed Linux Desktop launch requires direct-executable mode",
+            ));
+        }
+        if launcher_process_group_id != launcher_instance.id {
+            let _ = cleanup_failed_desktop_launch(
+                &mut launch_process,
+                std::slice::from_ref(&launcher_instance),
+            );
+            return Err(PlatformError::Invalid(format!(
+                "Desktop launcher PID {} did not become process-group leader",
+                launcher_instance.id
+            )));
+        }
+
+        let official_launcher = installation.desktop_launcher.canonicalize()?;
+        // The official wrapper may have exec'd the Desktop before /proc is
+        // sampled. In either case the PID came directly from this spawn; only
+        // that wrapper or its documented Desktop replacement is eligible.
+        if launcher_instance.executable != official_launcher
+            && launcher_instance.executable != installation.desktop_executable
+        {
+            let _ = cleanup_failed_desktop_launch(
+                &mut launch_process,
+                std::slice::from_ref(&launcher_instance),
+            );
+            return Err(PlatformError::Invalid(format!(
+                "Desktop launcher PID {} did not retain an official launcher or Desktop executable identity",
+                launcher_instance.id
+            )));
+        }
+
+        let started = Instant::now();
+        let mut observed_members = vec![launcher_instance.clone()];
+        let mut observed_descendants = Vec::new();
+        loop {
+            let snapshots = match process_snapshots() {
+                Ok(snapshots) => snapshots,
+                Err(error) => {
+                    return Err(cleanup_failed_desktop_launch_preserving_conflict(
+                        &mut launch_process,
+                        &observed_members,
+                        error,
+                    ));
                 }
-                thread::sleep(Duration::from_millis(50));
-            }
-            [] => {
-                cleanup_failed_desktop_launch(&mut launch_process, mode);
-                return Err(PlatformError::NotFound(
-                    "Desktop launch did not create an identifiable App process before timeout"
-                        .into(),
+            };
+            let launcher_live = snapshots
+                .iter()
+                .find(|process| process.id == launcher_instance.id);
+            if let Some(current) = launcher_live {
+                if !same_process_instance(&launcher_instance, current) {
+                    return Err(cleanup_failed_desktop_launch_preserving_conflict(
+                        &mut launch_process,
+                        &observed_members,
+                        PlatformError::Invalid(format!(
+                            "Desktop launcher PID {} was reused before ownership was established",
+                            launcher_instance.id
+                        )),
+                    ));
+                }
+                remember_processes(&mut observed_members, std::slice::from_ref(current));
+                remember_processes(
+                    &mut observed_descendants,
+                    &descendant_snapshots(&[launcher_instance.id], &snapshots),
+                );
+            } else if observed_descendants.is_empty() {
+                return Err(cleanup_failed_desktop_launch_preserving_conflict(
+                    &mut launch_process,
+                    &observed_members,
+                    PlatformError::NotFound(format!(
+                        "Desktop launcher PID {} exited before creating an identifiable App process",
+                        launcher_instance.id
+                    )),
                 ));
             }
-            _ => {
-                cleanup_failed_desktop_launch(&mut launch_process, mode);
-                return Err(PlatformError::Invalid(format!(
-                    "Desktop launch created multiple root processes: {}",
-                    roots
-                        .iter()
-                        .map(|process| process.id.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
+
+            let roots = desktop_root_snapshots(&installation.desktop_executable, &snapshots);
+            // Retain only snapshots linked to this exact launcher lineage for
+            // early-failure cleanup. The private PGID constrains managed roots,
+            // but on its own is not proof that an observed process belongs to
+            // this launch.
+            remember_processes(&mut observed_members, &observed_descendants);
+            let managed_root = select_managed_desktop_root(
+                &launcher_instance,
+                launcher_process_group_id,
+                &observed_descendants,
+                &roots,
+            );
+            match managed_root {
+                Ok(Some(root)) => {
+                    return Ok(DesktopSession {
+                        launch_process,
+                        tree: ObservedProcessTree::new_with_process_group(
+                            root,
+                            Some(launcher_process_group_id),
+                            Some(launcher_instance.started_at_micros),
+                        ),
+                        armed: true,
+                    });
+                }
+                Ok(None) if started.elapsed() < start_timeout => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Ok(None) => {
+                    return Err(cleanup_failed_desktop_launch_preserving_conflict(
+                        &mut launch_process,
+                        &observed_members,
+                        PlatformError::NotFound(
+                            "Desktop launch did not create an identifiable App process before timeout"
+                                .into(),
+                        ),
+                    ));
+                }
+                Err(error) => {
+                    return Err(cleanup_failed_desktop_launch_preserving_conflict(
+                        &mut launch_process,
+                        &observed_members,
+                        error,
+                    ));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut launch_process = desktop_launch_command(
+            installation,
+            shim_path,
+            mode,
+            additional_arguments,
+            additional_environment,
+        )?
+        .spawn()?;
+        let started = Instant::now();
+        loop {
+            let roots = desktop_root_snapshots_for_installation(installation)?;
+            match roots.as_slice() {
+                [root] => {
+                    if mode == DesktopLaunchMode::DirectExecutable
+                        && root.process_group_id != root.id
+                    {
+                        cleanup_failed_desktop_launch(&mut launch_process, mode);
+                        return Err(PlatformError::Invalid(format!(
+                            "Desktop root PID {} did not become process-group leader",
+                            root.id
+                        )));
+                    }
+                    return Ok(DesktopSession {
+                        launch_process,
+                        tree: ObservedProcessTree::new(root.clone()),
+                        armed: true,
+                    });
+                }
+                [] if started.elapsed() < start_timeout => {
+                    if let Some(status) = launch_process.try_wait()?
+                        && !status.success()
+                    {
+                        return Err(PlatformError::Invalid(format!(
+                            "Desktop launch process exited before creating the App instance: {status}"
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                [] => {
+                    cleanup_failed_desktop_launch(&mut launch_process, mode);
+                    return Err(PlatformError::NotFound(
+                        "Desktop launch did not create an identifiable App process before timeout"
+                            .into(),
+                    ));
+                }
+                _ => {
+                    cleanup_failed_desktop_launch(&mut launch_process, mode);
+                    return Err(PlatformError::Invalid(format!(
+                        "Desktop launch created multiple root processes: {}",
+                        roots
+                            .iter()
+                            .map(|process| process.id.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
             }
         }
     }
@@ -423,6 +672,8 @@ mod tests {
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::time::Duration;
+    #[cfg(target_os = "linux")]
+    use std::time::Instant;
 
     #[cfg(target_os = "macos")]
     use super::desktop_launch_command;
@@ -431,11 +682,14 @@ mod tests {
         remove_codexhost_environment,
     };
     #[cfg(target_os = "linux")]
-    use super::{desktop_launch_command, stock_desktop_command};
-    use crate::process::{ObservedProcessTree, unix_process_snapshot};
+    use super::{
+        desktop_launch_command, is_managed_desktop_root, select_managed_desktop_root,
+        stock_desktop_command,
+    };
+    use crate::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
     use crate::process_exists;
     #[cfg(target_os = "linux")]
-    use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode};
+    use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode, PlatformError};
     #[cfg(target_os = "macos")]
     use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode, temporary_directory};
 
@@ -459,6 +713,23 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn snapshot(
+        id: u32,
+        parent_id: u32,
+        process_group_id: u32,
+        executable: &str,
+        started_at_micros: u64,
+    ) -> ProcessSnapshot {
+        ProcessSnapshot {
+            id,
+            parent_id,
+            process_group_id,
+            executable: executable.into(),
+            started_at_micros,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_launches_through_the_official_launcher_but_tracks_the_desktop_executable() {
         let installation = linux_installation();
@@ -477,6 +748,146 @@ mod tests {
             installation.desktop_launcher,
             installation.desktop_executable
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_ownership_rejects_an_independent_root_after_precheck() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let independent = snapshot(20, 1, 20, "/usr/lib/chatgpt/ChatGPT", 101);
+        assert!(!is_managed_desktop_root(&launcher, 10, &[], &independent));
+        assert!(matches!(
+            select_managed_desktop_root(&launcher, 10, &[], &[independent]),
+            Err(PlatformError::UnmanagedDesktopConflict)
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_ownership_rejects_a_managed_and_independent_root_together() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let managed = snapshot(11, 10, 10, "/usr/lib/chatgpt/ChatGPT", 101);
+        let independent = snapshot(20, 1, 20, "/usr/lib/chatgpt/ChatGPT", 102);
+        assert!(matches!(
+            select_managed_desktop_root(
+                &launcher,
+                10,
+                &[managed],
+                &[
+                    snapshot(11, 10, 10, "/usr/lib/chatgpt/ChatGPT", 101,),
+                    independent
+                ]
+            ),
+            Err(PlatformError::UnmanagedDesktopConflict)
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_ownership_accepts_the_wrapper_exec_path() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let execed = snapshot(10, 1, 10, "/usr/lib/chatgpt/ChatGPT", 100);
+        assert!(is_managed_desktop_root(&launcher, 10, &[], &execed));
+        assert_eq!(
+            select_managed_desktop_root(&launcher, 10, &[], std::slice::from_ref(&execed))
+                .expect("selection"),
+            Some(execed)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_ownership_accepts_only_an_exact_launcher_descendant_in_its_group() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let managed = snapshot(11, 10, 10, "/usr/lib/chatgpt/ChatGPT", 101);
+        let wrong_group = snapshot(12, 10, 12, "/usr/lib/chatgpt/ChatGPT", 102);
+        let unrelated = snapshot(13, 1, 10, "/usr/lib/chatgpt/ChatGPT", 103);
+        assert!(is_managed_desktop_root(
+            &launcher,
+            10,
+            std::slice::from_ref(&managed),
+            &managed,
+        ));
+        assert!(!is_managed_desktop_root(
+            &launcher,
+            10,
+            &[managed.clone(), wrong_group.clone()],
+            &wrong_group,
+        ));
+        assert!(!is_managed_desktop_root(
+            &launcher,
+            10,
+            &[managed],
+            &unrelated
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_identity_reuse_cannot_be_used_for_cleanup() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let reused = snapshot(10, 1, 10, "/usr/lib/chatgpt/ChatGPT", 101);
+        assert!(!is_managed_desktop_root(&launcher, 10, &[], &reused));
+        assert!(matches!(
+            select_managed_desktop_root(&launcher, 10, &[], &[reused]),
+            Err(PlatformError::UnmanagedDesktopConflict)
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_failure_does_not_hide_an_unmanaged_desktop_conflict() {
+        let launcher = snapshot(10, 1, 10, "/usr/lib/chatgpt/codex-launcher", 100);
+        let result = super::cleanup_failed_desktop_launch_preserving_conflict(
+            &mut Command::new("/bin/true")
+                .spawn()
+                .expect("spawn cleanup fixture"),
+            std::slice::from_ref(&launcher),
+            PlatformError::UnmanagedDesktopConflict,
+        );
+        assert!(match result {
+            PlatformError::UnmanagedDesktopConflict => true,
+            PlatformError::Invalid(message) => message.contains("outside codexhost"),
+            _ => false,
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observed_session_cleanup_does_not_signal_an_unrelated_group() {
+        let mut own_command = Command::new("/bin/sleep");
+        own_command
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut own = own_command.spawn().expect("spawn owned fixture");
+        let own_snapshot = unix_process_snapshot(own.id()).expect("snapshot owned fixture");
+
+        let mut independent_command = Command::new("/bin/sleep");
+        independent_command
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut independent = independent_command
+            .spawn()
+            .expect("spawn independent fixture");
+        let independent_snapshot =
+            unix_process_snapshot(independent.id()).expect("snapshot independent fixture");
+
+        super::cleanup_failed_desktop_launch(&mut own, std::slice::from_ref(&own_snapshot))
+            .expect("clean owned fixture");
+        let started = Instant::now();
+        while own.try_wait().expect("wait owned fixture").is_none() {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(process_exists(independent_snapshot.id));
+        independent.kill().expect("stop independent fixture");
+        let _ = independent.wait().expect("reap independent fixture");
     }
 
     #[cfg(target_os = "macos")]

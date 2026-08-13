@@ -75,6 +75,16 @@ pub enum CompatibilityChoice {
     OpenStockCodex,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinuxCompatibilityChoice {
+    ContinueOnce,
+    ContinueAndRemember,
+    OpenLatestRelease,
+    OpenStockCodex,
+    Cancel,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompatibilityUpdateAvailability {
     Started,
@@ -93,10 +103,16 @@ pub struct CompatibilityPrompt<'a> {
     pub degraded: bool,
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+mod linux_ui;
+
+#[cfg(target_os = "linux")]
+pub use linux_ui::prompt_linux_compatibility_warning;
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 #[must_use]
 pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
-    CompatibilityChoice::ContinueCodexhost
+    CompatibilityChoice::OpenStockCodex
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +164,7 @@ pub struct DesktopInstallation {
 pub enum PlatformError {
     Unsupported(&'static str),
     NotFound(String),
+    UnmanagedDesktopConflict,
     Invalid(String),
     Io(io::Error),
 }
@@ -157,6 +174,9 @@ impl Display for PlatformError {
         match self {
             Self::Unsupported(message) => write!(formatter, "{message}"),
             Self::NotFound(message) => write!(formatter, "{message}"),
+            Self::UnmanagedDesktopConflict => formatter.write_str(
+                "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost",
+            ),
             Self::Invalid(message) => write!(formatter, "{message}"),
             Self::Io(error) => Display::fmt(error, formatter),
         }

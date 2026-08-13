@@ -97,6 +97,8 @@ dependencies = [
  "codexhost-platform",
  "fs2",
  "getrandom",
+ "nix",
+ "rustix",
  "serde",
  "serde_json",
  "winresource",

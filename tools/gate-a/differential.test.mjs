@@ -65,7 +65,7 @@ describe("app-server stdout validation", () => {
     const fakeCodex = path.join(parent, "fake-codex.mjs");
     fs.writeFileSync(
       fakeCodex,
-      `#!/usr/bin/env node\nif (process.argv.includes("--version")) { console.log("fake 1.0.0"); process.exit(0); }\nfor await (const line of process.stdin) {\n  const request = JSON.parse(line);\n  if (request.id === undefined) continue;\n  const result = request.method === "model/list" ? { data: [{ model: "fake", isDefault: true }] } : request.method === "thread/start" ? { thread: { id: "thread" } } : {};\n  console.log(JSON.stringify({ id: request.id, result }));\n}\n`,
+      `#!/usr/bin/env node\nif (process.argv.includes("--version")) { console.log("fake 1.0.0"); process.exit(0); }\nlet buffer = "";\nfor await (const chunk of process.stdin) {\n  buffer += chunk;\n  let newline;\n  while ((newline = buffer.indexOf("\\n")) >= 0) {\n    const line = buffer.slice(0, newline);\n    buffer = buffer.slice(newline + 1);\n    if (!line) continue;\n    const request = JSON.parse(line);\n    if (request.id === undefined) continue;\n    const result = request.method === "model/list" ? { data: [{ model: "fake", isDefault: true }] } : request.method === "thread/start" ? { thread: { id: "thread" } } : {};\n    console.log(JSON.stringify({ id: request.id, result }));\n  }\n}\n`,
       { mode: 0o755 },
     );
     try {

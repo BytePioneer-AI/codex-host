@@ -35,7 +35,7 @@ impl ChildProcessGuard {
     }
 
     fn process_group_id(&self) -> Result<u32, PlatformError> {
-        self.with_tree(|tree| Ok(tree.root.process_group_id))
+        self.with_tree(|tree| Ok(tree.process_group_id()))
     }
 
     fn signal(&self, signal: nix::sys::signal::Signal) -> Result<(), PlatformError> {
@@ -47,7 +47,7 @@ impl ChildProcessGuard {
         use nix::unistd::Pid;
 
         self.with_tree(|tree| {
-            let root_group = tree.root.process_group_id;
+            let root_group = tree.process_group_id();
             let owned = tree.observe()?;
             if owned.is_empty() {
                 return Ok(());

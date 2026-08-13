@@ -17,6 +17,10 @@ codexhost
 
 运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、ARM64，以及 Linux installer/self-update 包。
 
+## 兼容性警告
+
+Desktop Controller 报告警告或能力降级时，codexhost 会在启动受管会话前显示 Desktop 和 codexhost 版本、能力、原因及观察到的身份。交互式终端可选择：本次继续、继续并记住这一条警告、打开最新发布、启动原生 ChatGPT，或取消。非交互启动默认取消；只有明确选择“继续并记住”才会写入确认记录。
+
 ## 进程所有权
 
 CodexHost 不会接管独立运行的 ChatGPT App。启动 CodexHost 前，请完全退出 ChatGPT。受管启动会使用官方启动器，但通过 `/proc` 识别和监督真实 Desktop 可执行文件；只有重新校验 PID、启动时间和可执行文件身份后才会发送关闭信号。

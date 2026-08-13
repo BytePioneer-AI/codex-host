@@ -566,10 +566,11 @@ pub fn launch_desktop_session(
                 Ok(Some(root)) => {
                     return Ok(DesktopSession {
                         launch_process,
-                        tree: ObservedProcessTree::new_with_process_group(
+                        tree: ObservedProcessTree::new_with_owned_processes(
                             root,
                             Some(launcher_process_group_id),
                             Some(launcher_instance.started_at_micros),
+                            observed_members,
                         ),
                         armed: true,
                     });

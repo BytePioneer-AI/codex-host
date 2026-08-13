@@ -242,11 +242,31 @@ impl ObservedProcessTree {
         process_group_id: Option<u32>,
         process_group_started_at_micros: Option<u64>,
     ) -> Self {
+        Self::new_with_owned_processes(
+            root,
+            process_group_id,
+            process_group_started_at_micros,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn new_with_owned_processes(
+        root: ProcessSnapshot,
+        process_group_id: Option<u32>,
+        process_group_started_at_micros: Option<u64>,
+        mut known: Vec<ProcessSnapshot>,
+    ) -> Self {
+        if !known
+            .iter()
+            .any(|process| same_process_instance(process, &root))
+        {
+            known.push(root.clone());
+        }
         Self {
             process_group_id,
             process_group_started_at_micros: process_group_started_at_micros
                 .unwrap_or(root.started_at_micros),
-            known: vec![root.clone()],
+            known,
             root,
         }
     }

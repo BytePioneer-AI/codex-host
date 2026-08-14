@@ -69,6 +69,7 @@ export type GrokTransportEvent =
       type: "turn.completed";
       nativeTurnKey: string;
       stopReason: string;
+      usage?: unknown;
       metadata?: Record<string, unknown>;
     };
 
@@ -91,6 +92,7 @@ export interface GrokOpenResult {
   session: NewSessionResponse | LoadSessionResponse;
   sessionId: string;
   replay: GrokTransportEvent[];
+  signals?: unknown;
 }
 
 interface ActivePrompt {
@@ -179,6 +181,7 @@ function transportEvent(
       type: "turn.completed",
       nativeTurnKey: extension.prompt_id,
       stopReason: extension.stop_reason,
+      ...(extension.usage !== undefined ? { usage: extension.usage } : {}),
       ...(metadata ? { metadata } : {}),
     };
   }
@@ -230,7 +233,11 @@ function transportEvent(
   }
 }
 
-function nativeHistoryPath(options: GrokAcpTransportOptions, sessionId: string): string {
+function nativeSessionFile(
+  options: GrokAcpTransportOptions,
+  sessionId: string,
+  fileName: string,
+): string {
   const environment = { ...process.env, ...options.environment };
   const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
   const grokHome = environment.GROK_HOME ?? path.join(home, ".grok");
@@ -239,8 +246,23 @@ function nativeHistoryPath(options: GrokAcpTransportOptions, sessionId: string):
     "sessions",
     encodeURIComponent(path.resolve(options.cwd)),
     sessionId,
-    "updates.jsonl",
+    fileName,
   );
+}
+
+function nativeHistoryPath(options: GrokAcpTransportOptions, sessionId: string): string {
+  return nativeSessionFile(options, sessionId, "updates.jsonl");
+}
+
+async function readNativeSignals(
+  options: GrokAcpTransportOptions,
+  sessionId: string,
+): Promise<unknown | undefined> {
+  try {
+    return JSON.parse(await readFile(nativeSessionFile(options, sessionId, "signals.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -369,7 +391,15 @@ export class GrokAcpTransport {
       this.#sessionId = sessionId;
       const replay = this.#replay ?? [];
       this.#replay = null;
-      return { initialize, session, sessionId, replay };
+      const signals =
+        input.kind === "resume" ? await readNativeSignals(this.#options, sessionId) : undefined;
+      return {
+        initialize,
+        session,
+        sessionId,
+        replay,
+        ...(signals !== undefined ? { signals } : {}),
+      };
     } catch (error) {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);

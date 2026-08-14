@@ -36,6 +36,7 @@ const initialize: InitializeResponse = {
               { id: "high", label: "High" },
               { id: "low", label: "Low" },
             ],
+            totalContextTokens: 500000,
           },
         },
       ],
@@ -49,6 +50,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
   replay: GrokTransportEvent[] = [];
+  signals: unknown;
   #activePromptEvents: GrokTransportEvent[] = [];
   #activePromptText: string | null = null;
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
@@ -69,6 +71,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
       session: { sessionId: this.sessionId },
       sessionId: this.sessionId,
       replay: [...this.replay],
+      ...(this.signals !== undefined ? { signals: this.signals } : {}),
     };
   }
 
@@ -113,7 +116,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     });
   }
 
-  finish(response: PromptResponse = { stopReason: "end_turn" }): void {
+  finish(response: PromptResponse = { stopReason: "end_turn" }, historyUsage?: unknown): void {
     if (this.#activePromptText !== null) {
       const ordinal = this.replay.filter(({ type }) => type === "turn.completed").length + 1;
       this.replay.push(
@@ -127,6 +130,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
           type: "turn.completed",
           nativeTurnKey: `grok-prompt-${ordinal}`,
           stopReason: response.stopReason,
+          ...(historyUsage !== undefined ? { usage: historyUsage } : {}),
         },
       );
     }
@@ -318,6 +322,159 @@ describe("Grok Adapter ACP projection", () => {
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
       outcome: { status: "succeeded" },
+    });
+    await adapter.close();
+  });
+
+  it("publishes Grok turn_completed Usage without dropping context", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-usage");
+
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "test" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    transport.event({
+      type: "agent.text",
+      text: "working",
+      messageId: "message-1",
+      metadata: { totalTokens: 7734 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: turnId,
+      usage: { contextUsedTokens: 7734, contextWindowTokens: 500000 },
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect((await nextEvent(iterator)).type).toBe("item.updated");
+
+    transport.event({
+      type: "turn.completed",
+      nativeTurnKey: "grok-prompt-1",
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 330555,
+        outputTokens: 3737,
+        totalTokens: 334292,
+        cachedReadTokens: 296448,
+        cacheCreationTokens: 0,
+        reasoningTokens: 2189,
+        modelCalls: 9,
+        apiDurationMs: 82160,
+        costUsdTicks: 2388600000,
+        numTurns: 9,
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: {
+        contextUsedTokens: 7734,
+        contextWindowTokens: 500000,
+        inputTokens: 330555,
+        outputTokens: 3737,
+        totalTokens: 334292,
+        cachedInputTokens: 296448,
+        cacheWriteInputTokens: 0,
+        reasoningOutputTokens: 2189,
+        totalCostUsd: 0.23886,
+        cacheHitRatePercent: (296448 / 330555) * 100,
+      },
+    });
+    transport.finish();
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await adapter.close();
+  });
+
+  it("publishes cache hit and cost from persisted turn_completed Usage", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-history-usage");
+
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "test" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.finish(
+      { stopReason: "end_turn" },
+      {
+        inputTokens: 100,
+        outputTokens: 10,
+        totalTokens: 110,
+        cachedReadTokens: 80,
+        cacheCreationTokens: 0,
+        reasoningTokens: 4,
+        costUsdTicks: 126890500,
+      },
+    );
+    const events = [];
+    for (;;) {
+      const event = await nextEvent(iterator);
+      events.push(event);
+      if (event.type === "turn.completed") break;
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.usage.changed",
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: 80,
+          cacheWriteInputTokens: 0,
+          outputTokens: 10,
+          reasoningOutputTokens: 4,
+          totalTokens: 110,
+          totalCostUsd: 0.01268905,
+          cacheHitRatePercent: 80,
+        },
+      }),
+    );
+    await adapter.close();
+  });
+
+  it("restores resume Usage from Native history and signals", async () => {
+    const transport = new FakeGrokTransport();
+    transport.replay = [
+      { type: "user.text", text: "before", metadata: { eventId: "grok-session-user-1" } },
+      { type: "agent.text", text: "answer", messageId: "agent-1" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-1",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 10,
+          totalTokens: 110,
+          cachedReadTokens: 80,
+          cacheCreationTokens: 0,
+          reasoningTokens: 4,
+          costUsdTicks: 126890500,
+        },
+      },
+    ];
+    transport.signals = {
+      contextTokensUsed: 52322,
+      contextWindowTokens: 500000,
+      turnCount: 1,
+    };
+    const { adapter, session } = await openedSession(transport, "resume");
+    expect(session.initialUsage).toEqual({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+      cachedInputTokens: 80,
+      cacheWriteInputTokens: 0,
+      reasoningOutputTokens: 4,
+      totalCostUsd: 0.01268905,
+      cacheHitRatePercent: 80,
+      contextUsedTokens: 52322,
+      contextWindowTokens: 500000,
     });
     await adapter.close();
   });

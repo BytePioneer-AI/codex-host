@@ -76,7 +76,14 @@ import {
   stateForGrokModel,
   type GrokModelState,
 } from "./grok-models.js";
-import { usageFromPrompt, usageFromUpdate } from "./grok-usage.js";
+import {
+  combineUsage,
+  lastTurnUsage,
+  usageFromNative,
+  usageFromPrompt,
+  usageFromSignals,
+  usageFromUpdate,
+} from "./grok-usage.js";
 
 export interface GrokAdapterOptions {
   command?: string;
@@ -242,7 +249,7 @@ class GrokHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = grokHarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
-  readonly initialUsage: HostUsage | null = null;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;
@@ -269,6 +276,7 @@ class GrokHarnessSession implements HarnessSession {
     options: {
       closeTimeoutMs: number;
       history: GrokTransportEvent[];
+      initialUsage?: HostUsage | null;
       knownTurnRefs?: NativeTurnRef[];
       randomUUID: () => string;
       toolOutputLimit: number;
@@ -281,6 +289,8 @@ class GrokHarnessSession implements HarnessSession {
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#randomUUID = options.randomUUID;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.initialUsage = options.initialUsage ?? null;
+    this.#usage = this.initialUsage;
     this.capabilities = capabilitiesForModels(modelState);
     this.#state = stateForGrokModel(modelState, { nativeRef: nativeRef(opened.sessionId) });
     this.initialState = this.#state;
@@ -428,7 +438,7 @@ class GrokHarnessSession implements HarnessSession {
     queueMicrotask(() => this.#fault(error));
   }
 
-  async #refreshSnapshot(): Promise<void> {
+  async #refreshSnapshot(): Promise<GrokTransportEvent[]> {
     const history = await this.#transport.getHistory();
     const knownTurnRefs = this.#snapshot.turns.map((turn) => turn.nativeTurnRef);
     const refreshed = mapGrokReplay(
@@ -438,6 +448,7 @@ class GrokHarnessSession implements HarnessSession {
       knownTurnRefs,
     );
     this.#snapshot.turns = refreshed.turns;
+    return history;
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
@@ -609,7 +620,10 @@ class GrokHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.text, event.messageId);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
-    else if (event.type === "usage") return;
+    else if (event.type === "turn.completed") {
+      const usage = usageFromNative(event.usage);
+      if (usage) this.#publishUsage(usage, active.command.turnId);
+    } else if (event.type === "usage") return;
   }
 
   #appendAgent(active: ActiveTurn, text: string, messageId?: string): void {
@@ -745,9 +759,10 @@ class GrokHarnessSession implements HarnessSession {
     outcome: TurnOutcome,
     response?: PromptResponse,
   ): Promise<void> {
+    let history: GrokTransportEvent[] = [];
     let nativeTurnRef: NativeTurnRef | undefined;
     try {
-      await this.#refreshSnapshot();
+      history = await this.#refreshSnapshot();
       const created = this.#snapshot.turns.filter(
         (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
       );
@@ -762,13 +777,18 @@ class GrokHarnessSession implements HarnessSession {
         outcome = { status: "failed", error: normalizeError(error, "protocolError") };
       }
     }
-    this.#finish(active, outcome, response, nativeTurnRef);
+    this.#finish(
+      active,
+      outcome,
+      lastTurnUsage(history) ?? (response ? usageFromPrompt(response) : null),
+      nativeTurnRef,
+    );
   }
 
   #finish(
     active: ActiveTurn,
     outcome: TurnOutcome,
-    response?: PromptResponse,
+    usage: HostUsage | null = null,
     nativeTurnRef?: NativeTurnRef,
   ): void {
     if (this.#active !== active) return;
@@ -788,7 +808,6 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     this.#active = null;
-    const usage = response ? usageFromPrompt(response) : null;
     if (usage) this.#publishUsage(usage, active.command.turnId);
     this.#event({
       type: "turn.completed",
@@ -800,8 +819,8 @@ class GrokHarnessSession implements HarnessSession {
   }
 
   #publishUsage(usage: HostUsage, observedForTurnId?: TurnStartCommand["turnId"]): void {
-    const merged = { ...this.#usage, ...usage };
-    if (JSON.stringify(merged) === JSON.stringify(this.#usage)) return;
+    const merged = combineUsage(this.#usage, usage);
+    if (merged === null || JSON.stringify(merged) === JSON.stringify(this.#usage)) return;
     this.#usage = merged;
     this.#event({
       type: "session.usage.changed",
@@ -983,6 +1002,10 @@ export class GrokAdapter implements HarnessAdapter {
         }
       }
       const history = await transport.getHistory();
+      const initialUsage =
+        input.kind === "resume"
+          ? combineUsage(lastTurnUsage(history), usageFromSignals(opened.signals))
+          : null;
       const openedSession = new GrokHarnessSession(
         cwd,
         transport,
@@ -992,6 +1015,7 @@ export class GrokAdapter implements HarnessAdapter {
         {
           closeTimeoutMs: this.#closeTimeoutMs,
           history,
+          initialUsage,
           ...(input.kind === "resume" && input.knownTurnRefs
             ? { knownTurnRefs: input.knownTurnRefs }
             : {}),

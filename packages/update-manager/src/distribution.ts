@@ -13,6 +13,7 @@ import type { ReleaseTarget } from "./github-release.js";
 export const UPDATE_RUNTIME_ENV = Object.freeze({
   launcherPid: "CODEXHOST_LAUNCHER_PID",
   launcherExecutable: "CODEXHOST_LAUNCHER_EXECUTABLE",
+  runtimeDescriptorPath: "CODEXHOST_RUNTIME_DESCRIPTOR_PATH",
   controllerPort: "CODEXHOST_CONTROL_PORT",
   controllerNonce: "CODEXHOST_CONTROL_NONCE",
   npmNodePath: "CODEXHOST_NPM_NODE_PATH",
@@ -141,6 +142,10 @@ export async function resolveInstalledUpdateContext(
     environment,
     UPDATE_RUNTIME_ENV.launcherExecutable,
   );
+  const runtimeDescriptorPath = absoluteEnvironmentPath(
+    environment,
+    UPDATE_RUNTIME_ENV.runtimeDescriptorPath,
+  );
   const stateDirectory = path.normalize(
     options.stateDirectory ?? defaultUpdateStateDirectory(platform, environment),
   );
@@ -156,6 +161,7 @@ export async function resolveInstalledUpdateContext(
     version: metadata.version,
     launcherPid,
     launcherExecutable,
+    runtimeDescriptorPath,
     updaterExecutable,
     stateDirectory,
   };

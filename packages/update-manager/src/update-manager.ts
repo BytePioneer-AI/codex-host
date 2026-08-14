@@ -31,6 +31,7 @@ export interface CommonUpdateOptions {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
+  runtimeDescriptorPath: string;
   updaterExecutable: string;
   stateDirectory: string;
   onPrepared?(info: PreparedUpdateInfo): void | Promise<void>;
@@ -89,6 +90,7 @@ interface InternalRequest {
   version: string;
   wait_pid: number;
   wait_executable: string;
+  runtime_descriptor_path: string;
   status_path: string;
   installation:
     | {
@@ -115,6 +117,7 @@ interface PreparedCommonUpdate {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
+  runtimeDescriptorPath: string;
   workDirectory: string;
   helperPath: string;
   requestPath: string;
@@ -272,6 +275,10 @@ export function createBackgroundUpdateManager(
       options.launcherExecutable,
       "Launcher executable",
     );
+    const runtimeDescriptorPath = requireAbsolutePath(
+      options.runtimeDescriptorPath,
+      "runtime descriptor path",
+    );
     const updaterExecutable = await requireRegularFile(
       options.updaterExecutable,
       "Updater executable",
@@ -292,6 +299,7 @@ export function createBackgroundUpdateManager(
       version,
       launcherPid,
       launcherExecutable,
+      runtimeDescriptorPath,
       workDirectory,
       helperPath,
       requestPath,
@@ -338,6 +346,7 @@ export function createBackgroundUpdateManager(
       version: common.version,
       wait_pid: common.launcherPid,
       wait_executable: common.launcherExecutable,
+      runtime_descriptor_path: common.runtimeDescriptorPath,
       status_path: common.statusPath,
       installation,
     };

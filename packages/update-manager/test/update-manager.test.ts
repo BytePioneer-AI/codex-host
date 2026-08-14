@@ -37,6 +37,7 @@ async function commonOptions(root: string): Promise<CommonUpdateOptions> {
     version: "1.2.3-test.4",
     launcherPid: 4321,
     ...files,
+    runtimeDescriptorPath: path.join(root, "runtime", "desktop-runtime-v1.json"),
     stateDirectory: path.join(root, "state"),
   };
 }
@@ -89,6 +90,7 @@ describe("background update manager", () => {
       version: "1.2.3-test.4",
       wait_pid: 4321,
       wait_executable: common.launcherExecutable,
+      runtime_descriptor_path: common.runtimeDescriptorPath,
       status_path: prepared.statusPath,
       installation: {
         kind: "npm",

@@ -13,6 +13,7 @@ pub(crate) struct UpdateRequest {
     pub(crate) version: String,
     pub(crate) wait_pid: u32,
     pub(crate) wait_executable: PathBuf,
+    pub(crate) runtime_descriptor_path: PathBuf,
     pub(crate) status_path: PathBuf,
     pub(crate) installation: Installation,
 }
@@ -137,6 +138,7 @@ impl UpdateRequest {
             return Err("wait PID must identify the live Launcher".into());
         }
         require_absolute_file(&self.wait_executable, "Launcher executable")?;
+        require_absolute_path(&self.runtime_descriptor_path, "runtime descriptor path")?;
         require_absolute_path(&self.status_path, "update status path")?;
         match &self.installation {
             Installation::Npm(npm) => {
@@ -195,7 +197,7 @@ mod tests {
 
     #[test]
     fn request_rejects_unknown_installation_fields() {
-        let request = br#"{"schema_version":1,"version":"1.2.3","wait_pid":2,"wait_executable":"/tmp/launcher","status_path":"/tmp/status","installation":{"kind":"npm","node_path":"/tmp/node","npm_cli_path":"/tmp/npm","npm_launcher_path":"/tmp/codexhost.js","extra":true}}"#;
+        let request = br#"{"schema_version":1,"version":"1.2.3","wait_pid":2,"wait_executable":"/tmp/launcher","runtime_descriptor_path":"/tmp/desktop-runtime-v1.json","status_path":"/tmp/status","installation":{"kind":"npm","node_path":"/tmp/node","npm_cli_path":"/tmp/npm","npm_launcher_path":"/tmp/codexhost.js","extra":true}}"#;
         assert!(serde_json::from_slice::<UpdateRequest>(request).is_err());
     }
 }

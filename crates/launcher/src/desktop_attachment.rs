@@ -4,6 +4,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -146,6 +147,7 @@ pub(super) fn request_compatibility_update(
 }
 
 pub(super) fn publish_runtime_descriptor(
+    descriptor_path: &Path,
     control: &RuntimeControl,
 ) -> Result<RuntimeDescriptorGuard, Box<dyn Error>> {
     let descriptor = RuntimeDescriptor::new(
@@ -154,7 +156,7 @@ pub(super) fn publish_runtime_descriptor(
         control.nonce.clone(),
     )?;
     Ok(RuntimeDescriptorGuard::publish(
-        default_descriptor_path()?,
+        descriptor_path.to_path_buf(),
         descriptor,
     )?)
 }

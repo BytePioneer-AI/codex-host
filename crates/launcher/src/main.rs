@@ -69,6 +69,7 @@ const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
+const RUNTIME_DESCRIPTOR_PATH_ENV: &str = "CODEXHOST_RUNTIME_DESCRIPTOR_PATH";
 const CONTROL_PORT_ENV: &str = "CODEXHOST_CONTROL_PORT";
 const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
 const START_MENU_ARGUMENT: &str = "--start-menu";
@@ -587,6 +588,7 @@ fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<d
 enum CompatibilityLaunchDecision {
     ContinueManaged,
     LaunchStock,
+    #[cfg(target_os = "linux")]
     Cancel,
 }
 
@@ -756,6 +758,7 @@ fn supervise_desktop(
     desktop_arguments: &[OsString],
     environment: &[(OsString, OsString)],
     control: &RuntimeControl,
+    descriptor_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launching Codex Desktop");
     let mut desktop = launch_desktop_session(
@@ -800,7 +803,7 @@ fn supervise_desktop(
         }
         return Err("codexhost launch cancelled by compatibility choice".into());
     }
-    let _runtime = publish_runtime_descriptor(control)?;
+    let _runtime = publish_runtime_descriptor(descriptor_path, control)?;
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     #[cfg(target_os = "macos")]
@@ -846,6 +849,7 @@ fn supervise_desktop(
     desktop_arguments: &[OsString],
     environment: &[(OsString, OsString)],
     control: &RuntimeControl,
+    descriptor_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launching Codex Desktop");
     let mut desktop = launch_desktop(
@@ -895,7 +899,7 @@ fn supervise_desktop(
         }
         return Err("codexhost launch cancelled by compatibility choice".into());
     }
-    let _runtime = match publish_runtime_descriptor(control) {
+    let _runtime = match publish_runtime_descriptor(descriptor_path, control) {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = stop_desktop_controller(&mut controller);
@@ -948,6 +952,7 @@ fn desktop_environment(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
     launcher_executable: &Path,
+    descriptor_path: &Path,
 ) -> Vec<(OsString, OsString)> {
     let mut environment = vec![
         (
@@ -969,6 +974,10 @@ fn desktop_environment(
         (
             OsString::from(LAUNCHER_EXECUTABLE_ENV),
             launcher_executable.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from(RUNTIME_DESCRIPTOR_PATH_ENV),
+            descriptor_path.as_os_str().to_owned(),
         ),
         (
             OsString::from(CONTROL_PORT_ENV),
@@ -1124,7 +1133,8 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
 
         let control = allocate_runtime_control()?;
         let launcher_executable = env::current_exe()?.canonicalize()?;
-        let environment = desktop_environment(&options, &control, &launcher_executable);
+        let environment =
+            desktop_environment(&options, &control, &launcher_executable, &descriptor_path);
         #[cfg(target_os = "macos")]
         let environment = {
             let mut environment = environment;
@@ -1137,6 +1147,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
             std::slice::from_ref(&control.inspector_argument),
             &environment,
             &control,
+            &descriptor_path,
         );
         #[cfg(target_os = "windows")]
         match result {
@@ -1145,7 +1156,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
                     && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
                         || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
             {
-                return Err(error);
+                continue;
             }
             result => return result,
         }
@@ -1211,13 +1222,15 @@ fn launch(
     }
     let control = allocate_runtime_control()?;
     let launcher_executable = env::current_exe()?.canonicalize()?;
-    let environment = desktop_environment(&options, &control, &launcher_executable);
+    let environment =
+        desktop_environment(&options, &control, &launcher_executable, &descriptor_path);
     supervise_desktop(
         &installation,
         &options,
         std::slice::from_ref(&control.inspector_argument),
         &environment,
         &control,
+        &descriptor_path,
     )
 }
 
@@ -1301,10 +1314,10 @@ mod tests {
     use super::wait_for_desktop_exit;
     use super::{
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
-        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, ResolvedLaunchOptions, RuntimeControl,
-        STARTUP_TRACE_ENV, allocate_runtime_control, default_launch_options,
-        desktop_controller_command, desktop_environment, emit_ready_line, parse_launch_options,
-        read_bounded_controller_line,
+        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
+        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, allocate_runtime_control,
+        default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
+        parse_launch_options, read_bounded_controller_line,
     };
     #[cfg(target_os = "linux")]
     use crate::compatibility::{
@@ -1593,7 +1606,12 @@ mod tests {
                 .to_string_lossy()
                 .contains("remote-debugging")
         );
-        let environment = desktop_environment(&options, &control, Path::new("/opt/codexhost"));
+        let environment = desktop_environment(
+            &options,
+            &control,
+            Path::new("/opt/codexhost"),
+            Path::new("/run/user/1000/codexhost/desktop-runtime-v1.json"),
+        );
         let value = |name: &str| {
             environment
                 .iter()
@@ -1608,6 +1626,12 @@ mod tests {
         assert_eq!(
             value(LAUNCHER_EXECUTABLE_ENV),
             Some(&OsString::from("/opt/codexhost"))
+        );
+        assert_eq!(
+            value(RUNTIME_DESCRIPTOR_PATH_ENV),
+            Some(&OsString::from(
+                "/run/user/1000/codexhost/desktop-runtime-v1.json"
+            ))
         );
         assert_eq!(
             value(CONTROL_PORT_ENV),
@@ -1738,10 +1762,15 @@ mod tests {
         };
 
         assert_eq!(
-            desktop_environment(&options, &runtime_control(), Path::new(r"C:\codexhost.exe"))
-                .into_iter()
-                .find(|(name, _)| name == PI_COMMAND_ENV)
-                .map(|(_, value)| value),
+            desktop_environment(
+                &options,
+                &runtime_control(),
+                Path::new(r"C:\codexhost.exe"),
+                Path::new(r"C:\Users\Codex\AppData\Local\codexhost\desktop-runtime-v1.json"),
+            )
+            .into_iter()
+            .find(|(name, _)| name == PI_COMMAND_ENV)
+            .map(|(_, value)| value),
             Some(OsString::from(r"C:\nvm4w\nodejs\pi.cmd")),
         );
     }

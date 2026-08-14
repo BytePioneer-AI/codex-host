@@ -35,6 +35,7 @@ async function npmFixture(): Promise<{
     HOME: path.join(root, "home"),
     CODEXHOST_LAUNCHER_PID: "4321",
     CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "codexhost"),
+    CODEXHOST_RUNTIME_DESCRIPTOR_PATH: path.join(root, "runtime", "desktop-runtime-v1.json"),
     CODEXHOST_CONTROL_PORT: "43124",
     CODEXHOST_CONTROL_NONCE: "0123456789abcdef0123456789abcdef",
     CODEXHOST_NPM_NODE_PATH: path.join(root, "node"),
@@ -80,6 +81,7 @@ async function macFixture(): Promise<{
     HOME: path.join(root, "home"),
     CODEXHOST_LAUNCHER_PID: "4321",
     CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "codexhost"),
+    CODEXHOST_RUNTIME_DESCRIPTOR_PATH: path.join(root, "runtime", "desktop-runtime-v1.json"),
     CODEXHOST_CONTROL_PORT: "43124",
     CODEXHOST_CONTROL_NONCE: "0123456789abcdef0123456789abcdef",
   };

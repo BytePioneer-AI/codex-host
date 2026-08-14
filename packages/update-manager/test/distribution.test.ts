@@ -24,6 +24,11 @@ function runtimeEnvironment(root: string): NodeJS.ProcessEnv {
     HOME: path.join(root, "home"),
     [UPDATE_RUNTIME_ENV.launcherPid]: "4321",
     [UPDATE_RUNTIME_ENV.launcherExecutable]: path.join(root, "bin", "codexhost"),
+    [UPDATE_RUNTIME_ENV.runtimeDescriptorPath]: path.join(
+      root,
+      "runtime",
+      "desktop-runtime-v1.json",
+    ),
     [UPDATE_RUNTIME_ENV.controllerPort]: "41234",
     [UPDATE_RUNTIME_ENV.controllerNonce]: "0123456789abcdef0123456789abcdef",
   };
@@ -144,6 +149,9 @@ describe("installed update context", () => {
       }),
     ).resolves.toMatchObject({
       metadata: { target: "linux-x64" },
+      common: {
+        runtimeDescriptorPath: environment[UPDATE_RUNTIME_ENV.runtimeDescriptorPath],
+      },
       installation: { kind: "npm", options: { packageRoot } },
     });
   });

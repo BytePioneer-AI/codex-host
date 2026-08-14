@@ -60,18 +60,24 @@ fn linux_installation(
         ))
     })?;
     let metadata_path = install_root.join("resources/linux-package-metadata.json");
+    let metadata_file_type = metadata_path.symlink_metadata().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "ChatGPT Linux package metadata '{}' is unavailable: {error}",
+            metadata_path.display()
+        ))
+    })?;
+    if !metadata_file_type.is_file() || metadata_file_type.file_type().is_symlink() {
+        return Err(PlatformError::Invalid(format!(
+            "ChatGPT Linux package metadata '{}' is not a regular package file",
+            metadata_path.display()
+        )));
+    }
     let metadata_file = File::open(&metadata_path).map_err(|error| {
         PlatformError::NotFound(format!(
             "ChatGPT Linux package metadata '{}' is unavailable: {error}",
             metadata_path.display()
         ))
     })?;
-    if !metadata_file.metadata()?.is_file() {
-        return Err(PlatformError::Invalid(format!(
-            "ChatGPT Linux package metadata '{}' is not a regular package file",
-            metadata_path.display()
-        )));
-    }
     let mut metadata_bytes = Vec::new();
     metadata_file.take(4097).read_to_end(&mut metadata_bytes)?;
     if metadata_bytes.len() > 4096 {
@@ -238,6 +244,33 @@ mod tests {
         );
         fs::remove_dir_all(root).expect("remove fixture");
         fs::remove_file(launcher).expect("remove launcher");
+    }
+
+    #[test]
+    fn rejects_symlinked_package_metadata() {
+        let root = fixture("chatgpt", "prod");
+        let official_launcher = launcher(&root);
+        let external = root
+            .parent()
+            .expect("fixture parent")
+            .join("external-metadata.json");
+        fs::write(
+            &external,
+            r#"{"codexAppBrand":"chatgpt","codexBuildFlavor":"prod","version":"26.803.81509"}"#,
+        )
+        .expect("write external metadata");
+        let metadata = root.join("resources/linux-package-metadata.json");
+        fs::remove_file(&metadata).expect("remove package metadata");
+        symlink(&external, &metadata).expect("link external metadata");
+
+        assert!(matches!(
+            linux_installation(&root, &official_launcher),
+            Err(PlatformError::Invalid(_))
+        ));
+
+        fs::remove_dir_all(root).expect("remove fixture");
+        fs::remove_file(official_launcher).expect("remove launcher");
+        fs::remove_file(external).expect("remove external metadata");
     }
 
     #[test]

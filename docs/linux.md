@@ -1,6 +1,6 @@
 # Linux support
 
-CodexHost supports x64 Linux through the npm package. Install the official ChatGPT App first, then install CodexHost:
+codexhost supports x64 Linux through the npm package. Install the official ChatGPT App first, then install codexhost:
 
 ```bash
 npm install -g @codexhost/cli
@@ -9,7 +9,7 @@ codexhost
 
 ## Supported environment
 
-The first Linux release intentionally supports the official ChatGPT `.deb` and `.rpm` packages on x86-64. CodexHost verifies the production package metadata and these packaged entry points:
+The first Linux release intentionally supports the official ChatGPT `.deb` and `.rpm` packages on x86-64. codexhost verifies the production package metadata and these packaged entry points:
 
 - launcher: `/usr/bin/chatgpt`
 - installation: `/usr/lib/chatgpt`
@@ -23,7 +23,7 @@ When the Desktop Controller reports a warning or degraded capability, codexhost 
 
 ## Process ownership
 
-CodexHost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching CodexHost. A managed launch uses the official launcher but identifies and supervises the real Desktop executable through `/proc`; shutdown signals are sent only after PID, start time, and executable identity are revalidated.
+codexhost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching codexhost. A managed launch uses the official launcher but identifies and supervises the real Desktop executable through `/proc`; shutdown signals are sent only after PID, start time, and executable identity are revalidated.
 
 ## Diagnosis
 
@@ -32,4 +32,4 @@ codexhost inspect
 codexhost --version
 ```
 
-`inspect` reports the recognized package identity, version, launcher, executable, and running process IDs. After a ChatGPT App update, upgrade CodexHost before continuing if the compatibility check reports an unsupported Desktop identity.
+`inspect` reports the recognized package identity, version, launcher, executable, and running process IDs. After a ChatGPT App update, upgrade codexhost before continuing if the compatibility check reports an unsupported Desktop identity.

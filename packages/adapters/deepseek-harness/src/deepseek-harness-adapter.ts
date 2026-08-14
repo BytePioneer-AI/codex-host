@@ -565,13 +565,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           error: invalidState(`DeepSeek Harness rejected Interaction: ${receipt.reason}`),
         };
       }
-      active.interactions.delete(command.interactionId);
-      this.#emit({
-        type: "interaction.closed",
-        interactionId: command.interactionId,
-        turnId: active.command.turnId,
-        reason: "responded",
-      });
+      this.#closeHostInteraction(active, command.interactionId, "responded");
       return { ok: true, value: { accepted: true } };
     } catch (error) {
       return { ok: false, error: normalizedError(error, "nativeFailure") };
@@ -880,14 +874,22 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           ? pending.type === "approval" && pending.approvalId === nativeId
           : pending.type === "question" && pending.rpcId === nativeId;
       if (!matches) continue;
-      active.interactions.delete(interactionId);
-      this.#emit({
-        type: "interaction.closed",
-        interactionId,
-        turnId: active.command.turnId,
-        reason: "responded",
-      });
+      this.#closeHostInteraction(active, interactionId, "responded");
     }
+  }
+
+  #closeHostInteraction(
+    active: ActiveTurn,
+    interactionId: HostInteractionId,
+    reason: "responded" | "cancelled",
+  ): void {
+    if (!active.interactions.delete(interactionId)) return;
+    this.#emit({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
   }
 
   #finishTurn(active: ActiveTurn, reason: unknown): void {
@@ -905,15 +907,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#completeAgent(active, itemOutcome);
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
-    for (const [interactionId] of active.interactions) {
-      this.#emit({
-        type: "interaction.closed",
-        interactionId,
-        turnId: active.command.turnId,
-        reason: "cancelled",
-      });
+    for (const interactionId of [...active.interactions.keys()]) {
+      this.#closeHostInteraction(active, interactionId, "cancelled");
     }
-    active.interactions.clear();
     const nativeTurnRef = this.#nativeTurnRef(active.nativeTurn as number);
     this.#turns.push({
       nativeTurnRef,
@@ -989,15 +985,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#completeAgent(active, outcome);
       for (const tool of active.tools.values()) this.#completeItem(active, tool.item, outcome);
       active.tools.clear();
-      for (const [interactionId] of active.interactions) {
-        this.#emit({
-          type: "interaction.closed",
-          interactionId,
-          turnId: active.command.turnId,
-          reason: "cancelled",
-        });
+      for (const interactionId of [...active.interactions.keys()]) {
+        this.#closeHostInteraction(active, interactionId, "cancelled");
       }
-      active.interactions.clear();
       this.#emit({
         type: "turn.completed",
         turnId: active.command.turnId,

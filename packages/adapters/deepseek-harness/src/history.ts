@@ -10,6 +10,7 @@ import type {
   HostThreadSnapshot,
   HostToolExecutionItem,
   HostTurnSnapshot,
+  HostUsage,
 } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
@@ -28,6 +29,8 @@ import {
   isRecord,
   nonBlankString,
   parseArguments,
+  parseDeepSeekContextWindow,
+  parseDeepSeekUsage,
   projectToolResult,
   projectTurnReason,
   structuredDiffs,
@@ -51,6 +54,8 @@ export interface DeepSeekHistoryProjection {
   snapshot: HostThreadSnapshot;
   lastSeq: number;
   effectiveModel: HarnessModelRef | undefined;
+  contextWindowTokens: number | undefined;
+  usage: HostUsage | null;
 }
 
 function itemId(sessionId: string, seq: number, suffix: string): HostItemId {
@@ -109,6 +114,14 @@ export function projectDeepSeekHistory(input: {
   let active: HistoryTurn | null = null;
   let effectiveModel = input.fallbackModel;
   let lastSeq = -1;
+  let contextWindowTokens: number | undefined;
+  let latestUsageValue: unknown;
+  let usage: HostUsage | null = null;
+
+  const refreshUsage = (): void => {
+    const nextUsage = parseDeepSeekUsage(latestUsageValue, contextWindowTokens);
+    if (nextUsage) usage = nextUsage;
+  };
 
   for (const entry of input.entries) {
     const event = entry.event as SessionEvent;
@@ -134,6 +147,14 @@ export function projectDeepSeekHistory(input: {
       }
       continue;
     }
+    if (event.type === "request/context") {
+      const nextContextWindowTokens = parseDeepSeekContextWindow(data.contextWindow);
+      if (nextContextWindowTokens !== undefined) {
+        contextWindowTokens = nextContextWindowTokens;
+        refreshUsage();
+      }
+      continue;
+    }
     if (!active) continue;
 
     if (event.type === "user/message") {
@@ -142,7 +163,17 @@ export function projectDeepSeekHistory(input: {
       if (text) active.input.push({ type: "text", text });
       continue;
     }
+    if (event.type === "assistant/chunk") {
+      const chunk = isRecord(data.chunk) ? data.chunk : null;
+      if (chunk?.type === "usage") {
+        latestUsageValue = chunk.usage;
+        refreshUsage();
+      }
+      continue;
+    }
     if (event.type === "assistant/message") {
+      latestUsageValue = data.usage;
+      refreshUsage();
       const message = isRecord(data.message) ? data.message : null;
       if (!message) continue;
       const reasoning = contentByType(message, "reasoning");
@@ -251,6 +282,8 @@ export function projectDeepSeekHistory(input: {
     },
     lastSeq,
     effectiveModel,
+    contextWindowTokens,
+    usage,
   };
 }
 

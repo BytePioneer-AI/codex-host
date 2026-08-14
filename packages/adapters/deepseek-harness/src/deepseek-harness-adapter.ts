@@ -72,7 +72,6 @@ import {
   type DeepSeekHostSubscriber,
   type DeepSeekMuxEnvelope,
 } from "./host-client.js";
-import { contextWindowTokensForModel } from "./context-windows.js";
 import { projectDeepSeekHistory } from "./history.js";
 import {
   decodeDeepSeekHarnessModelRef,
@@ -84,6 +83,7 @@ import {
   isRecord,
   nonBlankString,
   parseArguments,
+  parseDeepSeekContextWindow,
   parseDeepSeekUsage,
   projectToolResult,
   projectTurnReason,
@@ -218,7 +218,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
   };
   readonly initialState: HarnessSessionState;
-  readonly initialUsage: HostUsage | null = null;
+  readonly initialUsage: HostUsage | null;
+
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #client: DeepSeekHostClient;
@@ -240,6 +241,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     model: HarnessModelRef;
     nativeSessionId: string;
     lastSeq: number;
+    contextWindowTokens?: number;
+    initialUsage?: HostUsage | null;
     onClosed(): void;
     snapshot: HostThreadSnapshot;
     toolOutputLimit: number;
@@ -251,6 +254,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#unsubscribe = input.unsubscribe;
     this.#lastSeq = input.lastSeq;
+    this.#contextWindowTokens = input.contextWindowTokens;
+    this.initialUsage = input.initialUsage ?? null;
+    this.#usage = this.initialUsage;
     this.#turns = [...input.snapshot.turns];
     this.#nativeRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
@@ -289,7 +295,12 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       });
       this.#lastSeq = Math.max(this.#lastSeq, projection.lastSeq);
       this.#turns = [...projection.snapshot.turns];
+      this.#contextWindowTokens = projection.contextWindowTokens;
       if (projection.effectiveModel) this.#model = projection.effectiveModel;
+      if (JSON.stringify(projection.usage) !== JSON.stringify(this.#usage)) {
+        this.#usage = projection.usage;
+        this.#emit({ type: "session.usage.changed", usage: projection.usage });
+      }
       return {
         ok: true,
         value: {
@@ -568,12 +579,24 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         return;
       }
       case "request/context": {
-        if (
-          typeof data.contextWindow === "number" &&
-          Number.isSafeInteger(data.contextWindow) &&
-          data.contextWindow > 0
-        ) {
-          this.#contextWindowTokens = data.contextWindow;
+        const contextWindowTokens = parseDeepSeekContextWindow(data.contextWindow);
+        if (contextWindowTokens !== undefined) {
+          this.#contextWindowTokens = contextWindowTokens;
+          if (this.#usage) {
+            const contextUsedTokens =
+              (this.#usage.inputTokens ?? 0) +
+              (this.#usage.cachedInputTokens ?? 0) +
+              (this.#usage.cacheWriteInputTokens ?? 0);
+            const usage = { ...this.#usage, contextUsedTokens, contextWindowTokens };
+            if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
+              this.#usage = usage;
+              this.#emit({
+                type: "session.usage.changed",
+                usage,
+                ...(active ? { observedForTurnId: active.command.turnId } : {}),
+              });
+            }
+          }
         }
         return;
       }
@@ -583,6 +606,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           this.#appendAgent(active, data.chunk.text);
         } else if (data.chunk.type === "reasoning-delta" && typeof data.chunk.text === "string") {
           this.#appendReasoning(active, data.chunk.text);
+        } else if (data.chunk.type === "usage") {
+          this.#updateUsage(data.chunk.usage, active.command.turnId);
         }
         return;
       case "assistant/message":
@@ -880,12 +905,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   #updateUsage(value: unknown, turnId: HostTurnId): void {
-    const usage = parseDeepSeekUsage(
-      value,
-      this.#contextWindowTokens ??
-        contextWindowTokensForModel(decodeDeepSeekHarnessModelRef(this.#model)),
-    );
-    if (!usage) return;
+    const usage = parseDeepSeekUsage(value, this.#contextWindowTokens);
+    if (!usage || JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
     this.#usage = usage;
     this.#emit({ type: "session.usage.changed", usage, observedForTurnId: turnId });
   }
@@ -1099,6 +1120,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           model: projection.effectiveModel ?? model,
           nativeSessionId: sessionId,
           lastSeq: projection.lastSeq,
+          ...(projection.contextWindowTokens !== undefined
+            ? { contextWindowTokens: projection.contextWindowTokens }
+            : {}),
+          initialUsage: projection.usage,
           snapshot: projection.snapshot,
           toolOutputLimit: this.#toolOutputLimit,
           unsubscribe,

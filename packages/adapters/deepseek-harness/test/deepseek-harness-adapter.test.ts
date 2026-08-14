@@ -293,17 +293,29 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       input: [{ type: "text", text: "hello" }],
     });
     const collecting = collectUntilTurn(session);
-    connection.sessionEvent(sessionId as string, 1, "request/header", {
+    connection.sessionEvent(sessionId as string, 1, "request/context", {
+      provider: "deepseek-official",
+      model: "deepseek-chat",
+      contextWindow: 128_000,
+    });
+    connection.sessionEvent(sessionId as string, 2, "request/header", {
       header: { config: { provider: "deepseek-official", model: "deepseek-chat" } },
     });
-    connection.sessionEvent(sessionId as string, 2, "turn/start", { turn: 1 });
-    connection.sessionEvent(sessionId as string, 3, "assistant/message", {
+    connection.sessionEvent(sessionId as string, 3, "turn/start", { turn: 1 });
+    connection.sessionEvent(sessionId as string, 4, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: {
+        type: "usage",
+        usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5, reasoningTokens: 2 },
+      },
+    });
+    connection.sessionEvent(sessionId as string, 5, "assistant/message", {
       turn: 1,
       step: 1,
       message: { content: [{ type: "text", text: "answer" }] },
-      usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5, reasoningTokens: 2 },
     });
-    connection.sessionEvent(sessionId as string, 4, "turn/end", {
+    connection.sessionEvent(sessionId as string, 6, "turn/end", {
       turn: 1,
       reason: { kind: "completed" },
     });
@@ -413,10 +425,15 @@ describe("DeepSeekHarnessAdapter local Host", () => {
         source: { kind: "skill-catalog" },
         content: [{ type: "text", text: "injected catalog" }],
       }),
-      event(3, "request/header", {
+      event(3, "request/context", {
+        provider: CURRENT_MODEL.provider,
+        model: CURRENT_MODEL.model,
+        contextWindow: 131_072,
+      }),
+      event(4, "request/header", {
         header: { config: CURRENT_MODEL },
       }),
-      event(4, "assistant/message", {
+      event(5, "assistant/message", {
         turn: 1,
         step: 1,
         message: {
@@ -425,8 +442,9 @@ describe("DeepSeekHarnessAdapter local Host", () => {
             { type: "text", text: "answer" },
           ],
         },
+        usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5 },
       }),
-      event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
     ]);
 
     const opened = await adapter.open({
@@ -439,6 +457,10 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       },
     });
     if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialUsage).toMatchObject({
+      contextUsedTokens: 15,
+      contextWindowTokens: 131_072,
+    });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: {

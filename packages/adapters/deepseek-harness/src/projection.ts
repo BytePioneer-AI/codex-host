@@ -116,14 +116,13 @@ export function structuredDiffs(meta: unknown): HostFileChange[] | null {
   return changes;
 }
 
+export function parseDeepSeekContextWindow(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 export function parseDeepSeekUsage(value: unknown, contextWindowTokens?: number): HostUsage | null {
   if (!isRecord(value)) return null;
-  const windowTokens =
-    typeof contextWindowTokens === "number" &&
-    Number.isSafeInteger(contextWindowTokens) &&
-    contextWindowTokens > 0
-      ? contextWindowTokens
-      : undefined;
+  const windowTokens = parseDeepSeekContextWindow(contextWindowTokens);
   const billedInput = ["inputTokens", "cacheReadTokens", "cacheWriteTokens"].reduce(
     (sum, field) => {
       const candidate = value[field];

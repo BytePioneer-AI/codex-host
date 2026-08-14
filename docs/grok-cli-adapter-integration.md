@@ -305,8 +305,6 @@ HarnessAdapter
 
 不建议现在直接创建带大量回调的 `GenericAcpAdapter`。只有一个 ACP Harness 时，通用接口很容易退化成 Grok Adapter 的参数化复制。第二个 ACP Harness 出现后，再根据两套真实实现抽取共享 Core。
 
-后续抽取条件、建议范围和迁移步骤见 [ACP 层后续开发说明](./acp-layer-follow-up.md)。
-
 ## 8. Grok 能力探测
 
 能力来源应按以下顺序汇总：

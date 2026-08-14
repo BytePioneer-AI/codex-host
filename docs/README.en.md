@@ -65,6 +65,19 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 Then open `codexhost` again.
 
+**Linux: run from source**
+
+The npm package and installers currently cover macOS and Windows only. Linux is supported when running from source, provided the official Codex Desktop `chatgpt` package is installed (by default under `/usr/lib/chatgpt`):
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host.git
+cd codex-host
+npm install
+npm start
+```
+
+Node.js 24 and a Rust toolchain are required. `npm start` first stops any running Codex Desktop, then relaunches it under codexhost.
+
 <details>
 <summary><h3>How it works</h3></summary>
 

@@ -40,13 +40,13 @@ where
     Ok(copied)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 struct ShutdownSignals {
     pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     registrations: Vec<signal_hook::SigId>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ShutdownSignals {
     fn install() -> ShimResult<Self> {
         use nix::sys::signal::{SigSet, Signal};
@@ -84,7 +84,7 @@ impl ShutdownSignals {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ShutdownSignals {
     fn drop(&mut self) {
         for registration in self.registrations.drain(..) {
@@ -93,10 +93,10 @@ impl Drop for ShutdownSignals {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 struct ShutdownSignals;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 impl ShutdownSignals {
     fn install() -> ShimResult<Self> {
         Ok(Self)
@@ -110,7 +110,7 @@ struct ChildOutcome {
     terminated_descendants: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_child(
     child: &mut codexhost_platform::SupervisedChild,
     signals: &ShutdownSignals,
@@ -155,7 +155,7 @@ fn wait_for_child(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn wait_for_child(
     child: &mut codexhost_platform::SupervisedChild,
     _signals: &ShutdownSignals,
@@ -171,14 +171,14 @@ fn wait_for_child(
         .map_err(Into::into)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn exit_signal(status: &ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
 
     status.signal()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
 }
@@ -355,7 +355,7 @@ pub fn run_from_environment() -> ShimResult<i32> {
 mod tests {
     use std::ffi::OsString;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::ShutdownSignals;
     use super::app_server_subcommand_index;
 
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(app_server_subcommand_index(&arguments(&["-c"])), None);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn observe_sigterm(signals: &ShutdownSignals) {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
@@ -410,14 +410,14 @@ mod tests {
         assert_eq!(observed, Some(SIGTERM));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn records_sigterm_in_an_atomic_flag() {
         let signals = ShutdownSignals::install().expect("install shutdown signals");
         observe_sigterm(&signals);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn records_sigterm_after_spawning_a_supervised_child() {
         use std::process::Command;
@@ -430,7 +430,7 @@ mod tests {
         observe_sigterm(&signals);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn records_sigterm_while_a_supervised_child_is_running() {
         use std::process::Command;

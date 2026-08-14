@@ -11,11 +11,16 @@ sha2 = "0.10.9"
 [lib]
 path = "src/lib.rs"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14.11"
-nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
 plist = { version = "1.10.0", default-features = false }
 system-configuration = "0.7.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+serde_json = "1.0.149"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [

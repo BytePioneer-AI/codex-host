@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::thread;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
 use super::PlatformError;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::{DesktopInstallation, discover_codex_desktop};
 #[cfg(target_os = "windows")]
 use super::{node_entrypoint_path, windows_process};
@@ -51,6 +51,11 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
     macos_process_snapshot(process_id)
 }
 
+#[cfg(target_os = "linux")]
+pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+    super::linux_process::linux_process_snapshot(process_id)
+}
+
 #[cfg(target_os = "macos")]
 pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
     use libproc::processes::{ProcFilter, pids_by_type};
@@ -61,17 +66,22 @@ pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
         .collect())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    super::linux_process::linux_process_snapshots()
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn same_process_instance(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     expected.id == current.id && expected.started_at_micros == current.started_at_micros
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn same_process_identity(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     same_process_instance(expected, current) && expected.executable == current.executable
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn descendant_snapshots(roots: &[u32], snapshots: &[ProcessSnapshot]) -> Vec<ProcessSnapshot> {
     let mut owned_ids = roots.to_vec();
     let mut descendants = Vec::new();
@@ -90,7 +100,7 @@ fn descendant_snapshots(roots: &[u32], snapshots: &[ProcessSnapshot]) -> Vec<Pro
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn desktop_process_tree_from_snapshots(
     desktop_executable: &Path,
     snapshots: &[ProcessSnapshot],
@@ -107,7 +117,7 @@ fn desktop_process_tree_from_snapshots(
     tree
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn desktop_process_tree(
     installation: &DesktopInstallation,
 ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
@@ -117,13 +127,13 @@ pub fn desktop_process_tree(
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) struct ObservedProcessTree {
     pub(crate) root: ProcessSnapshot,
     known: Vec<ProcessSnapshot>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ObservedProcessTree {
     pub(crate) fn new(root: ProcessSnapshot) -> Self {
         Self {
@@ -217,7 +227,7 @@ impl ObservedProcessTree {
         use nix::unistd::Pid;
 
         for expected in processes {
-            let current = match macos_process_snapshot(expected.id) {
+            let current = match process_snapshot(expected.id) {
                 Ok(current) => current,
                 Err(PlatformError::NotFound(_)) => continue,
                 Err(error) => return Err(error),
@@ -279,7 +289,7 @@ pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
         .collect())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
     let installation = discover_codex_desktop()?;
     Ok(desktop_process_tree(&installation)?
@@ -289,19 +299,19 @@ pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
         .collect())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
     desktop_process_ids()
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
     Err(PlatformError::Unsupported(
-        "Desktop process discovery currently supports Windows and macOS only",
+        "Desktop process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
     desktop_process_ids()
 }
@@ -340,7 +350,7 @@ pub fn descendant_executable_exists(
     }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn descendant_executable_exists(
     root_process_id: u32,
     executable: &Path,
@@ -351,13 +361,13 @@ pub fn descendant_executable_exists(
         .any(|process| process.executable == executable))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn descendant_executable_exists(
     _root_process_id: u32,
     _executable: &Path,
 ) -> Result<bool, PlatformError> {
     Err(PlatformError::Unsupported(
-        "descendant process discovery currently supports Windows and macOS only",
+        "descendant process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -369,15 +379,15 @@ pub fn parent_process_id(process_id: u32) -> Result<Option<u32>, PlatformError> 
         .map(|process| process.parent_id))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn parent_process_id(process_id: u32) -> Result<Option<u32>, PlatformError> {
-    macos_process_snapshot(process_id).map(|process| Some(process.parent_id))
+    process_snapshot(process_id).map(|process| Some(process.parent_id))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn parent_process_id(_process_id: u32) -> Result<Option<u32>, PlatformError> {
     Err(PlatformError::Unsupported(
-        "parent process discovery currently supports Windows and macOS only",
+        "parent process discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -386,15 +396,15 @@ pub fn process_executable_path(process_id: u32) -> Result<PathBuf, PlatformError
     windows_process::process_image_path(process_id).map_err(PlatformError::Io)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn process_executable_path(process_id: u32) -> Result<PathBuf, PlatformError> {
     process_snapshot(process_id).map(|process| process.executable)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn process_executable_path(_process_id: u32) -> Result<PathBuf, PlatformError> {
     Err(PlatformError::Unsupported(
-        "process executable discovery currently supports Windows and macOS only",
+        "process executable discovery currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -423,7 +433,12 @@ pub fn process_exists(process_id: u32) -> bool {
     i32::try_from(process_id).is_ok_and(|process_id| pidpath(process_id).is_ok())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+pub fn process_exists(process_id: u32) -> bool {
+    super::linux_process::linux_process_exists(process_id)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn signal_processes_checked(
     snapshots: &[ProcessSnapshot],
     signal: nix::sys::signal::Signal,
@@ -433,7 +448,7 @@ fn signal_processes_checked(
     use nix::unistd::Pid;
 
     for expected in snapshots {
-        let current = match macos_process_snapshot(expected.id) {
+        let current = match process_snapshot(expected.id) {
             Ok(current) => current,
             Err(PlatformError::NotFound(_)) => continue,
             Err(error) => return Err(error),
@@ -460,7 +475,7 @@ fn signal_processes_checked(
 /// Forcefully stop the entire Desktop process tree, including descendants such
 /// as the injected Shim, Host Runtime, and app-server. The Desktop is verified
 /// by identity before every signal so a reused PID is never terminated.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn force_stop_desktop(
     installation: &DesktopInstallation,
     grace: Duration,
@@ -506,7 +521,7 @@ pub fn force_stop_desktop(
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn process_exists(_process_id: u32) -> bool {
     false
 }
@@ -526,7 +541,7 @@ mod windows_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::path::Path;
 
@@ -551,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_the_current_macos_process_with_native_libproc() {
+    fn snapshots_the_current_process_with_native_platform_apis() {
         let snapshot = process_snapshot(std::process::id()).expect("current process snapshot");
         assert_eq!(snapshot.id, std::process::id());
         assert!(snapshot.parent_id > 0);

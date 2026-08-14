@@ -5,12 +5,12 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::thread;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use codexhost_platform::process_exists;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
 
@@ -175,7 +175,7 @@ fn rejects_missing_official_cli_without_falling_back_to_path() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not exist"));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn reports_an_official_cli_crash_without_polluting_stdout() {
     let output = run_shim(b"", &[], &[("FAKE_CODEX_CRASH", "1")]);
@@ -184,7 +184,7 @@ fn reports_an_official_cli_crash_without_polluting_stdout() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("terminated by signal"));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_file(path: &std::path::Path, timeout: Duration) -> String {
     let started = Instant::now();
     loop {
@@ -200,7 +200,7 @@ fn wait_for_file(path: &std::path::Path, timeout: Duration) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_external_signal_case(signal: &str, expected_signal: i32, ignore_signal: bool) {
     let directory = temporary_directory();
     let ready = directory.join("ready");
@@ -260,25 +260,25 @@ fn run_external_signal_case(signal: &str, expected_signal: i32, ignore_signal: b
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn forwards_external_sigterm_to_the_official_cli_group() {
     run_external_signal_case("TERM", 15, false);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn forwards_external_sigint_to_the_official_cli_group() {
     run_external_signal_case("INT", 2, false);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn forwards_external_sighup_to_the_official_cli_group() {
     run_external_signal_case("HUP", 1, false);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn converges_once_when_multiple_shutdown_signals_arrive() {
     let directory = temporary_directory();
@@ -328,13 +328,13 @@ fn converges_once_when_multiple_shutdown_signals_arrive() {
     assert!(!process_exists(child_id));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn escalates_when_the_official_cli_ignores_sigterm() {
     run_external_signal_case("TERM", 15, true);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
     let directory = temporary_directory();

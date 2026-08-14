@@ -67,6 +67,19 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 然后重新打开 `codexhost`。
 
+**Linux：从源码运行**
+
+npm 包与安装包目前仅覆盖 macOS 与 Windows。Linux 已支持从源码运行，前提是已安装官方 Codex Desktop 的 `chatgpt` 包（默认位于 `/usr/lib/chatgpt`）：
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host.git
+cd codex-host
+npm install
+npm start
+```
+
+需要 Node.js 24 与 Rust 工具链。`npm start` 会先停掉正在运行的 Codex Desktop，再由 codexhost 重新拉起。
+
 <details>
 <summary><h3>怎么做的</h3></summary>
 

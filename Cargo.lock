@@ -109,6 +109,7 @@ dependencies = [
  "libproc",
  "nix",
  "plist",
+ "serde_json",
  "sha2",
  "system-configuration",
  "windows",

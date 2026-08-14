@@ -148,7 +148,19 @@ describe("development Desktop start", () => {
     expect(macOsScript).toContain("packages/desktop-control/dist/release-main.js");
     expect(macOsScript).toContain("kill -TERM");
     expect(macOsScript).toContain("pkill -KILL");
-    expect(runningDesktopCleanupInvocation("linux")).toBeNull();
+
+    const linuxInvocation = runningDesktopCleanupInvocation("linux");
+    expect(linuxInvocation?.command).toBe("/bin/sh");
+    const linuxScript = linuxInvocation?.arguments.at(-1);
+    expect(linuxScript).toContain("^(/usr/lib|/opt|/usr/share)/chatgpt/ChatGPT");
+    expect(linuxScript).toContain("desktop-runtime-v1.json");
+    expect(linuxScript).toContain("ss -lptnH");
+    expect(linuxScript).toContain("ps -p");
+    expect(linuxScript).toContain("packages/desktop-control/dist/release-main.js");
+    expect(linuxScript).toContain("kill -TERM");
+    expect(linuxScript).toContain("pkill -KILL");
+
+    expect(runningDesktopCleanupInvocation("freebsd")).toBeNull();
   });
 
   it("constructs npm and native launcher commands without internal Host environment", () => {

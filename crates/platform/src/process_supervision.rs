@@ -2,8 +2,8 @@ use std::io;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 
 use super::PlatformError;
-#[cfg(target_os = "macos")]
-use super::process::{ObservedProcessTree, macos_process_snapshot};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::process::{ObservedProcessTree, process_snapshot};
 #[cfg(target_os = "windows")]
 use super::windows_process;
 
@@ -12,13 +12,13 @@ pub struct ChildProcessGuard {
     job: windows_process::ChildJob,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct ChildProcessGuard {
     tree: std::sync::Mutex<ObservedProcessTree>,
     armed: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ChildProcessGuard {
     fn with_tree<T>(
         &self,
@@ -83,7 +83,7 @@ impl ChildProcessGuard {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
         if self.armed {
@@ -92,7 +92,7 @@ impl Drop for ChildProcessGuard {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub struct ChildProcessGuard;
 
 pub struct SupervisedChild {
@@ -131,7 +131,7 @@ impl SupervisedChild {
         if let Some(guard) = &self.guard {
             return guard.job.terminate(1).map_err(PlatformError::Io);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &self.guard {
             return guard.signal(nix::sys::signal::Signal::SIGTERM);
         }
@@ -143,14 +143,14 @@ impl SupervisedChild {
         if let Some(guard) = &self.guard {
             return guard.job.terminate(1).map_err(PlatformError::Io);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &self.guard {
             return guard.signal(nix::sys::signal::Signal::SIGKILL);
         }
         self.child.kill().map_err(PlatformError::Io)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn forward_signal(&self, signal: i32) -> Result<(), PlatformError> {
         let signal = nix::sys::signal::Signal::try_from(signal)
             .map_err(|_| PlatformError::Invalid(format!("unsupported Unix signal {signal}")))?;
@@ -161,20 +161,20 @@ impl SupervisedChild {
     }
 
     pub fn disarm_cleanup(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &mut self.guard {
             guard.armed = false;
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn has_live_processes(&self) -> Result<bool, PlatformError> {
         self.guard
             .as_ref()
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[must_use]
     pub fn process_group_id(&self) -> u32 {
         self.guard
@@ -195,13 +195,13 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     Ok(SupervisedChild { child, guard })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     use std::os::unix::process::CommandExt;
 
     command.process_group(0);
     let mut child = command.spawn()?;
-    let root = match macos_process_snapshot(child.id()) {
+    let root = match process_snapshot(child.id()) {
         Ok(root) => root,
         Err(_) if child.try_wait()?.is_some() => {
             return Ok(SupervisedChild { child, guard: None });
@@ -229,9 +229,9 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     })
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn spawn_supervised(_command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     Err(PlatformError::Unsupported(
-        "supervised child processes currently support Windows and macOS only",
+        "supervised child processes currently support Windows, macOS, and Linux only",
     ))
 }

@@ -20,6 +20,6 @@ required-features = ["test-utils"]
 [dependencies]
 codexhost-platform = { path = "../platform" }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }
 signal-hook = "0.4.4"

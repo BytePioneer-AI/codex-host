@@ -8,7 +8,7 @@
   - `launcher/`: native application launch
   - `shim/`: process proxying
   - `updater/`: update installation
-  - `platform/`: shared Windows/macOS integration
+  - `platform/`: shared Windows/macOS/Linux integration
 
 ### TypeScript Workspace
 

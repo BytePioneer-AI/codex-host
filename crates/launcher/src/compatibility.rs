@@ -177,6 +177,9 @@ enum AcknowledgedDesktopIdentity {
     MacOsBundle {
         bundle_identifier: String,
     },
+    LinuxPackage {
+        package_name: String,
+    },
 }
 
 impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
@@ -191,6 +194,9 @@ impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
             },
             DesktopIdentity::MacOsBundle { bundle_identifier } => Self::MacOsBundle {
                 bundle_identifier: bundle_identifier.clone(),
+            },
+            DesktopIdentity::LinuxPackage { package_name } => Self::LinuxPackage {
+                package_name: package_name.clone(),
             },
         }
     }
@@ -272,7 +278,14 @@ pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
         .map(|home| home.join("Library").join("Application Support"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    let root = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     let root = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;

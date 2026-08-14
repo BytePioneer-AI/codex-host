@@ -23,7 +23,7 @@ fn write_ready_file(path: &Path, contents: &str) {
     fs::rename(temporary, path).expect("publish ready file");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_signal_observer() -> bool {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     use signal_hook::flag::register_usize;
@@ -56,7 +56,7 @@ fn run_signal_observer() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn run_signal_observer() -> bool {
     false
 }
@@ -67,10 +67,11 @@ fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     #[cfg(unix)]
     if env::var_os("FAKE_CODEX_CRASH").is_some() {
-        use std::os::unix::process::CommandExt;
-
-        let error = Command::new("/bin/sh").args(["-c", "kill -SEGV $$"]).exec();
-        panic!("failed to exec crashing process: {error}");
+        // Abort in place rather than exec'ing a crashing shell. The Shim
+        // supervises the official CLI by executable identity, so replacing this
+        // process image would be observed as the supervised root changing
+        // identity instead of as a crash.
+        process::abort();
     }
     if run_signal_observer() {
         return;
@@ -79,7 +80,7 @@ fn main() {
         .first()
         .is_some_and(|value| value == "--child-sleep")
     {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if env::var_os("FAKE_CODEX_CHILD_NEW_GROUP").is_some() {
             use nix::unistd::{Pid, setpgid};
 

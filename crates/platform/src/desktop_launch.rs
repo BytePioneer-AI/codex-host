@@ -1,14 +1,14 @@
 use std::ffi::OsString;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::thread;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::process::{
     ObservedProcessTree, ProcessSnapshot, desktop_process_tree, process_snapshots,
 };
@@ -53,11 +53,18 @@ pub fn launch_stock_desktop(installation: &DesktopInstallation) -> Result<Child,
         .map_err(PlatformError::Io)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn latest_release_command() -> Command {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("/usr/bin/open");
+        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
         command.arg(CODEXHOST_RELEASES_LATEST_URL);
         command
     };
@@ -74,17 +81,17 @@ fn latest_release_command() -> Command {
 }
 
 pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     return Err(PlatformError::Unsupported(
-        "opening the codexhost Releases page is supported on Windows and macOS only",
+        "opening the codexhost Releases page is supported on Windows, macOS, and Linux only",
     ));
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     latest_release_command().spawn()?.wait()?;
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn configure_external_command(command: &mut Command) {
     remove_codexhost_environment(command, std::env::vars_os().map(|(name, _)| name));
     command
@@ -146,7 +153,24 @@ fn desktop_launch_command(
         }
     };
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        if mode != DesktopLaunchMode::DirectExecutable {
+            return Err(PlatformError::Unsupported(
+                "LaunchServices is available on macOS only",
+            ));
+        }
+        // The Desktop root must lead its own process group so the supervised
+        // tree can be signalled without reaching the Launcher's own group.
+        let mut command = Command::new(&installation.desktop_executable);
+        command
+            .args(additional_arguments)
+            .envs(environment)
+            .process_group(0);
+        command
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut command = {
         if mode != DesktopLaunchMode::DirectExecutable {
             return Err(PlatformError::Unsupported(
@@ -183,7 +207,7 @@ pub fn launch_desktop(
     .map_err(PlatformError::Io)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunchMode) {
     if mode == DesktopLaunchMode::DirectExecutable {
         use nix::sys::signal::{Signal, killpg};
@@ -197,14 +221,14 @@ fn cleanup_failed_desktop_launch(launch_process: &mut Child, mode: DesktopLaunch
     let _ = launch_process.wait();
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct DesktopSession {
     launch_process: Child,
     tree: ObservedProcessTree,
     armed: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl DesktopSession {
     #[must_use]
     pub fn root_snapshot(&self) -> &ProcessSnapshot {
@@ -311,7 +335,7 @@ impl DesktopSession {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for DesktopSession {
     fn drop(&mut self) {
         if self.armed {
@@ -320,7 +344,7 @@ impl Drop for DesktopSession {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn launch_desktop_session(
     installation: &DesktopInstallation,
     shim_path: &Path,

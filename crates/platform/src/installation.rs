@@ -1,17 +1,17 @@
 #[cfg(target_os = "windows")]
 use std::env;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::fs::File;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::io::Read;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use plist::Value;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
 use windows::Management::Deployment::PackageManager;
@@ -20,7 +20,7 @@ use windows::core::HSTRING;
 
 use super::{DesktopIdentity, DesktopInstallation, PlatformError};
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn sha256_file(path: &Path) -> Result<String, PlatformError> {
     let metadata = path.metadata().map_err(|error| {
         PlatformError::NotFound(format!(
@@ -527,9 +527,11 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn discover_from_candidates(
     candidates: impl IntoIterator<Item = PathBuf>,
+    inspect: impl Fn(&Path) -> Result<DesktopInstallation, PlatformError>,
+    missing: &str,
 ) -> Result<DesktopInstallation, PlatformError> {
     let mut installations = Vec::new();
     let mut invalid = Vec::new();
@@ -537,22 +539,20 @@ fn discover_from_candidates(
         if !candidate.exists() {
             continue;
         }
-        match inspect_bundle(&candidate) {
+        match inspect(&candidate) {
             Ok(installation) => installations.push(installation),
             Err(error) => invalid.push(format!("{}: {error}", candidate.display())),
         }
     }
     match installations.len() {
         1 => Ok(installations.remove(0)),
-        0 if invalid.is_empty() => Err(PlatformError::NotFound(
-            "official Codex App was not found in /Applications or ~/Applications".into(),
-        )),
+        0 if invalid.is_empty() => Err(PlatformError::NotFound(missing.to_owned())),
         0 => Err(PlatformError::Invalid(format!(
-            "no valid official Codex App candidate: {}",
+            "no valid official Codex Desktop candidate: {}",
             invalid.join("; ")
         ))),
         _ => Err(PlatformError::Invalid(format!(
-            "multiple valid official Codex App installations were found: {}",
+            "multiple valid official Codex Desktop installations were found: {}",
             installations
                 .iter()
                 .map(|installation| installation.install_root.display().to_string())
@@ -573,13 +573,149 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
         candidates.push(applications.join("Codex.app"));
         candidates.push(applications.join("ChatGPT.app"));
     }
-    discover_from_candidates(candidates)
+    discover_from_candidates(
+        candidates,
+        inspect_bundle,
+        "official Codex App was not found in /Applications or ~/Applications",
+    )
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+const LINUX_CODEX_PACKAGE_NAME: &str = "chatgpt";
+#[cfg(target_os = "linux")]
+const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+
+#[cfg(target_os = "linux")]
+fn linux_executable(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
+    let metadata = path.metadata().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "{label} '{}' is unavailable: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(PlatformError::Invalid(format!(
+            "{label} '{}' is not an executable file",
+            path.display()
+        )));
+    }
+    let mut magic = [0_u8; 4];
+    File::open(path)?.read_exact(&mut magic).map_err(|error| {
+        PlatformError::Invalid(format!(
+            "{label} '{}' has no complete ELF header: {error}",
+            path.display()
+        ))
+    })?;
+    if magic != ELF_MAGIC {
+        return Err(PlatformError::Invalid(format!(
+            "{label} '{}' is not an ELF executable",
+            path.display()
+        )));
+    }
+    path.canonicalize().map_err(PlatformError::Io)
+}
+
+/// Read the packaged Desktop version from `resources/linux-package-metadata.json`.
+///
+/// This is the Linux counterpart of `CFBundleShortVersionString`: the official
+/// deb ships the marketing version there, while the top-level `version` file
+/// carries the Electron runtime build.
+#[cfg(target_os = "linux")]
+fn linux_package_version(install_root: &Path) -> Result<String, PlatformError> {
+    let metadata_path = install_root.join("resources/linux-package-metadata.json");
+    let text = std::fs::read_to_string(&metadata_path).map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop metadata '{}' is unavailable: {error}",
+            metadata_path.display()
+        ))
+    })?;
+    let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+        PlatformError::Invalid(format!(
+            "Codex Desktop metadata '{}' is invalid: {error}",
+            metadata_path.display()
+        ))
+    })?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            PlatformError::Invalid(format!(
+                "Codex Desktop metadata '{}' has no string version",
+                metadata_path.display()
+            ))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_linux_installation(install_root: &Path) -> Result<DesktopInstallation, PlatformError> {
+    let install_root = install_root.canonicalize().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' is unavailable: {error}",
+            install_root.display()
+        ))
+    })?;
+    let version = linux_package_version(&install_root)?;
+    let build = std::fs::read_to_string(install_root.join("version"))
+        .map(|value| value.trim().to_owned())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| version.clone());
+    let desktop_executable = linux_executable(&install_root.join("ChatGPT"), "Desktop executable")?;
+    let packaged_codex_cli = linux_executable(&install_root.join("resources/codex"), "Codex CLI")?;
+    if !desktop_executable.starts_with(&install_root)
+        || !packaged_codex_cli.starts_with(&install_root)
+    {
+        return Err(PlatformError::Invalid(format!(
+            "Codex Desktop directory '{}' resolves an executable outside the installation",
+            install_root.display()
+        )));
+    }
+    let asar_integrity = sha256_file(&install_root.join("resources/app.asar"))?;
+
+    Ok(DesktopInstallation {
+        identity: DesktopIdentity::LinuxPackage {
+            package_name: LINUX_CODEX_PACKAGE_NAME.to_owned(),
+        },
+        version,
+        build,
+        asar_integrity,
+        install_root,
+        desktop_executable,
+        // The packaged CLI is a directly executable ELF binary, so unlike
+        // Windows there is no separate Desktop-managed cache to match.
+        packaged_codex_cli: packaged_codex_cli.clone(),
+        executable_codex_cli: packaged_codex_cli,
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    if let Some(root) =
+        std::env::var_os(super::PROBE_INSTALL_ROOT_ENV).filter(|value| !value.is_empty())
+    {
+        return inspect_linux_installation(&PathBuf::from(root));
+    }
+    let mut candidates = vec![
+        PathBuf::from("/usr/lib/chatgpt"),
+        PathBuf::from("/opt/chatgpt"),
+        PathBuf::from("/usr/share/chatgpt"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/lib/chatgpt"));
+    }
+    discover_from_candidates(
+        candidates,
+        inspect_linux_installation,
+        "official Codex Desktop was not found in /usr/lib/chatgpt, /opt/chatgpt, or /usr/share/chatgpt",
+    )
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(
-        "the Codex Desktop probe currently supports Windows and macOS only",
+        "the Codex Desktop probe currently supports Windows, macOS, and Linux only",
     ))
 }
 
@@ -589,8 +725,14 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
 
-    use super::{DesktopIdentity, PlatformError, discover_from_candidates};
+    use super::{DesktopIdentity, DesktopInstallation, PlatformError, discover_from_candidates};
     use crate::temporary_directory;
+
+    fn discover(
+        candidates: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<DesktopInstallation, PlatformError> {
+        discover_from_candidates(candidates, super::inspect_bundle, "no Codex App candidate")
+    }
 
     fn temporary_bundle(name: &str, bundle_identifier: &str, include_cli: bool) -> PathBuf {
         let bundle = temporary_directory("codexhost-platform-bundle").join(name);
@@ -635,7 +777,7 @@ mod tests {
     fn discovers_a_valid_macos_bundle_under_current_or_legacy_app_names() {
         for app_name in ["Codex.app", "ChatGPT.app"] {
             let bundle = temporary_bundle(app_name, "com.openai.codex", true);
-            let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
+            let installation = discover([bundle.clone()]).expect("valid bundle");
             assert_eq!(installation.version, "1.2.3");
             assert_eq!(installation.build, "456");
             assert!(installation.asar_integrity.starts_with("sha256:"));
@@ -660,12 +802,9 @@ mod tests {
     fn rejects_wrong_bundle_identity_and_missing_cli() {
         let wrong = temporary_bundle("Wrong.app", "example.invalid", true);
         let missing = temporary_bundle("Missing.app", "com.openai.codex", false);
+        assert!(matches!(discover([wrong]), Err(PlatformError::Invalid(_))));
         assert!(matches!(
-            discover_from_candidates([wrong]),
-            Err(PlatformError::Invalid(_))
-        ));
-        assert!(matches!(
-            discover_from_candidates([missing]),
+            discover([missing]),
             Err(PlatformError::Invalid(_))
         ));
     }
@@ -678,10 +817,7 @@ mod tests {
         fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
             .expect("make external CLI executable");
         symlink(&external, bundle.join("Contents/Resources/codex")).expect("link external CLI");
-        assert!(matches!(
-            discover_from_candidates([bundle]),
-            Err(PlatformError::Invalid(_))
-        ));
+        assert!(matches!(discover([bundle]), Err(PlatformError::Invalid(_))));
     }
 
     #[test]
@@ -689,7 +825,114 @@ mod tests {
         let first = temporary_bundle("First.app", "com.openai.codex", true);
         let second = temporary_bundle("Second.app", "com.openai.codex", true);
         assert!(matches!(
-            discover_from_candidates([first, second]),
+            discover([first, second]),
+            Err(PlatformError::Invalid(message)) if message.contains("multiple valid")
+        ));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::path::PathBuf;
+
+    use super::{
+        DesktopIdentity, DesktopInstallation, PlatformError, discover_from_candidates,
+        inspect_linux_installation,
+    };
+    use crate::temporary_directory;
+
+    fn discover(
+        candidates: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<DesktopInstallation, PlatformError> {
+        discover_from_candidates(
+            candidates,
+            inspect_linux_installation,
+            "no Codex Desktop candidate",
+        )
+    }
+
+    fn temporary_installation(name: &str, version: &str, include_cli: bool) -> PathBuf {
+        let root = temporary_directory("codexhost-linux-installation").join(name);
+        fs::create_dir_all(root.join("resources")).expect("create resources directory");
+        fs::write(
+            root.join("resources/linux-package-metadata.json"),
+            format!(
+                "{{\"codexAppBrand\":\"chatgpt\",\"codexBuildFlavor\":\"prod\",\"version\":\"{version}\"}}"
+            ),
+        )
+        .expect("write package metadata");
+        fs::write(root.join("version"), "42.3.0\n").expect("write runtime version");
+        fs::write(root.join("resources/app.asar"), b"reviewed app asar").expect("write app.asar");
+        for path in [
+            Some(root.join("ChatGPT")),
+            include_cli.then(|| root.join("resources/codex")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            fs::write(&path, [0x7f, b'E', b'L', b'F']).expect("write ELF marker");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                .expect("make fixture executable");
+        }
+        root
+    }
+
+    #[test]
+    fn discovers_a_valid_linux_installation() {
+        let root = temporary_installation("chatgpt", "26.803.81509", true);
+        let installation = discover([root.clone()]).expect("valid installation");
+        assert_eq!(installation.version, "26.803.81509");
+        assert_eq!(installation.build, "42.3.0");
+        assert!(installation.asar_integrity.starts_with("sha256:"));
+        assert_eq!(
+            installation.identity,
+            DesktopIdentity::LinuxPackage {
+                package_name: "chatgpt".into()
+            }
+        );
+        assert_eq!(
+            installation.install_root,
+            root.canonicalize().expect("canonical install root")
+        );
+        // The packaged ELF CLI runs in place, so both CLI paths agree.
+        assert_eq!(
+            installation.packaged_codex_cli,
+            installation.executable_codex_cli
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_cli_and_a_non_elf_executable() {
+        let missing = temporary_installation("missing-cli", "26.803.81509", false);
+        assert!(matches!(
+            discover([missing]),
+            Err(PlatformError::Invalid(_))
+        ));
+
+        let script = temporary_installation("script-desktop", "26.803.81509", true);
+        fs::write(script.join("ChatGPT"), b"#!/bin/sh\nexit 0\n").expect("overwrite Desktop");
+        assert!(matches!(discover([script]), Err(PlatformError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_a_cli_symlinked_outside_the_installation() {
+        let root = temporary_installation("escaping-cli", "26.803.81509", false);
+        let external = root.parent().expect("parent").join("external-codex");
+        fs::write(&external, [0x7f, b'E', b'L', b'F']).expect("write external CLI");
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
+            .expect("make external CLI executable");
+        symlink(&external, root.join("resources/codex")).expect("link external CLI");
+        assert!(matches!(discover([root]), Err(PlatformError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_ambiguous_valid_installations() {
+        let first = temporary_installation("first", "26.803.81509", true);
+        let second = temporary_installation("second", "26.803.81509", true);
+        assert!(matches!(
+            discover([first, second]),
             Err(PlatformError::Invalid(message)) if message.contains("multiple valid")
         ));
     }

@@ -12,6 +12,8 @@ mod background;
 mod background;
 mod desktop_launch;
 mod installation;
+#[cfg(target_os = "linux")]
+mod linux_process;
 #[cfg(target_os = "macos")]
 mod macos_ui;
 mod process;
@@ -26,7 +28,7 @@ mod windows_process;
 mod windows_ui;
 
 pub use background::detach_from_terminal;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
 pub use installation::discover_codex_desktop;
@@ -36,7 +38,7 @@ pub use process::{
     ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
     parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "macos")]
@@ -110,6 +112,9 @@ pub enum DesktopIdentity {
     },
     MacOsBundle {
         bundle_identifier: String,
+    },
+    LinuxPackage {
+        package_name: String,
     },
 }
 

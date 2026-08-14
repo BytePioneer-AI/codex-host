@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use std::process::{Child, ExitStatus};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{OnceLock, mpsc};
@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use active_update::start_pending_update;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use codexhost_platform::launch_desktop;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::launch_desktop_session;
 use codexhost_platform::{
     CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity,
@@ -132,6 +132,10 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
         DesktopIdentity::MacOsBundle { bundle_identifier } => {
             println!("platform=macos");
             println!("bundle_identifier={bundle_identifier}");
+        }
+        DesktopIdentity::LinuxPackage { package_name } => {
+            println!("platform=linux");
+            println!("package_name={package_name}");
         }
     }
     println!("desktop_version={}", installation.version);
@@ -478,7 +482,11 @@ fn wait_for_launched_desktop_ownership(
     }
 }
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "macos"),
+    not(target_os = "linux")
+))]
 fn wait_for_launched_desktop_ownership(
     _desktop: &mut Child,
     _timeout: Duration,
@@ -486,7 +494,7 @@ fn wait_for_launched_desktop_ownership(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn wait_for_desktop_exit(
     desktop: &mut Child,
     timeout: Duration,
@@ -624,7 +632,7 @@ fn notify_stock_launch() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn supervise_desktop(
     installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
@@ -633,10 +641,16 @@ fn supervise_desktop(
     control: &RuntimeControl,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launching Codex Desktop");
+    // LaunchServices owns App activation on macOS; Linux ships a plain ELF
+    // Desktop that is executed directly.
+    #[cfg(target_os = "macos")]
+    let launch_mode = DesktopLaunchMode::LaunchServices;
+    #[cfg(target_os = "linux")]
+    let launch_mode = DesktopLaunchMode::DirectExecutable;
     let mut desktop = launch_desktop_session(
         installation,
         &options.shim,
-        DesktopLaunchMode::LaunchServices,
+        launch_mode,
         desktop_arguments,
         environment,
         Duration::from_secs(30),
@@ -673,8 +687,12 @@ fn supervise_desktop(
     let _runtime = publish_runtime_descriptor(control)?;
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    // Background update installation is macOS-only for now; Linux runs from a
+    // source checkout and has no installer flow to hand off to.
+    #[cfg(target_os = "macos")]
     let mut started_update_request = None;
     loop {
+        #[cfg(target_os = "macos")]
         if let Err(error) = start_pending_update(&mut started_update_request) {
             eprintln!("codexhost launcher: pending update could not be started: {error}");
         }
@@ -694,7 +712,7 @@ fn supervise_desktop(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn supervise_desktop(
     installation: &DesktopInstallation,
     options: &ResolvedLaunchOptions,
@@ -839,7 +857,7 @@ fn desktop_environment(
 /// Forcefully stop a Desktop that codexhost does not own (an official instance
 /// or a controlled instance whose Launcher exited), then relaunch cleanly.
 fn stop_external_desktop(installation: &DesktopInstallation) -> Result<(), Box<dyn Error>> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         codexhost_platform::force_stop_desktop(installation, Duration::from_secs(10))?;
     }

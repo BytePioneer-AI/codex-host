@@ -166,6 +166,103 @@ done
 echo 'codexhost dev: stopped the running Codex Desktop'
 `;
 
+const linuxDesktopCleanupScript = String.raw`
+set -eu
+
+# Anchored at the start of the command line so this script's own shell, whose
+# command line embeds the pattern, is never matched.
+desktop_pattern='^(/usr/lib|/opt|/usr/share)/chatgpt/ChatGPT'
+desktop_running() {
+  pgrep -f "$desktop_pattern" >/dev/null 2>&1
+}
+
+if desktop_running; then
+  pkill -KILL -f "$desktop_pattern" >/dev/null 2>&1 || true
+  attempt=0
+  while desktop_running; do
+    if [ "$attempt" -ge 200 ]; then
+      echo 'Codex Desktop did not exit before timeout.' >&2
+      exit 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+fi
+
+# Resolved without shell parameter expansion braces so the surrounding
+# String.raw template does not treat them as JavaScript interpolation.
+config_home="$XDG_CONFIG_HOME"
+if [ -z "$config_home" ]; then
+  config_home="$HOME/.config"
+fi
+runtime_descriptor="$config_home/codexhost/desktop-runtime-v1.json"
+descriptor_value() {
+  if [ ! -f "$runtime_descriptor" ]; then
+    return 0
+  fi
+  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p" "$runtime_descriptor" |
+    head -n 1
+}
+
+controller_pid() {
+  control_port="$(descriptor_value control_port)"
+  if [ -z "$control_port" ]; then
+    return 0
+  fi
+  candidate="$(
+    ss -lptnH "sport = :$control_port" 2>/dev/null |
+      sed -nE 's/.*pid=([0-9]+).*/\1/p' |
+      head -n 1
+  )"
+  if [ -z "$candidate" ]; then
+    return 0
+  fi
+  command_line="$(ps -p "$candidate" -o args= 2>/dev/null || true)"
+  case "$command_line" in
+    *"packages/desktop-control/dist/release-main.js"*)
+      printf '%s\n' "$candidate"
+      ;;
+  esac
+}
+
+runtime_running() {
+  pgrep -x codexhost >/dev/null 2>&1 ||
+    pgrep -x codexhost-shim >/dev/null 2>&1 ||
+    [ -n "$(controller_pid)" ]
+}
+
+controller="$(controller_pid)"
+if [ -n "$controller" ]; then
+  kill -TERM "$controller" >/dev/null 2>&1 || true
+fi
+
+attempt=0
+while runtime_running && [ "$attempt" -lt 40 ]; do
+  attempt=$((attempt + 1))
+  sleep 0.05
+done
+if runtime_running; then
+  controller="$(controller_pid)"
+  if [ -n "$controller" ]; then
+    kill -KILL "$controller" >/dev/null 2>&1 || true
+  fi
+  pkill -KILL -x codexhost >/dev/null 2>&1 || true
+  pkill -KILL -x codexhost-shim >/dev/null 2>&1 || true
+fi
+
+attempt=0
+while runtime_running; do
+  if [ "$attempt" -ge 200 ]; then
+    echo 'The previous codexhost runtime did not exit before timeout.' >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.05
+done
+
+echo 'codexhost dev: stopped the running Codex Desktop'
+`;
+
 export function usage() {
   return `usage: npm start -- [--agent <codex|pi>] [--no-build]
 
@@ -315,6 +412,9 @@ export function runningDesktopCleanupInvocation(platform = process.platform) {
   }
   if (platform === "darwin") {
     return { command: "/bin/sh", arguments: ["-c", macOsDesktopCleanupScript] };
+  }
+  if (platform === "linux") {
+    return { command: "/bin/sh", arguments: ["-c", linuxDesktopCleanupScript] };
   }
   return null;
 }

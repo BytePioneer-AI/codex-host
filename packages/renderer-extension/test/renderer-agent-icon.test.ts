@@ -23,5 +23,6 @@ describe("Renderer Agent icons", () => {
     expect(image.draggable).toBe(false);
     expect(image.style.width).toBe("16px");
     expect(image.style.height).toBe("16px");
+    expect(image.style.borderRadius).toBe("22.37%");
   });
 });

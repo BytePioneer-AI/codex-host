@@ -1,21 +1,28 @@
 <div align="center">
 
-# codexhost
+# CodexHost
 
-**在 Codex Desktop 中运行 Pi、Claude Code、DeepSeek Harness 和 Grok**
+**在 Codex Desktop 中运行 Pi 和其他 Harness**
 
 我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code**、**Pi Agent**、**DeepSeek Harness** 和 **Grok CLI**。
+但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
 
-**codexhost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
+**CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
 
 ⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
 
 <p>
   <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
-  <a href="https://grok.com/"><img alt="Grok Build" src="https://img.shields.io/badge/Grok-Build-000000?logo=x&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
+</p>
+
+<p>
+  <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a>
+  <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
+  <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
 </p>
 
 <p><a href="docs/README.en.md">English</a></p>
@@ -34,21 +41,21 @@ Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作�
 
 ## 功能状态
 
-| 能力 | Codex | Pi | Claude Code | DeepSeek Harness | Grok |
+| 能力 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
 | --- | --- | --- | --- | --- | --- |
 | 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thinking | 原生 | ✅ | ✅ | — | ✅ |
+| Thinking | 原生 | ✅ | ✅ | ✅ | — |
 | 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | ✅ | — |
-| 提问 / 取消 | 原生 | ✅ | ✅ | ✅ | 🚧 |
-| Model / Thinking 选择 | 原生 | ✅ | ✅ | 🚧 | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | — | ✅ |
+| 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ |
+| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
 | 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |
 | 权限模式 | 原生 | — | ✅ | — | — |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ |
 | 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ |
 | Thread 管理 | 原生 | ✅ | 🚧 | 🚧 | 🚧 |
 | Fork | 原生 | ✅ | ✅ | — | — |
-| 上下文压缩 | 原生 | ✅ | ✅ | ✅ | — |
+| 上下文压缩 | 原生 | ✅ | ✅ | — | ✅ |
 | 斜杠命令 | 原生 | 🚧 | 🚧 | — | — |
 | 修订上一条消息 | 原生 | ✅ | 🚧 | — | — |
 
@@ -76,13 +83,15 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 <details>
 <summary><h3>怎么做的</h3></summary>
 
-不同 Harness 提供的接口和能力并不相同。codexhost 不把它们简单压成最低公共能力，而是为每个 Harness 保留独立 Adapter：
+多数「多 Agent 客户端」通过 [ACP](https://agentclientprotocol.com/) 协议接入不同 Harness。接入快，但工具、审批、权限、Diff、提问等原生能力会先被削平，再在 UI 里补一层近似实现。
+
+CodexHost 尽量不走这条路：
 
 - **Desktop 侧**：用 CDP / Electron Inspector 在官方 Codex Desktop 上增强 Agent 选择与会话界面，不重做聊天壳，也不改官方安装包
 - **协议侧**：用 CLI Shim 透明接入官方 app-server；Codex 请求原样转发
-- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI，DeepSeek Harness 走本地 DSH Web Host，Grok CLI 使用官方 [ACP](https://agentclientprotocol.com/) v1 stdio——各 Adapter 再将可靠能力投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
+- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
 
-目标是保真，不只「能聊」。流式、工具状态、可靠 Patch 和审批只在 Harness 能准确表达时展示，不由 Host 猜测或伪造。
+目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 
 </details>
 

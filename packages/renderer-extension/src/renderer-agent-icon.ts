@@ -86,6 +86,7 @@ export function createRendererAgentIcon(
   mark.style.width = `${size}px`;
   mark.style.height = `${size}px`;
   mark.style.objectFit = "contain";
+  mark.style.borderRadius = "22.37%";
   mark.style.flex = "none";
   return mark;
 }

@@ -15,23 +15,87 @@ export interface DraftPrewarmPolicyTarget {
   [key: string]: unknown;
 }
 
+export interface RendererHostRequestBridge {
+  sendRequest(method: string, parameters: unknown, options?: unknown): unknown;
+}
+
 export function installDraftPrewarmPolicyBridge(
-  send: (method: string, parameters: { hostId: string }) => unknown,
+  bridge: RendererHostRequestBridge,
   hostId: string,
   target: DraftPrewarmPolicyTarget,
 ): { state: "ready"; reason: "owned-request-bridge" } {
+  const existing = target.__codexhostDraftPrewarmPolicyV1 as { dispose?: () => void } | undefined;
+  existing?.dispose?.();
+
+  const originalSend = bridge.sendRequest;
+  let selectedModel: string | null = null;
   let clearInFlight: Promise<void> | null = null;
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const routeCollaborationMode = (method: string, parameters: unknown): unknown => {
+    if (selectedModel === null || !isRecord(parameters)) return parameters;
+    const collaborationMode = parameters.collaborationMode;
+    const settings = isRecord(collaborationMode) ? collaborationMode.settings : null;
+    if (!isRecord(collaborationMode) || !isRecord(settings)) {
+      throw new Error(`Codex ${method} omitted collaborationMode.settings`);
+    }
+    return {
+      ...parameters,
+      collaborationMode: {
+        ...collaborationMode,
+        settings: { ...settings, model: selectedModel },
+      },
+    };
+  };
+  const routeThreadStart = (method: string, parameters: unknown): unknown => {
+    if (selectedModel === null || !isRecord(parameters)) return parameters;
+    const threadParams =
+      method === "prewarm-thread-start-for-host"
+        ? parameters.params
+        : parameters.method === "thread/start"
+          ? parameters.params
+          : null;
+    if (!isRecord(threadParams) || threadParams.ephemeral === true) return parameters;
+    return { ...parameters, params: { ...threadParams, model: selectedModel } };
+  };
+  const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
+    const routedParameters =
+      method === "start-conversation" || method === "prewarm-conversation-for-host"
+        ? routeCollaborationMode(method, parameters)
+        : method === "prewarm-thread-start-for-host" || method === "send-cli-request-for-host"
+          ? routeThreadStart(method, parameters)
+          : parameters;
+    return options === undefined
+      ? originalSend.call(bridge, method, routedParameters)
+      : originalSend.call(bridge, method, routedParameters, options);
+  };
+  bridge.sendRequest = routedSend;
+
   const policy = Object.freeze({
     state: "ready" as const,
+    select(model: string | null): boolean {
+      if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
+        throw new Error("Draft route Model must be a codexhost transport carrier");
+      }
+      if (selectedModel === model) return false;
+      selectedModel = model;
+      return true;
+    },
     clear(): Promise<void> {
       if (clearInFlight === null) {
-        clearInFlight = Promise.resolve(send("clear-prewarmed-threads-for-host", { hostId }))
+        clearInFlight = Promise.resolve(
+          originalSend.call(bridge, "clear-prewarmed-threads-for-host", { hostId }),
+        )
           .then(() => undefined)
           .finally(() => {
             clearInFlight = null;
           });
       }
       return clearInFlight;
+    },
+    dispose(): void {
+      if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
+      selectedModel = null;
     },
   });
   Object.defineProperty(target, "__codexhostDraftPrewarmPolicyV1", {

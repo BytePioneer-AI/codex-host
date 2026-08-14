@@ -55,9 +55,9 @@ export interface RendererAdapterStatus {
     | "installation-failed"
     | "title-policy-unavailable"
     | "draft-prewarm-clear-failed"
-    | "model-controller-unavailable";
+    | "draft-routing-policy-unavailable";
   modelUpdates: number;
-  hook: "model-state" | null;
+  hook: "request-bridge" | null;
 }
 
 type RendererAdapterStatusTransition = Pick<RendererAdapterStatus, "state" | "reason" | "hook">;
@@ -97,28 +97,9 @@ export interface ModelPowerSelection {
   [key: string]: unknown;
 }
 
-export interface ModelStateController {
-  apply(selection: ModelPowerSelection | null): void;
-  codexSelection: ModelPowerSelection | null;
-  current: ModelPowerSelection | null;
-  format: "legacy" | "compact";
-  reasoningEffort: unknown;
-}
-
-export interface ModelAtomState {
-  atom: object;
-  get(): unknown;
-  set(value: unknown): unknown;
-}
-
-export interface ModelAtomPair {
-  optimistic: ModelAtomState;
-  committed: ModelAtomState;
-  target: readonly unknown[];
-}
-
 export interface RendererDraftPrewarmPolicy {
   state: "ready";
+  select(model: string | null): boolean;
   clear(): Promise<void>;
 }
 
@@ -143,15 +124,6 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   return null;
-}
-
-function isTransportModelId(model: unknown): boolean {
-  return (
-    isPiTransportModelId(model) ||
-    isClaudeTransportModelId(model) ||
-    isDeepSeekHarnessTransportModelId(model) ||
-    isGrokTransportModelId(model)
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -403,56 +375,11 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   return [...targets];
 }
 
-function isModelAtomState(value: unknown): value is ModelAtomState {
-  return (
-    isRecord(value) &&
-    isRecord(value.atom) &&
-    typeof value.get === "function" &&
-    typeof value.set === "function"
-  );
-}
-
-function isModelSelection(value: unknown): value is ModelPowerSelection | null {
-  return value === null || (isRecord(value) && "model" in value && "reasoningEffort" in value);
-}
-
-export function sameModelPowerSelection(
-  left: ModelPowerSelection | null,
-  right: ModelPowerSelection | null,
-): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.model === right.model &&
-      left.reasoningEffort === right.reasoningEffort)
-  );
-}
-
-function sameTarget(left: readonly unknown[], right: readonly unknown[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-export function selectOptimisticModelAtom(pairs: readonly ModelAtomPair[]): ModelAtomState | null {
-  const first = pairs[0];
-  if (!first) return null;
-  const value = first.optimistic.get();
-  if (isRecord(value) && "modelSettings" in value) return first.optimistic;
-  if (first.optimistic.atom === first.committed.atom) return null;
-  if (
-    !pairs.every(
-      (pair) =>
-        pair.optimistic.atom === first.optimistic.atom &&
-        pair.committed.atom === first.committed.atom &&
-        sameTarget(pair.target, first.target),
-    )
-  ) {
-    return null;
-  }
-  return first.optimistic;
-}
-
-function findComposerFiber(composer?: Element): { return?: unknown; updateQueue?: unknown } | null {
+function findComposerFiber(composer?: Element): {
+  return?: unknown;
+  updateQueue?: unknown;
+  memoizedProps?: unknown;
+} | null {
   const selector = '[data-codex-composer], [contenteditable="true"][role="textbox"]';
   const editor =
     composer?.matches(selector) === true
@@ -471,188 +398,22 @@ function findComposerFiber(composer?: Element): { return?: unknown; updateQueue?
     ? (Object.getOwnPropertyDescriptor(fiberElement, fiberName)?.value as {
         return?: unknown;
         updateQueue?: unknown;
+        memoizedProps?: unknown;
       } | null)
     : null;
 }
 
-function findReasoningEffort(): { found: boolean; value: unknown } {
-  const matches: Array<{ callback: unknown; value: unknown }> = [];
-  for (const button of document.querySelectorAll<HTMLButtonElement>(
-    '[data-codex-composer-root] button[aria-haspopup="menu"]',
-  )) {
-    const fiberName = Object.getOwnPropertyNames(button).find((name) =>
-      name.startsWith("__reactFiber$"),
-    );
-    let fiber = fiberName
-      ? (Object.getOwnPropertyDescriptor(button, fiberName)?.value as {
-          return?: unknown;
-          memoizedProps?: unknown;
-        } | null)
-      : null;
-    for (let depth = 0; fiber && depth < 60; depth += 1) {
-      const props = fiber.memoizedProps;
-      if (
-        isRecord(props) &&
-        typeof props.onSelectModel === "function" &&
-        typeof props.onSelectReasoningEffort === "function" &&
-        "reasoningEffort" in props &&
-        isRecord(props.fallbackPowerSelection)
-      ) {
-        matches.push({ callback: props.onSelectModel, value: props.reasoningEffort });
-      }
-      const parent = fiber.return;
-      fiber =
-        (typeof parent === "object" || typeof parent === "function") && parent !== null
-          ? (parent as typeof fiber)
-          : null;
-    }
-  }
-  const uniqueCallbacks = new Set(matches.map((match) => match.callback));
-  const first = matches[0];
-  return {
-    found:
-      first !== undefined &&
-      uniqueCallbacks.size === 1 &&
-      matches.every((match) => match.value === first.value),
-    value: first?.value,
-  };
-}
-
-function findModelPickerControl(composer?: Element): {
-  codexSelection: ModelPowerSelection | null;
-  found: boolean;
-  selection: ModelPowerSelection;
-  selectModel(model: unknown, reasoningEffort: unknown): void;
-} {
-  let control:
-    | {
-        codexSelection: ModelPowerSelection | null;
-        selection: ModelPowerSelection;
-        selectModel(model: unknown, reasoningEffort: unknown): void;
-      }
-    | undefined;
-  for (const button of (composer ?? document).querySelectorAll<HTMLButtonElement>(
-    'button[aria-haspopup="menu"]',
-  )) {
-    const fiberName = Object.getOwnPropertyNames(button).find((name) =>
-      name.startsWith("__reactFiber$"),
-    );
-    let fiber = fiberName
-      ? (Object.getOwnPropertyDescriptor(button, fiberName)?.value as {
-          return?: unknown;
-          memoizedProps?: unknown;
-        } | null)
-      : null;
-    for (let depth = 0; fiber && depth < 60; depth += 1) {
-      const props = fiber.memoizedProps;
-      if (
-        !control &&
-        isRecord(props) &&
-        "model" in props &&
-        "reasoningEffort" in props &&
-        typeof props.onSelectModel === "function"
-      ) {
-        const selection = { model: props.model, reasoningEffort: props.reasoningEffort };
-        const fallbackSelection = isRecord(props.fallbackPowerSelection)
-          ? (props.fallbackPowerSelection as ModelPowerSelection)
-          : null;
-        control = {
-          codexSelection: isTransportModelId(selection.model) ? fallbackSelection : selection,
-          selection,
-          selectModel: props.onSelectModel as (model: unknown, reasoningEffort: unknown) => void,
-        };
-      }
-      const parent = fiber.return;
-      fiber =
-        (typeof parent === "object" || typeof parent === "function") && parent !== null
-          ? (parent as typeof fiber)
-          : null;
-    }
-  }
-  return {
-    codexSelection: control?.codexSelection ?? null,
-    found: control !== undefined,
-    selection: control?.selection ?? { model: undefined, reasoningEffort: undefined },
-    selectModel(model, reasoningEffort) {
-      control?.selectModel(model, reasoningEffort);
-    },
-  };
-}
-
-function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
-  const pairs: ModelAtomPair[] = [];
-  const compactPairs: ModelAtomPair[] = [];
+function findComposerConversationThreadId(composer?: Element): HostThreadId | null | undefined {
+  let threadId: HostThreadId | undefined;
   let fiber = findComposerFiber(composer);
   for (let depth = 0; fiber && depth < 120; depth += 1) {
-    const updateQueue = fiber.updateQueue;
-    const memoCache = isRecord(updateQueue) ? updateQueue.memoCache : null;
-    const data = isRecord(memoCache) && Array.isArray(memoCache.data) ? memoCache.data : [];
-    for (let index = 0; index + 1 < data.length; index += 1) {
-      const compact = data[index];
-      const resolved = data[index + 1];
-      if (
-        !Array.isArray(compact) ||
-        !isModelAtomState(compact[1]) ||
-        !Array.isArray(resolved) ||
-        !isModelAtomState(resolved[3]) ||
-        (resolved[2] !== null && typeof resolved[2] !== "string")
-      ) {
-        continue;
+    const props = fiber.memoizedProps;
+    if (isRecord(props) && "conversationId" in props && props.conversationId != null) {
+      const candidate = hostThreadIdSchema.safeParse(props.conversationId);
+      if (!candidate.success || (threadId !== undefined && threadId !== candidate.data)) {
+        return null;
       }
-      let value: unknown;
-      try {
-        value = compact[1].get();
-      } catch {
-        continue;
-      }
-      if (!isRecord(value) || !("modelSettings" in value)) continue;
-      const target =
-        resolved[2] === null || resolved[2].startsWith("client-new-thread:")
-          ? ["default", resolved[2]]
-          : ["conversation", resolved[2]];
-      compactPairs.push({ optimistic: compact[1], committed: resolved[3], target });
-    }
-    for (let index = 0; index + 3 < data.length; index += 1) {
-      const first = data[index];
-      const firstResolved = data[index + 1];
-      const second = data[index + 2];
-      const secondResolved = data[index + 3];
-      if (
-        !Array.isArray(first) ||
-        first.length !== 3 ||
-        !Array.isArray(firstResolved) ||
-        firstResolved.length !== 4 ||
-        !Array.isArray(second) ||
-        second.length !== 3 ||
-        !Array.isArray(secondResolved) ||
-        secondResolved.length !== 4
-      ) {
-        continue;
-      }
-      const target = firstResolved[2];
-      const secondTarget = secondResolved[2];
-      const optimistic = firstResolved[3];
-      const committed = secondResolved[3];
-      if (
-        !Array.isArray(target) ||
-        !Array.isArray(secondTarget) ||
-        target !== secondTarget ||
-        (target[0] !== "default" && target[0] !== "conversation") ||
-        !isModelAtomState(optimistic) ||
-        !isModelAtomState(committed)
-      ) {
-        continue;
-      }
-      let optimisticValue: unknown;
-      let committedValue: unknown;
-      try {
-        optimisticValue = optimistic.get();
-        committedValue = committed.get();
-      } catch {
-        continue;
-      }
-      if (!isModelSelection(optimisticValue) || !isModelSelection(committedValue)) continue;
-      pairs.push({ optimistic, committed, target });
+      threadId = candidate.data;
     }
     const parent = fiber.return;
     fiber =
@@ -660,55 +421,57 @@ function findModelAtomPairs(composer?: Element): ModelAtomPair[] {
         ? (parent as typeof fiber)
         : null;
   }
-  return pairs.length > 0 ? pairs : compactPairs;
+  return threadId;
+}
+
+function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 7 ||
+    value[3] !== value[5] ||
+    value[3] !== value[6] ||
+    !isRecord(value[3]) ||
+    typeof value[3].get !== "function" ||
+    (typeof value[2] !== "string" && value[2] !== null)
+  ) {
+    return false;
+  }
+  try {
+    const draft = value[3].get();
+    return isRecord(draft) && "modelSettings" in draft && "isManuallyChanged" in draft;
+  } catch {
+    return false;
+  }
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
-  const pairs = findModelAtomPairs(composer);
-  if (!selectOptimisticModelAtom(pairs)) return null;
-  return pairs[0]?.target ?? null;
-}
+  const conversationThreadId = findComposerConversationThreadId(composer);
+  if (conversationThreadId === null) return null;
+  if (conversationThreadId !== undefined) return ["conversation", conversationThreadId];
 
-function findModelStateController(composer?: Element): ModelStateController | null {
-  const pairs = findModelAtomPairs(composer);
-  const optimistic = selectOptimisticModelAtom(pairs);
-  if (!optimistic) return null;
-  const current = optimistic.get();
-  if (isModelSelection(current)) {
-    const reasoningEffort = findReasoningEffort();
-    const picker = findModelPickerControl(composer);
-    if (!reasoningEffort.found) return null;
-    return {
-      apply(selection) {
-        optimistic.set(selection);
-      },
-      codexSelection:
-        current === null
-          ? picker.codexSelection
-          : !isTransportModelId(current.model)
-            ? current
-            : picker.codexSelection,
-      get current() {
-        const value = optimistic.get();
-        return isModelSelection(value) ? value : null;
-      },
-      format: "legacy",
-      reasoningEffort: reasoningEffort.value,
-    };
+  const draftIds = new Set<string>();
+  let fiber = findComposerFiber(composer);
+  for (let depth = 0; fiber && depth < 120; depth += 1) {
+    const updateQueue = fiber.updateQueue;
+    const memoCache = isRecord(updateQueue) ? updateQueue.memoCache : null;
+    const data = isRecord(memoCache) && Array.isArray(memoCache.data) ? memoCache.data : [];
+    for (const value of data) {
+      if (
+        isCurrentDraftWrapper(value) &&
+        typeof value[2] === "string" &&
+        value[2].startsWith("client-new-thread:")
+      ) {
+        draftIds.add(value[2]);
+      }
+    }
+    const parent = fiber.return;
+    fiber =
+      (typeof parent === "object" || typeof parent === "function") && parent !== null
+        ? (parent as typeof fiber)
+        : null;
   }
-  if (!isRecord(current) || !("modelSettings" in current)) return null;
-  const picker = findModelPickerControl(composer);
-  if (!picker.found) return null;
-  return {
-    apply(selection) {
-      if (selection) picker.selectModel(selection.model, selection.reasoningEffort);
-      else optimistic.set({ ...current, isManuallyChanged: true, modelSettings: null });
-    },
-    codexSelection: picker.codexSelection,
-    current: picker.selection,
-    format: "compact",
-    reasoningEffort: picker.selection.reasoningEffort,
-  };
+  if (draftIds.size !== 1) return null;
+  return ["default", draftIds.values().next().value];
 }
 
 export function isMainProcessTitlePolicyReady(value: unknown): boolean {
@@ -716,7 +479,12 @@ export function isMainProcessTitlePolicyReady(value: unknown): boolean {
 }
 
 export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraftPrewarmPolicy {
-  return isRecord(value) && value.state === "ready" && typeof value.clear === "function";
+  return (
+    isRecord(value) &&
+    value.state === "ready" &&
+    typeof value.select === "function" &&
+    typeof value.clear === "function"
+  );
 }
 
 export async function waitForRendererDraftPrewarmPolicy(
@@ -768,10 +536,6 @@ export function installCurrentRendererAdapter(): {
   dispose(): void;
 } {
   let disposed = false;
-  let modelController: ModelStateController | null = null;
-  let officialSelection: ModelPowerSelection | null = null;
-  let hasOfficialSelection = false;
-  let selectedAgent: RendererAgent = "codex";
   let modelUpdates = 0;
   const liveStatus: RendererAdapterStatus = {
     state: "installing",
@@ -837,67 +601,47 @@ export function installCurrentRendererAdapter(): {
     },
   });
 
-  const captureController = (): boolean => {
-    const discovered = findModelStateController();
-    if (!discovered) return false;
-    modelController = discovered;
-    if (selectedAgent === "codex" && discovered.codexSelection !== null) {
-      officialSelection = discovered.codexSelection;
-      hasOfficialSelection = true;
-    } else if (selectedAgent === "codex" && discovered.current === null) {
-      officialSelection = null;
-      hasOfficialSelection = true;
+  let routingPolicy: RendererDraftPrewarmPolicy | null = null;
+  let policyTimer: number | null = null;
+  const captureRoutingPolicy = (): boolean => {
+    const discovered = window.__codexhostDraftPrewarmPolicyV1;
+    if (!isDraftPrewarmPolicyReady(discovered)) return false;
+    routingPolicy = discovered;
+    if (policyTimer !== null) {
+      window.clearInterval(policyTimer);
+      policyTimer = null;
     }
-    if (!hasOfficialSelection) return false;
-    updateStatus("ready", "ready", "model-state");
+    updateStatus("ready", "ready", "request-bridge");
     return true;
   };
+  if (!captureRoutingPolicy()) {
+    updateStatus("installing", "draft-routing-policy-unavailable", null);
+    policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
+  }
+
   const applyAgent = (
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-    composer?: Element,
   ): boolean => {
-    if (disposed) return false;
-    if (agent === "codex" && !hasOfficialSelection) {
-      selectedAgent = "codex";
-      return true;
-    }
-    const scopedController = composer ? findModelStateController(composer) : null;
-    const controller =
-      scopedController ??
-      (modelController?.format === "legacy"
-        ? modelController
-        : composer
-          ? null
-          : (modelController ?? findModelStateController()));
-    if (!controller || !hasOfficialSelection) return false;
-    modelController = controller;
+    if (disposed || routingPolicy === null) return false;
     const selection = modelSelectionForAgent(
-      officialSelection,
-      controller.reasoningEffort,
+      null,
+      null,
       agent,
       model,
       thinkingOptionId,
       permissionModeId,
     );
-    if (!sameModelPowerSelection(controller.current, selection)) {
-      controller.apply(selection);
+    const carrier = selection?.model;
+    if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
+    if (routingPolicy.select(carrier ?? null)) {
       modelUpdates += 1;
       liveStatus.modelUpdates = modelUpdates;
     }
-    selectedAgent = agent;
     return true;
   };
-
-  if (!captureController()) {
-    updateStatus("installing", "model-controller-unavailable", null);
-  }
-  const observer = new MutationObserver(() => {
-    captureController();
-  });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
   return {
     status: liveStatus,
     modelControl,
@@ -905,12 +649,11 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
-      observer.disconnect();
+      if (policyTimer !== null) window.clearInterval(policyTimer);
+      routingPolicy?.select(null);
+      routingPolicy = null;
       forkControl.dispose();
       usageSubscription.dispose();
-      modelController = null;
-      officialSelection = null;
-      hasOfficialSelection = false;
     },
   };
 }

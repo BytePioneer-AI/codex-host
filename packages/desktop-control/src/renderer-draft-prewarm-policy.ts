@@ -18,16 +18,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
-  const visibleEditors = [...document.querySelectorAll(
+  const editors = [...document.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
-  )].filter((editor) => {
-    const bounds = editor.getBoundingClientRect();
-    return bounds.width > 0 && bounds.height > 0;
-  });
-  if (visibleEditors.length !== 1) {
+  )];
+  if (editors.length !== 1) {
     return { candidateCount: 0, hostId: null, sendRequest: null };
   }
-  let element = visibleEditors[0];
+  let element = editors[0];
   let fiber = null;
   while (element != null && fiber == null) {
     const key = Object.getOwnPropertyNames(element).find((name) =>
@@ -64,10 +61,10 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
 })()`;
 
 const INSTALL_RENDERER_POLICY_FUNCTION = `function(hostId) {
-  const bridge = this;
-  const send = (method, parameters) => bridge.sendRequest(method, parameters);
-  return (${installDraftPrewarmPolicyBridge.toString()})(send, hostId, window);
+  return (${installDraftPrewarmPolicyBridge.toString()})(this, hostId, window);
 }`;
+const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
+const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;
 
 function mainProcessInstaller(rendererWebContentsId: number): string {
   return `async function () {
@@ -92,9 +89,21 @@ export async function installRendererDraftPrewarmPolicy(
     throw new Error("Renderer webContents ID must be a positive integer");
   }
   const installer = mainProcessInstaller(rendererWebContentsId);
-  const value = await inspector.evaluate<unknown>(`(${installer})()`);
-  if (!isRecord(value) || value.state !== "ready" || value.reason !== "owned-request-bridge") {
-    throw new Error("Renderer draft prewarm policy returned an invalid status");
+  const deadline = Date.now() + REQUEST_MANAGER_WAIT_TIMEOUT_MS;
+  while (true) {
+    try {
+      const value = await inspector.evaluate<unknown>(`(${installer})()`);
+      if (!isRecord(value) || value.state !== "ready" || value.reason !== "owned-request-bridge") {
+        throw new Error("Renderer draft prewarm policy returned an invalid status");
+      }
+      return value as unknown as RendererDraftPrewarmPolicyStatus;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const remaining = deadline - Date.now();
+      if (!message.includes("Renderer request manager is ambiguous") || remaining <= 0) throw error;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, Math.min(REQUEST_MANAGER_POLL_INTERVAL_MS, remaining));
+      });
+    }
   }
-  return value as unknown as RendererDraftPrewarmPolicyStatus;
 }

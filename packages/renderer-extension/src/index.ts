@@ -99,16 +99,11 @@ export {
   PI_TRANSPORT_MODEL_PREFIX,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX,
-  sameModelPowerSelection,
-  selectOptimisticModelAtom,
   threadIdFromComposerModelTarget,
 } from "./versioned-renderer-adapter.js";
 export type {
   LockedComposerSelection,
-  ModelAtomPair,
-  ModelAtomState,
   ModelPowerSelection,
-  ModelStateController,
   RendererDraftPrewarmPolicy,
   RendererAdapterState,
   RendererAdapterStatus,

@@ -129,7 +129,7 @@ describe("Renderer Control Session", () => {
     let selected = renderer(17, "primary", 100);
     const inspector = {
       command: vi.fn(),
-      evaluate: vi.fn(),
+      evaluate: vi.fn().mockResolvedValue(1),
       close: vi.fn(),
     };
     const operations = {
@@ -193,9 +193,9 @@ describe("Renderer Control Session", () => {
       "reload",
       "inspect",
       "title-ready:17",
+      "prewarm:17",
       "inject",
       "read-binding",
-      "prewarm:17",
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
     expect(session.snapshot.titlePolicy.warnings).toEqual([compatibilityWarning]);
@@ -216,9 +216,9 @@ describe("Renderer Control Session", () => {
       "inspect",
       "read-binding",
       "title-ready:19",
+      "prewarm:19",
       "inject",
       "read-binding",
-      "prewarm:19",
     ]);
     await session.quitDesktop();
     expect(calls.at(-1)).toBe("quit");
@@ -226,14 +226,14 @@ describe("Renderer Control Session", () => {
     expect(inspector.close).toHaveBeenCalledOnce();
   });
 
-  it("waits for the Composer Model Controller to mount", async () => {
+  it("waits for an installing Renderer Adapter", async () => {
     const selected = renderer(17, "primary", 100);
     const readBinding = vi
       .fn()
       .mockResolvedValueOnce({
         version: 2,
         enabledAgents: ["codex", "pi"],
-        adapter: { state: "installing", reason: "model-controller-unavailable" },
+        adapter: { state: "installing", reason: "installing" },
       })
       .mockResolvedValue(readyBinding());
     const operations = {
@@ -266,7 +266,7 @@ describe("Renderer Control Session", () => {
     };
 
     const session = await createRendererControlSession({
-      inspector: { command: vi.fn(), evaluate: vi.fn(), close: vi.fn() },
+      inspector: { command: vi.fn(), evaluate: vi.fn().mockResolvedValue(1), close: vi.fn() },
       inspectorEndpoint: "http://127.0.0.1:43123",
       rendererSource: "production renderer",
       pollIntervalMs: 1,
@@ -317,7 +317,7 @@ describe("Renderer Control Session", () => {
     };
 
     const failure = createRendererControlSession({
-      inspector: { command: vi.fn(), evaluate: vi.fn(), close: vi.fn() },
+      inspector: { command: vi.fn(), evaluate: vi.fn().mockResolvedValue(1), close: vi.fn() },
       inspectorEndpoint: "http://127.0.0.1:43123",
       rendererSource: "production renderer",
       pollIntervalMs: 1,

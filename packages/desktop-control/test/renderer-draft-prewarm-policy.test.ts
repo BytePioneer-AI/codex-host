@@ -117,6 +117,24 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate.mock.calls[0]?.[0]).toContain("webContents.fromId(17)");
   });
 
+  it("retries while the current Renderer request manager is mounting", async () => {
+    const evaluate = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("Renderer request manager is ambiguous"))
+      .mockResolvedValue({ state: "ready", reason: "owned-request-bridge" });
+    const inspector = {
+      async evaluate<T>(): Promise<T> {
+        return (await evaluate()) as T;
+      },
+    };
+
+    await expect(installRendererDraftPrewarmPolicy(inspector, 17)).resolves.toEqual({
+      state: "ready",
+      reason: "owned-request-bridge",
+    });
+    expect(evaluate).toHaveBeenCalledTimes(2);
+  });
+
   it("installs the fixed policy on the uniquely owned Host request bridge", async () => {
     const fixture = rendererFixture();
 
@@ -165,12 +183,12 @@ describe("Renderer draft prewarm policy", () => {
 
   it("coalesces concurrent clear operations and allows a later clear", async () => {
     const firstClear = Promise.withResolvers<undefined>();
-    const send = vi
+    const sendRequest = vi
       .fn<(method: string, parameters: { hostId: string }) => Promise<undefined>>()
       .mockReturnValueOnce(firstClear.promise)
       .mockResolvedValue(undefined);
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge(send, "local", target);
+    installDraftPrewarmPolicyBridge({ sendRequest }, "local", target);
     const policy = target.__codexhostDraftPrewarmPolicyV1 as {
       clear(): Promise<void>;
     };
@@ -178,13 +196,42 @@ describe("Renderer draft prewarm policy", () => {
     const first = policy.clear();
     const concurrent = policy.clear();
     expect(concurrent).toBe(first);
-    expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith("clear-prewarmed-threads-for-host", { hostId: "local" });
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith("clear-prewarmed-threads-for-host", {
+      hostId: "local",
+    });
 
     firstClear.resolve(undefined);
     await first;
     await policy.clear();
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes direct and prewarmed creates through the selected transport Model", async () => {
+    const sendRequest = vi.fn(async () => undefined);
+    const bridge = { sendRequest };
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(bridge, "local", target);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      select(model: string | null): boolean;
+    };
+
+    policy.select("codexhost/pi-native");
+    await bridge.sendRequest("start-conversation", {
+      collaborationMode: { mode: "default", settings: { model: "codexhost/grok-native" } },
+    });
+    await bridge.sendRequest("prewarm-thread-start-for-host", {
+      hostId: "local",
+      params: { model: "codexhost/grok-native" },
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, "start-conversation", {
+      collaborationMode: { mode: "default", settings: { model: "codexhost/pi-native" } },
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, "prewarm-thread-start-for-host", {
+      hostId: "local",
+      params: { model: "codexhost/pi-native" },
+    });
   });
 
   it("rejects an invalid Renderer identity before inspecting the Desktop", async () => {

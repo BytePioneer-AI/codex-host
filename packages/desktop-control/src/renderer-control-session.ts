@@ -430,7 +430,6 @@ class InstalledRendererControlSession implements RendererControlSession {
       .readBinding(this.inspector, selected.id)
       .catch(() => null);
     if (existing !== null) {
-      const binding = validateBindingStatus(existing, this.enabledAgents);
       const policyState = await this.operations
         .readDraftPrewarmPolicy?.(this.inspector, selected.id)
         .catch(() => null);
@@ -438,6 +437,21 @@ class InstalledRendererControlSession implements RendererControlSession {
         policyState === "ready"
           ? this.#snapshot.draftPrewarmPolicy
           : await this.operations.installDraftPrewarmPolicy(this.inspector, selected.id);
+      let binding: ProductionRendererStatus;
+      try {
+        binding = validateBindingStatus(existing, this.enabledAgents);
+      } catch (error) {
+        if (!(error instanceof RendererAdapterReadinessError)) throw error;
+        await this.operations.execute(this.inspector, selected.id, this.rendererSource);
+        binding = await waitForBinding(
+          this.inspector,
+          this.operations,
+          selected.id,
+          this.enabledAgents,
+          this.timeoutMs,
+          this.pollIntervalMs,
+        );
+      }
       this.#snapshot = {
         ...this.#snapshot,
         renderer: selected,
@@ -451,6 +465,11 @@ class InstalledRendererControlSession implements RendererControlSession {
       () => this.operations.markTitlePolicyReady(this.inspector, selected.id),
       { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
     );
+    await activateElectronDesktop(this.inspector);
+    const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(
+      this.inspector,
+      selected.id,
+    );
     await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const binding = await waitForBinding(
       this.inspector,
@@ -459,10 +478,6 @@ class InstalledRendererControlSession implements RendererControlSession {
       this.enabledAgents,
       this.timeoutMs,
       this.pollIntervalMs,
-    );
-    const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(
-      this.inspector,
-      selected.id,
     );
     this.#snapshot = {
       ...this.#snapshot,
@@ -547,6 +562,11 @@ export async function createRendererControlSession(
       pollIntervalMs,
     },
   );
+  startupTrace("installing draft routing policy");
+  const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(
+    options.inspector,
+    selected.id,
+  );
   startupTrace("injecting Renderer bundle");
   await operations.execute(options.inspector, selected.id, options.rendererSource);
   startupTrace("waiting for Renderer binding");
@@ -557,11 +577,6 @@ export async function createRendererControlSession(
     enabledAgents,
     timeoutMs,
     pollIntervalMs,
-  );
-  startupTrace("installing draft prewarm policy");
-  const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(
-    options.inspector,
-    selected.id,
   );
   return new InstalledRendererControlSession(
     options.inspector,

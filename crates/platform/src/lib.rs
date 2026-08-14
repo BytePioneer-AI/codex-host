@@ -32,6 +32,7 @@ pub use background::detach_from_terminal;
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
 pub use installation::discover_codex_desktop;
+pub use installation::discover_codex_desktop_from_root;
 #[cfg(target_os = "macos")]
 pub use macos_ui::prompt_compatibility_warning;
 pub use process::{

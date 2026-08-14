@@ -273,6 +273,85 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     windows_installation(details, &PathBuf::from(local_app_data))
 }
 
+/// Best-effort read of the packaged Desktop version from `AppxManifest.xml`.
+///
+/// A portable/unpacked installation has no registered AppX package, so the
+/// version is not available from the Windows PackageManager. The official MSIX
+/// embeds the marketing version in the `<Identity Version="..."/>` attribute of
+/// its manifest; fall back to a placeholder when it cannot be parsed.
+#[cfg(target_os = "windows")]
+fn portable_package_version(install_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(install_root.join("AppxManifest.xml")).ok()?;
+    let identity = content.find("<Identity")?;
+    let rest = &content[identity..];
+    let marker = rest.find("Version=")?;
+    let after = &rest[marker + "Version=".len()..];
+    let value = after.strip_prefix('"')?;
+    let version = value[..value.find('"')?].to_owned();
+    if !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        Some(version)
+    } else {
+        None
+    }
+}
+
+/// Discover Codex Desktop from an explicitly supplied installation directory.
+///
+/// This supports portable/unpacked installations (for example an MSIX that was
+/// extracted rather than installed) where no AppX package is registered for the
+/// current user, so the Windows PackageManager lookup would otherwise fail.
+#[cfg(target_os = "windows")]
+pub fn discover_codex_desktop_from_root(
+    install_root: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    let install_root = install_root.canonicalize().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' is unavailable: {error}",
+            install_root.display()
+        ))
+    })?;
+    let desktop_executable = install_root.join("app/ChatGPT.exe");
+    let packaged_codex_cli = install_root.join("app/resources/codex.exe");
+    let asar_path = install_root.join("app/resources/app.asar");
+    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() || !asar_path.is_file() {
+        return Err(PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' does not contain the required ChatGPT.exe, codex.exe, and app.asar resources",
+            install_root.display()
+        )));
+    }
+    // A portable installation may never have been launched through the official
+    // Desktop, so the Desktop-managed CLI cache may be absent. Prefer a matching
+    // cached CLI when one exists, otherwise fall back to the packaged CLI.
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let executable_codex_cli = local_app_data
+        .as_deref()
+        .and_then(|local_app_data| {
+            find_executable_codex_cli(&packaged_codex_cli, local_app_data).ok()
+        })
+        .unwrap_or_else(|| packaged_codex_cli.clone());
+
+    let version = portable_package_version(&install_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+
+    Ok(DesktopInstallation {
+        identity: DesktopIdentity::WindowsPackage {
+            package_name: WINDOWS_CODEX_PACKAGE_NAME.to_owned(),
+            package_family_name: format!("{WINDOWS_CODEX_PACKAGE_NAME}_portable"),
+        },
+        build: version.clone(),
+        version,
+        asar_integrity: sha256_file(&asar_path)?,
+        install_root,
+        desktop_executable,
+        packaged_codex_cli,
+        executable_codex_cli,
+    })
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use std::collections::HashMap;
@@ -373,6 +452,73 @@ mod windows_tests {
         );
 
         fs::remove_dir_all(root).expect("remove Windows installation fixture");
+    }
+
+    #[test]
+    fn custom_root_discovers_a_portable_installation_without_a_registered_package() {
+        let root = temporary_directory("codexhost-windows-custom-root");
+        let install_root = root.join("CodexPortable");
+        let desktop = install_root.join("app/ChatGPT.exe");
+        let packaged_cli = install_root.join("app/resources/codex.exe");
+        let app_asar = install_root.join("app/resources/app.asar");
+        fs::create_dir_all(desktop.parent().expect("Desktop parent"))
+            .expect("create Desktop directory");
+        fs::create_dir_all(packaged_cli.parent().expect("CLI parent"))
+            .expect("create CLI directory");
+        fs::write(&desktop, b"desktop").expect("write Desktop executable");
+        fs::write(&packaged_cli, b"packaged codex cli").expect("write packaged CLI");
+        fs::write(&app_asar, b"ported app asar").expect("write app.asar");
+        fs::write(
+            install_root.join("AppxManifest.xml"),
+            b"<?xml version=\"1.0\"?><Package><Identity Name=\"OpenAI.Codex\" Version=\"2.5.1.0\"/></Package>",
+        )
+        .expect("write AppxManifest");
+
+        // Leave LOCALAPPDATA pointing at a location with no matching CLI cache so
+        // the function must fall back to the packaged CLI.
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(
+            installation.identity,
+            DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_portable".into(),
+            }
+        );
+        assert_eq!(installation.version, "2.5.1.0");
+        assert_eq!(installation.build, "2.5.1.0");
+        assert_eq!(
+            installation.desktop_executable,
+            install_root.join("app/ChatGPT.exe")
+        );
+        // The resolved executable CLI is either the Desktop-managed cache (when a
+        // matching one exists in the real environment) or the packaged CLI, so it
+        // must at least resolve to an existing file.
+        assert!(installation.executable_codex_cli.is_file());
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn portable_version_parsing_is_best_effort() {
+        assert_eq!(
+            super::portable_package_version(std::path::Path::new(r"C:\absent")),
+            None
+        );
+        let root = temporary_directory("codexhost-version-parse");
+        fs::write(
+            root.join("AppxManifest.xml"),
+            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"1.2.3.4\"/></Package>",
+        )
+        .expect("write versioned manifest");
+        assert_eq!(
+            super::portable_package_version(&root).as_deref(),
+            Some("1.2.3.4")
+        );
+        fs::write(root.join("AppxManifest.xml"), b"not xml").expect("write invalid manifest");
+        assert_eq!(super::portable_package_version(&root), None);
+        fs::remove_dir_all(root).expect("remove version fixture");
     }
 }
 
@@ -580,6 +726,13 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     )
 }
 
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_from_root(
+    install_root: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle(install_root)
+}
+
 #[cfg(target_os = "linux")]
 const LINUX_CODEX_PACKAGE_NAME: &str = "chatgpt";
 #[cfg(target_os = "linux")]
@@ -712,8 +865,24 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     )
 }
 
+#[cfg(target_os = "linux")]
+pub fn discover_codex_desktop_from_root(
+    install_root: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    inspect_linux_installation(install_root)
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    Err(PlatformError::Unsupported(
+        "the Codex Desktop probe currently supports Windows, macOS, and Linux only",
+    ))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn discover_codex_desktop_from_root(
+    _install_root: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(
         "the Codex Desktop probe currently supports Windows, macOS, and Linux only",
     ))

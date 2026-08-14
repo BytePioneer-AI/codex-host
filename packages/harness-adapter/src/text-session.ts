@@ -71,6 +71,7 @@ export interface ResumeSessionInput {
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
+  knownTurnRefs?: NativeTurnRef[];
 }
 
 export interface ForkSessionInput {

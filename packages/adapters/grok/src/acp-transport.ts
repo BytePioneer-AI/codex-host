@@ -1,4 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable, Writable } from "node:stream";
 
 import {
@@ -61,7 +64,13 @@ export type GrokTransportEvent =
       content?: unknown[] | null;
       metadata?: Record<string, unknown>;
     }
-  | { type: "usage"; update: SessionUpdate; metadata?: Record<string, unknown> };
+  | { type: "usage"; update: SessionUpdate; metadata?: Record<string, unknown> }
+  | {
+      type: "turn.completed";
+      nativeTurnKey: string;
+      stopReason: string;
+      metadata?: Record<string, unknown>;
+    };
 
 export interface GrokPermissionRequest {
   request: RequestPermissionRequest;
@@ -159,6 +168,20 @@ function transportEvent(
   update: SessionUpdate,
   metadata?: Record<string, unknown>,
 ): GrokTransportEvent | null {
+  const extension = update as unknown as Record<string, unknown>;
+  if (
+    extension.sessionUpdate === "turn_completed" &&
+    typeof extension.prompt_id === "string" &&
+    extension.prompt_id.length > 0 &&
+    typeof extension.stop_reason === "string"
+  ) {
+    return {
+      type: "turn.completed",
+      nativeTurnKey: extension.prompt_id,
+      stopReason: extension.stop_reason,
+      ...(metadata ? { metadata } : {}),
+    };
+  }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -207,6 +230,43 @@ function transportEvent(
   }
 }
 
+function nativeHistoryPath(options: GrokAcpTransportOptions, sessionId: string): string {
+  const environment = { ...process.env, ...options.environment };
+  const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
+  const grokHome = environment.GROK_HOME ?? path.join(home, ".grok");
+  return path.join(
+    grokHome,
+    "sessions",
+    encodeURIComponent(path.resolve(options.cwd)),
+    sessionId,
+    "updates.jsonl",
+  );
+}
+
+function isMissingFile(error: unknown): boolean {
+  return isRecord(error) && error.code === "ENOENT";
+}
+
+function parseNativeHistory(contents: string, sessionId: string): GrokTransportEvent[] {
+  const events: GrokTransportEvent[] = [];
+  for (const line of contents.split("\n")) {
+    if (line.length === 0) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      throw new GrokTransportError("protocolError", "Grok Native history contains invalid JSON");
+    }
+    if (!isRecord(record) || !isRecord(record.params)) continue;
+    const params = record.params;
+    if (params.sessionId !== sessionId || !isRecord(params.update)) continue;
+    const metadata = isRecord(params._meta) ? params._meta : undefined;
+    const event = transportEvent(params.update as SessionUpdate, metadata);
+    if (event) events.push(metadata ? { ...event, metadata } : event);
+  }
+  return events;
+}
+
 export class GrokAcpTransport {
   readonly #options: Required<
     Pick<GrokAcpTransportOptions, "commandTimeoutMs" | "closeTimeoutMs">
@@ -252,6 +312,22 @@ export class GrokAcpTransport {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
       throw classified;
+    }
+  }
+
+  async getHistory(): Promise<GrokTransportEvent[]> {
+    const sessionId = this.sessionId;
+    try {
+      return parseNativeHistory(
+        await readFile(nativeHistoryPath(this.#options, sessionId), "utf8"),
+        sessionId,
+      );
+    } catch (error) {
+      if (isMissingFile(error)) return [];
+      if (error instanceof GrokTransportError) throw error;
+      throw new GrokTransportError("unavailable", "Grok Native history could not be read", {
+        cause: error,
+      });
     }
   }
 

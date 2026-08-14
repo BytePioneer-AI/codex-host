@@ -4,7 +4,12 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessModelRefSchema,
+  hostTurnIdSchema,
+  nativeTurnRefSchema,
+  type NativeTurnRef,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -44,6 +49,8 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
   replay: GrokTransportEvent[] = [];
+  #activePromptEvents: GrokTransportEvent[] = [];
+  #activePromptText: string | null = null;
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
   #onPermission: ((request: GrokPermissionRequest) => Promise<RequestPermissionResponse>) | null =
     null;
@@ -65,11 +72,17 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     };
   }
 
+  async getHistory(): Promise<GrokTransportEvent[]> {
+    return [...this.replay];
+  }
+
   runTurn(
-    _text: string,
+    text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
   ): Promise<PromptResponse> {
+    this.#activePromptText = text;
+    this.#activePromptEvents = [];
     this.#onEvent = onEvent;
     this.#onPermission = onPermission;
     return new Promise((resolve) => {
@@ -78,6 +91,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   }
 
   event(event: GrokTransportEvent): void {
+    this.#activePromptEvents.push(event);
     this.#onEvent?.(event);
   }
 
@@ -100,12 +114,34 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   }
 
   finish(response: PromptResponse = { stopReason: "end_turn" }): void {
+    if (this.#activePromptText !== null) {
+      const ordinal = this.replay.filter(({ type }) => type === "turn.completed").length + 1;
+      this.replay.push(
+        {
+          type: "user.text",
+          text: this.#activePromptText,
+          metadata: { eventId: `grok-session-user-${ordinal}` },
+        },
+        ...this.#activePromptEvents,
+        {
+          type: "turn.completed",
+          nativeTurnKey: `grok-prompt-${ordinal}`,
+          stopReason: response.stopReason,
+        },
+      );
+    }
+    this.#activePromptText = null;
+    this.#activePromptEvents = [];
     this.#resolve?.(response);
     this.#resolve = null;
   }
 }
 
-async function openedSession(transport: FakeGrokTransport, kind: "create" | "resume" = "create") {
+async function openedSession(
+  transport: FakeGrokTransport,
+  kind: "create" | "resume" = "create",
+  knownTurnRefs?: NativeTurnRef[],
+) {
   let uuid = 0;
   const adapter = new GrokAdapter(
     {},
@@ -125,6 +161,7 @@ async function openedSession(transport: FakeGrokTransport, kind: "create" | "res
             nativeSessionId: transport.sessionId,
             formatVersion: 1,
           },
+          ...(knownTurnRefs ? { knownTurnRefs } : {}),
         },
   );
   if (!opened.ok) throw new Error(opened.error.message);
@@ -146,6 +183,69 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("keeps Native Turn identity stable across live completion and resume", async () => {
+    const liveTransport = new FakeGrokTransport();
+    const live = await openedSession(liveTransport);
+    const liveIterator = live.session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-stable");
+
+    await live.session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "before" }],
+    });
+    expect((await nextEvent(liveIterator)).type).toBe("turn.started");
+    liveTransport.event({ type: "agent.text", text: "answer", messageId: "agent-1" });
+    expect((await nextEvent(liveIterator)).type).toBe("item.started");
+    expect((await nextEvent(liveIterator)).type).toBe("item.updated");
+    liveTransport.finish();
+    expect((await nextEvent(liveIterator)).type).toBe("item.completed");
+    const completed = await nextEvent(liveIterator);
+    if (completed.type !== "turn.completed" || !completed.nativeTurnRef) {
+      throw new Error("Live Grok Turn has no Native identity");
+    }
+    await live.adapter.close();
+
+    const resumedTransport = new FakeGrokTransport();
+    resumedTransport.replay = [...liveTransport.replay];
+    const resumed = await openedSession(resumedTransport, "resume");
+    const snapshot = await resumed.session.readSnapshot();
+    if (!snapshot.ok || !snapshot.value.turns[0]) {
+      throw new Error("Resumed Grok Snapshot has no Turn");
+    }
+    expect(snapshot.value.turns[0].nativeTurnRef).toEqual(completed.nativeTurnRef);
+    await resumed.adapter.close();
+  });
+
+  it("preserves persisted legacy Turn identity while resuming Native history", async () => {
+    const transport = new FakeGrokTransport();
+    transport.replay = [
+      {
+        type: "user.text",
+        text: "before",
+        metadata: { eventId: "grok-session-user-1" },
+      },
+      { type: "agent.text", text: "answer", messageId: "agent-1" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-1",
+        stopReason: "end_turn",
+      },
+    ];
+    const legacyRef = nativeTurnRefSchema.parse({
+      harnessId: "grok",
+      nativeSessionId: transport.sessionId,
+      nativeTurnKey: "legacy-random-key",
+      formatVersion: 1,
+    });
+    const resumed = await openedSession(transport, "resume", [legacyRef]);
+    await expect(resumed.session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ nativeTurnRef: legacyRef }] },
+    });
+    await resumed.adapter.close();
+  });
+
   it("projects Thinking, Tool, Approval, Text, Usage, and terminal in order", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);

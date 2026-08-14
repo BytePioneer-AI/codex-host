@@ -12,6 +12,7 @@ import {
   nativeTurnRefSchema,
   type HarnessId,
   type JsonValue,
+  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import type { GrokTransportEvent } from "./acp-transport.js";
@@ -32,16 +33,31 @@ function stableId(
   return hostItemIdSchema.parse(`grok-history-${kind}-${turn}-${index}`);
 }
 
+function terminalOutcome(stopReason: string): HistoricalTurnOutcome {
+  if (stopReason === "end_turn") return { status: "succeeded" };
+  if (stopReason === "cancelled") return { status: "cancelled", reason: "Cancelled by user" };
+  return {
+    status: "failed",
+    error: {
+      code: "nativeFailure",
+      message: `Grok stopped the Turn: ${stopReason}`,
+      retryable: stopReason === "max_tokens" || stopReason === "max_turn_requests",
+    },
+  };
+}
+
 export function mapGrokReplay(
   replay: readonly GrokTransportEvent[],
   harnessId: HarnessId,
   sessionId: string,
+  knownTurnRefs: readonly NativeTurnRef[] = [],
 ): HostThreadSnapshot {
   const turns: HostTurnSnapshot[] = [];
   let input = "";
   let items: HostItemSnapshot[] = [];
   let turnIndex = 0;
   let messageIndex = 0;
+  let nativeTurnKey: string | null = null;
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, HostToolExecutionItem>();
@@ -62,8 +78,14 @@ export function mapGrokReplay(
     }
     tools.clear();
   };
-  const completeTurn = (outcome: HistoricalTurnOutcome = { status: "succeeded" }): void => {
+  const completeTurn = (outcome: HistoricalTurnOutcome, terminalKey?: string): void => {
     if (input.length === 0) return;
+    const known = knownTurnRefs[turnIndex];
+    if (known && (known.harnessId !== harnessId || known.nativeSessionId !== sessionId)) {
+      throw new Error("Known Grok Turn identity does not belong to the Native Session");
+    }
+    const stableKey = known?.nativeTurnKey ?? terminalKey ?? nativeTurnKey;
+    if (!stableKey) throw new Error("Grok Native history Turn has no stable identity");
     completeReasoning();
     completeAgent();
     completeTools();
@@ -71,7 +93,7 @@ export function mapGrokReplay(
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId,
         nativeSessionId: sessionId,
-        nativeTurnKey: `replay-${turnIndex + 1}`,
+        nativeTurnKey: stableKey,
         formatVersion: 1,
       }),
       input: [{ type: "text", text: input }],
@@ -80,20 +102,32 @@ export function mapGrokReplay(
     });
     turnIndex += 1;
     messageIndex = 0;
+    nativeTurnKey = null;
     input = "";
     items = [];
   };
 
   for (const event of replay) {
     if (event.type === "user.text") {
-      if (input.length > 0 && (items.length > 0 || agent || reasoning || tools.size > 0)) {
-        completeTurn();
+      if (input.length > 0) {
+        completeTurn({
+          status: "unknown",
+          reason: "Grok Native history has no terminal signal",
+        });
       }
       input += event.text;
+      const eventId = event.metadata?.eventId;
+      if (!nativeTurnKey && typeof eventId === "string" && eventId.length > 0) {
+        nativeTurnKey = eventId;
+      } else if (!nativeTurnKey && event.messageId) {
+        nativeTurnKey = event.messageId;
+      }
       continue;
     }
     if (input.length === 0) continue;
-    if (event.type === "agent.text") {
+    if (event.type === "turn.completed") {
+      completeTurn(terminalOutcome(event.stopReason), event.nativeTurnKey);
+    } else if (event.type === "agent.text") {
       if (!agent) {
         completeReasoning();
         agent = {
@@ -132,6 +166,9 @@ export function mapGrokReplay(
       }
     }
   }
-  completeTurn({ status: "unknown", reason: "Grok ACP replay has no historical terminal signal" });
+  completeTurn({ status: "unknown", reason: "Grok Native history has no terminal signal" });
+  if (knownTurnRefs.length > turns.length) {
+    throw new Error("Grok Native history is missing persisted Turns");
+  }
   return { turns };
 }

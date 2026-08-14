@@ -53,7 +53,6 @@ import {
   hostItemIdSchema,
   jsonValueSchema,
   nativeSessionRefSchema,
-  nativeTurnRefSchema,
   type HarnessId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
@@ -96,6 +95,7 @@ export interface GrokAcpTransportLike {
   readonly sessionId: string;
   inspect(): Promise<GrokOpenResult["initialize"]>;
   open(input: { kind: "create" } | { kind: "resume"; sessionId: string }): Promise<GrokOpenResult>;
+  getHistory(): Promise<GrokTransportEvent[]>;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
@@ -127,7 +127,7 @@ interface ActiveTurn {
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
   cancellationRequested: boolean;
-  nativeTurnRef: NativeTurnRef;
+  beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
 }
@@ -268,6 +268,8 @@ class GrokHarnessSession implements HarnessSession {
     onClosed: () => void,
     options: {
       closeTimeoutMs: number;
+      history: GrokTransportEvent[];
+      knownTurnRefs?: NativeTurnRef[];
       randomUUID: () => string;
       toolOutputLimit: number;
     },
@@ -283,27 +285,32 @@ class GrokHarnessSession implements HarnessSession {
     this.#state = stateForGrokModel(modelState, { nativeRef: nativeRef(opened.sessionId) });
     this.initialState = this.#state;
     this.#snapshot = {
-      ...mapGrokReplay(opened.replay, this.harnessId, opened.sessionId),
+      ...mapGrokReplay(options.history, this.harnessId, opened.sessionId, options.knownTurnRefs),
       state: this.#state,
     };
     this.outputs = this.#channel.outputs;
   }
 
-  readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
-      return Promise.resolve({ ok: false, error: invalidState("Grok Session is not open") });
+      return { ok: false, error: invalidState("Grok Session is not open") };
     }
     if (this.#active || this.#configuring) {
-      return Promise.resolve({
+      return {
         ok: false,
         error: {
           code: "sessionBusy",
           message: "Grok Session cannot read history during another operation",
           retryable: true,
         },
-      });
+      };
     }
-    return Promise.resolve({ ok: true, value: { ...this.#snapshot, state: this.#state } });
+    try {
+      await this.#refreshSnapshot();
+      return { ok: true, value: { ...this.#snapshot, state: this.#state } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    }
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -363,6 +370,11 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
+    try {
+      await this.#refreshSnapshot();
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    }
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
@@ -377,12 +389,9 @@ class GrokHarnessSession implements HarnessSession {
       completedItems: [],
       approvals: new Map(),
       cancellationRequested: false,
-      nativeTurnRef: nativeTurnRefSchema.parse({
-        harnessId: this.harnessId,
-        nativeSessionId: this.#transport.sessionId,
-        nativeTurnKey: this.#randomUUID(),
-        formatVersion: 1,
-      }),
+      beforeNativeTurnKeys: new Set(
+        this.#snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
+      ),
       completion,
       resolveCompletion,
     };
@@ -396,9 +405,16 @@ class GrokHarnessSession implements HarnessSession {
       )
       .then(
         (response) =>
-          this.#finish(active, terminalOutcome(response, active.cancellationRequested), response),
+          this.#settleFromHistory(
+            active,
+            terminalOutcome(response, active.cancellationRequested),
+            response,
+          ),
         (error) =>
-          this.#finish(active, { status: "failed", error: normalizeError(error, "nativeFailure") }),
+          this.#settleFromHistory(active, {
+            status: "failed",
+            error: normalizeError(error, "nativeFailure"),
+          }),
       );
     return { ok: true, value: { turnId: command.turnId } };
   }
@@ -410,6 +426,18 @@ class GrokHarnessSession implements HarnessSession {
 
   handleTransportFault(error: GrokTransportError): void {
     queueMicrotask(() => this.#fault(error));
+  }
+
+  async #refreshSnapshot(): Promise<void> {
+    const history = await this.#transport.getHistory();
+    const knownTurnRefs = this.#snapshot.turns.map((turn) => turn.nativeTurnRef);
+    const refreshed = mapGrokReplay(
+      history,
+      this.harnessId,
+      this.#transport.sessionId,
+      knownTurnRefs,
+    );
+    this.#snapshot.turns = refreshed.turns;
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
@@ -712,7 +740,37 @@ class GrokHarnessSession implements HarnessSession {
     });
   }
 
-  #finish(active: ActiveTurn, outcome: TurnOutcome, response?: PromptResponse): void {
+  async #settleFromHistory(
+    active: ActiveTurn,
+    outcome: TurnOutcome,
+    response?: PromptResponse,
+  ): Promise<void> {
+    let nativeTurnRef: NativeTurnRef | undefined;
+    try {
+      await this.#refreshSnapshot();
+      const created = this.#snapshot.turns.filter(
+        (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
+      );
+      if (created.length !== 1) {
+        throw new Error(
+          `Grok Turn persisted ${created.length} new Native Turns; exactly one is required`,
+        );
+      }
+      nativeTurnRef = created[0]?.nativeTurnRef;
+    } catch (error) {
+      if (outcome.status === "succeeded") {
+        outcome = { status: "failed", error: normalizeError(error, "protocolError") };
+      }
+    }
+    this.#finish(active, outcome, response, nativeTurnRef);
+  }
+
+  #finish(
+    active: ActiveTurn,
+    outcome: TurnOutcome,
+    response?: PromptResponse,
+    nativeTurnRef?: NativeTurnRef,
+  ): void {
     if (this.#active !== active) return;
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
@@ -730,19 +788,12 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     this.#active = null;
-    this.#snapshot.turns.push({
-      nativeTurnRef: active.nativeTurnRef,
-      input: [...active.command.input],
-      items: active.completedItems,
-      outcome,
-      ...(this.#state.effectiveModel ? { model: this.#state.effectiveModel } : {}),
-    });
     const usage = response ? usageFromPrompt(response) : null;
     if (usage) this.#publishUsage(usage, active.command.turnId);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
-      nativeTurnRef: active.nativeTurnRef,
+      ...(nativeTurnRef ? { nativeTurnRef } : {}),
       outcome,
     });
     active.resolveCompletion();
@@ -931,6 +982,7 @@ export class GrokAdapter implements HarnessAdapter {
           else delete modelState.currentThinkingOptionId;
         }
       }
+      const history = await transport.getHistory();
       const openedSession = new GrokHarnessSession(
         cwd,
         transport,
@@ -939,6 +991,10 @@ export class GrokAdapter implements HarnessAdapter {
         () => this.#sessions.delete(openedSession),
         {
           closeTimeoutMs: this.#closeTimeoutMs,
+          history,
+          ...(input.kind === "resume" && input.knownTurnRefs
+            ? { knownTurnRefs: input.knownTurnRefs }
+            : {}),
           randomUUID: this.#dependencies.randomUUID,
           toolOutputLimit: this.#toolOutputLimit,
         },

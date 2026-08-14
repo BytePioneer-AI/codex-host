@@ -315,6 +315,7 @@ export class ExternalThreadRuntime {
       kind: "resume",
       cwd: record.cwd,
       nativeRef: record.nativeSessionRef as NativeSessionRef,
+      knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
     });
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));

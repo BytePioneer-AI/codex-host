@@ -2,23 +2,29 @@
 
 ## Purpose
 
-Define the Renderer-owned Usage surface for External Thread usage snapshots beside the Composer model control.
+Define the Renderer-owned Usage surface for External Thread usage snapshots beside the native context control, or the Composer model control when that circle is absent.
 
 ## Requirements
 
-### Requirement: Renderer SHALL place Usage immediately before the model control
+### Requirement: Renderer SHALL place Usage immediately before the native context control when present
 
-Renderer SHALL mount a codexhost-owned Usage control immediately before the Composer model control: the codexhost model picker when it is already in the DOM, otherwise the verified native model trigger. The Usage control MUST be a preceding sibling and MUST NOT modify native context or model control DOM attributes, text, styles, event handlers, or state. If no model control is available as a placement reference, Renderer MUST leave the Usage control unmounted.
+Renderer SHALL mount a codexhost-owned Usage control immediately before a uniquely verified native context usage control in the same Composer. If that circle is absent, Renderer SHALL place the Usage control immediately before the Composer model control: the codexhost model picker when it is already in the DOM, otherwise the verified native model trigger. The Usage control MUST be a preceding sibling and MUST NOT modify native context or model control DOM attributes, text, styles, event handlers, or state. If neither a context control nor a model control is available, Renderer MUST leave the Usage control unmounted.
 
-#### Scenario: Usage mounts to the left of the model control
+#### Scenario: Usage mounts to the left of the native context circle
 
-- **WHEN** a supported Composer contains a mounted codexhost model picker
+- **WHEN** a supported Composer contains one uniquely verified native context usage control
+- **THEN** Renderer MUST insert the Usage control immediately before that native control
+- **AND** the native control MUST remain unchanged
+
+#### Scenario: Context circle is absent
+
+- **WHEN** a Composer has no uniquely verified native context usage control
+- **AND** a supported Composer contains a mounted codexhost model picker
 - **THEN** Renderer MUST insert the Usage control immediately before that model picker
-- **AND** a native context usage control, if present, MUST remain unchanged
 
-#### Scenario: Model control is missing
+#### Scenario: Placement anchors are missing
 
-- **WHEN** a Composer has neither a mounted codexhost model picker nor a verified native model trigger
+- **WHEN** a Composer has neither a verified native context usage control nor a model control
 - **THEN** Renderer MUST NOT guess a toolbar child position
 - **AND** Renderer MUST leave the Usage control hidden or unmounted
 

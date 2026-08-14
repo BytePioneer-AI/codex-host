@@ -159,9 +159,10 @@ describe("Renderer Composer DOM behavior", () => {
     expect(formatRendererTokenCount(375000)).toBe("375k");
   });
 
-  it("places Usage before the model picker even when a native context control exists", () => {
+  it("places Usage before the native context circle when it is present", () => {
     const modelRoot = { parentElement: {} } as HTMLElement;
     const nativeContext = {
+      parentElement: {},
       hasAttribute: () => false,
       getAttribute: (name: string) => (name === "aria-label" ? "Context usage: 20%" : null),
     } as unknown as HTMLElement;
@@ -184,8 +185,29 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, true, false);
 
+    expect(placeUsage).toHaveBeenCalledWith(nativeContext);
+    expect(placeUsage).not.toHaveBeenCalledWith(modelRoot);
+  });
+
+  it("places Usage before the model picker when the native context circle is absent", () => {
+    const modelRoot = { parentElement: {} } as HTMLElement;
+    const placeUsage = vi.fn();
+    const control = {
+      composer: { querySelectorAll: () => [] },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      usage: {
+        anchor: null,
+        place: placeUsage,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
     expect(placeUsage).toHaveBeenCalledWith(modelRoot);
-    expect(placeUsage).not.toHaveBeenCalledWith(nativeContext);
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

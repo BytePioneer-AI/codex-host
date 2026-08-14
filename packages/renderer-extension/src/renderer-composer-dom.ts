@@ -285,6 +285,8 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
 }
 
 function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
+  const context = nativeContextUsageControlForComposer(control.composer);
+  if (context?.parentElement) return context;
   const modelRoot = control.modelPicker.root;
   if (modelRoot.parentElement) return modelRoot;
   const native = control.nativeModelControl?.element;

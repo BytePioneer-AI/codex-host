@@ -12,6 +12,7 @@ const forbiddenInputFragments = [
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
 const allowedRuntimePackages = new Set([
+  "@agentclientprotocol/sdk",
   "@anthropic-ai/claude-agent-sdk",
   "@deepseek-ai/dsh-host-apiproxy",
   "diff",
@@ -47,6 +48,8 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
     "/packages/adapters/deepseek-harness/",
+    "/packages/adapters/grok/",
+    "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
     "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
   ]) {

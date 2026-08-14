@@ -11,6 +11,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
   "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
+  grok: "https://grok.com/",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

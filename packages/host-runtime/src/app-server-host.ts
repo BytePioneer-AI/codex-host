@@ -206,6 +206,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Claude Code";
     case "deepseek-harness":
       return "DeepSeek Harness";
+    case "grok":
+      return "Grok";
   }
 }
 

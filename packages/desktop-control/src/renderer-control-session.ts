@@ -59,6 +59,10 @@ interface RendererControlOperations {
     inspector: RendererInspector,
     rendererWebContentsId: number,
   ): Promise<RendererDraftPrewarmPolicyStatus>;
+  readDraftPrewarmPolicy?(
+    inspector: RendererInspector,
+    rendererWebContentsId: number,
+  ): Promise<unknown>;
   reload(inspector: RendererInspector, rendererWebContentsId: number): Promise<void>;
   execute(
     inspector: RendererInspector,
@@ -332,6 +336,12 @@ const defaultOperations: RendererControlOperations = {
   installTitlePolicy: installMainProcessTitlePolicy,
   markTitlePolicyReady: markRendererTitlePolicyReady,
   installDraftPrewarmPolicy: installRendererDraftPrewarmPolicy,
+  readDraftPrewarmPolicy: (inspector, rendererWebContentsId) =>
+    executeInWebContents(
+      inspector,
+      rendererWebContentsId,
+      "window.__codexhostDraftPrewarmPolicyV1?.state ?? null",
+    ),
   reload: reloadRenderer,
   execute: executeInWebContents,
   readBinding: (inspector, rendererWebContentsId) =>
@@ -421,7 +431,19 @@ class InstalledRendererControlSession implements RendererControlSession {
       .catch(() => null);
     if (existing !== null) {
       const binding = validateBindingStatus(existing, this.enabledAgents);
-      this.#snapshot = { ...this.#snapshot, renderer: selected, binding };
+      const policyState = await this.operations
+        .readDraftPrewarmPolicy?.(this.inspector, selected.id)
+        .catch(() => null);
+      const draftPrewarmPolicy =
+        policyState === "ready"
+          ? this.#snapshot.draftPrewarmPolicy
+          : await this.operations.installDraftPrewarmPolicy(this.inspector, selected.id);
+      this.#snapshot = {
+        ...this.#snapshot,
+        renderer: selected,
+        draftPrewarmPolicy,
+        binding,
+      };
       return this.#snapshot;
     }
 

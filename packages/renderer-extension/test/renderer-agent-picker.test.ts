@@ -10,13 +10,14 @@ describe("Renderer Agent picker presentation", () => {
         "codex",
         "pi",
         "claude-code",
+        "grok",
       ]),
     ).toEqual({
       label: "Codex",
       triggerDisabled: false,
       nativeModelHidden: false,
-      optionDisabled: { codex: false, pi: true, "claude-code": true },
-      downloadVisible: { pi: false, "claude-code": false },
+      optionDisabled: { codex: false, pi: true, "claude-code": true, grok: true },
+      downloadVisible: { pi: false, "claude-code": false, grok: false },
     });
   });
 

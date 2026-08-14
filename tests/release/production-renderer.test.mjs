@@ -18,9 +18,8 @@ describe("production Renderer release chain", () => {
       source("packages/renderer-extension/src/agent-selection-state.ts"),
     ]);
 
-    expect(agentState).toContain(
-      'KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code", "deepseek-harness"] as const',
-    );
+    expect(agentState).toContain('"deepseek-harness",');
+    expect(agentState).toContain('"grok",');
     expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");

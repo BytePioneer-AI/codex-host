@@ -19,6 +19,8 @@ function validMetafile(extraInputs = {}) {
       "packages/adapters/pi/dist/index.js": {},
       "packages/adapters/claude-code/dist/index.js": {},
       "packages/adapters/deepseek-harness/dist/index.js": {},
+      "packages/adapters/grok/dist/index.js": {},
+      "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
       "node_modules/@deepseek-ai/dsh-host-apiproxy/lib/esm/fetch/client.js": {},
       "node_modules/diff/lib/index.mjs": {},
@@ -32,6 +34,7 @@ describe("release Host Bundle", () => {
   it("accepts the reviewed production Adapter closure", () => {
     expect(auditHostBundleMetafile(validMetafile())).toMatchObject({
       runtimePackages: [
+        "@agentclientprotocol/sdk",
         "@anthropic-ai/claude-agent-sdk",
         "@deepseek-ai/dsh-host-apiproxy",
         "diff",
@@ -74,6 +77,12 @@ describe("release Host Bundle", () => {
     expect(() => auditHostBundleMetafile({ inputs: withoutDeepSeek })).toThrow(
       "missing required input: /packages/adapters/deepseek-harness/",
     );
+
+    const withoutGrok = { ...validMetafile().inputs };
+    delete withoutGrok["packages/adapters/grok/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutGrok })).toThrow(
+      "missing required input: /packages/adapters/grok/",
+    );
   });
 
   it("builds the real production entry with all external Harness Adapters", async () => {
@@ -84,6 +93,7 @@ describe("release Host Bundle", () => {
         repositoryRoot: path.resolve(import.meta.dirname, "../.."),
         outputPath,
       });
+      expect(audit.runtimePackages).toContain("@agentclientprotocol/sdk");
       expect(audit.runtimePackages).toContain("@anthropic-ai/claude-agent-sdk");
       expect(audit.runtimePackages).toContain("@deepseek-ai/dsh-host-apiproxy");
       const source = await readFile(outputPath, "utf8");

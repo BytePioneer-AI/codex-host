@@ -40,6 +40,7 @@ import {
 import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
+  decodeGrokTransportModelId,
   findComposerModelTarget,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
@@ -72,9 +73,15 @@ const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
   "claude-code": harnessIdSchema.parse("claude-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
+  grok: harnessIdSchema.parse("grok"),
 } as const;
 
-const externalAgents: readonly ExternalRendererAgent[] = ["pi", "claude-code", "deepseek-harness"];
+const externalAgents: readonly ExternalRendererAgent[] = [
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "grok",
+];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
@@ -192,6 +199,20 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(inspection.effectivePermissionModeId
         ? { permissionModeId: inspection.effectivePermissionModeId }
         : {}),
+    };
+  }
+  if (inspection.harnessId === "grok") {
+    const transportSelection = decodeGrokTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Grok Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    return {
+      agent: "grok",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {

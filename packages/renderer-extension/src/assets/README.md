@@ -21,7 +21,9 @@ and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is
 the exact extract from the official `deepseek-harness` web favicon
 (`packages/client/ui-primitives/src/FishLogo.tsx` in that repo), rendered
-inline in the DeepSeek brand blue `#4D6BFE`.
+inline in the DeepSeek brand blue `#4D6BFE`. `grok-agent.png` is a cropped and
+resized copy of the Grok mark served by `grok.com`, provided from a captured
+first-party page asset so the Renderer does not make a network request.
 
 `codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
 `pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.

@@ -1,4 +1,5 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
+import grokAgentIconUrl from "./assets/grok-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -6,6 +7,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   pi: "Pi",
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek Harness",
+  grok: "Grok",
 };
 
 const PI_PATHS = [
@@ -77,19 +79,13 @@ export function createRendererAgentIcon(
       "0 0 23.16 17.04",
     );
   }
-  const mark = ownerDocument.createElement("span");
-  mark.textContent = "D";
-  mark.setAttribute("aria-hidden", "true");
-  mark.style.display = "inline-flex";
-  mark.style.alignItems = "center";
-  mark.style.justifyContent = "center";
+  const mark = ownerDocument.createElement("img");
+  mark.src = grokAgentIconUrl;
+  mark.alt = "";
+  mark.draggable = false;
   mark.style.width = `${size}px`;
   mark.style.height = `${size}px`;
+  mark.style.objectFit = "contain";
   mark.style.flex = "none";
-  mark.style.borderRadius = "4px";
-  mark.style.background = "#e8f5f1";
-  mark.style.color = "#0f766e";
-  mark.style.font = `700 ${Math.max(10, Math.floor(size * 0.62))}px/1 system-ui, sans-serif`;
-  mark.style.letterSpacing = "0";
   return mark;
 }

@@ -9,16 +9,19 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
+  GROK_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
+  decodeGrokTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
   encodeDeepSeekHarnessTransportModel,
+  encodeGrokTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
@@ -28,6 +31,7 @@ describe("external Harness transport model routing", () => {
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
+    ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -175,6 +179,23 @@ describe("external Harness transport model routing", () => {
     });
   });
 
+  it("round-trips request-scoped Grok Model and Thinking selection", () => {
+    const model = harnessModelRefSchema.parse({ id: "grok-4.6" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodeGrokTransportModel(model, thinkingOptionId);
+
+    expect(transportModelId).toBe(
+      `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+    );
+    expect(decodeGrokTransportSelection(transportModelId)).toEqual({
+      model,
+      thinkingOptionId,
+    });
+    expect(
+      decodeCreateRoute({ id: 10, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "grok", model, thinkingOptionId });
+  });
+
   it("decodes existing Thread carriers only for their owning Harness", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const selectedPi = encodePiTransportModel(model);
@@ -193,6 +214,8 @@ describe("external Harness transport model routing", () => {
     });
     expect(decodeExternalTransportModel("claude-code", selectedPi)).toBeNull();
     expect(decodeExternalTransportModel("pi", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID)).toBeNull();
+    expect(decodeExternalTransportModel("grok", GROK_NATIVE_TRANSPORT_MODEL_ID)).toBeUndefined();
+    expect(decodeExternalTransportModel("grok", selectedPi)).toBeNull();
   });
 
   it("rejects malformed selected Claude carriers instead of forwarding them as official Models", () => {

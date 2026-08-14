@@ -260,6 +260,36 @@ describe("Renderer sidebar Agent ownership", () => {
     expect(dom.listeners.size).toBe(0);
   });
 
+  it("contains a synchronous early-client failure and retries after refresh", async () => {
+    const row = new FakeRow("pi-thread");
+    const dom = new FakeDom([row]);
+    const listThreadOwnership = vi
+      .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
+      .mockImplementationOnce(() => {
+        throw new Error("request manager unavailable");
+      })
+      .mockResolvedValue({
+        threads: [
+          {
+            threadId: "pi-thread" as HostThreadId,
+            owner: "external",
+            harnessId: PI_HARNESS_ID,
+          },
+        ],
+      });
+    const client = clientWith(listThreadOwnership);
+    const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+
+    await settle();
+    expect(row.agent).toBeNull();
+    control.refresh();
+    await settle();
+
+    expect(listThreadOwnership).toHaveBeenCalledTimes(2);
+    expect(row.agent).toBe("pi");
+    control.dispose();
+  });
+
   it("maps only known external Harness ownership to Renderer Agents", () => {
     expect(
       rendererAgentForThreadOwnership({

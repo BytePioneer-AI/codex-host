@@ -676,6 +676,7 @@ export function installRendererBindingProbe(
       };
       mounted.permissionModeView = { status: "idle" };
       renderMounted(mounted);
+      if (availability === "checking") void refreshHarnessAvailability();
       return;
     }
     mounted.modelView = {
@@ -1290,44 +1291,49 @@ export function installRendererBindingProbe(
   };
 
   const refreshHarnessAvailability = (refresh = false): Promise<void> => {
-    if (adapterStatus.state !== "ready" || !modelControl) return Promise.resolve();
+    if (!modelControl) return Promise.resolve();
     const client = modelControl;
+    harnessAvailability = Object.fromEntries(
+      externalAgents.map((agent) => [agent, "checking"]),
+    ) as HarnessAvailability;
+    for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     if (availabilityRequest?.client === client) return availabilityRequest.promise;
     const generation = ++availabilityRequestGeneration;
     const promise = (async () => {
-      const inspections = await Promise.all(
+      await Promise.all(
         externalAgents.map(async (agent) => {
+          let status: RendererAgentAvailability = "error";
           try {
             const inspection = await client.inspectHarness({
               harnessId: externalHarnessIds[agent],
               refresh,
             });
-            return [agent, inspection.status === "ready" ? "ready" : inspection.status] as const;
+            status = inspection.status === "ready" ? "ready" : inspection.status;
           } catch {
-            return [agent, "error"] as const;
+            status = "error";
+          }
+          if (generation !== availabilityRequestGeneration || disposed) return;
+          harnessAvailability = { ...harnessAvailability, [agent]: status };
+          for (const mounted of mountedByComposer.values()) {
+            const state = controller.get(mounted.composer);
+            if (
+              adapterStatus.state === "ready" &&
+              state.phase === "draft" &&
+              state.agent === agent &&
+              status !== "ready"
+            ) {
+              await switchComposerAgent(mounted, "codex");
+            }
+          }
+          for (const mounted of mountedByComposer.values()) {
+            const state = controller.get(mounted.composer);
+            if (state.agent === agent) {
+              void loadExternalCatalog(mounted);
+            }
+            renderMounted(mounted);
           }
         }),
       );
-      if (generation !== availabilityRequestGeneration || disposed) return;
-      harnessAvailability = Object.fromEntries(inspections) as HarnessAvailability;
-      for (const mounted of mountedByComposer.values()) {
-        const state = controller.get(mounted.composer);
-        if (
-          state.phase === "draft" &&
-          state.agent !== "codex" &&
-          harnessAvailability[state.agent] !== "ready"
-        ) {
-          await switchComposerAgent(mounted, "codex");
-        }
-      }
-      for (const mounted of mountedByComposer.values()) {
-        const state = controller.get(mounted.composer);
-        if (state.agent !== "codex") {
-          void loadExternalCatalog(mounted);
-        } else {
-          renderMounted(mounted);
-        }
-      }
     })();
     const request = { client, promise };
     availabilityRequest = request;
@@ -1644,6 +1650,7 @@ export function installRendererBindingProbe(
   });
   const onAdapterStatus = () => {
     if (adapterStatus.state === "ready") {
+      sidebarAgentIcons.refresh();
       void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {
         if (

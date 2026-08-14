@@ -466,11 +466,11 @@ class InstalledRendererControlSession implements RendererControlSession {
       { timeoutMs: this.timeoutMs, pollIntervalMs: this.pollIntervalMs },
     );
     await activateElectronDesktop(this.inspector);
+    await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(
       this.inspector,
       selected.id,
     );
-    await this.operations.execute(this.inspector, selected.id, this.rendererSource);
     const binding = await waitForBinding(
       this.inspector,
       this.operations,
@@ -562,13 +562,13 @@ export async function createRendererControlSession(
       pollIntervalMs,
     },
   );
+  startupTrace("injecting Renderer bundle");
+  await operations.execute(options.inspector, selected.id, options.rendererSource);
   startupTrace("installing draft routing policy");
   const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(
     options.inspector,
     selected.id,
   );
-  startupTrace("injecting Renderer bundle");
-  await operations.execute(options.inspector, selected.id, options.rendererSource);
   startupTrace("waiting for Renderer binding");
   const binding = await waitForBinding(
     options.inspector,

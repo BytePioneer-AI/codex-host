@@ -199,8 +199,8 @@ export function installRendererSidebarAgentIcons(options: {
   ): void => {
     for (const threadId of threadIds) pending.add(threadId);
     let succeeded = false;
-    void client
-      .listThreadOwnership({ threadIds })
+    void Promise.resolve()
+      .then(() => client.listThreadOwnership({ threadIds }))
       .then(({ threads }) => {
         if (disposed) return;
         for (const ownership of threads) {

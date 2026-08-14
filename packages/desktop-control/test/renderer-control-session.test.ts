@@ -193,8 +193,8 @@ describe("Renderer Control Session", () => {
       "reload",
       "inspect",
       "title-ready:17",
-      "prewarm:17",
       "inject",
+      "prewarm:17",
       "read-binding",
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
@@ -216,8 +216,8 @@ describe("Renderer Control Session", () => {
       "inspect",
       "read-binding",
       "title-ready:19",
-      "prewarm:19",
       "inject",
+      "prewarm:19",
       "read-binding",
     ]);
     await session.quitDesktop();

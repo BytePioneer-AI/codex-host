@@ -26,7 +26,9 @@ import {
 import { encodeDeepSeekHarnessModelRef, type DeepSeekNativeModelRef } from "./model-catalog.js";
 import {
   contentText,
+  deepSeekUsageKey,
   isRecord,
+  mergeDeepSeekUsage,
   nonBlankString,
   parseArguments,
   parseDeepSeekContextWindow,
@@ -116,11 +118,26 @@ export function projectDeepSeekHistory(input: {
   let lastSeq = -1;
   let contextWindowTokens: number | undefined;
   let latestUsageValue: unknown;
+  let latestUsageKey: string | undefined;
   let usage: HostUsage | null = null;
+  const usageByStep = new Map<string, HostUsage>();
 
+  const rebuildUsage = (): void => {
+    usage = null;
+    for (const stepUsage of usageByStep.values()) {
+      usage = mergeDeepSeekUsage(usage, stepUsage);
+    }
+  };
+  const recordUsage = (value: unknown, key: string): void => {
+    const nextUsage = parseDeepSeekUsage(value, contextWindowTokens);
+    if (!nextUsage) return;
+    usageByStep.set(key, nextUsage);
+    latestUsageValue = value;
+    latestUsageKey = key;
+    rebuildUsage();
+  };
   const refreshUsage = (): void => {
-    const nextUsage = parseDeepSeekUsage(latestUsageValue, contextWindowTokens);
-    if (nextUsage) usage = nextUsage;
+    if (latestUsageKey !== undefined) recordUsage(latestUsageValue, latestUsageKey);
   };
 
   for (const entry of input.entries) {
@@ -166,14 +183,14 @@ export function projectDeepSeekHistory(input: {
     if (event.type === "assistant/chunk") {
       const chunk = isRecord(data.chunk) ? data.chunk : null;
       if (chunk?.type === "usage") {
-        latestUsageValue = chunk.usage;
-        refreshUsage();
+        recordUsage(chunk.usage, deepSeekUsageKey(data, `event:${event.seq}`));
       }
       continue;
     }
     if (event.type === "assistant/message") {
-      latestUsageValue = data.usage;
-      refreshUsage();
+      if (data.usage !== undefined) {
+        recordUsage(data.usage, deepSeekUsageKey(data, `event:${event.seq}`));
+      }
       const message = isRecord(data.message) ? data.message : null;
       if (!message) continue;
       const reasoning = contentByType(message, "reasoning");

@@ -298,6 +298,13 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       model: "deepseek-chat",
       contextWindow: 128_000,
     });
+    connection.mux(sessionId as string, {
+      type: "session/projection",
+      sessionId: sessionId as SessionId,
+      key: "sessionStats",
+      value: { decodeTokens: 164, decodeMs: 1_000 },
+      seq: 1,
+    });
     connection.sessionEvent(sessionId as string, 2, "request/header", {
       header: { config: { provider: "deepseek-official", model: "deepseek-chat" } },
     });
@@ -324,18 +331,20 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "event",
-          event: {
+          event: expect.objectContaining({
             type: "session.usage.changed",
             observedForTurnId: turnId,
-            usage: {
+            usage: expect.objectContaining({
               inputTokens: 10,
               outputTokens: 4,
               cachedInputTokens: 5,
               reasoningOutputTokens: 2,
+              cacheHitRatePercent: 33.33333333333333,
+              outputTokensPerSecond: 164,
               contextUsedTokens: 15,
               contextWindowTokens: 128_000,
-            },
-          },
+            }),
+          }),
         }),
       ]),
     );
@@ -375,17 +384,106 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "event",
-          event: {
+          event: expect.objectContaining({
             type: "session.usage.changed",
             observedForTurnId: turnId,
-            usage: {
+            usage: expect.objectContaining({
               inputTokens: 10,
               outputTokens: 4,
               cachedInputTokens: 5,
+              cacheHitRatePercent: 33.33333333333333,
               contextUsedTokens: 15,
               contextWindowTokens: 131_072,
-            },
-          },
+            }),
+          }),
+        }),
+      ]),
+    );
+    await session.close();
+    await adapter.close();
+  });
+
+  it("accumulates Usage across Turns and replaces duplicate step reports", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const sessionId = session.initialState.nativeRef?.nativeSessionId;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const collectTurn = async (): Promise<unknown[]> => {
+      const outputs: unknown[] = [];
+      for (;;) {
+        const result = await iterator.next();
+        if (result.done) throw new Error("Output stream ended before Turn completion");
+        outputs.push(result.value);
+        if (result.value.kind === "event" && result.value.event.type === "turn.completed") {
+          return outputs;
+        }
+      }
+    };
+
+    const firstTurn = hostTurnIdSchema.parse("host-turn-aggregate-1");
+    await session.execute({
+      type: "turn.start",
+      turnId: firstTurn,
+      input: [{ type: "text", text: "first" }],
+    });
+    const firstCollecting = collectTurn();
+    connection.sessionEvent(sessionId as string, 1, "request/context", {
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      contextWindow: 128_000,
+    });
+    connection.sessionEvent(sessionId as string, 2, "turn/start", { turn: 1 });
+    connection.sessionEvent(sessionId as string, 3, "assistant/message", {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: "text", text: "first answer" }] },
+      usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5 },
+    });
+    connection.sessionEvent(sessionId as string, 4, "turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+    await firstCollecting;
+
+    const secondTurn = hostTurnIdSchema.parse("host-turn-aggregate-2");
+    await session.execute({
+      type: "turn.start",
+      turnId: secondTurn,
+      input: [{ type: "text", text: "second" }],
+    });
+    const secondCollecting = collectTurn();
+    connection.sessionEvent(sessionId as string, 5, "turn/start", { turn: 2 });
+    connection.sessionEvent(sessionId as string, 6, "assistant/chunk", {
+      turn: 2,
+      step: 1,
+      chunk: { type: "usage", usage: { inputTokens: 20, outputTokens: 6 } },
+    });
+    connection.sessionEvent(sessionId as string, 7, "assistant/message", {
+      turn: 2,
+      step: 1,
+      message: { content: [{ type: "text", text: "second answer" }] },
+      usage: { inputTokens: 20, outputTokens: 6 },
+    });
+    connection.sessionEvent(sessionId as string, 8, "turn/end", {
+      turn: 2,
+      reason: { kind: "completed" },
+    });
+    const outputs = await secondCollecting;
+    expect(outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "session.usage.changed",
+            observedForTurnId: secondTurn,
+            usage: expect.objectContaining({
+              inputTokens: 30,
+              outputTokens: 10,
+              cachedInputTokens: 5,
+              contextUsedTokens: 20,
+              contextWindowTokens: 128_000,
+            }),
+          }),
         }),
       ]),
     );
@@ -444,7 +542,13 @@ describe("DeepSeekHarnessAdapter local Host", () => {
         },
         usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5 },
       }),
-      event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      event(6, "assistant/message", {
+        turn: 1,
+        step: 2,
+        message: { content: [] },
+        usage: { inputTokens: 20, outputTokens: 6 },
+      }),
+      event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
     ]);
 
     const opened = await adapter.open({
@@ -458,7 +562,10 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(opened.value.initialUsage).toMatchObject({
-      contextUsedTokens: 15,
+      inputTokens: 30,
+      outputTokens: 10,
+      cachedInputTokens: 5,
+      contextUsedTokens: 20,
       contextWindowTokens: 131_072,
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({

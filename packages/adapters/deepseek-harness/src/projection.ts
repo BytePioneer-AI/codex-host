@@ -120,33 +120,51 @@ export function parseDeepSeekContextWindow(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function deepSeekUsageKey(data: Record<string, unknown>, fallback: string): string {
+  return Number.isSafeInteger(data.turn) && Number.isSafeInteger(data.step)
+    ? `turn:${data.turn}:step:${data.step}`
+    : fallback;
+}
+
+export function parseDeepSeekOutputTokensPerSecond(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined;
+  const direct = [
+    value.outputTokensPerSecond,
+    value.tokensPerSecond,
+    value.decodeTokensPerSecond,
+  ].find((candidate) => typeof candidate === "number");
+  if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0) return direct;
+  const decodeTokens = nonNegativeSafeInteger(value.decodeTokens);
+  const decodeMs = nonNegativeSafeInteger(value.decodeMs);
+  if (decodeTokens === undefined || decodeMs === undefined || decodeMs === 0) return undefined;
+  return (decodeTokens * 1_000) / decodeMs;
+}
+
 export function parseDeepSeekUsage(value: unknown, contextWindowTokens?: number): HostUsage | null {
   if (!isRecord(value)) return null;
+  const inputTokens = nonNegativeSafeInteger(value.inputTokens);
+  const cacheReadTokens = nonNegativeSafeInteger(value.cacheReadTokens);
+  const cacheWriteTokens = nonNegativeSafeInteger(value.cacheWriteTokens);
+  const outputTokens = nonNegativeSafeInteger(value.outputTokens);
+  const reasoningTokens = nonNegativeSafeInteger(value.reasoningTokens);
   const windowTokens = parseDeepSeekContextWindow(contextWindowTokens);
-  const billedInput = ["inputTokens", "cacheReadTokens", "cacheWriteTokens"].reduce(
-    (sum, field) => {
-      const candidate = value[field];
-      return typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
-        ? sum + candidate
-        : sum;
-    },
-    0,
-  );
-  const reasoningTokens =
-    typeof value.reasoningTokens === "number" &&
-    Number.isSafeInteger(value.reasoningTokens) &&
-    value.reasoningTokens >= 0
-      ? value.reasoningTokens
+  const billedInput = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+  const cacheHitRatePercent =
+    inputTokens !== undefined && billedInput > 0
+      ? ((cacheReadTokens ?? 0) / billedInput) * 100
       : undefined;
   try {
     return parseHostUsage({
-      ...(value.inputTokens !== undefined ? { inputTokens: value.inputTokens } : {}),
-      ...(value.outputTokens !== undefined ? { outputTokens: value.outputTokens } : {}),
-      ...(value.cacheReadTokens !== undefined ? { cachedInputTokens: value.cacheReadTokens } : {}),
-      ...(value.cacheWriteTokens !== undefined
-        ? { cacheWriteInputTokens: value.cacheWriteTokens }
-        : {}),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(cacheReadTokens !== undefined ? { cachedInputTokens: cacheReadTokens } : {}),
+      ...(cacheWriteTokens !== undefined ? { cacheWriteInputTokens: cacheWriteTokens } : {}),
       ...(reasoningTokens !== undefined ? { reasoningOutputTokens: reasoningTokens } : {}),
+      ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
       ...(windowTokens !== undefined
         ? { contextUsedTokens: billedInput, contextWindowTokens: windowTokens }
         : {}),
@@ -154,6 +172,49 @@ export function parseDeepSeekUsage(value: unknown, contextWindowTokens?: number)
   } catch {
     return null;
   }
+}
+
+const DEEPSEEK_USAGE_COUNTERS = [
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+] as const satisfies ReadonlyArray<keyof HostUsage>;
+
+export function mergeDeepSeekUsage(current: HostUsage | null, next: HostUsage): HostUsage {
+  const counters = Object.fromEntries(
+    DEEPSEEK_USAGE_COUNTERS.flatMap((field) => {
+      const value = (current?.[field] ?? 0) + (next[field] ?? 0);
+      return current?.[field] !== undefined || next[field] !== undefined ? [[field, value]] : [];
+    }),
+  );
+  const context =
+    next.contextUsedTokens !== undefined && next.contextWindowTokens !== undefined
+      ? {
+          contextUsedTokens: next.contextUsedTokens,
+          contextWindowTokens: next.contextWindowTokens,
+        }
+      : current?.contextUsedTokens !== undefined && current.contextWindowTokens !== undefined
+        ? {
+            contextUsedTokens: current.contextUsedTokens,
+            contextWindowTokens: current.contextWindowTokens,
+          }
+        : {};
+  return parseHostUsage({
+    ...counters,
+    ...context,
+    ...(next.cacheHitRatePercent !== undefined
+      ? { cacheHitRatePercent: next.cacheHitRatePercent }
+      : current?.cacheHitRatePercent !== undefined
+        ? { cacheHitRatePercent: current.cacheHitRatePercent }
+        : {}),
+    ...(next.outputTokensPerSecond !== undefined
+      ? { outputTokensPerSecond: next.outputTokensPerSecond }
+      : current?.outputTokensPerSecond !== undefined
+        ? { outputTokensPerSecond: current.outputTokensPerSecond }
+        : {}),
+  });
 }
 
 export function projectTurnReason(value: unknown): {

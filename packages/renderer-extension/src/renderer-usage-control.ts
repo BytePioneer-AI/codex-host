@@ -25,6 +25,10 @@ export function formatRendererCost(value: number): string {
   return `$${value.toFixed(3)}`;
 }
 
+export function formatRendererTokenRate(value: number): string {
+  return `${decimal(value, 1)} tok/s`;
+}
+
 export function formatRendererTokenCount(value: number): string {
   const sign = value < 0 ? "-" : "";
   const absolute = Math.abs(value);
@@ -77,11 +81,17 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot): voi
       formatRendererCacheHitRate(usage.cacheHitRatePercent),
     );
   }
+  if (usage.outputTokensPerSecond !== undefined) {
+    addDetailRow(popover, "Output speed", formatRendererTokenRate(usage.outputTokensPerSecond));
+  }
   if (usage.cachedInputTokens !== undefined) {
     addDetailRow(popover, "Cache read", formatRendererTokenCount(usage.cachedInputTokens));
   }
   if (usage.cacheWriteInputTokens !== undefined) {
     addDetailRow(popover, "Cache write", formatRendererTokenCount(usage.cacheWriteInputTokens));
+  }
+  if (usage.reasoningOutputTokens !== undefined) {
+    addDetailRow(popover, "Reasoning", formatRendererTokenCount(usage.reasoningOutputTokens));
   }
   if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
     addDetailRow(
@@ -282,10 +292,12 @@ export function renderRendererUsageControl(
   usage: ThreadUsageSnapshot | null,
 ): boolean {
   const cacheHitRatePercent = usage?.cacheHitRatePercent;
+  const outputTokensPerSecond = usage?.outputTokensPerSecond;
   const totalCostUsd = usage?.totalCostUsd;
   const hasCacheHitRate = cacheHitRatePercent !== undefined;
+  const hasOutputSpeed = outputTokensPerSecond !== undefined;
   const hasCost = totalCostUsd !== undefined;
-  const visible = hasCacheHitRate || hasCost;
+  const visible = hasCacheHitRate || hasOutputSpeed || hasCost;
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible || !usage) {
     closePopover(control);
@@ -294,6 +306,7 @@ export function renderRendererUsageControl(
 
   const summary = [
     cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
+    outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   const compactSummary = summary.join(" · ");

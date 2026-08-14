@@ -3,6 +3,7 @@ export interface HostUsage {
   cachedInputTokens?: number;
   cacheWriteInputTokens?: number;
   outputTokens?: number;
+  outputTokensPerSecond?: number;
   reasoningOutputTokens?: number;
   totalTokens?: number;
   totalCostUsd?: number;
@@ -16,6 +17,7 @@ const tokenFields = [
   "cachedInputTokens",
   "cacheWriteInputTokens",
   "outputTokens",
+  "outputTokensPerSecond",
   "reasoningOutputTokens",
   "totalTokens",
   "contextWindowTokens",
@@ -49,6 +51,14 @@ export function parseHostUsage(value: unknown): HostUsage {
     ) {
       throw new Error(`Harness Usage '${field}' must be a non-negative safe integer`);
     }
+  }
+  if (
+    value.outputTokensPerSecond !== undefined &&
+    (typeof value.outputTokensPerSecond !== "number" ||
+      !Number.isFinite(value.outputTokensPerSecond) ||
+      value.outputTokensPerSecond < 0)
+  ) {
+    throw new Error("Harness Usage 'outputTokensPerSecond' must be a finite non-negative number");
   }
   if (
     value.totalCostUsd !== undefined &&

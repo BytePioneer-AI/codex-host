@@ -80,10 +80,13 @@ import {
 } from "./model-catalog.js";
 import {
   contentText,
+  deepSeekUsageKey,
   isRecord,
+  mergeDeepSeekUsage,
   nonBlankString,
   parseArguments,
   parseDeepSeekContextWindow,
+  parseDeepSeekOutputTokensPerSecond,
   parseDeepSeekUsage,
   projectToolResult,
   projectTurnReason,
@@ -234,7 +237,12 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   #model: HarnessModelRef;
   #contextWindowTokens: number | undefined;
   #turns: HostTurnSnapshot[];
+  #usageBaseline: HostUsage | null;
+  #usageByStep = new Map<string, HostUsage>();
   #usage: HostUsage | null = null;
+  #usageSequence = 0;
+  #latestUsageKey: string | undefined;
+  #outputTokensPerSecond: number | undefined;
 
   constructor(input: {
     client: DeepSeekHostClient;
@@ -256,6 +264,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#lastSeq = input.lastSeq;
     this.#contextWindowTokens = input.contextWindowTokens;
     this.initialUsage = input.initialUsage ?? null;
+    this.#usageBaseline = this.initialUsage;
     this.#usage = this.initialUsage;
     this.#turns = [...input.snapshot.turns];
     this.#nativeRef = nativeSessionRefSchema.parse({
@@ -296,10 +305,14 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#lastSeq = Math.max(this.#lastSeq, projection.lastSeq);
       this.#turns = [...projection.snapshot.turns];
       this.#contextWindowTokens = projection.contextWindowTokens;
+      this.#usageBaseline = projection.usage;
+      this.#usageByStep.clear();
+      this.#latestUsageKey = undefined;
       if (projection.effectiveModel) this.#model = projection.effectiveModel;
-      if (JSON.stringify(projection.usage) !== JSON.stringify(this.#usage)) {
-        this.#usage = projection.usage;
-        this.#emit({ type: "session.usage.changed", usage: projection.usage });
+      const usage = this.#withOutputSpeed(projection.usage);
+      if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
+        this.#usage = usage;
+        this.#emit({ type: "session.usage.changed", usage });
       }
       return {
         ok: true,
@@ -395,6 +408,16 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   onMux(envelope: DeepSeekMuxEnvelope): void {
     if (this.#closed) return;
     const frame = envelope.payload;
+    if (frame.type === "session/projection") {
+      if (frame.sessionId === this.#nativeRef.nativeSessionId && frame.key === "sessionStats") {
+        const speed = parseDeepSeekOutputTokensPerSecond(frame.value);
+        if (speed !== undefined) {
+          this.#outputTokensPerSecond = speed;
+          this.#publishUsage();
+        }
+      }
+      return;
+    }
     if (frame.type === "session/event") {
       if (frame.event.seq <= this.#lastSeq) return;
       this.#lastSeq = frame.event.seq;
@@ -582,20 +605,20 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         const contextWindowTokens = parseDeepSeekContextWindow(data.contextWindow);
         if (contextWindowTokens !== undefined) {
           this.#contextWindowTokens = contextWindowTokens;
-          if (this.#usage) {
+          const latestUsageKey = this.#latestUsageKey;
+          const latest =
+            latestUsageKey === undefined ? undefined : this.#usageByStep.get(latestUsageKey);
+          if (latest && latestUsageKey !== undefined) {
             const contextUsedTokens =
-              (this.#usage.inputTokens ?? 0) +
-              (this.#usage.cachedInputTokens ?? 0) +
-              (this.#usage.cacheWriteInputTokens ?? 0);
-            const usage = { ...this.#usage, contextUsedTokens, contextWindowTokens };
-            if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
-              this.#usage = usage;
-              this.#emit({
-                type: "session.usage.changed",
-                usage,
-                ...(active ? { observedForTurnId: active.command.turnId } : {}),
-              });
-            }
+              (latest.inputTokens ?? 0) +
+              (latest.cachedInputTokens ?? 0) +
+              (latest.cacheWriteInputTokens ?? 0);
+            this.#usageByStep.set(latestUsageKey, {
+              ...latest,
+              contextUsedTokens,
+              contextWindowTokens,
+            });
+            this.#publishUsage(active?.command.turnId);
           }
         }
         return;
@@ -607,7 +630,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         } else if (data.chunk.type === "reasoning-delta" && typeof data.chunk.text === "string") {
           this.#appendReasoning(active, data.chunk.text);
         } else if (data.chunk.type === "usage") {
-          this.#updateUsage(data.chunk.usage, active.command.turnId);
+          this.#updateUsage(
+            data.chunk.usage,
+            active.command.turnId,
+            deepSeekUsageKey(data, `live:${this.#usageSequence++}`),
+          );
         }
         return;
       case "assistant/message":
@@ -618,7 +645,13 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           if (text) this.#appendAgent(active, text);
         }
         this.#completeAgent(active, { status: "succeeded" });
-        this.#updateUsage(data.usage, active.command.turnId);
+        if (data.usage !== undefined) {
+          this.#updateUsage(
+            data.usage,
+            active.command.turnId,
+            deepSeekUsageKey(data, `live:${this.#usageSequence++}`),
+          );
+        }
         return;
       case "tool/call":
         if (!active?.started) return;
@@ -904,11 +937,34 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#emit({ type: "item.completed", turnId: active.command.turnId, snapshot });
   }
 
-  #updateUsage(value: unknown, turnId: HostTurnId): void {
+  #updateUsage(value: unknown, turnId: HostTurnId, key: string): void {
     const usage = parseDeepSeekUsage(value, this.#contextWindowTokens);
-    if (!usage || JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
+    if (!usage) return;
+    this.#usageByStep.set(key, usage);
+    this.#latestUsageKey = key;
+    this.#publishUsage(turnId);
+  }
+
+  #publishUsage(observedForTurnId?: HostTurnId): void {
+    let usage = this.#usageBaseline;
+    for (const stepUsage of this.#usageByStep.values()) {
+      usage = mergeDeepSeekUsage(usage, stepUsage);
+    }
+    usage = this.#withOutputSpeed(usage);
+    if (JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
     this.#usage = usage;
-    this.#emit({ type: "session.usage.changed", usage, observedForTurnId: turnId });
+    this.#emit({
+      type: "session.usage.changed",
+      usage,
+      ...(observedForTurnId ? { observedForTurnId } : {}),
+    });
+  }
+
+  #withOutputSpeed(usage: HostUsage | null): HostUsage | null {
+    if (this.#outputTokensPerSecond === undefined) return usage;
+    return usage
+      ? { ...usage, outputTokensPerSecond: this.#outputTokensPerSecond }
+      : { outputTokensPerSecond: this.#outputTokensPerSecond };
   }
 
   #nativeTurnRef(turn: number): NativeTurnRef {

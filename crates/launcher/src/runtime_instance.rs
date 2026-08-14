@@ -316,7 +316,7 @@ impl Drop for RuntimeDescriptorGuard {
 mod tests {
     use std::env;
     use std::fs;
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::time::{SystemTime, UNIX_EPOCH};
 

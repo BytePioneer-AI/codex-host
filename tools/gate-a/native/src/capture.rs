@@ -42,6 +42,7 @@ fn json_string(value: &str) -> String {
     output
 }
 
+#[cfg(any(unix, test))]
 fn release_architecture() -> &'static str {
     match std::env::consts::ARCH {
         "x86_64" => "x64",

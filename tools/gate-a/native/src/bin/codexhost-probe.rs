@@ -332,6 +332,14 @@ mod tests {
 
     use super::{DesktopLaunchMode, parse_options};
 
+    fn absolute_shim_path() -> &'static str {
+        if cfg!(target_os = "windows") {
+            r"C:\probe\codexhost-shim-probe.exe"
+        } else {
+            "/probe/codexhost-shim-probe"
+        }
+    }
+
     #[test]
     fn requires_absolute_shim_path() {
         let error = parse_options(&["--shim".into(), "shim.exe".into()])
@@ -341,14 +349,9 @@ mod tests {
 
     #[test]
     fn parses_probe_options() {
-        let absolute = if cfg!(target_os = "windows") {
-            r"C:\probe\codexhost-shim-probe.exe"
-        } else {
-            "/probe/codexhost-shim-probe"
-        };
         let options = parse_options(&[
             "--shim".into(),
-            absolute.into(),
+            absolute_shim_path().into(),
             "--launch-mode".into(),
             "direct-executable".into(),
             "--output".into(),
@@ -357,7 +360,7 @@ mod tests {
             "5".into(),
         ])
         .expect("valid options");
-        assert_eq!(options.shim_path, PathBuf::from(absolute));
+        assert_eq!(options.shim_path, PathBuf::from(absolute_shim_path()));
         assert_eq!(options.launch_mode, DesktopLaunchMode::DirectExecutable);
         assert_eq!(options.wait_timeout.as_secs(), 5);
         assert!(!options.exit_after_capture);
@@ -368,7 +371,9 @@ mod tests {
     fn rejects_conflicting_capture_dispositions() {
         let error = parse_options(&[
             "--shim".into(),
-            "/probe/codexhost-shim-probe".into(),
+            absolute_shim_path().into(),
+            "--launch-mode".into(),
+            "direct-executable".into(),
             "--exit-after-capture".into(),
             "--shutdown-after-capture".into(),
         ])

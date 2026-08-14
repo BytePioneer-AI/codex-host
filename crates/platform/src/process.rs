@@ -148,11 +148,6 @@ pub(crate) fn same_process_instance(expected: &ProcessSnapshot, current: &Proces
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn same_process_identity(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
-    same_process_instance(expected, current) && expected.executable == current.executable
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn descendant_snapshots(
     roots: &[u32],
     snapshots: &[ProcessSnapshot],
@@ -403,9 +398,13 @@ impl ObservedProcessTree {
                     Err(PlatformError::NotFound(_)) => continue,
                     Err(error) => return Err(error),
                 };
-                if !same_process_identity(expected, &current) {
+                // An observed descendant may legitimately exec after it is
+                // attributed to this launch. PID plus start time is the
+                // process-instance identity; its executable is not. The
+                // Desktop root is checked separately in `observe()`.
+                if !same_process_instance(expected, &current) {
                     return Err(PlatformError::Invalid(format!(
-                        "PID {} identity changed before signal delivery",
+                        "PID {} was reused before signal delivery",
                         expected.id
                     )));
                 }
@@ -425,9 +424,13 @@ impl ObservedProcessTree {
                     Err(PlatformError::NotFound(_)) => continue,
                     Err(error) => return Err(error),
                 };
-                if !same_process_identity(expected, &current) {
+                // An observed descendant may legitimately exec after it is
+                // attributed to this launch. PID plus start time is the
+                // process-instance identity; its executable is not. The
+                // Desktop root is checked separately in `observe()`.
+                if !same_process_instance(expected, &current) {
                     return Err(PlatformError::Invalid(format!(
-                        "PID {} identity changed before signal delivery",
+                        "PID {} was reused before signal delivery",
                         expected.id
                     )));
                 }
@@ -455,7 +458,7 @@ impl ObservedProcessTree {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn signal_processes_exact(
     processes: &[ProcessSnapshot],
     signal: nix::sys::signal::Signal,
@@ -465,11 +468,11 @@ pub(crate) fn signal_processes_exact(
         .iter()
         .filter_map(
             |expected| match snapshots.iter().find(|current| current.id == expected.id) {
-                Some(current) if same_process_identity(expected, current) => {
+                Some(current) if same_process_instance(expected, current) => {
                     Some(Ok(expected.clone()))
                 }
                 Some(_) => Some(Err(PlatformError::Invalid(format!(
-                    "PID {} identity changed before cleanup",
+                    "PID {} was reused before cleanup",
                     expected.id
                 )))),
                 None => None,
@@ -791,9 +794,11 @@ mod windows_tests {
 mod tests {
     use std::path::Path;
 
+    #[cfg(target_os = "linux")]
+    use super::ObservedProcessTree;
     use super::{
-        ObservedProcessTree, ProcessSnapshot, desktop_process_tree_from_snapshots,
-        desktop_root_snapshots, process_snapshot, same_process_identity, same_process_instance,
+        ProcessSnapshot, desktop_process_tree_from_snapshots, desktop_root_snapshots,
+        process_snapshot, same_process_instance,
     };
 
     fn snapshot(
@@ -856,7 +861,6 @@ mod tests {
         let execed = snapshot(10, 1, "/tmp/tool", 100);
         let reused = snapshot(10, 1, "/tmp/helper", 101);
         assert!(same_process_instance(&original, &execed));
-        assert!(!same_process_identity(&original, &execed));
         assert!(!same_process_instance(&original, &reused));
     }
 

@@ -672,9 +672,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::time::Duration;
-    #[cfg(target_os = "linux")]
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[cfg(target_os = "macos")]
     use super::desktop_launch_command;
@@ -710,6 +708,22 @@ mod tests {
             desktop_executable: "/usr/lib/chatgpt/ChatGPT".into(),
             packaged_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
             executable_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
+        }
+    }
+
+    fn spawned_sleep_snapshot(process_id: u32) -> ProcessSnapshot {
+        let expected_executable = std::fs::canonicalize("/bin/sleep").expect("canonical sleep");
+        let started = Instant::now();
+        loop {
+            let snapshot = unix_process_snapshot(process_id).expect("snapshot spawned sleep");
+            if snapshot.executable == expected_executable {
+                return snapshot;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "spawned sleep did not exec before supervision"
+            );
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -864,7 +878,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut own = own_command.spawn().expect("spawn owned fixture");
-        let own_snapshot = unix_process_snapshot(own.id()).expect("snapshot owned fixture");
+        let own_snapshot = spawned_sleep_snapshot(own.id());
 
         let mut independent_command = Command::new("/bin/sleep");
         independent_command
@@ -876,8 +890,7 @@ mod tests {
         let mut independent = independent_command
             .spawn()
             .expect("spawn independent fixture");
-        let independent_snapshot =
-            unix_process_snapshot(independent.id()).expect("snapshot independent fixture");
+        let independent_snapshot = spawned_sleep_snapshot(independent.id());
 
         super::cleanup_failed_desktop_launch(&mut own, std::slice::from_ref(&own_snapshot))
             .expect("clean owned fixture");
@@ -984,7 +997,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let desktop = desktop_command.spawn().expect("spawn fake Desktop root");
-        let desktop_snapshot = unix_process_snapshot(desktop.id()).expect("snapshot Desktop root");
+        let desktop_snapshot = spawned_sleep_snapshot(desktop.id());
         let mut session = DesktopSession {
             launch_process: desktop,
             tree: ObservedProcessTree::new(desktop_snapshot),

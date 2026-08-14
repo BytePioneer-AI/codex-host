@@ -13,6 +13,7 @@ mod system_proxy_environment;
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -721,7 +722,7 @@ fn handle_compatibility_result(
         if update_availability == CompatibilityUpdateAvailability::Started {
             return Ok(CompatibilityLaunchDecision::ContinueManaged);
         }
-        return match choice {
+        match choice {
             CompatibilityChoice::ContinueCodexhost => {
                 if let (Some(path), Some(key)) =
                     (acknowledgement_path.as_deref(), acknowledgement.as_ref())
@@ -742,7 +743,7 @@ fn handle_compatibility_result(
                 Ok(CompatibilityLaunchDecision::ContinueManaged)
             }
             CompatibilityChoice::OpenStockCodex => Ok(CompatibilityLaunchDecision::LaunchStock),
-        };
+        }
     }
 }
 
@@ -1048,7 +1049,10 @@ fn force_stop_external_desktop(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(), Box<dyn Error>> {
+fn launch(
+    options: LaunchOptions,
+    _interactive_running_desktop: bool,
+) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     let options = options.resolve()?;
     startup_trace("resources resolved");
@@ -1098,7 +1102,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    if interactive_running_desktop {
+                    if _interactive_running_desktop {
                         match prompt_running_desktop() {
                             RunningDesktopChoice::Restart => {
                                 force_stop_external_desktop(
@@ -1152,7 +1156,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
         #[cfg(target_os = "windows")]
         match result {
             Err(error)
-                if interactive_running_desktop
+                if _interactive_running_desktop
                     && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
                         || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
             {

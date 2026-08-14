@@ -1,9 +1,13 @@
 use std::io;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::time::{Duration, Instant};
 
 use super::PlatformError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use super::process::{ObservedProcessTree, unix_process_snapshot};
+use super::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
 #[cfg(target_os = "windows")]
 use super::windows_process;
 
@@ -196,16 +200,68 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+fn spawned_root_snapshot(
+    child: &mut Child,
+    expected_executable: Option<&Path>,
+) -> Result<Option<ProcessSnapshot>, PlatformError> {
+    const EXEC_IDENTITY_TIMEOUT: Duration = Duration::from_secs(1);
+    let started = Instant::now();
+    let mut process_instance = None;
+    loop {
+        match unix_process_snapshot(child.id()) {
+            Ok(snapshot) => {
+                if let Some((process_id, started_at_micros)) = process_instance {
+                    if snapshot.id != process_id || snapshot.started_at_micros != started_at_micros
+                    {
+                        return Err(PlatformError::Invalid(format!(
+                            "spawned PID {} was reused before supervision",
+                            child.id()
+                        )));
+                    }
+                } else {
+                    process_instance = Some((snapshot.id, snapshot.started_at_micros));
+                }
+                let Some(expected_executable) = expected_executable else {
+                    return Ok(Some(snapshot));
+                };
+                if snapshot.executable == expected_executable {
+                    return Ok(Some(snapshot));
+                }
+                if started.elapsed() >= EXEC_IDENTITY_TIMEOUT {
+                    return Err(PlatformError::Invalid(format!(
+                        "spawned PID {} did not exec expected executable {} (observed {})",
+                        child.id(),
+                        expected_executable.display(),
+                        snapshot.executable.display()
+                    )));
+                }
+            }
+            Err(error) => {
+                if child.try_wait()?.is_some() {
+                    return Ok(None);
+                }
+                if started.elapsed() >= EXEC_IDENTITY_TIMEOUT {
+                    return Err(error);
+                }
+            }
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     use std::os::unix::process::CommandExt;
 
+    let expected_executable = std::fs::canonicalize(command.get_program()).ok();
     command.process_group(0);
     let mut child = command.spawn()?;
-    let root = match unix_process_snapshot(child.id()) {
-        Ok(root) => root,
-        Err(_) if child.try_wait()?.is_some() => {
-            return Ok(SupervisedChild { child, guard: None });
-        }
+    let root = match spawned_root_snapshot(&mut child, expected_executable.as_deref()) {
+        Ok(Some(root)) => root,
+        Ok(None) => return Ok(SupervisedChild { child, guard: None }),
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();

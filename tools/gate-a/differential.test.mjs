@@ -70,8 +70,10 @@ describe("app-server stdout validation", () => {
     );
     try {
       const result = await runDifferential({
-        stockCodexPath: fakeCodex,
-        shimPath: fakeCodex,
+        stockCodexPath: process.execPath,
+        stockCodexPrefixArguments: [fakeCodex],
+        shimPath: process.execPath,
+        shimPrefixArguments: [fakeCodex],
         temporaryParent: parent,
       });
       expect(result.unknownDifferences).toEqual([]);

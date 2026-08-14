@@ -59,19 +59,19 @@ function normalize(value, roots) {
   );
 }
 
-function commandSpec(executable, shim, codexHome) {
+function commandSpec(executable, shim, codexHome, prefixArguments = []) {
   if (!shim) {
     return {
       label: "direct",
       executable,
-      prefixArguments: [],
+      prefixArguments,
       environment: cleanEnvironment(codexHome),
     };
   }
   return {
     label: "shim",
     executable: shim,
-    prefixArguments: [],
+    prefixArguments,
     environment: {
       ...cleanEnvironment(codexHome),
       CODEXHOST_STOCK_CODEX_PATH: executable,
@@ -369,7 +369,9 @@ function copyCodexProfile(sourceHome, codexHomes) {
 
 export async function runDifferential({
   stockCodexPath,
+  stockCodexPrefixArguments = [],
   shimPath,
+  shimPrefixArguments = [],
   outputPath,
   temporaryParent = os.tmpdir(),
   live = false,
@@ -383,8 +385,8 @@ export async function runDifferential({
   if (live) {
     copyCodexProfile(path.join(os.homedir(), ".codex"), [directCodexHome, shimCodexHome]);
   }
-  const direct = commandSpec(stockCodexPath, null, directCodexHome);
-  const shim = commandSpec(stockCodexPath, shimPath, shimCodexHome);
+  const direct = commandSpec(stockCodexPath, null, directCodexHome, stockCodexPrefixArguments);
+  const shim = commandSpec(stockCodexPath, shimPath, shimCodexHome, shimPrefixArguments);
   try {
     const directVersion = await version(direct);
     const shimVersion = await version(shim);

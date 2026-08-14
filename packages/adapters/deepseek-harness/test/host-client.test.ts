@@ -153,14 +153,16 @@ describe("DeepSeek local Host connection", () => {
 
   it("resolves the configured command from the Adapter environment", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codexhost-dsh-path-"));
-    const executable = path.join(directory, "dsh");
-    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    const executable = path.join(directory, process.platform === "win32" ? "dsh.cmd" : "dsh");
+    writeFileSync(
+      executable,
+      process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+    );
     chmodSync(executable, 0o755);
 
-    expect(resolveDeepSeekCommand(undefined, { PATH: directory })).toEqual({
-      command: executable,
-      arguments: [],
-    });
+    const resolved = resolveDeepSeekCommand(undefined, { PATH: directory });
+    expect(resolved).toMatchObject({ arguments: [] });
+    expect(resolved?.command.toLowerCase()).toBe(executable.toLowerCase());
     expect(resolveDeepSeekCommand(undefined, { PATH: "" })).toBeNull();
   });
 });

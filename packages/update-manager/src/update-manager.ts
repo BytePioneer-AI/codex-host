@@ -20,6 +20,7 @@ import {
 } from "./status.js";
 
 const REQUEST_SCHEMA_VERSION = 1;
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
 
 export interface PreparedUpdateInfo {
   version: string;
@@ -128,6 +129,38 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function systemErrorCode(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : null;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function replaceStatusFile(temporaryPath: string, statusPath: string): Promise<void> {
+  let retryIndex = 0;
+  for (;;) {
+    try {
+      await rename(temporaryPath, statusPath);
+      return;
+    } catch (error) {
+      const retryDelay = WINDOWS_RENAME_RETRY_DELAYS_MS[retryIndex];
+      const code = systemErrorCode(error);
+      if (
+        process.platform !== "win32" ||
+        retryDelay === undefined ||
+        (code !== "EACCES" && code !== "EBUSY" && code !== "EPERM")
+      ) {
+        throw error;
+      }
+      retryIndex += 1;
+      await delay(retryDelay);
+    }
+  }
+}
+
 function requireAbsolutePath(value: string, label: string): string {
   if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path`);
   return path.normalize(value);
@@ -190,7 +223,7 @@ export function createBackgroundUpdateManager(
         mode: 0o600,
         flag: "wx",
       });
-      await rename(temporaryPath, statusPath);
+      await replaceStatusFile(temporaryPath, statusPath);
     } catch (error) {
       await rm(temporaryPath, { force: true });
       throw error;

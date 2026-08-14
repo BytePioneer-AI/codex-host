@@ -1,10 +1,36 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { PathLike } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const renameFixture = vi.hoisted(() => ({
+  attempts: 0,
+  remainingFailures: 0,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return {
+    ...actual,
+    async rename(oldPath: PathLike, newPath: PathLike): Promise<void> {
+      if (String(newPath).endsWith("status-v1.json")) {
+        renameFixture.attempts += 1;
+        if (renameFixture.remainingFailures > 0) {
+          renameFixture.remainingFailures -= 1;
+          const error = new Error("status file is temporarily busy") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+      }
+      await actual.rename(oldPath, newPath);
+    },
+  };
+});
 
 import {
   createBackgroundUpdateManager,
@@ -21,6 +47,8 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 afterEach(async () => {
+  renameFixture.attempts = 0;
+  renameFixture.remainingFailures = 0;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -111,6 +139,37 @@ describe("background update manager", () => {
     expect(started.updaterPid).toBeTypeOf("number");
     expect(() => manager.start(prepared)).toThrow("already started");
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "retries transient Windows status replacement failures",
+    async () => {
+      const root = await temporaryDirectory();
+      const common = await commonOptions(root);
+      const npmFiles = {
+        nodePath: path.join(root, "node", "node"),
+        npmCliPath: path.join(root, "node", "npm-cli.js"),
+        npmLauncherPath: path.join(root, "npm", "bin", "codexhost.js"),
+      };
+      for (const filePath of Object.values(npmFiles)) {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, "fixture\n");
+      }
+      renameFixture.remainingFailures = 2;
+      const manager = createBackgroundUpdateManager({
+        platform: "darwin",
+        randomId: () => "retry-fixture",
+      });
+
+      await expect(
+        manager.prepareNpm({
+          ...common,
+          ...npmFiles,
+          packageRoot: path.join(root, "npm", "platform-package"),
+        }),
+      ).resolves.toMatchObject({ installation: "npm" });
+      expect(renameFixture.attempts).toBe(3);
+    },
+  );
 
   it("reports artifact download progress while preparing an installer", async () => {
     const root = await temporaryDirectory();

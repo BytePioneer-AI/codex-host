@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { HistoryEntry, MuxFrame, SessionModels } from "@deepseek-ai/dsh-host-apiproxy/api";
@@ -199,7 +201,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     const sessionId = session.initialState.nativeRef?.nativeSessionId;
     expect(sessionId).toBe("session-native-1");
     expect(connection.calls.create).toHaveBeenCalledWith({
-      cwd: "/workspace",
+      cwd: path.resolve("/workspace"),
       sessionId: "session-native-1",
     });
     expect(connection.calls.selectModel).toHaveBeenCalledWith({

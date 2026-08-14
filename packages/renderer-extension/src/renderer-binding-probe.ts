@@ -392,8 +392,13 @@ export function installRendererBindingProbe(
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
+  const isMountedComposer = (composer: Element): boolean =>
+    composer.isConnected &&
+    composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    mountedByComposer.has(composer);
+
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
-    mounted.composer.isConnected &&
+    isMountedComposer(mounted.composer) &&
     mountedByComposer.get(mounted.composer) === mounted &&
     controller.isCurrentModelRequest(mounted.composer, generation);
 
@@ -1338,7 +1343,13 @@ export function installRendererBindingProbe(
   };
 
   const mount = (composer: Element): void => {
-    if (mountedByComposer.has(composer) || !composer.isConnected) return;
+    if (
+      mountedByComposer.has(composer) ||
+      !composer.isConnected ||
+      !composer.matches(CODEX_COMPOSER_SELECTOR)
+    ) {
+      return;
+    }
     const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
@@ -1441,7 +1452,18 @@ export function installRendererBindingProbe(
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
-      if (!composer.isConnected || !mounted.control.root.isConnected) {
+      if (
+        !composer.isConnected ||
+        !composer.matches(CODEX_COMPOSER_SELECTOR) ||
+        !mounted.control.root.isConnected
+      ) {
+        mounted.usageRequestGeneration += 1;
+        usageRefreshAttempts.delete(composer);
+        const timer = usageRefreshTimers.get(composer);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          usageRefreshTimers.delete(composer);
+        }
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -1556,7 +1578,8 @@ export function installRendererBindingProbe(
   const composerForTarget = (target: EventTarget | null): Element | null => {
     const element = eventElement(target);
     const editor = element ? editorForElement(element) : null;
-    return editor ? composerForEditor(editor) : null;
+    const composer = editor ? composerForEditor(editor) : null;
+    return composer && isMountedComposer(composer) ? composer : null;
   };
   const onBeforeInput = (event: InputEvent): void => {
     const composer = composerForTarget(event.target);
@@ -1567,7 +1590,8 @@ export function installRendererBindingProbe(
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
-    const composer = element ? composerForElement(element) : null;
+    const candidate = element ? composerForElement(element) : null;
+    const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     if (!composer) return;
     const prepared = prepareComposer(composer);
     if (prepared === null) return;
@@ -1603,7 +1627,8 @@ export function installRendererBindingProbe(
     const element = eventElement(event.target);
     const button = element?.closest<HTMLButtonElement>("button");
     if (!button) return;
-    const composer = composerForElement(button);
+    const candidate = composerForElement(button);
+    const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (!composer || mounted?.control.sendButton !== button) return;
     if (!prepareComposer(composer)) {
@@ -1634,7 +1659,7 @@ export function installRendererBindingProbe(
   };
   mutationObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["hidden", "aria-hidden"],
+    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
     characterData: true,
     childList: true,
     subtree: true,

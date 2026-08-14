@@ -8,6 +8,17 @@ Define the supported Desktop build contract for Composer-scoped Codex, Pi, and C
 
 The Renderer Extension SHALL keep Agent state isolated by logical Composer, SHALL keep the selected Agent mutable while the user edits a draft, SHALL synchronously freeze the final Agent when that draft is submitted, and SHALL persist the Agent of the most recently submitted Composer for later new-Thread drafts across codexhost Renderer windows.
 
+#### Scenario: Ordinary Chat composer is present
+
+- **WHEN** the Renderer contains an editable form with a Send button outside a verified Codex composer root
+- **THEN** the Renderer Extension does not mount Agent controls or intercept that form's input and submission events
+
+#### Scenario: Renderer switches from Work to Chat
+
+- **WHEN** a previously mounted Composer is no longer inside a verified Codex composer root
+- **THEN** the Renderer Extension removes its controls and stops intercepting that Composer's input and submission events
+- **AND** a later verified Codex composer is discovered normally without reloading the Renderer
+
 #### Scenario: User switches after editing
 
 - **WHEN** a user types, pastes, composes with an IME, deletes content, inserts an attachment, or adds a line break before submission

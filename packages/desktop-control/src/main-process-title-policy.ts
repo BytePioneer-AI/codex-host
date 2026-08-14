@@ -83,7 +83,7 @@ const ELECTRON_MODULE_EXPRESSION = `(() => {
 })()`;
 
 const CONNECT_APP_HOST_CHANNEL = "codex_desktop:connect-app-host";
-const REVIEWED_TITLE_SERVICE_IDENTITIES = ["Dhe", "Nye", "wbe", "nxe"] as const;
+const REVIEWED_TITLE_SERVICE_IDENTITIES = ["Dhe", "Nye", "wbe", "nxe", "tTe"] as const;
 const POLICY_STATE_SYMBOL = "codexhost.main-process-title-policy.v1";
 const SERVICE_OWNER_SYMBOL = "codexhost.main-process-title-policy.owner.v1";
 const RENDERER_READY_EXPRESSION =

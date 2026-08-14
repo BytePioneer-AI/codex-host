@@ -66,24 +66,6 @@ function digest(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function writeUpdaterWaitingStatus(requestPath: string): Promise<void> {
-  const request = JSON.parse(await readFile(requestPath, "utf8")) as {
-    version: string;
-    status_path: string;
-    installation: { kind: "npm" | "windows-installer" | "macos-dmg" };
-  };
-  await writeFile(
-    request.status_path,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      version: request.version,
-      installation: request.installation.kind,
-      phase: "waiting-for-exit",
-      updatedAt: 11,
-    })}\n`,
-  );
-}
-
 async function macFixture(): Promise<{
   root: string;
   hostRuntimePath: string;
@@ -128,7 +110,7 @@ function release(version = "1.2.3"): CodexhostLatestRelease {
 }
 
 describe("Host update coordinator", () => {
-  it("hands a macOS update to Launcher and waits for the Helper before shutdown", async () => {
+  it("hands a macOS update to Launcher without starting the Helper", async () => {
     const fixture = await npmFixture();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
@@ -137,7 +119,6 @@ describe("Host update coordinator", () => {
       spawnUpdater,
       now: () => 10_000,
     });
-    const shutdown = vi.fn(async () => {});
     const coordinator = createHostUpdateCoordinator({
       hostRuntimePath: fixture.hostRuntimePath,
       environment: fixture.environment,
@@ -145,7 +126,6 @@ describe("Host update coordinator", () => {
       architecture: "arm64",
       manager,
       fetchLatest: async () => release(),
-      shutdown,
     });
 
     await expect(coordinator.check()).resolves.toMatchObject({
@@ -176,20 +156,9 @@ describe("Host update coordinator", () => {
       expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
     );
     expect(spawnUpdater).not.toHaveBeenCalled();
-    coordinator.requestShutdown();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(shutdown).not.toHaveBeenCalled();
-
-    await writeUpdaterWaitingStatus(updaterRequestPath);
-    await vi.waitFor(() =>
-      expect(shutdown).toHaveBeenCalledWith({
-        port: 43124,
-        nonce: "0123456789abcdef0123456789abcdef",
-      }),
-    );
   });
 
-  it("returns before a macOS artifact download completes and shuts down afterward", async () => {
+  it("returns before a macOS artifact download completes", async () => {
     const fixture = await macFixture();
     const bytes = Buffer.from("macos-dmg-fixture");
     let unblockDownload!: () => void;
@@ -212,7 +181,6 @@ describe("Host update coordinator", () => {
         return { bytes: bytes.length, finalUrl: "https://downloads.example.test/final" };
       },
     });
-    const shutdown = vi.fn(async () => {});
     const coordinator = createHostUpdateCoordinator({
       hostRuntimePath: fixture.hostRuntimePath,
       environment: fixture.environment,
@@ -233,14 +201,11 @@ describe("Host update coordinator", () => {
           },
         ],
       }),
-      shutdown,
     });
 
     const result = await coordinator.start();
     expect(result.status).toMatchObject({ version: "1.2.3", installation: "macos-dmg" });
     await downloadObserved;
-    coordinator.requestShutdown();
-    expect(shutdown).not.toHaveBeenCalled();
     await vi.waitFor(async () =>
       expect((await coordinator.status()).status).toMatchObject({
         phase: "downloading",
@@ -261,8 +226,9 @@ describe("Host update coordinator", () => {
       "request-v1.json",
     );
     await vi.waitFor(async () => expect(await readFile(requestPath, "utf8")).not.toEqual(""));
-    await writeUpdaterWaitingStatus(requestPath);
-    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+    await expect(coordinator.status()).resolves.toMatchObject({
+      status: { phase: "prepared", version: "1.2.3", installation: "macos-dmg" },
+    });
   });
 
   it("ignores a prepared status without an active operation lock", async () => {

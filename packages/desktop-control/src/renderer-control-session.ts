@@ -73,7 +73,6 @@ interface RendererControlOperations {
   readTitlePolicyCounters(
     inspector: RendererInspector,
   ): Promise<MainProcessTitlePolicyCounters | null>;
-  quitDesktop(inspector: RendererInspector): Promise<void>;
 }
 
 export type CompatibilityUpdateOutcome = "update-started" | "current" | "unavailable";
@@ -82,7 +81,6 @@ export interface RendererControlSession {
   readonly snapshot: RendererControlSnapshot;
   ensureInstalled(): Promise<RendererControlSnapshot>;
   activateDesktop(): Promise<number>;
-  quitDesktop(): Promise<void>;
   requestCompatibilityUpdate(): Promise<CompatibilityUpdateOutcome>;
   executeRenderer<T>(expression: string): Promise<T>;
   readTitlePolicyCounters(): Promise<MainProcessTitlePolicyCounters | null>;
@@ -299,17 +297,6 @@ export async function activateElectronDesktop(
   return value as number;
 }
 
-export async function quitElectronDesktop(
-  inspector: Pick<RendererInspector, "evaluate">,
-): Promise<void> {
-  const accepted = await inspector.evaluate<unknown>(`(() => {
-    const { app } = ${electronModuleExpression};
-    setTimeout(() => app.quit(), 100);
-    return true;
-  })()`);
-  if (accepted !== true) throw new Error("Electron Desktop did not accept the quit request");
-}
-
 async function executeInWebContents<T>(
   inspector: Pick<RendererInspector, "evaluate">,
   rendererWebContentsId: number,
@@ -351,7 +338,6 @@ const defaultOperations: RendererControlOperations = {
       "window.__codexhostRendererBindingProbeV1?.status() ?? null",
     ),
   readTitlePolicyCounters: readMainProcessTitlePolicyCounters,
-  quitDesktop: quitElectronDesktop,
 };
 
 async function waitForRenderer(
@@ -492,11 +478,6 @@ class InstalledRendererControlSession implements RendererControlSession {
   activateDesktop(): Promise<number> {
     if (this.#closed) return Promise.reject(new Error("Renderer Control Session is closed"));
     return activateElectronDesktop(this.inspector);
-  }
-
-  quitDesktop(): Promise<void> {
-    if (this.#closed) return Promise.reject(new Error("Renderer Control Session is closed"));
-    return this.operations.quitDesktop(this.inspector);
   }
 
   async requestCompatibilityUpdate(): Promise<CompatibilityUpdateOutcome> {

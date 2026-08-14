@@ -898,7 +898,6 @@ export class AppServerHost {
       }
       const result = updateStartResultSchema.parse(await coordinator.start());
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-      coordinator.requestShutdown();
     } catch (error) {
       await this.#writer.json(rpcError(request, -32091, errorMessage(error).slice(0, 500)));
     }

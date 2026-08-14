@@ -11,7 +11,6 @@ export interface StartControllerAttachmentServerOptions {
   nonce: string;
   attach(): Promise<void>;
   compatibilityUpdate(): Promise<"update-started" | "current" | "unavailable">;
-  shutdown(): Promise<void>;
 }
 
 function validPort(value: number): boolean {
@@ -79,11 +78,6 @@ export async function startControllerAttachmentServer(
           (outcome) => respond(socket, outcome),
           () => respond(socket, "failed"),
         );
-        return;
-      }
-      if (line === `SHUTDOWN ${options.nonce}`) {
-        respond(socket, "ready");
-        queueMicrotask(() => void options.shutdown().catch(() => undefined));
         return;
       }
       respond(socket, "rejected");

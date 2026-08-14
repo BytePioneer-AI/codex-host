@@ -174,9 +174,6 @@ describe("Renderer Control Session", () => {
       async readTitlePolicyCounters() {
         return null;
       },
-      async quitDesktop() {
-        calls.push("quit");
-      },
     };
 
     const session = await createRendererControlSession({
@@ -220,8 +217,6 @@ describe("Renderer Control Session", () => {
       "prewarm:19",
       "read-binding",
     ]);
-    await session.quitDesktop();
-    expect(calls.at(-1)).toBe("quit");
     session.close();
     expect(inspector.close).toHaveBeenCalledOnce();
   });
@@ -262,7 +257,6 @@ describe("Renderer Control Session", () => {
       async readTitlePolicyCounters() {
         return null;
       },
-      async quitDesktop() {},
     };
 
     const session = await createRendererControlSession({
@@ -313,7 +307,6 @@ describe("Renderer Control Session", () => {
       async readTitlePolicyCounters() {
         return null;
       },
-      async quitDesktop() {},
     };
 
     const failure = createRendererControlSession({

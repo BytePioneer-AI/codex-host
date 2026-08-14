@@ -38,7 +38,7 @@ The update capability SHALL read strict packaged distribution metadata and resol
 - **THEN** automatic update SHALL fail before download or process shutdown
 
 ### Requirement: Installer preparation reports bounded download progress
-The Host and Update Manager SHALL persist a `downloading` status for installer artifacts with nonnegative `downloadedBytes` and a positive `totalBytes` derived from the verified GitHub asset size. Renderer SHALL be able to read that status while preparation is active. Download completion SHALL be followed by the existing size and SHA-256 verification before the operation becomes `prepared` and before Desktop shutdown is requested. npm updates MAY remain phase-only because npm installation occurs after the managed application exits.
+The Host and Update Manager SHALL persist a `downloading` status for installer artifacts with nonnegative `downloadedBytes` and a positive `totalBytes` derived from the verified GitHub asset size. Renderer SHALL be able to read that status while preparation is active. Download completion SHALL be followed by the existing size and SHA-256 verification before the operation becomes `prepared` and before the Launcher stops the managed Desktop. npm updates MAY remain phase-only because npm installation occurs after the managed application exits.
 
 #### Scenario: macOS DMG download is active
 - **WHEN** a verified macOS Release asset is being downloaded
@@ -50,14 +50,14 @@ The Host and Update Manager SHALL persist a `downloading` status for installer a
 - **WHEN** artifact download, size validation, or digest validation fails
 - **THEN** status SHALL become `failed` with bounded error text
 - **AND** the temporary artifact SHALL be removed
-- **AND** Host SHALL NOT request Desktop shutdown
+- **AND** the Launcher SHALL NOT stop the managed Desktop for that failed operation
 
-### Requirement: Update starts once and shuts down the managed application in order
-Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL start the temporary Updater, confirm a helper PID, respond to the initiating Renderer, and only then request the authenticated Desktop Controller to quit the managed Electron application. The helper SHALL install only after the exact Launcher exits.
+### Requirement: Update starts once and stops the managed Desktop process tree
+Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows it SHALL start the temporary Updater; on macOS the Launcher SHALL start that helper from the prepared request. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. The helper SHALL install only after the exact Launcher exits.
 
 #### Scenario: User starts the current candidate
 - **WHEN** no update operation is active and the current candidate remains the latest stable Release
-- **THEN** exactly one helper SHALL start and the managed Desktop SHALL begin orderly shutdown after the start response is produced
+- **THEN** exactly one helper SHALL start and the Launcher SHALL stop the owned Desktop process tree after that helper is waiting for exit
 
 #### Scenario: User clicks update repeatedly
 - **WHEN** a prepared or active operation already exists

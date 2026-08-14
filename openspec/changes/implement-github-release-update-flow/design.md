@@ -43,23 +43,23 @@ The existing Renderer request-manager client adds explicit methods for these ope
 
 Production Host composition creates one update coordinator from process environment and the Host bundle location. It parses the packaged distribution, checks GitHub, selects the current target, serializes prepare/start with an atomic local operation lock, and routes only the three fixed methods. A second start while an operation is prepared or active returns the existing status rather than spawning another helper.
 
-Immediately before start, Host refreshes the current Release and rejects a stale candidate. After the helper reports a PID, Host sends the success response and schedules a bounded Controller shutdown request. Normal app-server stream closure drives the existing Adapter, Session, official app-server, and Mapping Store cleanup.
+Immediately before start, Host refreshes the current Release and rejects a stale candidate. After preparation it returns the current status to Renderer. On Windows it also starts the temporary Updater; on macOS the Launcher starts that helper. Desktop shutdown is not requested through Electron.
 
-Alternative: run updates directly in Renderer or Desktop Controller. Rejected because Renderer cannot own filesystem/network/process privileges, while the Host already owns reviewed fixed request routing and can compose the Node manager. Desktop Controller owns only managed Desktop activation and shutdown.
+Alternative: run updates directly in Renderer or Desktop Controller. Rejected because Renderer cannot own filesystem/network/process privileges, while the Host already owns reviewed fixed request routing and can compose the Node manager. Desktop Controller owns only managed Desktop activation.
 
-### 4. Launcher supplies minimal runtime identity and Controller owns graceful Desktop quit
+### 4. Launcher supplies runtime identity and stops the managed Desktop for updates
 
-Launcher adds its PID, canonical executable, Controller loopback port, and nonce to the managed Desktop environment. These values identify the exact Launcher the temporary helper must wait for and authenticate a fixed local Controller command. npm launcher additionally supplies the absolute system Node, npm CLI, npm meta launcher, and platform package root; installer layouts derive from the Host bundle location.
+Launcher adds its PID, canonical executable, Controller loopback port, and nonce to the managed Desktop environment. These values identify the exact Launcher the temporary helper must wait for. npm launcher additionally supplies the absolute system Node, npm CLI, npm meta launcher, and platform package root; installer layouts derive from the Host bundle location.
 
-The existing Controller attachment server accepts either `ATTACH <nonce>` or `SHUTDOWN <nonce>`. Shutdown stops new attachment work, responds, and invokes Electron main-process `app.quit()` through the existing Inspector session. Desktop exit causes Host cleanup and Launcher supervision to stop Controller and release its guard. The helper then observes Launcher exit and installs.
+After the helper is started, or when the discoverable status is `waiting-for-exit` for this Launcher, the Launcher stops the owned Desktop process tree with SIGTERM then SIGKILL (or the Windows equivalent), then exits. The helper observes that Launcher exit and installs. Controller Inspector `app.quit()` is not part of the update path.
 
-Alternative: terminate Launcher or Desktop by PID from Host. Rejected because it bypasses existing cleanup and increases Windows file-occupation races.
+Alternative: ask Electron to quit through the Inspector session. Rejected because Codex Desktop can cancel or ignore `app.quit()` without exiting.
 
 ### 5. Updates is one cohesive settings page
 
 The production registry adds an Updates page after Gateway. The page uses a method-specific client supplied by the binding lifecycle. On mount it checks current status and the latest Release. It renders current/latest version, bounded Release body text, an external release-notes link, one Update and Restart command, bounded waiting/failure states, and retry. It uses page `runLatest` and abort semantics, never fetches GitHub directly, and never renders arbitrary Release Markdown as HTML.
 
-Installer download and preparation expose a bounded byte-progress state. The Node downloader reports each received chunk against GitHub's declared asset size, persists throttled progress in the discoverable status file, and the Host returns from start as soon as the operation status exists. The Host starts the temporary Updater and requests Desktop shutdown only after the artifact is fully downloaded and verified. Once shutdown begins the UI disappears; after relaunch the page discovers and polls a `restarting` operation until terminal, then reports success or failure. npm installation remains phase-only because its package installation occurs after the old application exits.
+Installer download and preparation expose a bounded byte-progress state. The Node downloader reports each received chunk against GitHub's declared asset size, persists throttled progress in the discoverable status file, and the Host returns from start as soon as the operation status exists. The Host starts the temporary Updater only on non-macOS platforms, and only after the artifact is fully downloaded and verified. The Launcher then stops the owned Desktop tree. Once the Desktop exits the UI disappears; after relaunch the page discovers and polls a `restarting` operation until terminal, then reports success or failure. npm installation remains phase-only because its package installation occurs after the old application exits.
 
 ### 6. Local operation state is discoverable and bounded
 
@@ -72,22 +72,22 @@ The update state root is platform application data, outside install roots. Every
 - [GitHub API is offline or rate-limited] -> Cache the last successful check locally, keep normal launch available, and expose retry only when the user opens Updates.
 - [GitHub asset digest is absent] -> Show the Release and notes but disable automatic installation with an honest error.
 - [Two Host processes race to update] -> Use one atomic state-root lock and bind start to the refreshed current candidate.
-- [Desktop refuses to quit] -> Helper times out after its existing 180-second wait and records failure without modifying the installation.
+- [Desktop process tree does not die] -> Launcher retries SIGTERM/SIGKILL on the owned tree; the helper still times out after 180 seconds without modifying the installation if the Launcher itself never exits.
 - [macOS application parent is not writable] -> Record a permission failure; a later platform authorization dialog may retry, but this change does not silently elevate.
 - [New process starts before helper writes success] -> Treat `restarting` as pending and poll the discoverable local status.
-- [Private Electron behavior changes] -> Keep quit inside the version-reviewed Controller Inspector and fail without force-killing from Renderer.
+- [Private Electron behavior changes] -> Update shutdown no longer depends on Inspector `app.quit()`.
 
 ## Migration Plan
 
 1. Add specifications and update the PRD decision.
 2. Extend Shared Contracts and `update-manager` with Release/distribution/status coordination.
-3. Add Launcher environment and Controller shutdown control with focused process tests.
+3. Add Launcher environment and Launcher-owned Desktop stop for updates with focused process tests.
 4. Compose fixed update methods in Host Runtime and extend the method-specific Renderer client.
 5. Add the Updates settings page and lifecycle tests.
 6. Run focused checks, full check/build, release contract tests, and strict OpenSpec validation.
 7. Execute real npm, Windows x64/ARM64, and macOS arm64/x64 old-to-new upgrade gates; retain unverified targets as pending.
 
-Rollback removes the new request routes, page, and Controller shutdown command. Existing packaged helpers remain inert and existing application/session data needs no migration.
+Rollback removes the new request routes, page, and Launcher-owned Desktop stop for updates. Existing packaged helpers remain inert and existing application/session data needs no migration.
 
 ## Open Questions
 

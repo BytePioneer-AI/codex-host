@@ -21,7 +21,6 @@ export {
   createRendererControlSession,
   inspectElectronWebContents,
   installRendererControlSession,
-  quitElectronDesktop,
   selectRendererWebContents,
   waitForInspectorTarget,
   waitForRendererTitlePolicyReady,

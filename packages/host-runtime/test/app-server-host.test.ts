@@ -259,8 +259,7 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
-  it("routes fixed update controls locally and starts shutdown after the response", async () => {
-    const events: string[] = [];
+  it("routes fixed update controls locally without requesting Desktop quit", async () => {
     const updateCoordinator: HostUpdateCoordinator = {
       check: vi.fn(async () => ({
         currentVersion: "1.2.2",
@@ -283,10 +282,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       })),
       status: vi.fn(async () => ({ status: null })),
-      requestShutdown: vi.fn(() => events.push("shutdown")),
     };
     const fixture = createFixture({ updateCoordinator });
-    fixture.desktopOutput.on("data", () => events.push("response"));
 
     writeRequest(fixture.desktopInput, {
       id: 20,
@@ -297,7 +294,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor((message) => requestId(message, 20)),
     ).resolves.toMatchObject({ result: { latestVersion: "1.2.3", updateAvailable: true } });
 
-    events.length = 0;
     writeRequest(fixture.desktopInput, {
       id: 21,
       method: "codexhost/update/start",
@@ -306,7 +302,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 21)),
     ).resolves.toMatchObject({ result: { status: { phase: "prepared" } } });
-    expect(events).toEqual(["response", "shutdown"]);
     expect(updateCoordinator.start).toHaveBeenCalledOnce();
     await stopFixture(fixture);
   });

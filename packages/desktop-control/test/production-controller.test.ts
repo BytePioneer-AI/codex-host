@@ -131,13 +131,11 @@ describe("production Desktop Controller", () => {
     });
     const activateDesktop = vi.fn(async () => 1);
     const requestCompatibilityUpdate = vi.fn(async () => "current" as const);
-    const quitDesktop = vi.fn(async () => {});
     const close = vi.fn();
     const session: RendererControlSession = {
       snapshot,
       ensureInstalled,
       activateDesktop,
-      quitDesktop,
       requestCompatibilityUpdate,
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
@@ -149,11 +147,9 @@ describe("production Desktop Controller", () => {
     let attach: (() => Promise<void>) | undefined;
     let compatibilityUpdate:
       (() => Promise<"update-started" | "current" | "unavailable">) | undefined;
-    let shutdown: (() => Promise<void>) | undefined;
     const startAttachmentServer = vi.fn(async (options) => {
       attach = options.attach;
       compatibilityUpdate = options.compatibilityUpdate;
-      shutdown = options.shutdown;
       return server;
     });
     const dependencies: DesktopControllerDependencies = {
@@ -179,7 +175,6 @@ describe("production Desktop Controller", () => {
       nonce: attachmentNonce,
       attach: expect.any(Function),
       compatibilityUpdate: expect.any(Function),
-      shutdown: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,
@@ -193,7 +188,6 @@ describe("production Desktop Controller", () => {
     expect(compatibilityUpdate).toEqual(expect.any(Function));
     await expect(compatibilityUpdate?.()).resolves.toBe("current");
     expect(requestCompatibilityUpdate).toHaveBeenCalledOnce();
-    expect(shutdown).toEqual(expect.any(Function));
   });
 
   it("retries a transient Electron evaluation failure during cold startup", async () => {
@@ -204,7 +198,7 @@ describe("production Desktop Controller", () => {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
-      quitDesktop: vi.fn(async () => {}),
+
       requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
@@ -245,7 +239,7 @@ describe("production Desktop Controller", () => {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
-      quitDesktop: vi.fn(async () => {}),
+
       requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
@@ -331,7 +325,7 @@ describe("production Desktop Controller", () => {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop,
-      quitDesktop: vi.fn(async () => {}),
+
       requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
@@ -375,7 +369,7 @@ describe("production Desktop Controller", () => {
         throw new Error("Renderer binding disappeared");
       }),
       activateDesktop: vi.fn(async () => 1),
-      quitDesktop: vi.fn(async () => {}),
+
       requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),
@@ -385,7 +379,7 @@ describe("production Desktop Controller", () => {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
-      quitDesktop: vi.fn(async () => {}),
+
       requestCompatibilityUpdate: vi.fn(async () => "unavailable" as const),
       executeRenderer: vi.fn(),
       readTitlePolicyCounters: vi.fn(),

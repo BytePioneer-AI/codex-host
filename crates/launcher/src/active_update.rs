@@ -1,7 +1,9 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
 use codexhost_platform::atomic_replace_file;
@@ -74,7 +76,7 @@ fn pending_update_at(
     state_directory: &Path,
     launcher_pid: u32,
     launcher_executable: &Path,
-) -> io::Result<Option<PendingUpdate>> {
+) -> io::Result<Option<(String, PendingUpdate)>> {
     let Some(lock_bytes) =
         read_bounded_regular_file(&state_directory.join(ACTIVE_UPDATE_LOCK_FILE))?
     else {
@@ -98,9 +100,8 @@ fn pending_update_at(
         return Err(invalid("active update status schema is unsupported"));
     }
     match status.phase.as_str() {
-        "prepared" => {}
-        "downloading" | "waiting-for-exit" | "installing" | "restarting" | "succeeded"
-        | "failed" => return Ok(None),
+        "prepared" | "waiting-for-exit" => {}
+        "downloading" | "installing" | "restarting" | "succeeded" | "failed" => return Ok(None),
         _ => return Err(invalid("active update status phase is invalid")),
     }
 
@@ -141,22 +142,50 @@ fn pending_update_at(
     if !helper_metadata.is_file() || helper_metadata.file_type().is_symlink() {
         return Err(invalid("active update Helper is not a regular file"));
     }
-    Ok(Some(PendingUpdate {
-        lock_path: state_directory.join(ACTIVE_UPDATE_LOCK_FILE),
-        status_path: canonical_status,
-        helper_path: helper_path.canonicalize()?,
-        request_path: request_path.canonicalize()?,
-    }))
+    Ok(Some((
+        status.phase,
+        PendingUpdate {
+            lock_path: state_directory.join(ACTIVE_UPDATE_LOCK_FILE),
+            status_path: canonical_status,
+            helper_path: helper_path.canonicalize()?,
+            request_path: request_path.canonicalize()?,
+        },
+    )))
 }
 
-fn pending_update() -> io::Result<Option<PendingUpdate>> {
+fn pending_startable_update_at(
+    state_directory: &Path,
+    launcher_pid: u32,
+    launcher_executable: &Path,
+) -> io::Result<Option<PendingUpdate>> {
+    match pending_update_at(state_directory, launcher_pid, launcher_executable)? {
+        Some((phase, pending)) if phase == "prepared" => Ok(Some(pending)),
+        _ => Ok(None),
+    }
+}
+
+fn waiting_for_launcher_exit_at(
+    state_directory: &Path,
+    launcher_pid: u32,
+    launcher_executable: &Path,
+) -> io::Result<bool> {
+    Ok(matches!(
+        pending_update_at(state_directory, launcher_pid, launcher_executable)?,
+        Some((phase, _)) if phase == "waiting-for-exit"
+    ))
+}
+
+fn update_state_directory() -> io::Result<PathBuf> {
     let descriptor = default_descriptor_path()?;
-    let state_directory = descriptor
+    descriptor
         .parent()
-        .ok_or_else(|| invalid("runtime descriptor has no state directory"))?
-        .join("updates");
-    pending_update_at(
-        &state_directory,
+        .ok_or_else(|| invalid("runtime descriptor has no state directory"))
+        .map(|parent| parent.join("updates"))
+}
+
+pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
+    waiting_for_launcher_exit_at(
+        &update_state_directory()?,
         std::process::id(),
         &std::env::current_exe()?,
     )
@@ -194,11 +223,17 @@ fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Re
     result
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io::Result<()> {
     if started_request.is_some() {
         return Ok(());
     }
-    let Some(pending) = pending_update()? else {
+    let Some(pending) = pending_startable_update_at(
+        &update_state_directory()?,
+        std::process::id(),
+        &std::env::current_exe()?,
+    )?
+    else {
         return Ok(());
     };
     let mut child = Command::new(&pending.helper_path)
@@ -228,7 +263,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, pending_update_at, transfer_lock_to_updater,
+        pending_startable_update_at, pending_update_at, transfer_lock_to_updater,
+        waiting_for_launcher_exit_at, PendingUpdate, ACTIVE_UPDATE_LOCK_FILE,
     };
 
     fn fixture_directory(label: &str) -> PathBuf {
@@ -307,7 +343,7 @@ mod tests {
         let expected = write_pending_update(&root, &launcher, 42);
 
         assert_eq!(
-            pending_update_at(&root, 42, &launcher).expect("resolve pending update"),
+            pending_startable_update_at(&root, 42, &launcher).expect("resolve pending update"),
             Some(expected)
         );
         assert!(pending_update_at(&root, 43, &launcher).is_err());
@@ -344,9 +380,41 @@ mod tests {
         fs::remove_file(expected.request_path).expect("remove incomplete request");
 
         assert_eq!(
-            pending_update_at(&root, 42, &launcher).expect("ignore incomplete update"),
+            pending_startable_update_at(&root, 42, &launcher).expect("ignore incomplete update"),
             None
         );
         fs::remove_dir_all(fixture).expect("remove incomplete update fixture");
+    }
+
+    #[test]
+    fn treats_waiting_for_exit_as_a_managed_desktop_stop() {
+        let fixture = fixture_directory("waiting-update");
+        let root = fixture.join("updates");
+        fs::create_dir(&root).expect("create update root");
+        let launcher = fixture.join("codexhost");
+        fs::write(&launcher, b"launcher").expect("write Launcher fixture");
+        let pending = write_pending_update(&root, &launcher, 42);
+        fs::write(
+            &pending.status_path,
+            format!(
+                "{}\n",
+                json!({
+                    "schemaVersion": 1,
+                    "version": "1.2.3",
+                    "installation": "macos-dmg",
+                    "phase": "waiting-for-exit",
+                    "updatedAt": 2,
+                })
+            ),
+        )
+        .expect("write waiting status fixture");
+
+        assert_eq!(
+            pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
+            None
+        );
+        assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
+        assert!(waiting_for_launcher_exit_at(&root, 43, &launcher).is_err());
+        fs::remove_dir_all(fixture).expect("remove waiting update fixture");
     }
 }

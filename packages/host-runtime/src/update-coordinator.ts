@@ -1,5 +1,3 @@
-import { createConnection } from "node:net";
-
 import type {
   UpdateCheckResult,
   UpdateStartResult,
@@ -24,15 +22,11 @@ import {
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
-const CONTROLLER_TIMEOUT_MS = 5_000;
-const UPDATER_READY_TIMEOUT_MS = 10_000;
-const UPDATER_READY_POLL_MS = 20;
 
 export interface HostUpdateCoordinator {
   check(signal?: AbortSignal): Promise<UpdateCheckResult>;
   start(): Promise<UpdateStartResult>;
   status(): Promise<UpdateStatusResult>;
-  requestShutdown(): void;
 }
 
 export interface CreateHostUpdateCoordinatorOptions {
@@ -42,41 +36,11 @@ export interface CreateHostUpdateCoordinatorOptions {
   architecture?: string;
   manager?: BackgroundUpdateManager;
   fetchLatest?(signal?: AbortSignal): Promise<CodexhostLatestRelease>;
-  shutdown?(controller: { port: number; nonce: string }): Promise<void>;
 }
 
 function boundedError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, ERROR_MAX_LENGTH) || "Update operation failed";
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function waitForUpdaterReady(
-  manager: BackgroundUpdateManager,
-  statusPath: string,
-): Promise<void> {
-  const deadline = Date.now() + UPDATER_READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const status = await manager.readStatus(statusPath);
-    switch (status?.phase) {
-      case "waiting-for-exit":
-      case "installing":
-      case "restarting":
-      case "succeeded":
-        return;
-      case "failed":
-        throw new Error(status.error ?? "Background Updater failed before Desktop shutdown");
-      case "prepared":
-        break;
-      default:
-        throw new Error("Background Updater reported an unexpected startup phase");
-    }
-    await delay(UPDATER_READY_POLL_MS);
-  }
-  throw new Error("Background Updater did not become ready before Desktop shutdown");
 }
 
 function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
@@ -89,36 +53,6 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
   };
-}
-
-export function requestControllerShutdown(controller: {
-  port: number;
-  nonce: string;
-}): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: "127.0.0.1", port: controller.port });
-    let response = "";
-    const timeout = setTimeout(
-      () => socket.destroy(new Error("Controller shutdown timed out")),
-      CONTROLLER_TIMEOUT_MS,
-    );
-    const settle = (operation: () => void): void => {
-      clearTimeout(timeout);
-      operation();
-    };
-    socket.setEncoding("utf8");
-    socket.once("error", (error) => settle(() => reject(error)));
-    socket.on("data", (chunk: string) => {
-      response += chunk;
-    });
-    socket.once("end", () =>
-      settle(() => {
-        if (response === "ready\n") resolve();
-        else reject(new Error("Desktop Controller rejected the shutdown request"));
-      }),
-    );
-    socket.once("connect", () => socket.write(`SHUTDOWN ${controller.nonce}\n`));
-  });
 }
 
 export function createHostUpdateCoordinator(
@@ -136,17 +70,7 @@ export function createHostUpdateCoordinator(
     options.fetchLatest ??
     ((signal?: AbortSignal) =>
       fetchLatestGitHubRelease({ signal: signal ?? AbortSignal.timeout(15_000) }));
-  const shutdown = options.shutdown ?? requestControllerShutdown;
   let candidate: CodexhostLatestRelease | null = null;
-  let shutdownPending: InstalledUpdateContext["controller"] | null = null;
-  let shutdownRequested = false;
-
-  const scheduleShutdown = (): void => {
-    if (!shutdownRequested || !shutdownPending) return;
-    const controller = shutdownPending;
-    shutdownPending = null;
-    setTimeout(() => void shutdown(controller).catch(() => undefined), 50).unref();
-  };
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
@@ -305,9 +229,6 @@ export function createHostUpdateCoordinator(
                     });
             }
             if (platform !== "darwin") manager.start(prepared);
-            await waitForUpdaterReady(manager, prepared.statusPath);
-            shutdownPending = context.controller;
-            scheduleShutdown();
           } catch (error) {
             await lock.release();
             rejectPrepared(error);
@@ -332,11 +253,6 @@ export function createHostUpdateCoordinator(
       } catch {
         return { status: null };
       }
-    },
-
-    requestShutdown(): void {
-      shutdownRequested = true;
-      scheduleShutdown();
     },
   });
 }

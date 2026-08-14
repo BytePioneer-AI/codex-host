@@ -20,7 +20,7 @@ export {
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
-export { createHostUpdateCoordinator, requestControllerShutdown } from "./update-coordinator.js";
+export { createHostUpdateCoordinator } from "./update-coordinator.js";
 export type {
   CreateHostUpdateCoordinatorOptions,
   HostUpdateCoordinator,

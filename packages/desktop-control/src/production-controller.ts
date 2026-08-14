@@ -353,11 +353,6 @@ export async function runDesktopController(
           const current = await recoverSession();
           return current.requestCompatibilityUpdate();
         }),
-      shutdown: () =>
-        useSession(async () => {
-          const current = await recoverSession();
-          await current.quitDesktop();
-        }),
     });
     startupTrace("attachment server ready");
     const issues = session?.snapshot.titlePolicy.warnings ?? [];

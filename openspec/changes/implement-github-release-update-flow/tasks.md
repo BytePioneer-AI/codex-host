@@ -12,14 +12,14 @@
 ## 3. Managed Shutdown Control
 
 - [x] 3.1 Pass the exact Launcher PID, executable, Controller port, and nonce through the managed Desktop environment and preserve npm-only absolute update paths from the npm launcher.
-- [x] 3.2 Extend the Controller's authenticated loopback protocol and Renderer Control Session with one bounded graceful Desktop shutdown operation.
-- [x] 3.3 Add Launcher/Desktop Controller tests for accepted/rejected shutdown, response-before-quit ordering, and unchanged attachment behavior.
+- [x] 3.2 After the update Helper is started or reports `waiting-for-exit`, the Launcher stops the owned Desktop process tree and exits. Do not quit Desktop through Controller Inspector `app.quit()`.
+- [x] 3.3 Add Launcher tests for prepared Helper start versus waiting-for-exit Desktop stop, and Controller tests that the retired SHUTDOWN command is rejected.
 
 ## 4. Host Update Composition
 
-- [x] 4.1 Compose Release discovery, installed context, Update Manager, operation serialization, status recovery, and Controller shutdown in one Host-owned update coordinator.
+- [x] 4.1 Compose Release discovery, installed context, Update Manager, operation serialization, and status recovery in one Host-owned update coordinator.
 - [x] 4.2 Route only fixed `codexhost/update/check`, `codexhost/update/start`, and `codexhost/update/status` requests and reject malformed or privileged input.
-- [x] 4.3 Add Host tests for no update, installable update, missing digest, duplicate start, helper start before shutdown, status recovery, and GitHub failure.
+- [x] 4.3 Add Host tests for no update, installable update, missing digest, duplicate start, macOS Helper hand-off, status recovery, and GitHub failure.
 
 ## 5. Renderer Update Experience
 

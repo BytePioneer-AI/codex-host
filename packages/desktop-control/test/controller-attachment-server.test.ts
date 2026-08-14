@@ -39,19 +39,16 @@ describe("Controller attachment server", () => {
     const port = await availablePort();
     const attach = vi.fn(async () => {});
     const compatibilityUpdate = vi.fn(async () => "current" as const);
-    const shutdown = vi.fn(async () => {});
     const server = await startControllerAttachmentServer({
       port,
       nonce,
       attach,
       compatibilityUpdate,
-      shutdown,
     });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
       await expect(request(port, `ATTACH ${"0".repeat(32)}\n`)).resolves.toBe("rejected\n");
       expect(attach).toHaveBeenCalledOnce();
-      expect(shutdown).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -65,7 +62,6 @@ describe("Controller attachment server", () => {
       nonce,
       attach: async () => {},
       compatibilityUpdate,
-      shutdown: async () => {},
     });
     try {
       await expect(request(port, `COMPATIBILITY_UPDATE ${nonce}\n`)).resolves.toBe(
@@ -89,7 +85,6 @@ describe("Controller attachment server", () => {
         throw new Error("private detail");
       },
       compatibilityUpdate: async () => "unavailable",
-      shutdown: async () => {},
     });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("failed\n");
@@ -98,23 +93,16 @@ describe("Controller attachment server", () => {
     }
   });
 
-  it("acknowledges an authenticated shutdown before invoking its callback", async () => {
+  it("rejects the retired Desktop quit command", async () => {
     const port = await availablePort();
-    const events: string[] = [];
     const server = await startControllerAttachmentServer({
       port,
       nonce,
       attach: async () => {},
       compatibilityUpdate: async () => "unavailable",
-      shutdown: async () => {
-        events.push("shutdown");
-      },
     });
     try {
-      await expect(request(port, `SHUTDOWN ${nonce}\n`)).resolves.toBe("ready\n");
-      events.unshift("response");
-      await vi.waitFor(() => expect(events).toEqual(["response", "shutdown"]));
-      await expect(request(port, `SHUTDOWN ${"0".repeat(32)}\n`)).resolves.toBe("rejected\n");
+      await expect(request(port, `SHUTDOWN ${nonce}\n`)).resolves.toBe("rejected\n");
     } finally {
       await server.close();
     }

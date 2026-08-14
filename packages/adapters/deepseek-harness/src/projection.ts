@@ -116,8 +116,29 @@ export function structuredDiffs(meta: unknown): HostFileChange[] | null {
   return changes;
 }
 
-export function parseDeepSeekUsage(value: unknown): HostUsage | null {
+export function parseDeepSeekUsage(value: unknown, contextWindowTokens?: number): HostUsage | null {
   if (!isRecord(value)) return null;
+  const windowTokens =
+    typeof contextWindowTokens === "number" &&
+    Number.isSafeInteger(contextWindowTokens) &&
+    contextWindowTokens > 0
+      ? contextWindowTokens
+      : undefined;
+  const billedInput = ["inputTokens", "cacheReadTokens", "cacheWriteTokens"].reduce(
+    (sum, field) => {
+      const candidate = value[field];
+      return typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
+        ? sum + candidate
+        : sum;
+    },
+    0,
+  );
+  const reasoningTokens =
+    typeof value.reasoningTokens === "number" &&
+    Number.isSafeInteger(value.reasoningTokens) &&
+    value.reasoningTokens >= 0
+      ? value.reasoningTokens
+      : undefined;
   try {
     return parseHostUsage({
       ...(value.inputTokens !== undefined ? { inputTokens: value.inputTokens } : {}),
@@ -125,6 +146,10 @@ export function parseDeepSeekUsage(value: unknown): HostUsage | null {
       ...(value.cacheReadTokens !== undefined ? { cachedInputTokens: value.cacheReadTokens } : {}),
       ...(value.cacheWriteTokens !== undefined
         ? { cacheWriteInputTokens: value.cacheWriteTokens }
+        : {}),
+      ...(reasoningTokens !== undefined ? { reasoningOutputTokens: reasoningTokens } : {}),
+      ...(windowTokens !== undefined
+        ? { contextUsedTokens: billedInput, contextWindowTokens: windowTokens }
         : {}),
     });
   } catch {

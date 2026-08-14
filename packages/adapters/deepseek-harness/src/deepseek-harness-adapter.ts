@@ -72,6 +72,7 @@ import {
   type DeepSeekHostSubscriber,
   type DeepSeekMuxEnvelope,
 } from "./host-client.js";
+import { contextWindowTokensForModel } from "./context-windows.js";
 import { projectDeepSeekHistory } from "./history.js";
 import {
   decodeDeepSeekHarnessModelRef,
@@ -230,6 +231,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   #closed = false;
   #lastSeq: number;
   #model: HarnessModelRef;
+  #contextWindowTokens: number | undefined;
   #turns: HostTurnSnapshot[];
   #usage: HostUsage | null = null;
 
@@ -565,6 +567,16 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         }
         return;
       }
+      case "request/context": {
+        if (
+          typeof data.contextWindow === "number" &&
+          Number.isSafeInteger(data.contextWindow) &&
+          data.contextWindow > 0
+        ) {
+          this.#contextWindowTokens = data.contextWindow;
+        }
+        return;
+      }
       case "assistant/chunk":
         if (!active?.started || !isRecord(data.chunk)) return;
         if (data.chunk.type === "text-delta" && typeof data.chunk.text === "string") {
@@ -868,7 +880,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   #updateUsage(value: unknown, turnId: HostTurnId): void {
-    const usage = parseDeepSeekUsage(value);
+    const usage = parseDeepSeekUsage(
+      value,
+      this.#contextWindowTokens ??
+        contextWindowTokensForModel(decodeDeepSeekHarnessModelRef(this.#model)),
+    );
     if (!usage) return;
     this.#usage = usage;
     this.#emit({ type: "session.usage.changed", usage, observedForTurnId: turnId });

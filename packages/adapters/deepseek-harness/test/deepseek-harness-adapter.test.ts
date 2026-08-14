@@ -282,6 +282,105 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(true);
   });
 
+  it("projects Session Usage with a context window for a known Model", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const sessionId = session.initialState.nativeRef?.nativeSessionId;
+    const turnId = hostTurnIdSchema.parse("host-turn-usage");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "hello" }],
+    });
+    const collecting = collectUntilTurn(session);
+    connection.sessionEvent(sessionId as string, 1, "request/header", {
+      header: { config: { provider: "deepseek-official", model: "deepseek-chat" } },
+    });
+    connection.sessionEvent(sessionId as string, 2, "turn/start", { turn: 1 });
+    connection.sessionEvent(sessionId as string, 3, "assistant/message", {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: "text", text: "answer" }] },
+      usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5, reasoningTokens: 2 },
+    });
+    connection.sessionEvent(sessionId as string, 4, "turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+    const outputs = await collecting;
+    expect(outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: {
+            type: "session.usage.changed",
+            observedForTurnId: turnId,
+            usage: {
+              inputTokens: 10,
+              outputTokens: 4,
+              cachedInputTokens: 5,
+              reasoningOutputTokens: 2,
+              contextUsedTokens: 15,
+              contextWindowTokens: 128_000,
+            },
+          },
+        }),
+      ]),
+    );
+    await session.close();
+    await adapter.close();
+  });
+
+  it("uses the context window DeepSeek Harness advertises on request/context", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const sessionId = session.initialState.nativeRef?.nativeSessionId;
+    const turnId = hostTurnIdSchema.parse("host-turn-context");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "hello" }],
+    });
+    const collecting = collectUntilTurn(session);
+    connection.sessionEvent(sessionId as string, 1, "request/context", {
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      contextWindow: 131_072,
+    });
+    connection.sessionEvent(sessionId as string, 2, "turn/start", { turn: 1 });
+    connection.sessionEvent(sessionId as string, 3, "assistant/message", {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: "text", text: "answer" }] },
+      usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 5 },
+    });
+    connection.sessionEvent(sessionId as string, 4, "turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+    const outputs = await collecting;
+    expect(outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: {
+            type: "session.usage.changed",
+            observedForTurnId: turnId,
+            usage: {
+              inputTokens: 10,
+              outputTokens: 4,
+              cachedInputTokens: 5,
+              contextUsedTokens: 15,
+              contextWindowTokens: 131_072,
+            },
+          },
+        }),
+      ]),
+    );
+    await session.close();
+    await adapter.close();
+  });
+
   it("forwards cancellation for the active Turn", async () => {
     const { adapter, connection } = fixture();
     const session = await openCreated(adapter);

@@ -34,9 +34,11 @@ const { outputFiles } = await build({
 });
 
 const browserBundle = outputFiles[0]?.text;
-if (!browserBundle) throw new Error("Renderer Chat isolation E2E bundle was not generated");
+if (typeof browserBundle !== "string") {
+  throw new Error("Renderer Chat isolation E2E bundle was not generated");
+}
 
-async function installChatComposer(page: Page): Promise<void> {
+async function installChatComposer(page: Page, script: string): Promise<void> {
   await page.setContent(`
     <!doctype html>
     <body>
@@ -46,8 +48,8 @@ async function installChatComposer(page: Page): Promise<void> {
       </form>
     </body>
   `);
-  await page.addScriptTag({ content: browserBundle });
-  await page.evaluate(() => new Promise((resolve) => queueMicrotask(resolve)));
+  await page.addScriptTag({ content: script });
+  await page.evaluate(() => new Promise<void>((resolve) => queueMicrotask(resolve)));
 }
 
 async function dispatchInputIntents(page: Page): Promise<unknown> {
@@ -81,7 +83,7 @@ const unmodifiedInputResults = {
 };
 
 test("ordinary Chat composers remain untouched", async ({ page }) => {
-  await installChatComposer(page);
+  await installChatComposer(page, browserBundle);
 
   await expect(page.locator("[data-codexhost-agent-control]")).toHaveCount(0);
   await expect(page.locator("[data-codexhost-model-control]")).toHaveCount(0);

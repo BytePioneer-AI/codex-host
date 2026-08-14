@@ -10,7 +10,7 @@ async function source(relative) {
 }
 
 describe("production Renderer release chain", () => {
-  it("uses the fixed three-Agent list without a development enable switch", async () => {
+  it("uses the fixed production Agent list without a development enable switch", async () => {
     const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
       source("packages/renderer-extension/src/production-entry.ts"),
       source("packages/renderer-extension/src/probe-entry.ts"),
@@ -19,8 +19,9 @@ describe("production Renderer release chain", () => {
     ]);
 
     expect(agentState).toContain(
-      'DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const',
+      'KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code", "deepseek-harness"] as const',
     );
+    expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");
     expect(productionEntry).not.toContain("RendererConfiguration");

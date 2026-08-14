@@ -62,15 +62,18 @@ function readPreference(storage: PreferenceStorage | null): NewThreadPreference 
     if (!isRecord(parsed) || parsed.version !== 1) return undefined;
     if (!KNOWN_RENDERER_AGENTS.some((agent) => agent === parsed.lastAgent)) return undefined;
     const externalByAgent = isRecord(parsed.externalByAgent) ? parsed.externalByAgent : {};
-    const pi = parseExternalConfiguration(externalByAgent.pi);
-    const claudeCode = parseExternalConfiguration(externalByAgent["claude-code"]);
+    const parsedExternal = Object.fromEntries(
+      KNOWN_RENDERER_AGENTS.filter(
+        (agent): agent is ExternalRendererAgent => agent !== "codex",
+      ).flatMap((agent) => {
+        const configuration = parseExternalConfiguration(externalByAgent[agent]);
+        return configuration ? [[agent, configuration]] : [];
+      }),
+    ) as NewThreadPreference["externalByAgent"];
     return {
       version: 1,
       lastAgent: parsed.lastAgent as RendererAgent,
-      externalByAgent: {
-        ...(pi ? { pi } : {}),
-        ...(claudeCode ? { "claude-code": claudeCode } : {}),
-      },
+      externalByAgent: parsedExternal,
     };
   } catch {
     return undefined;

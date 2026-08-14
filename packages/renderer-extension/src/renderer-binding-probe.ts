@@ -39,6 +39,7 @@ import {
 } from "./renderer-composer-dom.js";
 import {
   decodeClaudeTransportModelId,
+  decodeDeepSeekHarnessTransportModelId,
   findComposerModelTarget,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
@@ -70,9 +71,10 @@ import {
 const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
   "claude-code": harnessIdSchema.parse("claude-code"),
+  "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
 } as const;
 
-const externalAgents: readonly ExternalRendererAgent[] = ["pi", "claude-code"];
+const externalAgents: readonly ExternalRendererAgent[] = ["pi", "claude-code", "deepseek-harness"];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
@@ -208,6 +210,14 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
     };
+  }
+  if (inspection.harnessId === "deepseek-harness") {
+    const transportSelection = decodeDeepSeekHarnessTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("DeepSeek Harness Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    return { agent: "deepseek-harness", ...(model ? { model } : {}) };
   }
   throw new Error("Thread owner is not a Renderer Agent");
 }

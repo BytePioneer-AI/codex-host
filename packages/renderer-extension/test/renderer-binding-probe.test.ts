@@ -244,6 +244,21 @@ describe("Renderer Composer DOM behavior", () => {
       model: { id: "claude-model-v1.c29ubmV0" },
       permissionModeId: "acceptEdits",
     });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "deepseek-harness",
+        transportModelId: "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        effectiveModel: harnessModelRefSchema.parse({
+          id: "deepseek-harness-model-v1.Zmxhc2g",
+        }),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "deepseek-harness",
+      model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
+    });
     expect(() =>
       restoredThreadOwnership({
         owner: "external",

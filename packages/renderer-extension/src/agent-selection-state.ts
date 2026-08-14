@@ -4,8 +4,8 @@ import type {
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
-export const DEFAULT_RENDERER_AGENTS = ["codex", "pi", "claude-code"] as const;
+export const KNOWN_RENDERER_AGENTS = ["codex", "pi", "claude-code", "deepseek-harness"] as const;
+export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
 export type RendererAgentAvailability =
@@ -20,6 +20,7 @@ export interface DraftComposerState {
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
   claudeThinkingOptionId?: HarnessThinkingOptionId;
+  deepSeekHarnessModel?: HarnessModelRef;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -176,6 +177,7 @@ export class DraftAgentController<Composer extends object> {
     state.phase = "locked";
     if (agent === "pi" && model) state.piModel = model;
     if (agent === "claude-code" && model) state.claudeModel = model;
+    if (agent === "deepseek-harness" && model) state.deepSeekHarnessModel = model;
     if (agent === "pi" && thinkingOptionId) {
       state.piThinkingOptionId = thinkingOptionId;
     } else if (agent === "pi") {
@@ -188,7 +190,7 @@ export class DraftAgentController<Composer extends object> {
     }
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
-      for (const candidate of ["pi", "claude-code"] as const) {
+      for (const candidate of ["pi", "claude-code", "deepseek-harness"] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
       }
@@ -204,7 +206,13 @@ export class DraftAgentController<Composer extends object> {
 
   modelForAgent(composer: Composer, agent: RendererAgent): HarnessModelRef | undefined {
     const state = this.#state(composer);
-    return agent === "pi" ? state.piModel : agent === "claude-code" ? state.claudeModel : undefined;
+    return agent === "pi"
+      ? state.piModel
+      : agent === "claude-code"
+        ? state.claudeModel
+        : agent === "deepseek-harness"
+          ? state.deepSeekHarnessModel
+          : undefined;
   }
 
   thinkingOptionForAgent(
@@ -212,7 +220,11 @@ export class DraftAgentController<Composer extends object> {
     agent: ExternalRendererAgent,
   ): HarnessThinkingOptionId | undefined {
     const state = this.#state(composer);
-    return agent === "pi" ? state.piThinkingOptionId : state.claudeThinkingOptionId;
+    return agent === "pi"
+      ? state.piThinkingOptionId
+      : agent === "claude-code"
+        ? state.claudeThinkingOptionId
+        : undefined;
   }
 
   permissionModeForAgent(
@@ -242,7 +254,8 @@ export class DraftAgentController<Composer extends object> {
   ): Readonly<DraftComposerState> {
     const state = this.#state(composer);
     if (agent === "pi") state.piModel = model;
-    else state.claudeModel = model;
+    else if (agent === "claude-code") state.claudeModel = model;
+    else state.deepSeekHarnessModel = model;
     return state;
   }
 
@@ -270,8 +283,11 @@ export class DraftAgentController<Composer extends object> {
     const state = this.#state(composer);
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
-    else if (thinkingOptionId) state.claudeThinkingOptionId = thinkingOptionId;
-    else delete state.claudeThinkingOptionId;
+    else if (agent === "claude-code" && thinkingOptionId) {
+      state.claudeThinkingOptionId = thinkingOptionId;
+    } else if (agent === "claude-code") {
+      delete state.claudeThinkingOptionId;
+    }
     return state;
   }
 

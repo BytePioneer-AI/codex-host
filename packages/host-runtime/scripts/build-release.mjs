@@ -11,7 +11,12 @@ const forbiddenInputFragments = [
   "/tools/",
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
-const allowedRuntimePackages = new Set(["@anthropic-ai/claude-agent-sdk", "diff", "zod"]);
+const allowedRuntimePackages = new Set([
+  "@anthropic-ai/claude-agent-sdk",
+  "@deepseek-ai/dsh-host-apiproxy",
+  "diff",
+  "zod",
+]);
 
 function normalizedInputPath(value) {
   return `/${value.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "")}/`;
@@ -41,7 +46,9 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/host-runtime/src/adapter-composition.ts/",
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
+    "/packages/adapters/deepseek-harness/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
+    "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {
       throw new Error(`release Host Bundle is missing required input: ${required}`);

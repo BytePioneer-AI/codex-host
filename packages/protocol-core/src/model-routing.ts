@@ -12,7 +12,9 @@ export const PI_NATIVE_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_NATIVE_TRANSPORT_MODEL_PREFIX = `${PI_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
-export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code"] as const;
+export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
+export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code", "deepseek-harness"] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
@@ -20,6 +22,7 @@ export type RoutedHarnessId = "codex" | ExternalHarnessId;
 const transportModelByHarness = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -164,6 +167,30 @@ export function decodeClaudeTransportSelection(
   };
 }
 
+export function encodeDeepSeekHarnessTransportModel(model?: HarnessModelRef): string {
+  if (!model) return DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID;
+  const parsedModel = harnessModelRefSchema.parse(model);
+  return `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}`;
+}
+
+export function decodeDeepSeekHarnessTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (
+    typeof value !== "string" ||
+    !value.startsWith(DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX)
+  ) {
+    return null;
+  }
+  const modelId = value.slice(DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX.length);
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) {
+    throw new Error("DeepSeek Harness transport Model contains an invalid Model Ref");
+  }
+  return { model: model.data };
+}
+
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
@@ -177,6 +204,8 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    case "deepseek-harness":
+      return encodeDeepSeekHarnessTransportModel(selection.model);
   }
 }
 
@@ -189,6 +218,8 @@ export function decodeExternalTransportSelection(
       return decodePiTransportSelection(value);
     case "claude-code":
       return decodeClaudeTransportSelection(value);
+    case "deepseek-harness":
+      return decodeDeepSeekHarnessTransportSelection(value);
   }
 }
 
@@ -222,6 +253,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...claudeSelection,
+    };
+  }
+  const deepSeekSelection = decodeDeepSeekHarnessTransportSelection(request.params.model);
+  if (deepSeekSelection !== null) {
+    return {
+      harnessId: "deepseek-harness",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...deepSeekSelection,
     };
   }
 

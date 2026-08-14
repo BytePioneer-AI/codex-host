@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
+  DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   findActivePrewarmTargets,
@@ -218,6 +219,10 @@ describe("versioned Renderer Agent adapter", () => {
     });
     expect(modelSelectionForAgent(null, "high", "claude-code")).toEqual({
       model: CLAUDE_CODE_TRANSPORT_MODEL_ID,
+      reasoningEffort: "high",
+    });
+    expect(modelSelectionForAgent(null, "high", "deepseek-harness")).toEqual({
+      model: DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
       reasoningEffort: "high",
     });
     expect(modelSelectionForAgent(null, "high", "codex")).toBeNull();

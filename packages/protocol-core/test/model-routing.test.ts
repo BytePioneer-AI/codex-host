@@ -8,14 +8,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
+  decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeDeepSeekHarnessTransportModel,
   encodePiTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
@@ -24,6 +27,7 @@ describe("external Harness transport model routing", () => {
   it.each([
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
+    ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -153,6 +157,22 @@ describe("external Harness transport model routing", () => {
     expect(
       decodeCreateRoute({ id: 9, method: "thread/start", params: { model: configured } }),
     ).toMatchObject({ harnessId: "claude-code", model, permissionModeId, thinkingOptionId });
+  });
+
+  it("round-trips a request-scoped DeepSeek Harness Model Ref", () => {
+    const model = harnessModelRefSchema.parse({ id: "deepseek-harness-model-v1.Zmxhc2g" });
+    const transportModelId = encodeDeepSeekHarnessTransportModel(model);
+
+    expect(transportModelId).toBe(`${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(decodeDeepSeekHarnessTransportSelection(transportModelId)).toEqual({ model });
+    expect(
+      decodeCreateRoute({ id: 10, method: "thread/start", params: { model: transportModelId } }),
+    ).toEqual({
+      harnessId: "deepseek-harness",
+      routeMode: "native",
+      transportModelId,
+      model,
+    });
   });
 
   it("decodes existing Thread carriers only for their owning Harness", () => {

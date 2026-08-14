@@ -18,7 +18,10 @@ does not depend on a local extension path or a network request.
 
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
-VS Code extension as inline vector paths.
+VS Code extension as inline vector paths. The DeepSeek Harness whale mark is
+the exact extract from the official `deepseek-harness` web favicon
+(`packages/client/ui-primitives/src/FishLogo.tsx` in that repo), rendered
+inline in the DeepSeek brand blue `#4D6BFE`.
 
 `codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
 `pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.

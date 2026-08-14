@@ -30,6 +30,8 @@ export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
 export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_TRANSPORT_MODEL_ID}@`;
+export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
+export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -136,11 +138,16 @@ declare global {
 function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
   if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
+  if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   return null;
 }
 
 function isTransportModelId(model: unknown): boolean {
-  return isPiTransportModelId(model) || isClaudeTransportModelId(model);
+  return (
+    isPiTransportModelId(model) ||
+    isClaudeTransportModelId(model) ||
+    isDeepSeekHarnessTransportModelId(model)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -219,6 +226,28 @@ export function decodeClaudeTransportModelId(value: unknown): {
 
 export function isClaudeTransportModelId(value: unknown): value is string {
   return decodeClaudeTransportModelId(value) !== null;
+}
+
+export function deepSeekHarnessTransportModelId(model?: HarnessModelRef): string {
+  if (!model) return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
+  return `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}`;
+}
+
+export function decodeDeepSeekHarnessTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+} | null {
+  if (value === DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const model = harnessModelRefSchema.safeParse({
+    id: value.slice(DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX.length),
+  });
+  return model.success ? { model: model.data } : null;
+}
+
+export function isDeepSeekHarnessTransportModelId(value: unknown): value is string {
+  return decodeDeepSeekHarnessTransportModelId(value) !== null;
 }
 
 export function isPiTransportModelId(value: unknown): value is string {
@@ -673,7 +702,9 @@ export function modelSelectionForAgent(
       ? piTransportModelId(model, thinkingOptionId)
       : agent === "claude-code"
         ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : transportModelIdForAgent(agent);
+        : agent === "deepseek-harness"
+          ? deepSeekHarnessTransportModelId(model)
+          : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

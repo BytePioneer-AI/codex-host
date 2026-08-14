@@ -77,6 +77,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.owner === "codex") return null;
   if (ownership.harnessId === "pi") return "pi";
   if (ownership.harnessId === "claude-code") return "claude-code";
+  if (ownership.harnessId === "deepseek-harness") return "deepseek-harness";
   return null;
 }
 

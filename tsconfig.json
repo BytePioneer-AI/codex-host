@@ -9,6 +9,7 @@
     { "path": "./packages/update-manager/tsconfig.json" },
     { "path": "./packages/adapters/pi/tsconfig.json" },
     { "path": "./packages/adapters/claude-code/tsconfig.json" },
+    { "path": "./packages/adapters/deepseek-harness/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

@@ -1,4 +1,5 @@
 import { packageMetadata as claudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { packageMetadata as deepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
@@ -9,6 +10,8 @@ import { packageMetadata as updateManager } from "@codexhost/update-manager";
 
 export {
   CLAUDE_CODE_COMMAND_ENV,
+  DEEPSEEK_HARNESS_COMMAND_ENV,
+  DEEPSEEK_HARNESS_ENDPOINT_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchClaudeCodeModelCatalog,
@@ -33,6 +36,7 @@ export const packageMetadata = {
   dependencies: [
     protocolCore.name,
     claudeCodeAdapter.name,
+    deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,
     mappingStore.name,

@@ -2,11 +2,11 @@
 
 # CodexHost
 
-**在 Codex Desktop 中运行 Pi 和 Claude Code**
+**在 Codex Desktop 中运行 Pi、Claude Code 和 DeepSeek Harness**
 
 我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
+但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code**、**Pi Agent** 和 **DeepSeek Harness**。
 
 **CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
 
@@ -23,30 +23,30 @@
 
 ## 界面预览
 
-Pi 与 Claude Code 在同一个 Codex Desktop 中作为独立会话运行 —— 流式输出、工具状态、Diff、审批与提问等均实时渲染。
+Pi、Claude Code 和 DeepSeek Harness 在同一个 Codex Desktop 中作为独立会话运行 —— 流式输出、工具状态、Diff、审批与提问等均实时渲染。
 
 ![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](docs/imgs/demo.gif)
 
 ### 界面
 
-![Pi 与 Claude Code 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
+![Pi、Claude Code 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
 
 ## 功能状态
 
-| 能力 | Codex | Pi | Claude Code |
-| --- | --- | --- | --- |
-| 流式回复 | 原生 | ✅ | ✅ |
-| 工具状态 | 原生 | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ |
-| 提问 / 取消 | 原生 | ✅ | ✅ |
-| Model / Thinking | 原生 | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ |
-| 会话恢复 | 原生 | ✅ | ✅ |
-| Thread 管理 | 原生 | ✅ | 🚧 |
-| Fork | 原生 | ✅ | ✅ |
-| 上下文压缩 | 原生 | ✅ | ✅ |
-| 斜杠命令 | 原生 | 🚧 | 🚧 |
-| 修订上一条消息 | 原生 | ✅ | 🚧 |
+| 能力 | Codex | Pi | Claude Code | DeepSeek Harness |
+| --- | --- | --- | --- | --- |
+| 流式回复 | 原生 | ✅ | ✅ | ✅ |
+| 工具状态 | 原生 | ✅ | ✅ | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | ✅ |
+| 提问 / 取消 | 原生 | ✅ | ✅ | ✅ |
+| Model / Thinking | 原生 | ✅ | ✅ | 🚧 |
+| 权限模式 | 原生 | — | ✅ | — |
+| 会话恢复 | 原生 | ✅ | ✅ | ✅ |
+| Thread 管理 | 原生 | ✅ | 🚧 | 🚧 |
+| Fork | 原生 | ✅ | ✅ | — |
+| 上下文压缩 | 原生 | ✅ | ✅ | ✅ |
+| 斜杠命令 | 原生 | 🚧 | 🚧 | — |
+| 修订上一条消息 | 原生 | ✅ | 🚧 | — |
 
 ## 快速使用
 
@@ -76,7 +76,7 @@ CodexHost 不走这条路：
 
 - **Desktop 侧**：用 CDP / Electron Inspector 在官方 Codex Desktop 上增强 Agent 选择与会话界面，不重做聊天壳，也不改官方安装包
 - **协议侧**：用 CLI Shim 透明接入官方 app-server；Codex 请求原样转发
-- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
+- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI，DeepSeek Harness 走本地 DSH Web Host——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 

@@ -34,11 +34,12 @@ describe("Host external Harness composition", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("registers Pi and Claude Code by default without resolving executables", async () => {
+  it("registers all external Harnesses by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 
-    expect([...adapters.keys()]).toEqual(["pi", "claude-code"]);
+    expect([...adapters.keys()]).toEqual(["pi", "claude-code", "deepseek-harness"]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
+    expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 

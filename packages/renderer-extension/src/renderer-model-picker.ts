@@ -9,7 +9,7 @@ export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
   "border-token-border no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-sm leading-[18px] min-w-0";
 
 const MENU_CLASSES =
-  "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg ring-[0.5px] ring-token-border backdrop-blur-xl";
+  "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
 
 const OPTION_CLASSES =
   "flex w-full cursor-interaction items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-foreground outline-none enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 disabled:cursor-not-allowed disabled:opacity-40";
@@ -253,6 +253,7 @@ export function mountRendererModelPicker(
   menu.style.inset = "auto";
   menu.style.margin = "0";
   menu.style.padding = "4px";
+  menu.style.border = "0";
   trigger.setAttribute("aria-controls", menu.id);
 
   const modelButton = document.createElement("button");
@@ -273,6 +274,7 @@ export function mountRendererModelPicker(
   modelMenu.style.inset = "auto";
   modelMenu.style.margin = "0";
   modelMenu.style.padding = "4px";
+  modelMenu.style.border = "0";
   modelMenu.style.maxHeight = "min(360px, 60vh)";
   modelMenu.style.overflowY = "auto";
   modelButton.setAttribute("aria-controls", modelMenu.id);

@@ -115,7 +115,7 @@ export function mountRendererAgentPicker(
   trigger.style.width = "30px";
   trigger.style.height = "28px";
   trigger.style.padding = "0";
-  trigger.style.border = "1px solid rgba(127, 127, 127, 0.28)";
+  trigger.style.border = "0";
   trigger.style.borderRadius = "6px";
   trigger.style.background = "rgba(127, 127, 127, 0.08)";
   trigger.style.color = "inherit";
@@ -158,7 +158,7 @@ export function mountRendererAgentPicker(
   menu.style.inset = "auto";
   menu.style.width = "190px";
   menu.style.padding = "4px";
-  menu.style.border = "1px solid rgba(127, 127, 127, 0.35)";
+  menu.style.border = "0";
   menu.style.borderRadius = "6px";
   menu.style.background = "Canvas";
   menu.style.color = "CanvasText";

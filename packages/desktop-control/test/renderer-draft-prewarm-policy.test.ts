@@ -208,7 +208,9 @@ describe("Renderer draft prewarm policy", () => {
   });
 
   it("routes direct and prewarmed creates through the selected transport Model", async () => {
-    const sendRequest = vi.fn(async () => undefined);
+    const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
+      async () => undefined,
+    );
     const bridge = { sendRequest };
     const target: DraftPrewarmPolicyTarget = {};
     installDraftPrewarmPolicyBridge(bridge, "local", target);

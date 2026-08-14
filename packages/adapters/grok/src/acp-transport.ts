@@ -259,7 +259,9 @@ async function readNativeSignals(
   sessionId: string,
 ): Promise<unknown | undefined> {
   try {
-    return JSON.parse(await readFile(nativeSessionFile(options, sessionId, "signals.json"), "utf8"));
+    return JSON.parse(
+      await readFile(nativeSessionFile(options, sessionId, "signals.json"), "utf8"),
+    );
   } catch {
     return undefined;
   }

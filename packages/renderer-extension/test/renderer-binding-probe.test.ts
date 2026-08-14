@@ -94,7 +94,7 @@ describe("Renderer Composer DOM behavior", () => {
     const trigger = new FakeElement();
     const control = {
       composer,
-      modelPicker: { trigger },
+      modelPicker: { trigger, root: { parentElement: {} } },
       nativeModelControl: { element: previous, hidden: false, ariaHidden: null },
       nativePermissionModeControl: null,
       usage: {
@@ -157,6 +157,35 @@ describe("Renderer Composer DOM behavior", () => {
     expect(formatRendererTokenCount(87000)).toBe("87k");
     expect(formatRendererTokenCount(6700)).toBe("6.7k");
     expect(formatRendererTokenCount(375000)).toBe("375k");
+  });
+
+  it("places Usage before the model picker even when a native context control exists", () => {
+    const modelRoot = { parentElement: {} } as HTMLElement;
+    const nativeContext = {
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Context usage: 20%" : null),
+    } as unknown as HTMLElement;
+    const placeUsage = vi.fn();
+    const control = {
+      composer: {
+        querySelectorAll: (selector: string) =>
+          selector.includes("[aria-label]") ? [nativeContext] : [],
+      },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      usage: {
+        anchor: null,
+        place: placeUsage,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
+    expect(placeUsage).toHaveBeenCalledWith(modelRoot);
+    expect(placeUsage).not.toHaveBeenCalledWith(nativeContext);
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

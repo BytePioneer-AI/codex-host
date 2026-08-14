@@ -2,23 +2,23 @@
 
 ## Purpose
 
-Define the Renderer-owned Usage surface for External Thread usage snapshots beside the native context control.
+Define the Renderer-owned Usage surface for External Thread usage snapshots beside the Composer model control.
 
 ## Requirements
 
-### Requirement: Renderer SHALL place Usage beside the native context control
+### Requirement: Renderer SHALL place Usage immediately before the model control
 
-Renderer SHALL mount a codexhost-owned Usage control immediately before a uniquely verified native context usage control in the same Composer toolbar. The Usage control MUST be a sibling element and MUST NOT modify the native context control's DOM attributes, text, styles, event handlers, or state. If the native context anchor cannot be identified uniquely, Renderer MUST leave the Usage control unmounted.
+Renderer SHALL mount a codexhost-owned Usage control immediately before the Composer model control: the codexhost model picker when it is already in the DOM, otherwise the verified native model trigger. The Usage control MUST be a preceding sibling and MUST NOT modify native context or model control DOM attributes, text, styles, event handlers, or state. If no model control is available as a placement reference, Renderer MUST leave the Usage control unmounted.
 
-#### Scenario: Usage mounts to the left of the native context circle
+#### Scenario: Usage mounts to the left of the model control
 
-- **WHEN** a supported Composer contains one structurally and semantically verified native context usage control
-- **THEN** Renderer MUST insert the codexhost Usage control before that native control in its parent
-- **AND** the native control MUST remain unchanged
+- **WHEN** a supported Composer contains a mounted codexhost model picker
+- **THEN** Renderer MUST insert the Usage control immediately before that model picker
+- **AND** a native context usage control, if present, MUST remain unchanged
 
-#### Scenario: Context anchor is missing or ambiguous
+#### Scenario: Model control is missing
 
-- **WHEN** a Composer does not contain exactly one verified native context usage control
+- **WHEN** a Composer has neither a mounted codexhost model picker nor a verified native model trigger
 - **THEN** Renderer MUST NOT guess a toolbar child position
 - **AND** Renderer MUST leave the Usage control hidden or unmounted
 
@@ -30,7 +30,7 @@ The Usage control SHALL bind its state to the current External Thread ID and SHA
 
 - **WHEN** the current Thread Usage contains `cacheHitRatePercent: 99.9` and `totalCostUsd: 0.168`
 - **THEN** the collapsed control MUST display `CH 99.9% · $0.168`
-- **AND** it MUST NOT change the native context circle's displayed value
+- **AND** it MUST NOT change a native context control, if one is present
 
 #### Scenario: Usage contains only one displayable field
 

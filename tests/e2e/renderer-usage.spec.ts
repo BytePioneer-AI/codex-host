@@ -18,17 +18,18 @@ const { outputFiles } = await build({
         const toolbar = document.createElement("div");
         toolbar.style.display = "flex";
         toolbar.style.alignItems = "center";
-        const anchor = document.createElement("button");
-        anchor.type = "button";
-        anchor.setAttribute("aria-label", "Context window usage");
-        anchor.textContent = "native context";
-        const nativeWrapper = document.createElement("span");
-        nativeWrapper.append(anchor);
-        toolbar.append(nativeWrapper);
+        const model = document.createElement("div");
+        model.setAttribute("data-codexhost-model-control", "usage-composer");
+        const modelButton = document.createElement("button");
+        modelButton.type = "button";
+        modelButton.setAttribute("aria-label", "Model: gpt-test");
+        modelButton.textContent = "gpt-test";
+        model.append(modelButton);
+        toolbar.append(model);
         document.body.append(toolbar);
 
         const control = mountRendererUsageControl("usage-composer");
-        control.place(anchor);
+        control.place(model);
         renderRendererUsageControl(control, null);
         globalThis.updateRendererUsage = () => {
           renderRendererUsageControl(control, {
@@ -58,7 +59,7 @@ const { outputFiles } = await build({
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Usage bundle was not generated");
 
-test("renders Usage immediately to the left of the native context control", async ({ page }) => {
+test("renders Usage immediately to the left of the model control", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
@@ -67,7 +68,7 @@ test("renders Usage immediately to the left of the native context control", asyn
     setup();
   });
 
-  const anchor = page.locator('button[aria-label="Context window usage"]');
+  const model = page.locator('[data-codexhost-model-control="usage-composer"]');
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage).toBeHidden();
   await page.evaluate(() => {
@@ -83,17 +84,17 @@ test("renders Usage immediately to the left of the native context control", asyn
   );
   await expect(usage.locator("button")).toHaveClass(/text-token-text-tertiary/u);
   await expect(usage.locator("svg")).toHaveCount(0);
-  const [usageBox, anchorBox] = await Promise.all([usage.boundingBox(), anchor.boundingBox()]);
-  if (!usageBox || !anchorBox) throw new Error("Usage geometry is unavailable");
+  const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
+  if (!usageBox || !modelBox) throw new Error("Usage geometry is unavailable");
   expect(
-    Math.abs(usageBox.y + usageBox.height / 2 - (anchorBox.y + anchorBox.height / 2)),
+    Math.abs(usageBox.y + usageBox.height / 2 - (modelBox.y + modelBox.height / 2)),
   ).toBeLessThanOrEqual(2);
   expect(usageBox.width).toBeLessThan(200);
-  await expect(
-    usage.locator("xpath=following-sibling::*[1]").locator('[aria-label="Context window usage"]'),
-  ).toHaveCount(1);
-  await expect(anchor).toHaveAttribute("aria-label", "Context window usage");
-  await expect(anchor).toHaveText("native context");
+  await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
+    "data-codexhost-model-control",
+    "usage-composer",
+  );
+  await expect(model).toHaveText("gpt-test");
 
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="Thread Usage details"]');

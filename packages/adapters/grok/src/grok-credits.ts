@@ -104,7 +104,11 @@ function selectAccessToken(auth: unknown, now: Date): string | null {
   if (!isRecord(auth)) return null;
   const entries = Object.entries(auth)
     .filter(([, value]) => isRecord(value) && typeof value.key === "string" && value.key.length > 0)
-    .sort(([left], [right]) => Number(right.startsWith("https://auth.x.ai")) - Number(left.startsWith("https://auth.x.ai")));
+    .sort(
+      ([left], [right]) =>
+        Number(right.startsWith("https://auth.x.ai")) -
+        Number(left.startsWith("https://auth.x.ai")),
+    );
   for (const [, value] of entries) {
     if (!isRecord(value) || typeof value.key !== "string") continue;
     if (typeof value.expires_at === "string") {

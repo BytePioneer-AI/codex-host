@@ -646,7 +646,9 @@ describe("Grok Adapter ACP projection", () => {
       },
     );
     expect(adapter.credits()).toBeNull();
-    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({ status: "ready" });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
     await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
     expect(adapter.credits()).toEqual(snapshot);
     await adapter.close();

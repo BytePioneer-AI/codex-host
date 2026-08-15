@@ -45,10 +45,14 @@ describe("Renderer Composer DOM behavior", () => {
     expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
     expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
     expect(
-      shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 }, {
-        usedPercent: 33,
-        periodType: "weekly",
-      }),
+      shouldRetryExternalThreadUsage(
+        "grok",
+        { totalCostUsd: 0.168 },
+        {
+          usedPercent: 33,
+          periodType: "weekly",
+        },
+      ),
     ).toBe(false);
     expect(rendererUsageRefreshDelay(0)).toBe(250);
     expect(rendererUsageRefreshDelay(1)).toBe(500);

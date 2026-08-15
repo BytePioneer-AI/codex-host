@@ -2,9 +2,6 @@
   简体中文 | <a href="../README.md">English</a>
 </div>
 
-> [!NOTE]
-> 本页为中文版。仓库主 README 为英文：[English](../README.md)。
-
 <div align="center">
 
 # CodexHost

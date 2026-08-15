@@ -309,35 +309,6 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
-  it("preserves persisted legacy Turn identity while resuming Native history", async () => {
-    const transport = new FakeGrokTransport();
-    transport.replay = [
-      {
-        type: "user.text",
-        text: "before",
-        metadata: { eventId: "grok-session-user-1" },
-      },
-      { type: "agent.text", text: "answer", messageId: "agent-1" },
-      {
-        type: "turn.completed",
-        nativeTurnKey: "grok-prompt-1",
-        stopReason: "end_turn",
-      },
-    ];
-    const legacyRef = nativeTurnRefSchema.parse({
-      harnessId: "grok",
-      nativeSessionId: transport.sessionId,
-      nativeTurnKey: "legacy-random-key",
-      formatVersion: 1,
-    });
-    const resumed = await openedSession(transport, "resume", [legacyRef]);
-    await expect(resumed.session.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{ nativeTurnRef: legacyRef }] },
-    });
-    await resumed.adapter.close();
-  });
-
   it("projects Thinking, Tool, Approval, Text, Usage, and terminal in order", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);

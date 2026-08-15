@@ -29,8 +29,6 @@ use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
 use codexhost_platform::launch_desktop;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(not(target_os = "linux"))]
 use codexhost_platform::{CompatibilityChoice, prompt_compatibility_warning};
 use codexhost_platform::{
@@ -39,6 +37,8 @@ use codexhost_platform::{
     desktop_root_process_ids_for_installation, discover_codex_desktop, launch_stock_desktop,
     node_entrypoint_path, open_latest_codexhost_release, spawn_supervised,
 };
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "linux")]
 use codexhost_platform::{LinuxCompatibilityChoice, prompt_linux_compatibility_warning};
 #[cfg(target_os = "windows")]
@@ -525,9 +525,7 @@ fn should_stop_desktop_for_update(helper_started: bool) -> bool {
     match update_waiting_for_launcher_exit() {
         Ok(waiting) => waiting,
         Err(error) => {
-            eprintln!(
-                "codexhost launcher: pending update exit state could not be read: {error}"
-            );
+            eprintln!("codexhost launcher: pending update exit state could not be read: {error}");
             false
         }
     }
@@ -545,7 +543,7 @@ fn stop_managed_desktop_for_update(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn stop_managed_desktop_for_update(
     desktop: &mut Child,
     controller: &mut SupervisedChild,

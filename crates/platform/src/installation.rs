@@ -52,8 +52,8 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
 }
 #[cfg(target_os = "windows")]
 use super::{
-    PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
-    PROBE_PACKAGE_NAME_ENV,
+    CUSTOM_INSTALL_ROOT_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+    PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_NAME_ENV,
 };
 
 #[cfg(target_os = "windows")]
@@ -267,15 +267,124 @@ fn windows_installation(
 }
 
 #[cfg(target_os = "windows")]
+fn windows_local_app_data() -> Result<PathBuf, PlatformError> {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            PlatformError::NotFound(
+                "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
+            )
+        })
+}
+
+/// Read the standalone portable-installation override.
+///
+/// This is deliberately independent of the Gate A `CODEXHOST_PROBE_*` set: it
+/// names an installation root on its own, so an unpacked Desktop can be located
+/// without supplying package identity and version as well.
+#[cfg(target_os = "windows")]
+fn custom_install_root(
+    value: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    value(CUSTOM_INSTALL_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(target_os = "windows")]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let details =
-        probe_package_details(env::var_os)?.map_or_else(discover_installed_windows_package, Ok)?;
-    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
-        PlatformError::NotFound(
-            "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
-        )
+    if let Some(details) = probe_package_details(env::var_os)? {
+        return windows_installation(details, &windows_local_app_data()?);
+    }
+    // A portable installation - an MSIX that was extracted rather than
+    // installed - registers no AppX package, so the PackageManager lookup below
+    // cannot find it. Honouring the override here rather than at each call site
+    // keeps every entry point working, including the argument-less `codexhost`
+    // and `codexhost inspect`.
+    if let Some(root) = custom_install_root(env::var_os) {
+        return discover_codex_desktop_from_root(&root);
+    }
+    let details = discover_installed_windows_package()?;
+    windows_installation(details, &windows_local_app_data()?)
+}
+
+/// Best-effort read of the packaged Desktop version from `AppxManifest.xml`.
+///
+/// A portable/unpacked installation has no registered AppX package, so the
+/// version is not available from the Windows PackageManager. The official MSIX
+/// embeds the marketing version in the `<Identity Version="..."/>` attribute of
+/// its manifest; fall back to a placeholder when it cannot be parsed.
+#[cfg(target_os = "windows")]
+fn portable_package_version(install_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(install_root.join("AppxManifest.xml")).ok()?;
+    let identity = content.find("<Identity")?;
+    let rest = &content[identity..];
+    let marker = rest.find("Version=")?;
+    let after = &rest[marker + "Version=".len()..];
+    let value = after.strip_prefix('"')?;
+    let version = value[..value.find('"')?].to_owned();
+    if !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        Some(version)
+    } else {
+        None
+    }
+}
+
+/// Discover Codex Desktop from an explicitly supplied installation directory.
+///
+/// This supports portable/unpacked installations (for example an MSIX that was
+/// extracted rather than installed) where no AppX package is registered for the
+/// current user, so the Windows PackageManager lookup would otherwise fail.
+#[cfg(target_os = "windows")]
+pub fn discover_codex_desktop_from_root(
+    install_root: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    let install_root = install_root.canonicalize().map_err(|error| {
+        PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' is unavailable: {error}",
+            install_root.display()
+        ))
     })?;
-    windows_installation(details, &PathBuf::from(local_app_data))
+    let desktop_executable = install_root.join("app/ChatGPT.exe");
+    let packaged_codex_cli = install_root.join("app/resources/codex.exe");
+    let asar_path = install_root.join("app/resources/app.asar");
+    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() || !asar_path.is_file() {
+        return Err(PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' does not contain the required ChatGPT.exe, codex.exe, and app.asar resources",
+            install_root.display()
+        )));
+    }
+    // A portable installation may never have been launched through the official
+    // Desktop, so the Desktop-managed CLI cache may be absent. Prefer a matching
+    // cached CLI when one exists, otherwise fall back to the packaged CLI.
+    let executable_codex_cli = windows_local_app_data()
+        .ok()
+        .and_then(|local_app_data| {
+            find_executable_codex_cli(&packaged_codex_cli, &local_app_data).ok()
+        })
+        .unwrap_or_else(|| packaged_codex_cli.clone());
+
+    let version = portable_package_version(&install_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+
+    Ok(DesktopInstallation {
+        identity: DesktopIdentity::WindowsPackage {
+            package_name: WINDOWS_CODEX_PACKAGE_NAME.to_owned(),
+            package_family_name: format!("{WINDOWS_CODEX_PACKAGE_NAME}_portable"),
+        },
+        build: version.clone(),
+        version,
+        asar_integrity: sha256_file(&asar_path)?,
+        install_root,
+        desktop_launcher: desktop_executable.clone(),
+        desktop_executable,
+        packaged_codex_cli,
+        executable_codex_cli,
+    })
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -286,11 +395,11 @@ mod windows_tests {
     use std::path::PathBuf;
 
     use super::{WindowsPackageDetails, probe_package_details, windows_installation};
-    use crate::{DesktopIdentity, PlatformError, temporary_directory};
     use crate::{
-        PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV,
-        PROBE_PACKAGE_NAME_ENV,
+        CUSTOM_INSTALL_ROOT_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+        PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_NAME_ENV,
     };
+    use crate::{DesktopIdentity, PlatformError, temporary_directory};
 
     #[test]
     fn gate_override_is_optional_but_must_be_complete() {
@@ -378,6 +487,122 @@ mod windows_tests {
         );
 
         fs::remove_dir_all(root).expect("remove Windows installation fixture");
+    }
+
+    fn portable_fixture(name: &str, manifest: Option<&[u8]>) -> (PathBuf, PathBuf) {
+        let root = temporary_directory(name);
+        let install_root = root.join("CodexPortable");
+        let desktop = install_root.join("app/ChatGPT.exe");
+        let packaged_cli = install_root.join("app/resources/codex.exe");
+        let app_asar = install_root.join("app/resources/app.asar");
+        fs::create_dir_all(packaged_cli.parent().expect("CLI parent"))
+            .expect("create portable layout");
+        fs::write(&desktop, b"desktop").expect("write Desktop executable");
+        fs::write(&packaged_cli, b"packaged codex cli").expect("write packaged CLI");
+        fs::write(&app_asar, b"portable app asar").expect("write app.asar");
+        if let Some(manifest) = manifest {
+            fs::write(install_root.join("AppxManifest.xml"), manifest).expect("write AppxManifest");
+        }
+        (root, install_root)
+    }
+
+    #[test]
+    fn custom_root_discovers_a_portable_installation_without_a_registered_package() {
+        let (root, install_root) = portable_fixture(
+            "codexhost-windows-custom-root",
+            Some(
+                b"<?xml version=\"1.0\"?><Package><Identity Name=\"OpenAI.Codex\" Version=\"2.5.1.0\"/></Package>",
+            ),
+        );
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(
+            installation.identity,
+            DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_portable".into(),
+            }
+        );
+        assert_eq!(installation.version, "2.5.1.0");
+        assert_eq!(installation.build, "2.5.1.0");
+        assert_eq!(
+            installation.desktop_executable,
+            install_root
+                .canonicalize()
+                .expect("canonical install root")
+                .join("app/ChatGPT.exe")
+        );
+        assert_eq!(
+            installation.desktop_launcher,
+            installation.desktop_executable
+        );
+        assert!(installation.asar_integrity.starts_with("sha256:"));
+        // A portable installation may never have been launched through the
+        // official Desktop, so the resolved CLI falls back to the packaged one
+        // when no Desktop-managed cache matches.
+        assert!(installation.executable_codex_cli.is_file());
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_without_a_manifest_falls_back_to_a_placeholder_version() {
+        let (root, install_root) = portable_fixture("codexhost-windows-no-manifest", None);
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(installation.version, "0.0.0.0");
+        assert_eq!(installation.build, "0.0.0.0");
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_rejects_directories_without_the_desktop_payload() {
+        let root = temporary_directory("codexhost-windows-empty-root");
+        assert!(matches!(
+            super::discover_codex_desktop_from_root(&root),
+            Err(PlatformError::NotFound(_))
+        ));
+        assert!(matches!(
+            super::discover_codex_desktop_from_root(&root.join("absent")),
+            Err(PlatformError::NotFound(_))
+        ));
+        fs::remove_dir_all(root).expect("remove empty fixture");
+    }
+
+    #[test]
+    fn portable_version_parsing_is_best_effort() {
+        let root = temporary_directory("codexhost-version-parse");
+        assert_eq!(super::portable_package_version(&root), None);
+        fs::write(
+            root.join("AppxManifest.xml"),
+            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"1.2.3.4\"/></Package>",
+        )
+        .expect("write versioned manifest");
+        assert_eq!(
+            super::portable_package_version(&root).as_deref(),
+            Some("1.2.3.4")
+        );
+        fs::write(root.join("AppxManifest.xml"), b"not xml").expect("write invalid manifest");
+        assert_eq!(super::portable_package_version(&root), None);
+        fs::remove_dir_all(root).expect("remove version fixture");
+    }
+
+    #[test]
+    fn custom_install_root_override_stands_alone() {
+        // Unlike the Gate A set, this override is read on its own and an empty
+        // value is treated as absent.
+        assert_eq!(super::custom_install_root(|_| None), None);
+        assert_eq!(super::custom_install_root(|_| Some(OsString::new())), None);
+        assert_eq!(
+            super::custom_install_root(|name| (name == CUSTOM_INSTALL_ROOT_ENV)
+                .then(|| OsString::from(r"C:\CodexPortable"))),
+            Some(PathBuf::from(r"C:\CodexPortable"))
+        );
     }
 }
 

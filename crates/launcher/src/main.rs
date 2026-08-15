@@ -97,7 +97,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>]"
+        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]"
     );
 }
 
@@ -181,8 +181,26 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
     println!("desktop_process_ids={process_list}");
 }
 
-fn inspect() -> Result<(), Box<dyn Error>> {
-    let installation = discover_codex_desktop()?;
+/// Resolve the Codex Desktop installation for this run.
+///
+/// An explicitly supplied installation root wins over the platform's own
+/// discovery; without one the platform probe applies, which on Windows already
+/// falls back to the portable-installation override before consulting the AppX
+/// PackageManager.
+fn discover_desktop(
+    custom_install_root: Option<&Path>,
+) -> Result<DesktopInstallation, Box<dyn Error>> {
+    match custom_install_root {
+        #[cfg(target_os = "windows")]
+        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(root)?),
+        #[cfg(not(target_os = "windows"))]
+        Some(_) => Err("--custom-install is supported on Windows only".into()),
+        None => Ok(discover_codex_desktop()?),
+    }
+}
+
+fn inspect(custom_install_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let installation = discover_desktop(custom_install_root)?;
     let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     print_installation(&installation, &process_ids);
     Ok(())
@@ -220,6 +238,7 @@ struct LaunchOptions {
     desktop_controller: Option<PathBuf>,
     renderer_extension: Option<PathBuf>,
     pi: Option<PathBuf>,
+    custom_install_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -231,6 +250,7 @@ struct ResolvedLaunchOptions {
     desktop_controller: PathBuf,
     renderer_extension: PathBuf,
     pi: Option<PathBuf>,
+    custom_install_root: Option<PathBuf>,
 }
 
 fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Result<PathBuf, String> {
@@ -261,6 +281,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut desktop_controller = None;
     let mut renderer_extension = None;
     let mut pi = None;
+    let mut custom_install_root = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -285,6 +306,10 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
                 renderer_extension = Some(required_path(arguments, &mut index, "--renderer")?)
             }
             "--pi" => pi = Some(required_path(arguments, &mut index, "--pi")?),
+            "--custom-install" => {
+                custom_install_root =
+                    Some(required_path(arguments, &mut index, "--custom-install")?)
+            }
             unknown => return Err(format!("unknown launch option: {unknown}")),
         }
         index += 1;
@@ -297,7 +322,35 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         desktop_controller,
         renderer_extension,
         pi,
+        custom_install_root,
     })
+}
+
+/// Parse the options accepted by `codexhost inspect`.
+fn parse_inspect_options(arguments: &[String]) -> Result<Option<PathBuf>, String> {
+    let mut custom_install_root = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--custom-install" => {
+                custom_install_root =
+                    Some(required_path(arguments, &mut index, "--custom-install")?)
+            }
+            unknown => return Err(format!("unknown inspect option: {unknown}")),
+        }
+        index += 1;
+    }
+    Ok(custom_install_root)
+}
+
+fn absolute_directory(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    if !path.is_absolute() {
+        return Err(format!("{label} must be an absolute path").into());
+    }
+    if !path.is_dir() {
+        return Err(format!("{label} '{}' is not an existing directory", path.display()).into());
+    }
+    Ok(path.to_path_buf())
 }
 
 fn absolute_file(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -353,6 +406,10 @@ impl LaunchOptions {
             pi: self
                 .pi
                 .map(|path| absolute_file(&path, "--pi"))
+                .transpose()?,
+            custom_install_root: self
+                .custom_install_root
+                .map(|path| absolute_directory(&path, "--custom-install"))
                 .transpose()?,
         })
     }
@@ -1054,7 +1111,7 @@ fn launch(
     startup_trace("launch requested");
     let options = options.resolve()?;
     startup_trace("resources resolved");
-    let installation = discover_codex_desktop()?;
+    let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -1175,7 +1232,7 @@ fn launch(
     startup_trace("launch requested");
     let options = options.resolve()?;
     startup_trace("resources resolved");
-    let installation = discover_codex_desktop()?;
+    let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -1245,6 +1302,7 @@ fn default_launch_options() -> LaunchOptions {
         desktop_controller: None,
         renderer_extension: None,
         pi: None,
+        custom_install_root: None,
     }
 }
 
@@ -1252,7 +1310,12 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
         None => launch(default_launch_options(), false),
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
-        Some("inspect") if arguments.len() == 1 => inspect(),
+        Some("inspect") => {
+            let custom_install_root = parse_inspect_options(&arguments[1..])?
+                .map(|path| absolute_directory(&path, "--custom-install"))
+                .transpose()?;
+            inspect(custom_install_root.as_deref())
+        }
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         _ => {
             usage();
@@ -1317,9 +1380,10 @@ mod tests {
     use super::{
         Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
-        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, allocate_runtime_control,
-        default_launch_options, desktop_controller_command, desktop_environment, emit_ready_line,
-        parse_launch_options, read_bounded_controller_line,
+        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
+        allocate_runtime_control, default_launch_options, desktop_controller_command,
+        desktop_environment, emit_ready_line, parse_inspect_options, parse_launch_options,
+        read_bounded_controller_line,
     };
     #[cfg(target_os = "linux")]
     use crate::compatibility::{
@@ -1543,6 +1607,52 @@ mod tests {
         assert!(options.renderer_extension.is_some());
     }
 
+    #[test]
+    fn custom_install_root_is_accepted_by_launch_and_inspect() {
+        let options = parse_launch_options(&[
+            "--agent".into(),
+            "codex".into(),
+            "--custom-install".into(),
+            "/opt/CodexPortable".into(),
+        ])
+        .expect("launch accepts a custom install root");
+        assert_eq!(
+            options.custom_install_root.as_deref(),
+            Some(Path::new("/opt/CodexPortable"))
+        );
+
+        assert_eq!(
+            parse_inspect_options(&["--custom-install".into(), "/opt/CodexPortable".into()])
+                .expect("inspect accepts a custom install root")
+                .as_deref(),
+            Some(Path::new("/opt/CodexPortable"))
+        );
+        assert_eq!(parse_inspect_options(&[]).expect("bare inspect"), None);
+    }
+
+    #[test]
+    fn custom_install_root_rejects_missing_values_and_unknown_options() {
+        assert!(
+            parse_launch_options(&["--agent".into(), "codex".into(), "--custom-install".into()])
+                .is_err()
+        );
+        assert!(parse_inspect_options(&["--custom-install".into()]).is_err());
+        assert!(parse_inspect_options(&["--unknown".into()]).is_err());
+    }
+
+    #[test]
+    fn custom_install_root_must_be_an_existing_absolute_directory() {
+        assert!(absolute_directory(Path::new("relative/path"), "--custom-install").is_err());
+        assert!(
+            absolute_directory(Path::new("/definitely/absent/codex"), "--custom-install").is_err()
+        );
+        let existing = std::env::temp_dir();
+        assert_eq!(
+            absolute_directory(&existing, "--custom-install").expect("existing directory"),
+            existing
+        );
+    }
+
     fn resolved_options() -> ResolvedLaunchOptions {
         ResolvedLaunchOptions {
             agent: Agent::Pi,
@@ -1552,6 +1662,7 @@ mod tests {
             desktop_controller: PathBuf::from("/opt/desktop-controller.mjs"),
             renderer_extension: PathBuf::from("/opt/renderer-extension.js"),
             pi: None,
+            custom_install_root: None,
         }
     }
 

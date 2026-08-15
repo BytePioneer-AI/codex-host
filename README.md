@@ -82,6 +82,19 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 Then open `codexhost` again.
 
+On Windows, a portable Codex Desktop — an official MSIX extracted and run in place, with no AppX package registered — cannot be found through the system package manager, so `codexhost` reports `official OpenAI.Codex AppX package is not installed for the current user`. Point `CODEXHOST_INSTALL_ROOT` at the extracted root (the directory that contains `app\ChatGPT.exe`):
+
+```powershell
+$env:CODEXHOST_INSTALL_ROOT = "D:\CodexPortable"
+codexhost
+```
+
+You can also pass it per command; both `codexhost inspect` and `codexhost launch` accept it:
+
+```powershell
+codexhost inspect --custom-install D:\CodexPortable
+```
+
 <details>
 <summary><h3>How it works</h3></summary>
 

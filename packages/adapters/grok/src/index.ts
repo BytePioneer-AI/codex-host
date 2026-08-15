@@ -6,6 +6,8 @@ export type {
   GrokAdapterOptions,
   GrokAcpTransportLike,
 } from "./grok-adapter.js";
+export { fetchGrokCredits, parseGrokCreditsResponse } from "./grok-credits.js";
+export type { GrokCreditsSnapshot, GrokProductUsage } from "./grok-credits.js";
 export { GrokAcpTransport, GrokTransportError } from "./acp-transport.js";
 export type {
   GrokAcpTransportOptions,

@@ -34,6 +34,7 @@ import {
   formatRendererCacheHitRate,
   formatRendererCost,
   formatRendererTokenCount,
+  rendererUsageTriggerMaxWidth,
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Composer DOM behavior", () => {
@@ -42,6 +43,13 @@ describe("Renderer Composer DOM behavior", () => {
     expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
     expect(shouldRetryExternalThreadUsage("codex", null)).toBe(false);
     expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
+    expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
+    expect(
+      shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 }, {
+        usedPercent: 33,
+        periodType: "weekly",
+      }),
+    ).toBe(false);
     expect(rendererUsageRefreshDelay(0)).toBe(250);
     expect(rendererUsageRefreshDelay(1)).toBe(500);
     expect(rendererUsageRefreshDelay(99)).toBe(8000);
@@ -157,6 +165,8 @@ describe("Renderer Composer DOM behavior", () => {
     expect(formatRendererTokenCount(87000)).toBe("87k");
     expect(formatRendererTokenCount(6700)).toBe("6.7k");
     expect(formatRendererTokenCount(375000)).toBe("375k");
+    expect(rendererUsageTriggerMaxWidth(false)).toBe("min(180px, 30vw)");
+    expect(rendererUsageTriggerMaxWidth(true)).toBe("min(300px, 44vw)");
   });
 
   it("places Usage before the native context circle when it is present", () => {

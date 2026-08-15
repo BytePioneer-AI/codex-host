@@ -6,6 +6,7 @@ import {
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
+  type AccountCreditsSnapshot,
   type ThreadInspection,
   type ThreadUsageInspection,
   type ThreadUsageSnapshot,
@@ -94,8 +95,11 @@ export function rendererUsageRefreshDelay(attempt: number): number {
 export function shouldRetryExternalThreadUsage(
   agent: RendererAgent,
   usage: ThreadUsageSnapshot | null,
+  accountCredits: AccountCreditsSnapshot | null = null,
 ): boolean {
-  return agent !== "codex" && usage === null;
+  if (agent === "codex") return false;
+  if (usage === null) return true;
+  return agent === "grok" && accountCredits === null;
 }
 
 export interface RendererBindingProbeStatus {
@@ -257,6 +261,7 @@ interface MountedComposer {
   ownershipStatus: ComposerOwnershipStatus;
   threadConfiguration: HarnessModelSelectionState | undefined;
   usage: ThreadUsageSnapshot | null;
+  accountCredits: AccountCreditsSnapshot | null;
   usageRequestGeneration: number;
 }
 
@@ -442,6 +447,7 @@ export function installRendererBindingProbe(
       mounted.modelView,
       mounted.permissionModeView,
       mounted.usage,
+      mounted.accountCredits,
     );
   };
 
@@ -450,6 +456,7 @@ export function installRendererBindingProbe(
       if (threadIdFromComposerModelTarget(mounted.modelTarget) !== update.threadId) continue;
       mounted.usageRequestGeneration += 1;
       mounted.usage = update.usage;
+      mounted.accountCredits = update.accountCredits ?? null;
       usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
     }
@@ -459,6 +466,7 @@ export function installRendererBindingProbe(
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") {
       mounted.usage = null;
+      mounted.accountCredits = null;
       usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
       return;
@@ -477,9 +485,19 @@ export function installRendererBindingProbe(
         return;
       }
       mounted.usage = result.usage;
-      if (result.usage !== null) usageRefreshAttempts.delete(mounted.composer);
+      mounted.accountCredits = result.accountCredits ?? null;
+      const agent = controller.get(mounted.composer).agent;
+      if (result.usage !== null && (agent !== "grok" || result.accountCredits)) {
+        usageRefreshAttempts.delete(mounted.composer);
+      }
       renderMounted(mounted);
-      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, result.usage)) {
+      if (
+        shouldRetryExternalThreadUsage(
+          controller.get(mounted.composer).agent,
+          result.usage,
+          result.accountCredits ?? null,
+        )
+      ) {
         scheduleThreadUsageRefresh(mounted);
       }
     } catch {
@@ -488,7 +506,7 @@ export function installRendererBindingProbe(
         mounted.usageRequestGeneration === generation
       ) {
         renderMounted(mounted);
-        if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null)) {
+        if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
           scheduleThreadUsageRefresh(mounted);
         }
       }
@@ -609,7 +627,11 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (
           mounted.ownershipStatus !== "error" &&
-          shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, mounted.usage)
+          shouldRetryExternalThreadUsage(
+            controller.get(mounted.composer).agent,
+            mounted.usage,
+            mounted.accountCredits,
+          )
         ) {
           scheduleThreadUsageRefresh(mounted);
         }
@@ -640,7 +662,7 @@ export function installRendererBindingProbe(
     if (resolution === "transfer") {
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
-      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null)) {
+      if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
         scheduleThreadUsageRefresh(mounted);
       }
     } else {
@@ -650,6 +672,7 @@ export function installRendererBindingProbe(
       mounted.threadConfiguration = undefined;
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
+      mounted.accountCredits = null;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
@@ -1410,6 +1433,7 @@ export function installRendererBindingProbe(
         : "not-required",
       threadConfiguration: inherited?.threadConfiguration,
       usage: inherited?.usage ?? null,
+      accountCredits: inherited?.accountCredits ?? null,
       usageRequestGeneration: 0,
     };
     mountedByComposer.set(composer, mounted);
@@ -1432,7 +1456,7 @@ export function installRendererBindingProbe(
     } else if (
       threadIdFromComposerModelTarget(modelTarget) &&
       inherited &&
-      shouldRetryExternalThreadUsage(state.agent, mounted.usage)
+      shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
     ) {
       scheduleThreadUsageRefresh(mounted);
     } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {

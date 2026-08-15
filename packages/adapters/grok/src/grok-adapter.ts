@@ -76,6 +76,7 @@ import {
   stateForGrokModel,
   type GrokModelState,
 } from "./grok-models.js";
+import { fetchGrokCredits, type GrokCreditsSnapshot } from "./grok-credits.js";
 import {
   combineUsage,
   lastTurnUsage,
@@ -96,6 +97,7 @@ export interface GrokAdapterOptions {
 export interface GrokAdapterDependencies {
   createTransport(options: GrokAcpTransportOptions): GrokAcpTransportLike;
   randomUUID(): string;
+  fetchCredits?(input: { environment?: NodeJS.ProcessEnv }): Promise<GrokCreditsSnapshot | null>;
 }
 
 export interface GrokAcpTransportLike {
@@ -873,19 +875,65 @@ export class GrokAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = grokHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: GrokAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv | undefined;
+  readonly #fetchCredits: (input: {
+    environment?: NodeJS.ProcessEnv;
+  }) => Promise<GrokCreditsSnapshot | null>;
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #sessions = new Set<GrokHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
+  #credits: GrokCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<GrokCreditsSnapshot | null> | null = null;
 
   constructor(options: GrokAdapterOptions = {}, dependencies?: GrokAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#environment = options.environment;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
     this.#dependencies = dependencies ?? {
       randomUUID,
       createTransport: (transportOptions) =>
         new GrokAcpTransport({ ...options, ...transportOptions }),
     };
+    this.#fetchCredits =
+      this.#dependencies.fetchCredits ??
+      ((input) =>
+        fetchGrokCredits(
+          input.environment
+            ? { environment: input.environment }
+            : this.#environment
+              ? { environment: this.#environment }
+              : {},
+        ));
+  }
+
+  credits(): GrokCreditsSnapshot | null {
+    return this.#credits;
+  }
+
+  refreshCredits(): Promise<GrokCreditsSnapshot | null> {
+    if (this.#closePromise) return Promise.resolve(this.#credits);
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#loadCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  #scheduleCreditsRefresh(): void {
+    void this.refreshCredits();
+  }
+
+  async #loadCredits(): Promise<GrokCreditsSnapshot | null> {
+    try {
+      const snapshot = await this.#fetchCredits(
+        this.#environment ? { environment: this.#environment } : {},
+      );
+      if (snapshot) this.#credits = snapshot;
+    } catch {
+      // Credits are optional account telemetry; keep the last good snapshot.
+    }
+    return this.#credits;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -910,6 +958,7 @@ export class GrokAdapter implements HarnessAdapter {
         capabilities: capabilitiesForModels(modelState),
       };
       this.#inspectionCache.set(cwd, ready);
+      this.#scheduleCreditsRefresh();
       return ready;
     } catch (error) {
       await transport?.close().catch(() => undefined);
@@ -1025,6 +1074,7 @@ export class GrokAdapter implements HarnessAdapter {
       );
       session = openedSession;
       this.#sessions.add(openedSession);
+      this.#scheduleCreditsRefresh();
       return { ok: true, value: openedSession };
     } catch (error) {
       await transport.close().catch(() => undefined);

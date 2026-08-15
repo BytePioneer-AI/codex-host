@@ -45,6 +45,26 @@ export const threadUsageSnapshotSchema = z
 
 export type ThreadUsageSnapshot = z.infer<typeof threadUsageSnapshotSchema>;
 
+const usagePercentSchema = z.number().finite().min(0).max(100);
+
+export const accountCreditsProductUsageSchema = z
+  .object({
+    product: z.string().min(1),
+    usagePercent: usagePercentSchema,
+  })
+  .strict();
+
+export const accountCreditsSnapshotSchema = z
+  .object({
+    usedPercent: usagePercentSchema,
+    resetsAt: z.string().min(1).optional(),
+    periodType: z.enum(["weekly", "monthly", "unknown"]),
+    productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
+  })
+  .strict();
+
+export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema>;
+
 export const threadUsageInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
@@ -57,6 +77,7 @@ export const threadUsageInspectionSchema = z
   .object({
     threadId: hostThreadIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
+    accountCredits: accountCreditsSnapshotSchema.optional(),
   })
   .strict();
 

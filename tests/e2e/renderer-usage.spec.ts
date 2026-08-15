@@ -43,6 +43,13 @@ const { outputFiles } = await build({
             contextWindowTokens: 272000,
           });
         };
+        globalThis.updateRendererCreditsUsage = () => {
+          renderRendererUsageControl(
+            control,
+            { cacheHitRatePercent: 99.3 },
+            { usedPercent: 47, periodType: "weekly" },
+          );
+        };
       };
     `,
     resolveDir: repositoryRoot,
@@ -116,4 +123,52 @@ test("renders Usage immediately to the left of the model control", async ({ page
   await expect(popover).toContainText("87k / 6.7k");
   await expect(popover).toContainText("Session cost estimate");
   await expect(popover).toContainText("$0.822");
+});
+
+test("widens Usage only when account credits are shown", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsage");
+    if (typeof update !== "function") throw new Error("Usage update is unavailable");
+    update();
+  });
+
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  const trigger = usage.locator("button");
+  await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(trigger).toHaveCSS("max-width", "180px");
+  const defaultBox = await usage.boundingBox();
+  if (!defaultBox) throw new Error("Usage geometry is unavailable");
+  expect(defaultBox.width).toBeLessThan(200);
+
+  await page.evaluate(() => {
+    const update = Reflect.get(globalThis, "updateRendererCreditsUsage");
+    if (typeof update !== "function") throw new Error("Credits usage update is unavailable");
+    update();
+  });
+  await expect(usage).toHaveText("Weekly limit 47% · CH 99.3%");
+  await expect(trigger).toHaveCSS("max-width", "300px");
+  const overflowing = await trigger.evaluate((element) => {
+    const label = element.querySelector("span");
+    return label !== null && label.scrollWidth > label.clientWidth + 1;
+  });
+  expect(overflowing).toBe(false);
+  const creditsBox = await usage.boundingBox();
+  if (!creditsBox) throw new Error("Credits usage geometry is unavailable");
+  expect(creditsBox.width).toBeGreaterThan(defaultBox.width);
+
+  await page.evaluate(() => {
+    const update = Reflect.get(globalThis, "updateRendererUsage");
+    if (typeof update !== "function") throw new Error("Usage update is unavailable");
+    update();
+  });
+  await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(trigger).toHaveCSS("max-width", "180px");
+  const restoredBox = await usage.boundingBox();
+  if (!restoredBox) throw new Error("Restored usage geometry is unavailable");
+  expect(restoredBox.width).toBeLessThan(200);
 });

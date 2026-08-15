@@ -4,7 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import type { AccountCreditsSnapshot, ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 import {
   CONTROL_ATTRIBUTE,
   mountRendererAgentPicker,
@@ -422,6 +422,7 @@ export function renderComposerAgentControl(
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,
+  accountCredits: AccountCreditsSnapshot | null = null,
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -474,7 +475,7 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  renderRendererUsageControl(control.usage, usage);
+  renderRendererUsageControl(control.usage, usage, accountCredits);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

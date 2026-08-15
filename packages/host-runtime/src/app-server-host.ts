@@ -12,6 +12,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
+  accountCreditsSnapshotSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessInspectParamsSchema,
@@ -34,6 +35,7 @@ import {
   updateEmptyParamsSchema,
   updateStartResultSchema,
   updateStatusResultSchema,
+  type AccountCreditsSnapshot,
   type HarnessModelRef,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -153,6 +155,24 @@ type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCreditsAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
+  credits(): unknown;
+  refreshCredits(): Promise<unknown>;
+} {
+  return (
+    typeof (adapter as { credits?: unknown }).credits === "function" &&
+    typeof (adapter as { refreshCredits?: unknown }).refreshCredits === "function"
+  );
+}
+
+function projectAccountCredits(value: unknown): AccountCreditsSnapshot | null {
+  if (!isRecord(value)) return null;
+  const rest = { ...value };
+  delete rest.fetchedAt;
+  const parsed = accountCreditsSnapshotSchema.safeParse(rest);
+  return parsed.success ? parsed.data : null;
 }
 
 function errorMessage(error: unknown): string {
@@ -1010,9 +1030,14 @@ export class AppServerHost {
       );
       return;
     }
+    const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
+    if (adapter && isCreditsAdapter(adapter)) void adapter.refreshCredits();
+    const credits =
+      adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
       usage: resolution.thread.latestUsage,
+      ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }

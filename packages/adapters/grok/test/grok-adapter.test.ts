@@ -152,6 +152,7 @@ async function openedSession(
     {
       randomUUID: () => `grok-id-${++uuid}`,
       createTransport: () => transport,
+      fetchCredits: async () => null,
     },
   );
   const opened = await adapter.open(
@@ -518,7 +519,11 @@ describe("Grok Adapter ACP projection", () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
       {},
-      { randomUUID: vi.fn(() => "id"), createTransport: () => transport },
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
     );
     await expect(
       adapter.open({
@@ -534,6 +539,29 @@ describe("Grok Adapter ACP projection", () => {
         sourceRef: { harnessId: adapter.harnessId, nativeSessionId: "session", formatVersion: 1 },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await adapter.close();
+  });
+
+  it("caches Grok account credits on the Adapter without changing Session Usage", async () => {
+    const snapshot = {
+      usedPercent: 33,
+      resetsAt: "2026-08-20T03:32:07.498525+00:00",
+      periodType: "weekly" as const,
+      fetchedAt: "2026-08-15T00:00:00.000Z",
+    };
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => snapshot,
+      },
+    );
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({ status: "ready" });
+    await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
+    expect(adapter.credits()).toEqual(snapshot);
     await adapter.close();
   });
 });

@@ -52,6 +52,12 @@ Grok Session resume SHALL use the Grok Native Session ID and structure-proven AC
 - **WHEN** Host resumes a mapped Grok Native Session
 - **THEN** GrokAdapter SHALL load the same Session and return its available ordered history without persisting Transcript content in codexhost
 
+#### Scenario: Grok Native history includes background-task control records
+- **WHEN** Native history contains a `<system-reminder>` User chunk or a `task-completed-*` terminal between already mapped human Turns
+- **THEN** GrokAdapter SHALL omit those control records from `HostThreadSnapshot`
+- **AND** the remaining human Turns SHALL keep their persisted Native identities and appear in Native Snapshot order
+- **AND** later genuine human Turns SHALL still be projected
+
 #### Scenario: Desktop requests Fork or rollback
 - **WHEN** a Grok Thread receives an exact Fork or rollback request during the MVP
 - **THEN** Host SHALL return the existing explicit unsupported error

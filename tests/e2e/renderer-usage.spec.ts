@@ -133,7 +133,9 @@ test("renders Usage immediately to the left of the model control", async ({ page
   await expect(popover).toContainText("$0.822");
 });
 
-test("keeps Usage in place and shows credits after the leading composer control", async ({ page }) => {
+test("keeps Usage in place and shows credits after the leading composer control", async ({
+  page,
+}) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {

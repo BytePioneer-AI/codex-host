@@ -229,6 +229,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "DeepSeek Harness";
     case "grok":
       return "Grok";
+    case "opencode":
+      return "OpenCode";
   }
 }
 

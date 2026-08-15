@@ -1,6 +1,7 @@
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
+import { OpenCodeAdapter } from "@codexhost/adapter-opencode";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
@@ -10,6 +11,7 @@ export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND"
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
+export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -59,6 +61,15 @@ export function createExternalHarnessAdapters(
       "grok",
       new GrokAdapter({
         ...(environment[GROK_COMMAND_ENV] ? { command: environment[GROK_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "opencode",
+      new OpenCodeAdapter({
+        ...(environment[OPENCODE_COMMAND_ENV]
+          ? { command: environment[OPENCODE_COMMAND_ENV] }
+          : {}),
         environment,
       }),
     ],

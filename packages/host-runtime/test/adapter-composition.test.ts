@@ -38,10 +38,17 @@ describe("Host external Harness composition", () => {
   it("registers all external Harnesses by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 
-    expect([...adapters.keys()]).toEqual(["pi", "claude-code", "deepseek-harness", "grok"]);
+    expect([...adapters.keys()]).toEqual([
+      "pi",
+      "claude-code",
+      "deepseek-harness",
+      "grok",
+      "opencode",
+    ]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
+    expect(adapters.get("opencode")?.harnessId).toBe("opencode");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 

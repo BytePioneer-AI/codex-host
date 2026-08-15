@@ -42,6 +42,7 @@ import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeOpencodeTransportModelId,
   findComposerModelTarget,
   isPiTransportModelId,
   threadIdFromComposerModelTarget,
@@ -75,6 +76,7 @@ const externalHarnessIds = {
   "claude-code": harnessIdSchema.parse("claude-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
+  opencode: harnessIdSchema.parse("opencode"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -82,6 +84,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "claude-code",
   "deepseek-harness",
   "grok",
+  "opencode",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
@@ -243,6 +246,20 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     }
     const model = inspection.effectiveModel ?? transportSelection.model;
     return { agent: "deepseek-harness", ...(model ? { model } : {}) };
+  }
+  if (inspection.harnessId === "opencode") {
+    const transportSelection = decodeOpencodeTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("OpenCode Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    return {
+      agent: "opencode",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    };
   }
   throw new Error("Thread owner is not a Renderer Agent");
 }

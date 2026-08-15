@@ -61,10 +61,33 @@ export interface RendererModelPickerControl {
   menu: HTMLElement;
   modelMenu: HTMLElement;
   modelButton: HTMLButtonElement;
+  searchInput: HTMLInputElement;
+  empty: HTMLElement;
   options: Map<string, ModelOptionControl>;
   thinkingOptions: Map<string, ThinkingOptionControl>;
   close(): void;
   dispose(): void;
+}
+
+export function rendererModelSearchText(
+  model: HarnessModelCatalog["models"][number],
+): string {
+  return [
+    model.label,
+    model.resolvedModelLabel,
+    model.ref.id,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .toLowerCase();
+}
+
+export function rendererModelMatchesQuery(
+  searchText: string,
+  query: string,
+): boolean {
+  const normalized = query.trim().toLowerCase();
+  return normalized.length === 0 || searchText.includes(normalized);
 }
 
 function popoverOpen(menu: HTMLElement): boolean {
@@ -247,7 +270,7 @@ export function mountRendererModelPicker(
   menu.id = `${composerId}-model-menu`;
   menu.setAttribute("role", "menu");
   menu.setAttribute("aria-label", "Model and Thinking");
-  menu.setAttribute("popover", "auto");
+  menu.setAttribute("popover", "manual");
   menu.className = MENU_CLASSES;
   menu.style.position = "fixed";
   menu.style.inset = "auto";
@@ -278,6 +301,26 @@ export function mountRendererModelPicker(
   modelMenu.style.maxHeight = "min(360px, 60vh)";
   modelMenu.style.overflowY = "auto";
   modelButton.setAttribute("aria-controls", modelMenu.id);
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.setAttribute("aria-label", "Search models");
+  searchInput.placeholder = "Search models…";
+  searchInput.autocomplete = "off";
+  searchInput.spellcheck = false;
+  searchInput.style.margin = "0 4px 4px";
+  searchInput.style.padding = "4px 8px";
+  searchInput.style.width = "calc(100% - 8px)";
+  searchInput.style.border = "1px solid var(--token-border, rgba(255,255,255,0.15))";
+  searchInput.style.borderRadius = "6px";
+  searchInput.style.background = "transparent";
+  searchInput.style.color = "inherit";
+  searchInput.style.outline = "none";
+
+  const empty = document.createElement("div");
+  empty.className = HEADING_CLASSES;
+  empty.textContent = "No matching models";
+  empty.hidden = true;
 
   const options = new Map<string, ModelOptionControl>();
   const thinkingOptions = new Map<string, ThinkingOptionControl>();
@@ -311,7 +354,9 @@ export function mountRendererModelPicker(
     if (!openState) closeModelMenu();
   };
   const onModelToggle = (): void => {
-    modelButton.setAttribute("aria-expanded", String(popoverOpen(modelMenu)));
+    const openState = popoverOpen(modelMenu);
+    modelButton.setAttribute("aria-expanded", String(openState));
+    if (openState) searchInput.focus();
   };
   const onRootClick = (event: MouseEvent): void => {
     const target =
@@ -341,15 +386,47 @@ export function mountRendererModelPicker(
     if (popoverOpen(menu)) positionMainMenu(control);
     if (popoverOpen(modelMenu)) positionModelMenu(control);
   };
+  const onDocumentPointerDown = (event: PointerEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (root.contains(target) || modelMenu.contains(target)) return;
+    close();
+  };
+  const onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    if (popoverOpen(menu)) close();
+  };
+  const onSearchInput = (): void => {
+    const query = searchInput.value;
+    let matches = 0;
+    for (const option of control.options.values()) {
+      const visible = rendererModelMatchesQuery(option.button.dataset.searchText ?? "", query);
+      option.button.hidden = !visible;
+      if (visible) matches++;
+    }
+    empty.hidden = matches > 0;
+    if (matches === 1) {
+      for (const option of control.options.values()) {
+        if (!option.button.hidden) {
+          option.button.scrollIntoView({ block: "nearest" });
+          break;
+        }
+      }
+    }
+  };
   trigger.addEventListener("click", onTriggerClick);
   menu.addEventListener("toggle", onToggle);
   modelMenu.addEventListener("toggle", onModelToggle);
   modelButton.addEventListener("mouseenter", onModelHover);
   root.addEventListener("click", onRootClick);
   modelMenu.addEventListener("click", onModelMenuClick);
+  searchInput.addEventListener("input", onSearchInput);
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("scroll", onViewportChange, true);
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
+  document.addEventListener("keydown", onDocumentKeyDown, true);
   root.append(trigger, menu);
+  modelMenu.append(searchInput, empty);
   document.body.append(modelMenu);
 
   const control: RendererModelPickerControl = {
@@ -360,6 +437,8 @@ export function mountRendererModelPicker(
     menu,
     modelMenu,
     modelButton,
+    searchInput,
+    empty,
     options,
     thinkingOptions,
     close,
@@ -371,8 +450,11 @@ export function mountRendererModelPicker(
       modelButton.removeEventListener("mouseenter", onModelHover);
       root.removeEventListener("click", onRootClick);
       modelMenu.removeEventListener("click", onModelMenuClick);
+      searchInput.removeEventListener("input", onSearchInput);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
+      document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      document.removeEventListener("keydown", onDocumentKeyDown, true);
       modelMenu.remove();
       root.remove();
     },
@@ -386,7 +468,8 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   control.options.clear();
   control.thinkingOptions.clear();
   control.menu.replaceChildren();
-  control.modelMenu.replaceChildren(createHeading("Model"));
+  control.modelMenu.replaceChildren(createHeading("Model"), control.searchInput, control.empty);
+  const query = control.searchInput.value;
 
   if (presentation.showThinkingSection) {
     control.menu.append(createHeading("Thinking"));
@@ -422,10 +505,12 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   control.modelButton.replaceChildren(modelText, modelChevron);
   control.menu.append(control.modelButton);
 
+  let matches = 0;
   for (const model of view.catalog?.models ?? []) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.modelId = model.ref.id;
+    button.dataset.searchText = rendererModelSearchText(model);
     button.setAttribute("role", "menuitemradio");
     button.className = OPTION_CLASSES;
 
@@ -435,9 +520,13 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
     text.title = model.label;
     const check = createCheck();
     button.append(text, check);
+    const visible = rendererModelMatchesQuery(button.dataset.searchText, query);
+    button.hidden = !visible;
+    if (visible) matches++;
     control.options.set(model.ref.id, { button, check });
     control.modelMenu.append(button);
   }
+  control.empty.hidden = matches > 0;
 }
 
 export function renderRendererModelPicker(

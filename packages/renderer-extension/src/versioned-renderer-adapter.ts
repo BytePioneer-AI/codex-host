@@ -34,6 +34,8 @@ export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-n
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID}@`;
 export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
+export const OPENCODE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
+export const OPENCODE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -123,6 +125,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
+  if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -206,6 +209,43 @@ export function decodeGrokTransportModelId(value: unknown): {
   };
 }
 
+export function opencodeTransportModelId(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("OpenCode transport Thinking requires a Model Ref");
+    return OPENCODE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@@${parsedThinking}` : ""}`;
+}
+
+export function decodeOpencodeTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+} | null {
+  if (value === OPENCODE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(OPENCODE_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(OPENCODE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length !== 1 && components.length !== 3) return null;
+  const [modelId, emptyPermissionMode, thinkingOptionId] = components;
+  if (components.length === 3 && (emptyPermissionMode !== "" || !thinkingOptionId)) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return {
+    model: model.data,
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
 export function decodeClaudeTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
@@ -239,6 +279,10 @@ export function decodeClaudeTransportModelId(value: unknown): {
 
 export function isGrokTransportModelId(value: unknown): value is string {
   return decodeGrokTransportModelId(value) !== null;
+}
+
+export function isOpencodeTransportModelId(value: unknown): value is string {
+  return decodeOpencodeTransportModelId(value) !== null;
 }
 
 export function isClaudeTransportModelId(value: unknown): value is string {
@@ -519,7 +563,9 @@ export function modelSelectionForAgent(
           ? deepSeekHarnessTransportModelId(model)
           : agent === "grok"
             ? grokTransportModelId(model, thinkingOptionId)
-            : transportModelIdForAgent(agent);
+            : agent === "opencode"
+              ? opencodeTransportModelId(model, thinkingOptionId)
+              : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

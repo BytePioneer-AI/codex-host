@@ -1,5 +1,6 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
+import openCodeAgentIconUrl from "./assets/opencode-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -8,6 +9,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek Harness",
   grok: "Grok",
+  opencode: "OpenCode",
 };
 
 const PI_PATHS = [
@@ -78,6 +80,17 @@ export function createRendererAgentIcon(
       ownerDocument,
       "0 0 23.16 17.04",
     );
+  }
+  if (agent === "opencode") {
+    const image = ownerDocument.createElement("img");
+    image.src = openCodeAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.flex = "none";
+    return image;
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

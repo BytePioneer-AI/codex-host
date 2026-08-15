@@ -2,11 +2,11 @@
 
 # CodexHost
 
-**在 Codex Desktop 中运行 Pi 和其他 Harness**
+**在 Codex Desktop 中运行 Pi、OpenCode 和其他 Harness**
 
 我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
+但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code**、**Pi Agent** 和 **OpenCode**。
 
 **CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
 
@@ -23,6 +23,7 @@
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
+  <a href="https://opencode.ai/"><img alt="OpenCode" src="https://img.shields.io/badge/OpenCode-000000?logo=opencode&logoColor=white" /></a>
 </p>
 
 <p><a href="docs/README.en.md">English</a></p>
@@ -31,7 +32,7 @@
 
 ## 界面预览
 
-Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作为独立会话运行。各 Harness 支持的流式输出、思考过程、工具状态、Diff、审批与提问会实时渲染。
+Pi、Claude Code、DeepSeek Harness、Grok 和 OpenCode 在同一个 Codex Desktop 中作为独立会话运行。各 Harness 支持的流式输出、思考过程、工具状态、Diff、审批与提问会实时渲染。
 
 ![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](docs/imgs/demo.gif)
 
@@ -41,23 +42,23 @@ Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作�
 
 ## 功能状态
 
-| 能力 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
-| --- | --- | --- | --- | --- | --- |
-| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thinking | 原生 | ✅ | ✅ | ✅ | — |
-| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | — | ✅ |
-| 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ |
-| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
-| 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | — | — |
-| Usage | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thread 管理 | 原生 | ✅ | 🚧 | 🚧 | 🚧 |
-| Fork | 原生 | ✅ | ✅ | — | — |
-| 上下文压缩 | 原生 | ✅ | ✅ | — | ✅ |
-| 斜杠命令 | 原生 | 🚧 | 🚧 | — | — |
-| 修订上一条消息 | 原生 | ✅ | 🚧 | — | — |
+| 能力 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness | OpenCode |
+| --- | --- | --- | --- | --- | --- | --- |
+| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Thinking | 原生 | ✅ | ✅ | ✅ | — | ✅ |
+| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | — | ✅ | — |
+| 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ | 🚧 |
+| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 | ✅ |
+| 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 权限模式 | 原生 | — | ✅ | — | — | — |
+| Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Thread 管理 | 原生 | ✅ | 🚧 | 🚧 | 🚧 | 🚧 |
+| Fork | 原生 | ✅ | ✅ | — | — | — |
+| 上下文压缩 | 原生 | ✅ | ✅ | — | ✅ | — |
+| 斜杠命令 | 原生 | 🚧 | 🚧 | — | — | — |
+| 修订上一条消息 | 原生 | ✅ | 🚧 | — | — | — |
 
 `✅` 已支持，`🚧` 部分支持或开发中，`—` 当前不支持。
 

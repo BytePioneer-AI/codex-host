@@ -3,6 +3,11 @@ declare module "*.png" {
   export default dataUrl;
 }
 
+declare module "*.svg" {
+  const dataUrl: string;
+  export default dataUrl;
+}
+
 declare module "*.css" {
   const cssText: string;
   export default cssText;

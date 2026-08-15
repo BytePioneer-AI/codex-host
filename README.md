@@ -1,23 +1,21 @@
 <div align="right">
-  <a href="docs/README.en.md">English</a> | 简体中文
+  <a href="docs/README.zh-CN.md">简体中文</a> | English
 </div>
 
 <div align="center">
 
-# CodexHost
+# codexhost
 
-**在 Codex Desktop 中运行 Pi 和其他 Harness**
+**Run Pi, Claude Code, DeepSeek Harness, and Grok inside [Codex Desktop](https://openai.com/codex/)**
 
-我们认为 **Codex Desktop** 提供了目前最好的桌面开发交互体验。
+We believe **Codex Desktop** currently provides one of the best desktop development experiences.
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
+But **Codex** is not the only capable **Agent Harness**. Some developers prefer **Claude Code**, **Pi Agent**, **DeepSeek Harness**, or **Grok CLI**.
 
-**CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
-
-⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
+**codexhost** lets you choose the **Agent** that actually executes your tasks inside **Codex Desktop**, while preserving the native Codex experience.
 
 <p>
-  <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
 </p>
 
@@ -31,102 +29,102 @@
 
 </div>
 
-## 界面预览
+## Interface Preview
 
-Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作为独立会话运行。各 Harness 支持的流式输出、思考过程、工具状态、Diff、审批与提问会实时渲染。
+Pi, Claude Code, DeepSeek Harness, and Grok run as independent sessions in the same Codex Desktop window. Streaming output, thinking, tool status, diffs, approvals, and questions are rendered in real time when supported by each Harness.
 
-![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](docs/imgs/demo.gif)
+![Full demo of Pi and Claude Code running in Codex Desktop](docs/imgs/demo.gif)
 
-### 界面
+### Interface
 
-![Pi、Claude Code 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
+![Pi, Claude Code, and DeepSeek Harness running as independent threads in Codex Desktop](docs/imgs/app-overview.png)
 
-## 功能状态
+## Feature Status
 
-| 能力 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
+| Capability | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
 | --- | --- | --- | --- | --- | --- |
-| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thinking | 原生 | ✅ | ✅ | ✅ | — |
-| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | — | ✅ |
-| 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ |
-| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
-| 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | — | — |
-| Usage | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thread 管理 | 原生 | ✅ | 🚧 | 🚧 | 🚧 |
-| Fork | 原生 | ✅ | ✅ | — | — |
-| 上下文压缩 | 原生 | ✅ | ✅ | — | ✅ |
-| 斜杠命令 | 原生 | 🚧 | 🚧 | — | — |
-| 修订上一条消息 | 原生 | ✅ | 🚧 | — | — |
+| Streaming replies | Native | ✅ | ✅ | ✅ | ✅ |
+| Thinking | Native | ✅ | ✅ | ✅ | — |
+| Tool status | Native | ✅ | ✅ | ✅ | ✅ |
+| Edit diffs | Native | ✅ | ✅ | — | ✅ |
+| Ask / cancel | Native | ✅ | ✅ | 🚧 | ✅ |
+| Model / thinking selection | Native | ✅ | ✅ | ✅ | 🚧 |
+| Tool approvals | Native | ✅ | ✅ | ✅ | ✅ |
+| Permission modes | Native | — | ✅ | — | — |
+| Usage | Native | ✅ | ✅ | ✅ | ✅ |
+| Session resume | Native | ✅ | ✅ | ✅ | ✅ |
+| Thread management | Native | ✅ | 🚧 | 🚧 | 🚧 |
+| Fork | Native | ✅ | ✅ | — | — |
+| Context compaction | Native | ✅ | ✅ | — | ✅ |
+| Slash commands | Native | 🚧 | 🚧 | — | — |
+| Revise the previous message | Native | ✅ | 🚧 | — | — |
 
-`✅` 已支持，`🚧` 部分支持或开发中，`—` 当前不支持。
+`✅` supported, `🚧` partial or in progress, `—` not currently supported.
 
-## 快速使用
+## Quick Start
 
-**方式一：使用 npm**
+**Option 1: Install with npm**
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
-npm 支持 macOS、Windows 和 [x64 Linux](docs/linux.zh-CN.md)。
+npm supports macOS, Windows, and [x64 Linux](docs/linux.md).
 
-**方式二：下载安装包**
+**Option 2: Download an installer**
 
-从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。目前安装包支持 macOS 和 Windows。
+Download the latest installer from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases), then choose the file matching your operating system and CPU architecture. Installers currently support macOS and Windows.
 
-macOS 安装后，如果首次打开时提示 Apple 无法验证该应用，请在终端执行：
+After installing on macOS, if Apple says it cannot verify the app when you first open it, run the following command in Terminal:
 ```bash
 xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
-然后重新打开 `codexhost`。
+Then open `codexhost` again.
 
 <details>
-<summary><h3>怎么做的</h3></summary>
+<summary><h3>How it works</h3></summary>
 
-多数「多 Agent 客户端」通过 [ACP](https://agentclientprotocol.com/) 协议接入不同 Harness。接入快，但工具、审批、权限、Diff、提问等原生能力会先被削平，再在 UI 里补一层近似实现。
+Most multi-agent clients connect different Harnesses through the [ACP](https://agentclientprotocol.com/) protocol. This is quick to integrate, but native capabilities such as tools, approvals, permissions, diffs, and questions are first reduced to a common denominator and then approximated again in the UI.
 
-CodexHost 尽量不走这条路：
+codexhost takes a different approach:
 
-- **Desktop 侧**：用 CDP / Electron Inspector 在官方 Codex Desktop 上增强 Agent 选择与会话界面，不重做聊天壳，也不改官方安装包
-- **协议侧**：用 CLI Shim 透明接入官方 app-server；Codex 请求原样转发
-- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
+- **Desktop layer:** Use CDP / Electron Inspector to enhance the official Codex Desktop with Agent selection and session controls. The chat shell is not recreated, and the official installer is not modified.
+- **Protocol layer:** Use a CLI shim to transparently connect to the official app-server and forward Codex requests unchanged.
+- **Harness layer:** Integrate each Harness through its native interface: Pi uses the official RPC, while Claude Code uses the Agent SDK / CLI. Each Harness is then projected into the Desktop's existing streaming output, tools, diffs, approvals, and questions.
 
-目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
+The goal is fidelity, not merely making the conversation work. Streaming, tool status, reliable patches, native approvals, and questions should come from the Harness itself whenever possible, rather than being guessed or fabricated by the Host.
 
 </details>
 
-### 交互展示
+### Interaction Examples
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/grok-agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Grok 已加入列表">
+      <p><strong>Agent and Model selection</strong></p>
+      <img src="docs/imgs/grok-agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Grok is now in the list">
     </td>
     <td width="50%" valign="top">
-      <p><strong>Usage 与费用信息</strong></p>
-      <img src="docs/imgs/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
+      <p><strong>Usage and cost information</strong></p>
+      <img src="docs/imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Mermaid 图表可视化渲染</strong></p>
-      <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+      <p><strong>Mermaid diagram rendering</strong></p>
+      <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Grok 效果展示</strong></p>
-      <img src="docs/imgs/grok-account-credits.png" alt="Grok 效果展示：账户额度与每周用量、重置时间一目了然">
+      <p><strong>Grok showcase</strong></p>
+      <img src="docs/imgs/grok-account-credits.png" alt="Grok showcase: account credits with weekly limits, usage, and reset time at a glance">
     </td>
   </tr>
 </table>
 
-## 鸣谢
+## Acknowledgements
 
-- 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。
-- 感谢 [Paseo](https://github.com/getpaseo/paseo) 项目在多 Harness 接入思路与架构设计方面带来的启发与参考。
+- Thanks to the [LINUX DO](https://linux.do/) community for its continued support.
+- Thanks to the [Paseo](https://github.com/getpaseo/paseo) project for inspiring and informing the multi-Harness integration approach and architecture.

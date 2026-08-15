@@ -4,7 +4,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import type { AccountCreditsSnapshot, ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 import {
   CONTROL_ATTRIBUTE,
   mountRendererAgentPicker,
@@ -284,14 +284,23 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
   control.usage.syncNativeModelClassName(candidate.className);
 }
 
-function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
-  const candidate = nativeContextUsageControlForComposer(control.composer);
-  if (!candidate) {
+function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
+  const context = nativeContextUsageControlForComposer(control.composer);
+  if (context?.parentElement) return context;
+  const modelRoot = control.modelPicker.root;
+  if (modelRoot.parentElement) return modelRoot;
+  const native = control.nativeModelControl?.element;
+  return native?.parentElement ? native : null;
+}
+
+function refreshUsagePlacement(control: ComposerAgentControl): void {
+  const anchor = usagePlacementAnchor(control);
+  if (!anchor) {
     if (control.usage.anchor) control.usage.root.remove();
     control.usage.anchor = null;
     return;
   }
-  control.usage.place(candidate);
+  control.usage.place(anchor);
 }
 
 function refreshNativePermissionModeControl(control: ComposerAgentControl): void {
@@ -335,7 +344,7 @@ export function reconcileComposerNativeControls(
   hidePermissionMode: boolean,
 ): void {
   refreshNativeModelControl(control);
-  refreshNativeContextUsageControl(control);
+  refreshUsagePlacement(control);
   refreshNativePermissionModeControl(control);
   setNativeControlHidden(control.nativeModelControl, hideModel);
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
@@ -400,7 +409,7 @@ export function mountComposerAgentControl(
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
-  refreshNativeContextUsageControl(control);
+  refreshUsagePlacement(control);
   return control;
 }
 
@@ -413,6 +422,7 @@ export function renderComposerAgentControl(
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,
+  accountCredits: AccountCreditsSnapshot | null = null,
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -465,7 +475,7 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  renderRendererUsageControl(control.usage, usage);
+  renderRendererUsageControl(control.usage, usage, accountCredits);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

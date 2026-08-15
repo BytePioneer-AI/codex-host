@@ -69,11 +69,14 @@ export type {
   ThreadOwnershipListResult,
 } from "./harness-models.js";
 export {
+  accountCreditsProductUsageSchema,
+  accountCreditsSnapshotSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,
 } from "./thread-usage.js";
 export type {
+  AccountCreditsSnapshot,
   ThreadUsageInspection,
   ThreadUsageInspectionParams,
   ThreadUsageSnapshot,

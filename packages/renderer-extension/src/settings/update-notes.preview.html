@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Updates notes preview</title>
+    <style>
+      :root {
+        --settings-bg: #181818;
+        --settings-sidebar: #1c1c1c;
+        --settings-panel: transparent;
+        --settings-text: #f5f5f5;
+        --settings-muted: #a1a1a1;
+        --settings-border: rgb(255 255 255 / 10%);
+        --settings-divider: rgb(255 255 255 / 10%);
+        --settings-hover: rgb(255 255 255 / 6%);
+        --settings-active: rgb(51 156 255 / 12%);
+        --settings-focus: #339cff;
+        color: var(--settings-text);
+        color-scheme: dark;
+        font:
+          14px / 1.5 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #111;
+      }
+
+      .preview-page {
+        width: min(930px, calc(100% - 80px));
+        margin-inline: auto;
+        padding: 44px 0 56px;
+      }
+
+      .preview-hint {
+        margin: 0 0 20px;
+        color: var(--settings-muted);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      .settings-section-label {
+        padding: 0 0 28px;
+        color: var(--settings-text);
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 30px;
+      }
+
+      .settings-update-metadata {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+        margin-bottom: 24px;
+        padding: 0 4px 20px;
+        border-bottom: 1px solid var(--settings-divider);
+      }
+
+      .settings-update-metadata__item {
+        display: grid;
+        min-width: 0;
+        gap: 4px;
+      }
+
+      .settings-update-metadata__item span {
+        color: var(--settings-muted);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      .settings-update-metadata__item strong {
+        color: var(--settings-text);
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 22px;
+      }
+
+      .settings-update-panel {
+        display: grid;
+        gap: 16px;
+        min-height: 128px;
+        padding: 20px;
+        color: var(--settings-text);
+        background: var(--settings-panel);
+        border: 1px solid var(--settings-border);
+        border-radius: 8px;
+      }
+
+      .settings-update-summary {
+        margin: 0;
+        color: var(--settings-muted);
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .settings-update-version-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 20px;
+        min-height: 32px;
+        color: var(--settings-muted);
+        font-size: 13px;
+      }
+
+      .settings-update-version-row strong {
+        color: var(--settings-text);
+        font-size: 15px;
+      }
+
+      .settings-update-notes {
+        display: grid;
+        gap: 10px;
+        color: var(--settings-muted);
+        font-size: 13px;
+        line-height: 20px;
+        overflow-wrap: anywhere;
+      }
+
+      .settings-update-notes h1,
+      .settings-update-notes h2,
+      .settings-update-notes h3,
+      .settings-update-notes h4,
+      .settings-update-notes h5,
+      .settings-update-notes h6 {
+        margin: 6px 0 0;
+        color: var(--settings-text);
+        font-weight: 600;
+      }
+
+      .settings-update-notes h1 {
+        font-size: 16px;
+        line-height: 24px;
+      }
+
+      .settings-update-notes h2 {
+        font-size: 15px;
+        line-height: 22px;
+      }
+
+      .settings-update-notes h3,
+      .settings-update-notes h4,
+      .settings-update-notes h5,
+      .settings-update-notes h6 {
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .settings-update-notes p,
+      .settings-update-notes ul,
+      .settings-update-notes ol,
+      .settings-update-notes pre {
+        margin: 0;
+      }
+
+      .settings-update-notes ul,
+      .settings-update-notes ol {
+        padding-left: 20px;
+      }
+
+      .settings-update-notes li + li {
+        margin-top: 4px;
+      }
+
+      .settings-update-notes strong {
+        color: var(--settings-text);
+        font-weight: 600;
+      }
+
+      .settings-update-notes a {
+        color: #7cb8ff;
+        text-decoration: none;
+      }
+
+      .settings-update-notes a:hover {
+        text-decoration: underline;
+      }
+
+      .settings-update-notes code {
+        font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+
+      .settings-update-notes :not(pre) > code {
+        padding: 1px 5px;
+        background: rgb(255 255 255 / 8%);
+        border-radius: 4px;
+      }
+
+      .settings-update-notes pre {
+        padding: 10px 12px;
+        overflow: auto;
+        background: rgb(0 0 0 / 28%);
+        border-radius: 6px;
+      }
+
+      .settings-update-notes pre code {
+        line-height: 18px;
+        white-space: pre-wrap;
+      }
+
+      .settings-update-actions {
+        display: flex;
+        margin-top: 16px;
+      }
+
+      .settings-update-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: fit-content;
+        min-height: 36px;
+        gap: 8px;
+        padding: 8px 12px;
+        color: var(--settings-text);
+        font: inherit;
+        font-size: 13px;
+        text-decoration: none;
+        background: transparent;
+        border: 1px solid var(--settings-border);
+        border-radius: 6px;
+      }
+
+      .settings-update-link:hover {
+        filter: brightness(1.08);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="preview-page">
+      <p class="preview-hint">
+        本地预览：修改下面的 SAMPLE_MARKDOWN 后刷新即可。生产设置页不再给更新说明加灰色底。
+      </p>
+      <div class="settings-section-label">更新</div>
+      <div class="settings-update-metadata">
+        <div class="settings-update-metadata__item">
+          <span>当前版本</span>
+          <strong>v0.2.0</strong>
+        </div>
+        <div class="settings-update-metadata__item">
+          <span>安装方式</span>
+          <strong>macOS DMG</strong>
+        </div>
+      </div>
+      <section class="settings-update-panel" data-update-state="current" aria-live="polite">
+        <div class="settings-update-version-row">
+          <span>最新版本</span>
+          <strong>v0.2.0</strong>
+        </div>
+        <p class="settings-update-summary">更新安装成功。</p>
+        <div id="release-notes"></div>
+      </section>
+      <div class="settings-update-actions">
+        <a
+          class="settings-update-link"
+          href="https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.0"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          前往 GitHub Releases 下载
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M14 5h5v5M10 14 19 5M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </a>
+      </div>
+    </main>
+    <script>
+      const SAMPLE_MARKDOWN = `codexhost 是一个将 Pi 和 Claude Code 接入 Codex Desktop 的跨平台 Host。用户可以继续使用 Codex Desktop 的桌面交互，同时选择由不同 Harness 执行当前任务。
+
+## 本次发布
+
+- 新增 Grok CLI adapter：支持在 Codex Desktop 中通过 Grok 执行任务，跨重启保留线程身份，并将 Grok 原生 Usage（token、缓存、推理、成本）映射到 HostUsage 展示。
+- 集成 DeepSeek Harness：通过本地 Host 接入 DeepSeek，暴露 token 生成速度，并基于上下文窗口投影 Usage 显示。
+- 修复当前 Codex 创建的任务未经过请求桥接的问题。
+- 隔离 Chat 编辑器输入绑定，确保 Renderer Extension 只绑定已验证的 Codex 根节点，避免误绑普通输入框。
+- 修复模型选择器弹层定位不稳定的问题。
+- 优化启动性能：模型加载与路由策略安装并行执行。
+- 移除 Agent 与 Model 选择器的边框样式，并刷新品牌与 Grok agent 图标。
+- 新增 MIT LICENSE，并在 package.json 中声明许可证。
+
+## 安装方式
+
+### npm
+
+\`\`\`bash
+npm install -g @codexhost/cli
+codexhost
+\`\`\`
+
+### 安装包
+
+下载与你的操作系统和 CPU 架构对应的安装包，或查看 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.0)。
+
+1. 选择 macOS / Windows 与对应 CPU 架构
+2. 下载后打开安装包完成更新
+3. 通过 **codexhost** 重新启动 Desktop
+`;
+
+      const HEADING_PATTERN = /^(#{1,6})[ \t]+(.+?)\s*$/u;
+      const UNORDERED_ITEM_PATTERN = /^[-*][ \t]+(.+?)\s*$/u;
+      const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
+      const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
+      const INLINE_PATTERN = /(`+)((?:(?!\1).)+)\1|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)/gu;
+
+      function appendInline(parent, text) {
+        let lastIndex = 0;
+        for (const match of text.matchAll(INLINE_PATTERN)) {
+          const index = match.index ?? 0;
+          if (index > lastIndex) parent.append(text.slice(lastIndex, index));
+          if (match[2] !== undefined) {
+            const code = document.createElement("code");
+            code.textContent = match[2];
+            parent.append(code);
+          } else if (match[3] !== undefined) {
+            const strong = document.createElement("strong");
+            strong.textContent = match[3];
+            parent.append(strong);
+          } else {
+            const link = document.createElement("a");
+            link.textContent = match[4] ?? "";
+            link.setAttribute("href", match[5] ?? "");
+            link.setAttribute("target", "_blank");
+            link.setAttribute("rel", "noopener noreferrer");
+            parent.append(link);
+          }
+          lastIndex = index + match[0].length;
+        }
+        if (lastIndex < text.length) parent.append(text.slice(lastIndex));
+      }
+
+      function appendFencedCode(root, lines, start, language) {
+        const body = [];
+        let index = start + 1;
+        while (index < lines.length && !FENCE_PATTERN.test(lines[index] ?? "")) {
+          body.push(lines[index] ?? "");
+          index += 1;
+        }
+        if (index < lines.length) index += 1;
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        if (language.length > 0) code.className = "language-" + language;
+        code.textContent = body.join("\n");
+        pre.append(code);
+        root.append(pre);
+        return index;
+      }
+
+      function appendList(root, lines, start, tag, pattern) {
+        const list = document.createElement(tag);
+        let index = start;
+        while (index < lines.length) {
+          const item = pattern.exec(lines[index] ?? "");
+          if (!item?.[1]) break;
+          const entry = document.createElement("li");
+          appendInline(entry, item[1]);
+          list.append(entry);
+          index += 1;
+        }
+        root.append(list);
+        return index;
+      }
+
+      function appendParagraph(root, lines, start) {
+        const paragraphLines = [];
+        let index = start;
+        while (index < lines.length) {
+          const current = lines[index] ?? "";
+          if (
+            current.trim().length === 0 ||
+            FENCE_PATTERN.test(current) ||
+            HEADING_PATTERN.test(current) ||
+            UNORDERED_ITEM_PATTERN.test(current) ||
+            ORDERED_ITEM_PATTERN.test(current)
+          ) {
+            break;
+          }
+          paragraphLines.push(current.trim());
+          index += 1;
+        }
+        const paragraph = document.createElement("p");
+        appendInline(paragraph, paragraphLines.join(" "));
+        root.append(paragraph);
+        return index;
+      }
+
+      function createReleaseNotesElement(markdown) {
+        const root = document.createElement("div");
+        root.className = "settings-update-notes";
+        const lines = markdown.replaceAll("\r\n", "\n").split("\n");
+        let index = 0;
+        while (index < lines.length) {
+          const line = lines[index] ?? "";
+          if (line.trim().length === 0) {
+            index += 1;
+            continue;
+          }
+          const fence = FENCE_PATTERN.exec(line);
+          if (fence) {
+            index = appendFencedCode(root, lines, index, fence[1] ?? "");
+            continue;
+          }
+          const heading = HEADING_PATTERN.exec(line);
+          if (heading?.[1] && heading[2]) {
+            const element = document.createElement("h" + heading[1].length);
+            appendInline(element, heading[2]);
+            root.append(element);
+            index += 1;
+            continue;
+          }
+          if (UNORDERED_ITEM_PATTERN.test(line)) {
+            index = appendList(root, lines, index, "ul", UNORDERED_ITEM_PATTERN);
+            continue;
+          }
+          if (ORDERED_ITEM_PATTERN.test(line)) {
+            index = appendList(root, lines, index, "ol", ORDERED_ITEM_PATTERN);
+            continue;
+          }
+          index = appendParagraph(root, lines, index);
+        }
+        return root;
+      }
+
+      document
+        .getElementById("release-notes")
+        .replaceWith(createReleaseNotesElement(SAMPLE_MARKDOWN));
+    </script>
+  </body>
+</html>

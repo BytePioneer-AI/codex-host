@@ -46,6 +46,17 @@ function terminalOutcome(stopReason: string): HistoricalTurnOutcome {
   };
 }
 
+const systemReminderPattern = /^\s*<system-reminder>[\s\S]*$/u;
+const taskCompletedTurnKeyPattern = /^task-completed-/u;
+
+function isSyntheticGrokUserText(text: string): boolean {
+  return systemReminderPattern.test(text);
+}
+
+function isSyntheticGrokTurnKey(nativeTurnKey: string): boolean {
+  return taskCompletedTurnKeyPattern.test(nativeTurnKey);
+}
+
 export function mapGrokReplay(
   replay: readonly GrokTransportEvent[],
   harnessId: HarnessId,
@@ -109,6 +120,7 @@ export function mapGrokReplay(
 
   for (const event of replay) {
     if (event.type === "user.text") {
+      if (isSyntheticGrokUserText(event.text)) continue;
       if (input.length > 0) {
         completeTurn({
           status: "unknown",
@@ -126,6 +138,7 @@ export function mapGrokReplay(
     }
     if (input.length === 0) continue;
     if (event.type === "turn.completed") {
+      if (isSyntheticGrokTurnKey(event.nativeTurnKey)) continue;
       completeTurn(terminalOutcome(event.stopReason), event.nativeTurnKey);
     } else if (event.type === "agent.text") {
       if (!agent) {

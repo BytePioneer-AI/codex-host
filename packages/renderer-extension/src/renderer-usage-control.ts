@@ -1,4 +1,4 @@
-import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import type { AccountCreditsSnapshot, ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 
 import { RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES } from "./renderer-model-picker.js";
 
@@ -36,6 +36,39 @@ export function formatRendererTokenCount(value: number): string {
   return `${sign}${decimal(absolute / 1000, 1)}k`;
 }
 
+export function formatRendererCreditsPercent(value: number): string {
+  return `${decimal(value, 1)}%`;
+}
+
+export function rendererUsageTriggerMaxWidth(hasAccountCredits: boolean): string {
+  return hasAccountCredits ? "min(300px, 44vw)" : "min(180px, 30vw)";
+}
+
+export function formatRendererCreditsReset(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function creditsPeriodLabel(periodType: AccountCreditsSnapshot["periodType"]): string {
+  if (periodType === "weekly") return "Weekly limit";
+  if (periodType === "monthly") return "Monthly limit";
+  return "Account limit";
+}
+
+function productLabel(product: string): string {
+  if (product === "GrokBuild") return "Build";
+  if (product === "GrokChat") return "Chat";
+  if (product === "GrokImagine") return "Imagine";
+  if (product === "GrokVoice") return "Voice";
+  return product;
+}
+
 function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   const row = document.createElement("div");
   row.style.display = "grid";
@@ -53,7 +86,11 @@ function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   parent.append(row);
 }
 
-function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot): void {
+function renderDetails(
+  popover: HTMLDivElement,
+  usage: ThreadUsageSnapshot | null,
+  accountCredits: AccountCreditsSnapshot | null,
+): void {
   popover.replaceChildren();
   const heading = document.createElement("div");
   heading.textContent = "Usage";
@@ -61,7 +98,25 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot): voi
   heading.style.marginBottom = "6px";
   popover.append(heading);
 
-  if (usage.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
+  if (accountCredits) {
+    addDetailRow(
+      popover,
+      creditsPeriodLabel(accountCredits.periodType),
+      formatRendererCreditsPercent(accountCredits.usedPercent),
+    );
+    if (accountCredits.resetsAt) {
+      addDetailRow(popover, "Resets", formatRendererCreditsReset(accountCredits.resetsAt));
+    }
+    for (const product of accountCredits.productUsage ?? []) {
+      addDetailRow(
+        popover,
+        productLabel(product.product),
+        formatRendererCreditsPercent(product.usagePercent),
+      );
+    }
+  }
+
+  if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
     const contextPercent =
       usage.contextWindowTokens > 0
         ? (usage.contextUsedTokens / usage.contextWindowTokens) * 100
@@ -74,33 +129,33 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot): voi
         : `${decimal(contextPercent, 1)}% / ${formatRendererTokenCount(usage.contextWindowTokens)}`,
     );
   }
-  if (usage.cacheHitRatePercent !== undefined) {
+  if (usage?.cacheHitRatePercent !== undefined) {
     addDetailRow(
       popover,
       "Latest cache hit",
       formatRendererCacheHitRate(usage.cacheHitRatePercent),
     );
   }
-  if (usage.outputTokensPerSecond !== undefined) {
+  if (usage?.outputTokensPerSecond !== undefined) {
     addDetailRow(popover, "Output speed", formatRendererTokenRate(usage.outputTokensPerSecond));
   }
-  if (usage.cachedInputTokens !== undefined) {
+  if (usage?.cachedInputTokens !== undefined) {
     addDetailRow(popover, "Cache read", formatRendererTokenCount(usage.cachedInputTokens));
   }
-  if (usage.cacheWriteInputTokens !== undefined) {
+  if (usage?.cacheWriteInputTokens !== undefined) {
     addDetailRow(popover, "Cache write", formatRendererTokenCount(usage.cacheWriteInputTokens));
   }
-  if (usage.reasoningOutputTokens !== undefined) {
+  if (usage?.reasoningOutputTokens !== undefined) {
     addDetailRow(popover, "Reasoning", formatRendererTokenCount(usage.reasoningOutputTokens));
   }
-  if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
+  if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
     addDetailRow(
       popover,
       "Input / output",
       `${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
     );
   }
-  if (usage.totalCostUsd !== undefined) {
+  if (usage?.totalCostUsd !== undefined) {
     addDetailRow(popover, "Session cost estimate", formatRendererCost(usage.totalCostUsd));
   }
 }
@@ -168,7 +223,7 @@ export function mountRendererUsageControl(
   trigger.style.display = "inline-flex";
   trigger.style.alignItems = "center";
   trigger.style.width = "fit-content";
-  trigger.style.maxWidth = "min(180px, 30vw)";
+  trigger.style.maxWidth = rendererUsageTriggerMaxWidth(false);
   trigger.style.height = "24px";
   trigger.style.padding = "0 4px";
   trigger.style.borderRadius = "9999px";
@@ -290,6 +345,7 @@ export function mountRendererUsageControl(
 export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
+  accountCredits: AccountCreditsSnapshot | null = null,
 ): boolean {
   const cacheHitRatePercent = usage?.cacheHitRatePercent;
   const outputTokensPerSecond = usage?.outputTokensPerSecond;
@@ -297,23 +353,28 @@ export function renderRendererUsageControl(
   const hasCacheHitRate = cacheHitRatePercent !== undefined;
   const hasOutputSpeed = outputTokensPerSecond !== undefined;
   const hasCost = totalCostUsd !== undefined;
-  const visible = hasCacheHitRate || hasOutputSpeed || hasCost;
+  const hasCredits = accountCredits !== null;
+  const visible = hasCacheHitRate || hasOutputSpeed || hasCost || hasCredits;
   control.root.style.display = visible ? "inline-flex" : "none";
-  if (!visible || !usage) {
+  if (!visible) {
     closePopover(control);
     return false;
   }
 
   const summary = [
+    accountCredits
+      ? `${creditsPeriodLabel(accountCredits.periodType)} ${formatRendererCreditsPercent(accountCredits.usedPercent)}`
+      : null,
     cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
     outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   const compactSummary = summary.join(" · ");
   const accessibleSummary = `Thread Usage: ${compactSummary}`;
+  control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth(hasCredits);
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
   control.label.textContent = compactSummary;
-  renderDetails(control.popover, usage);
+  renderDetails(control.popover, usage, accountCredits);
   return true;
 }

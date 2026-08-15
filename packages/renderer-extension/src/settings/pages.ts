@@ -17,6 +17,7 @@ import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
+import { createReleaseNotesElement } from "./release-notes.js";
 import {
   RendererUpdateRequestTimeoutError,
   runBoundedRendererUpdateRequest,
@@ -335,10 +336,7 @@ function updatesPage(
               : messages.updateUpToDate);
         panel.append(summary);
         if (result.releaseNotes) {
-          const releaseNotes = document.createElement("div");
-          releaseNotes.className = "settings-update-notes";
-          releaseNotes.textContent = result.releaseNotes;
-          panel.append(releaseNotes);
+          panel.append(createReleaseNotesElement(document, result.releaseNotes));
         }
         if (result.status?.phase === "failed" && result.status.error) {
           const error = document.createElement("p");

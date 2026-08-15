@@ -6,6 +6,7 @@ import type { HistoryEntry, MuxFrame, SessionModels } from "@deepseek-ai/dsh-hos
 import { RpcId } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
@@ -642,6 +643,131 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           },
         },
       }),
+    );
+    await adapter.close();
+  });
+
+  it("keeps one Question close when DSH resolves during respond and continues the Turn", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const turnId = hostTurnIdSchema.parse("host-turn-question-continue");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "ask" }],
+    });
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    connection.sessionEvent("session-native-1", 1, "turn/start", { turn: 1 });
+    await iterator.next();
+    connection.mux(
+      "session-native-1",
+      {
+        type: "question/requested",
+        sessionId: SESSION_ID,
+        questions: [
+          {
+            id: "choice",
+            question: "Choose",
+            header: "Ask user question",
+            options: [{ label: "能看到弹窗，一切正常" }, { label: "看不到" }],
+          },
+        ],
+      },
+      "question-rpc",
+    );
+    const requested = await iterator.next();
+    const interaction = requested.value.interaction;
+
+    let releaseRespond: ((value: { accepted: true }) => void) | undefined;
+    connection.calls.respond.mockImplementationOnce(
+      () =>
+        new Promise<{ accepted: true }>((resolve) => {
+          releaseRespond = resolve;
+        }),
+    );
+
+    const responding = session.execute({
+      type: "interaction.respond",
+      interactionId: interaction.interactionId,
+      response: { type: "question", answers: { choice: ["能看到弹窗，一切正常"] } },
+    });
+
+    connection.mux(
+      "session-native-1",
+      {
+        type: "question/resolved",
+        sessionId: SESSION_ID,
+        questionRpcId: RpcId("question-rpc"),
+        outcome: "answered",
+      },
+      "question-resolved",
+    );
+    connection.sessionEvent("session-native-1", 2, "assistant/chunk", {
+      turn: 1,
+      step: 2,
+      chunk: { type: "reasoning-delta", text: "thinking after answer" },
+    });
+    releaseRespond?.({ accepted: true });
+    await expect(responding).resolves.toEqual({ ok: true, value: { accepted: true } });
+    connection.sessionEvent("session-native-1", 3, "assistant/chunk", {
+      turn: 1,
+      step: 2,
+      chunk: { type: "reasoning-delta", text: " more thinking" },
+    });
+    connection.sessionEvent("session-native-1", 4, "assistant/message", {
+      turn: 1,
+      step: 2,
+      message: { content: [{ type: "text", text: "final answer" }] },
+    });
+    connection.sessionEvent("session-native-1", 5, "turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+
+    const outputs: HarnessOutput[] = [];
+    for (;;) {
+      const result = await Promise.race([
+        iterator.next(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("timed out waiting for turn.completed")), 200);
+        }),
+      ]);
+      if (result.done) throw new Error("Output stream ended before Turn completion");
+      outputs.push(result.value);
+      if (result.value.kind === "event" && result.value.event.type === "turn.completed") break;
+    }
+
+    expect(
+      outputs.filter(
+        (output) => output.kind === "event" && output.event.type === "interaction.closed",
+      ),
+    ).toHaveLength(1);
+    expect(outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "item.updated",
+            update: { type: "text.append", text: "thinking after answer" },
+          }),
+        }),
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "item.completed",
+            snapshot: expect.objectContaining({
+              item: expect.objectContaining({ type: "agentMessage", text: "final answer" }),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "turn.completed",
+            outcome: { status: "succeeded" },
+          }),
+        }),
+      ]),
     );
     await adapter.close();
   });

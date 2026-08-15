@@ -152,6 +152,7 @@ async function openedSession(
     {
       randomUUID: () => `grok-id-${++uuid}`,
       createTransport: () => transport,
+      fetchCredits: async () => null,
     },
   );
   const opened = await adapter.open(
@@ -219,6 +220,93 @@ describe("Grok Adapter ACP projection", () => {
     }
     expect(snapshot.value.turns[0].nativeTurnRef).toEqual(completed.nativeTurnRef);
     await resumed.adapter.close();
+  });
+
+  it("omits background-task control records without shifting persisted Turn identities", async () => {
+    const transport = new FakeGrokTransport();
+    transport.replay = [
+      {
+        type: "user.text",
+        text: "first",
+        metadata: { eventId: "grok-session-user-1" },
+      },
+      { type: "agent.text", text: "answer-1", messageId: "agent-1" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-1",
+        stopReason: "end_turn",
+      },
+      {
+        type: "user.text",
+        text: '<system-reminder>\nBackground task "call-1" completed.\n</system-reminder>',
+        metadata: { eventId: "grok-session-user-bg" },
+      },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "task-completed-call-1",
+        stopReason: "end_turn",
+      },
+      {
+        type: "user.text",
+        text: "second",
+        metadata: { eventId: "grok-session-user-2" },
+      },
+      { type: "agent.text", text: "answer-2", messageId: "agent-2" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-2",
+        stopReason: "end_turn",
+      },
+      {
+        type: "user.text",
+        text: "third",
+        metadata: { eventId: "grok-session-user-3" },
+      },
+      { type: "agent.text", text: "answer-3", messageId: "agent-3" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-3",
+        stopReason: "end_turn",
+      },
+    ];
+    const known = [
+      nativeTurnRefSchema.parse({
+        harnessId: "grok",
+        nativeSessionId: transport.sessionId,
+        nativeTurnKey: "grok-prompt-1",
+        formatVersion: 1,
+      }),
+      nativeTurnRefSchema.parse({
+        harnessId: "grok",
+        nativeSessionId: transport.sessionId,
+        nativeTurnKey: "grok-prompt-2",
+        formatVersion: 1,
+      }),
+    ];
+    const { adapter, session } = await openedSession(transport, "resume", known);
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: known[0],
+            input: [{ type: "text", text: "first" }],
+          },
+          {
+            nativeTurnRef: known[1],
+            input: [{ type: "text", text: "second" }],
+          },
+          {
+            nativeTurnRef: {
+              nativeTurnKey: "grok-prompt-3",
+            },
+            input: [{ type: "text", text: "third" }],
+          },
+        ],
+      },
+    });
+    await adapter.close();
   });
 
   it("preserves persisted legacy Turn identity while resuming Native history", async () => {
@@ -518,7 +606,11 @@ describe("Grok Adapter ACP projection", () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
       {},
-      { randomUUID: vi.fn(() => "id"), createTransport: () => transport },
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
     );
     await expect(
       adapter.open({
@@ -534,6 +626,31 @@ describe("Grok Adapter ACP projection", () => {
         sourceRef: { harnessId: adapter.harnessId, nativeSessionId: "session", formatVersion: 1 },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await adapter.close();
+  });
+
+  it("caches Grok account credits on the Adapter without changing Session Usage", async () => {
+    const snapshot = {
+      usedPercent: 33,
+      resetsAt: "2026-08-20T03:32:07.498525+00:00",
+      periodType: "weekly" as const,
+      fetchedAt: "2026-08-15T00:00:00.000Z",
+    };
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => snapshot,
+      },
+    );
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
+    expect(adapter.credits()).toEqual(snapshot);
     await adapter.close();
   });
 });

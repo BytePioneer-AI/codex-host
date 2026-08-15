@@ -48,6 +48,7 @@ export {
 export {
   formatRendererCacheHitRate,
   formatRendererCost,
+  formatRendererCreditsPercent,
   formatRendererTokenCount,
 } from "./renderer-usage-control.js";
 export {

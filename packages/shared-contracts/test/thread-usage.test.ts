@@ -20,6 +20,19 @@ describe("Thread Usage contracts", () => {
       threadId: "thread-usage",
       usage,
     });
+    expect(
+      threadUsageInspectionSchema.parse({
+        threadId: "thread-usage",
+        usage,
+        accountCredits: {
+          usedPercent: 33,
+          resetsAt: "2026-08-20T03:32:07.498525+00:00",
+          periodType: "weekly",
+        },
+      }),
+    ).toMatchObject({
+      accountCredits: { usedPercent: 33, periodType: "weekly" },
+    });
   });
 
   it.each([

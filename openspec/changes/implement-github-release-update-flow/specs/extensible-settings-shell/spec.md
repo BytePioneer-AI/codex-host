@@ -20,7 +20,7 @@ The settings shell SHALL consume an immutable ordered registry of cohesive page 
 ## ADDED Requirements
 
 ### Requirement: Settings exposes a bounded Updates page
-The production settings registry SHALL expose one Updates page backed only by a method-specific update client. The page SHALL display current and latest versions, a bounded plain-text excerpt from the GitHub Release body and a GitHub release-notes link when available, one update-and-restart command when installation is available, and bounded checking, preparing, restarting, succeeded, and failed states. It MUST NOT fetch an arbitrary URL, render Release Markdown as HTML, accept native paths or commands, or imply installation succeeded before a terminal status is observed.
+The production settings registry SHALL expose one Updates page backed only by a method-specific update client. The page SHALL display current and latest versions, a bounded GitHub Release body rendered as structured Markdown and a GitHub release-notes link when available, one update-and-restart command when installation is available, and bounded checking, preparing, restarting, succeeded, and failed states. It MUST NOT fetch an arbitrary URL, accept native paths or commands, or imply installation succeeded before a terminal status is observed.
 
 #### Scenario: Startup check finds a newer Release
 - **WHEN** the fixed background check reports `updateAvailable: true`
@@ -30,7 +30,7 @@ The production settings registry SHALL expose one Updates page backed only by a 
 
 #### Scenario: User opens Updates with a newer installable Release
 - **WHEN** the fixed check operation reports a newer version with an installable current-target asset
-- **THEN** the page SHALL show both versions, the bounded Release body as plain text, the GitHub release-notes link, and an enabled update-and-restart command
+- **THEN** the page SHALL show both versions, the bounded Release body as structured Markdown, the GitHub release-notes link, and an enabled update-and-restart command
 
 #### Scenario: User starts an update
 - **WHEN** the user activates update-and-restart and the fixed start operation accepts it

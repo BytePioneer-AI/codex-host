@@ -469,17 +469,104 @@ button {
 }
 
 .settings-update-notes {
-  max-height: 240px;
-  padding: 14px;
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
   overflow: auto;
   color: var(--settings-muted);
   font-size: 13px;
   line-height: 20px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: rgb(255 255 255 / 4%);
-  border: 1px solid var(--settings-divider);
+}
+
+.settings-update-notes > :first-child {
+  margin-top: 0;
+}
+
+.settings-update-notes > :last-child {
+  margin-bottom: 0;
+}
+
+.settings-update-notes h1,
+.settings-update-notes h2,
+.settings-update-notes h3,
+.settings-update-notes h4,
+.settings-update-notes h5,
+.settings-update-notes h6 {
+  margin: 6px 0 0;
+  color: var(--settings-text);
+  font-weight: 600;
+}
+
+.settings-update-notes h1 {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.settings-update-notes h2 {
+  font-size: 15px;
+  line-height: 22px;
+}
+
+.settings-update-notes h3,
+.settings-update-notes h4,
+.settings-update-notes h5,
+.settings-update-notes h6 {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-update-notes p,
+.settings-update-notes ul,
+.settings-update-notes ol,
+.settings-update-notes pre {
+  margin: 0;
+}
+
+.settings-update-notes ul,
+.settings-update-notes ol {
+  padding-left: 20px;
+}
+
+.settings-update-notes li + li {
+  margin-top: 4px;
+}
+
+.settings-update-notes strong {
+  color: var(--settings-text);
+  font-weight: 600;
+}
+
+.settings-update-notes a {
+  color: #7cb8ff;
+  text-decoration: none;
+}
+
+.settings-update-notes a:hover {
+  text-decoration: underline;
+}
+
+.settings-update-notes code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.settings-update-notes :not(pre) > code {
+  padding: 1px 5px;
+  background: rgb(255 255 255 / 8%);
+  border-radius: 4px;
+}
+
+.settings-update-notes pre {
+  padding: 10px 12px;
+  overflow: auto;
+  background: rgb(0 0 0 / 28%);
   border-radius: 6px;
+}
+
+.settings-update-notes pre code {
+  line-height: 18px;
+  white-space: pre-wrap;
 }
 
 .settings-update-version-row {

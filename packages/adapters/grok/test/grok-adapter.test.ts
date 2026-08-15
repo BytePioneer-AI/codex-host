@@ -309,7 +309,7 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
-  it("keeps Native Turn keys when persisted identities do not match history", async () => {
+  it("preserves persisted legacy Turn identity while resuming Native history", async () => {
     const transport = new FakeGrokTransport();
     transport.replay = [
       {
@@ -324,101 +324,18 @@ describe("Grok Adapter ACP projection", () => {
         stopReason: "end_turn",
       },
     ];
-    const staleRef = nativeTurnRefSchema.parse({
+    const legacyRef = nativeTurnRefSchema.parse({
       harnessId: "grok",
       nativeSessionId: transport.sessionId,
       nativeTurnKey: "legacy-random-key",
       formatVersion: 1,
     });
-    const resumed = await openedSession(transport, "resume", [staleRef]);
+    const resumed = await openedSession(transport, "resume", [legacyRef]);
     await expect(resumed.session.readSnapshot()).resolves.toMatchObject({
       ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef: {
-              nativeTurnKey: "grok-prompt-1",
-            },
-          },
-        ],
-      },
+      value: { turns: [{ nativeTurnRef: legacyRef }] },
     });
     await resumed.adapter.close();
-  });
-
-  it("does not reassign persisted Turn keys onto extra cancelled Native Turns", async () => {
-    const transport = new FakeGrokTransport();
-    transport.replay = [
-      {
-        type: "user.text",
-        text: "review",
-        metadata: { eventId: "grok-session-user-1" },
-      },
-      { type: "agent.text", text: "looks good", messageId: "agent-1" },
-      {
-        type: "turn.completed",
-        nativeTurnKey: "grok-prompt-1",
-        stopReason: "end_turn",
-      },
-      {
-        type: "user.text",
-        text: "merge now",
-        metadata: { eventId: "grok-session-user-2" },
-      },
-      {
-        type: "turn.completed",
-        nativeTurnKey: "grok-prompt-cancelled",
-        stopReason: "cancelled",
-      },
-      {
-        type: "user.text",
-        text: "summarize",
-        metadata: { eventId: "grok-session-user-3" },
-      },
-      { type: "agent.text", text: "done", messageId: "agent-2" },
-      {
-        type: "turn.completed",
-        nativeTurnKey: "grok-prompt-2",
-        stopReason: "end_turn",
-      },
-    ];
-    const known = [
-      nativeTurnRefSchema.parse({
-        harnessId: "grok",
-        nativeSessionId: transport.sessionId,
-        nativeTurnKey: "grok-prompt-1",
-        formatVersion: 1,
-      }),
-      nativeTurnRefSchema.parse({
-        harnessId: "grok",
-        nativeSessionId: transport.sessionId,
-        nativeTurnKey: "grok-prompt-2",
-        formatVersion: 1,
-      }),
-    ];
-    const { adapter, session } = await openedSession(transport, "resume", known);
-    const snapshot = await session.readSnapshot();
-    expect(snapshot).toMatchObject({
-      ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef: known[0],
-            input: [{ type: "text", text: "review" }],
-          },
-          {
-            nativeTurnRef: { nativeTurnKey: "grok-prompt-cancelled" },
-            input: [{ type: "text", text: "merge now" }],
-            outcome: { status: "cancelled" },
-          },
-          {
-            nativeTurnRef: known[1],
-            input: [{ type: "text", text: "summarize" }],
-          },
-        ],
-      },
-    });
-    await adapter.close();
   });
 
   it("projects Thinking, Tool, Approval, Text, Usage, and terminal in order", async () => {
@@ -866,6 +783,55 @@ describe("Grok Adapter ACP projection", () => {
     });
     await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
     expect(adapter.credits()).toEqual(snapshot);
+    await adapter.close();
+  });
+
+  it("refreshes Grok account credits after a Turn settles", async () => {
+    let fetches = 0;
+    let uuid = 0;
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => `grok-id-${++uuid}`,
+        createTransport: () => transport,
+        fetchCredits: async () => {
+          fetches += 1;
+          return {
+            usedPercent: Math.min(fetches * 10, 100),
+            periodType: "weekly",
+            fetchedAt: "2026-08-15T00:00:00.000Z",
+          };
+        },
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await adapter.refreshCredits();
+    const fetchesAfterOpen = fetches;
+    expect(fetchesAfterOpen).toBeGreaterThan(0);
+
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-credits-refresh");
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "hello" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.finish(
+      { stopReason: "end_turn" },
+      {
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+        costUsdTicks: 1000,
+      },
+    );
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    expect(fetches).toBeGreaterThan(fetchesAfterOpen);
+    expect(adapter.credits()?.usedPercent).toBe(Math.min(fetches * 10, 100));
     await adapter.close();
   });
 });

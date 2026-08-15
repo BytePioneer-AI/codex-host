@@ -257,6 +257,7 @@ class GrokHarnessSession implements HarnessSession {
   readonly #cwd: string;
   readonly #modelState: GrokModelState;
   readonly #onClosed: () => void;
+  readonly #refreshCredits: () => Promise<unknown>;
   readonly #randomUUID: () => string;
   readonly #snapshot: HostThreadSnapshot;
   readonly #toolOutputLimit: number;
@@ -280,6 +281,7 @@ class GrokHarnessSession implements HarnessSession {
       initialUsage?: HostUsage | null;
       knownTurnRefs?: NativeTurnRef[];
       randomUUID: () => string;
+      refreshCredits: () => Promise<unknown>;
       toolOutputLimit: number;
     },
   ) {
@@ -287,6 +289,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#transport = transport;
     this.#modelState = modelState;
     this.#onClosed = onClosed;
+    this.#refreshCredits = options.refreshCredits;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#randomUUID = options.randomUUID;
     this.#toolOutputLimit = options.toolOutputLimit;
@@ -775,6 +778,7 @@ class GrokHarnessSession implements HarnessSession {
         outcome = { status: "failed", error: normalizeError(error, "protocolError") };
       }
     }
+    await this.#refreshCredits().catch(() => undefined);
     this.#finish(
       active,
       outcome,
@@ -1065,6 +1069,7 @@ export class GrokAdapter implements HarnessAdapter {
             ? { knownTurnRefs: input.knownTurnRefs }
             : {}),
           randomUUID: this.#dependencies.randomUUID,
+          refreshCredits: () => this.refreshCredits(),
           toolOutputLimit: this.#toolOutputLimit,
         },
       );

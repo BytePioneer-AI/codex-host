@@ -1,3 +1,7 @@
+<div align="right">
+  <a href="docs/README.en.md">English</a> | 简体中文
+</div>
+
 <div align="center">
 
 # CodexHost
@@ -24,8 +28,6 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
 </p>
-
-<p><a href="docs/README.en.md">English</a></p>
 
 </div>
 

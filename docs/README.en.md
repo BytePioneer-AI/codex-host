@@ -1,3 +1,7 @@
+<div align="right">
+  English | <a href="../README.md">简体中文</a>
+</div>
+
 <div align="center">
 
 # codexhost
@@ -22,8 +26,6 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
 </p>
-
-<p><a href="../README.md">中文 README</a></p>
 
 </div>
 

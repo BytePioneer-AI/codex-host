@@ -269,9 +269,9 @@ mod tests {
 
     use serde_json::json;
 
+    use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
     #[cfg(target_os = "macos")]
     use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
-    use super::{waiting_for_launcher_exit_at, PendingUpdate, ACTIVE_UPDATE_LOCK_FILE};
 
     fn fixture_directory(label: &str) -> PathBuf {
         let unique = SystemTime::now()

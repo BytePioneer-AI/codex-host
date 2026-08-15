@@ -1159,7 +1159,14 @@ describe("Pi HarnessAdapter Session", () => {
       if (result.done) break;
       remaining.push(result.value);
     }
-    expect(JSON.stringify(remaining)).not.toContain("999");
+    expect(
+      remaining.some(
+        (output) =>
+          output.kind === "event" &&
+          output.event.type === "session.usage.changed" &&
+          output.event.usage?.totalTokens === 999,
+      ),
+    ).toBe(false);
   });
 
   it("drops an older Usage refresh after the effective Model changes", async () => {

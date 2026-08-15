@@ -11,13 +11,11 @@ use std::time::{Duration, Instant};
 use codexhost_gate_a_native::{
     DESKTOP_VERSION_ENV, INSTALL_ROOT_ENV, LAUNCH_MODE_ENV, PROBE_OUTPUT_ENV,
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 use codexhost_platform::launch_desktop;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use codexhost_platform::launch_desktop_session;
-use codexhost_platform::{
-    DesktopInstallation, DesktopLaunchMode, desktop_process_ids, discover_codex_desktop,
-};
+use codexhost_platform::{DesktopInstallation, DesktopLaunchMode, discover_codex_desktop};
 
 const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -33,8 +31,10 @@ struct ProbeOptions {
     launch_mode: DesktopLaunchMode,
     output_directory: PathBuf,
     wait_timeout: Duration,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     exit_after_capture: bool,
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    shutdown_after_capture: bool,
 }
 
 fn parse_options(arguments: &[String]) -> Result<ProbeOptions, String> {
@@ -47,6 +47,7 @@ fn parse_options(arguments: &[String]) -> Result<ProbeOptions, String> {
     let mut output_directory = PathBuf::from(".codexhost/probes");
     let mut wait_timeout = DEFAULT_CAPTURE_TIMEOUT;
     let mut exit_after_capture = false;
+    let mut shutdown_after_capture = false;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -84,6 +85,7 @@ fn parse_options(arguments: &[String]) -> Result<ProbeOptions, String> {
                 wait_timeout = Duration::from_secs(seconds);
             }
             "--exit-after-capture" => exit_after_capture = true,
+            "--shutdown-after-capture" => shutdown_after_capture = true,
             unknown => return Err(format!("unknown probe argument: {unknown}")),
         }
         index += 1;
@@ -94,8 +96,14 @@ fn parse_options(arguments: &[String]) -> Result<ProbeOptions, String> {
         return Err("--shim must be an absolute path".into());
     }
     let launch_mode = launch_mode.ok_or_else(|| {
-        "macOS probe requires --launch-mode <launch-services|direct-executable>".to_owned()
+        "probe requires --launch-mode <launch-services|direct-executable>".to_owned()
     })?;
+    if cfg!(target_os = "linux") && launch_mode != DesktopLaunchMode::DirectExecutable {
+        return Err("Linux probe supports direct-executable launch mode only".into());
+    }
+    if exit_after_capture && shutdown_after_capture {
+        return Err("probe capture disposition may only be provided once".into());
+    }
 
     Ok(ProbeOptions {
         shim_path,
@@ -103,6 +111,7 @@ fn parse_options(arguments: &[String]) -> Result<ProbeOptions, String> {
         output_directory,
         wait_timeout,
         exit_after_capture,
+        shutdown_after_capture,
     })
 }
 
@@ -147,7 +156,7 @@ fn capture_environment(
 
 fn probe(options: ProbeOptions) -> Result<(), Box<dyn Error>> {
     let installation = discover_codex_desktop()?;
-    let process_ids = desktop_process_ids()?;
+    let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     if !process_ids.is_empty() {
         return Err(format!(
             "Codex Desktop is already running (PIDs: {}); close it normally before starting an isolated probe",
@@ -169,8 +178,8 @@ fn probe(options: ProbeOptions) -> Result<(), Box<dyn Error>> {
     let before = capture_files(&output_directory)?;
     let environment = capture_environment(&installation, &options, &output_directory);
 
-    #[cfg(target_os = "macos")]
-    return probe_macos(
+    #[cfg(unix)]
+    return probe_unix(
         &installation,
         &options,
         &output_directory,
@@ -178,7 +187,7 @@ fn probe(options: ProbeOptions) -> Result<(), Box<dyn Error>> {
         &environment,
     );
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         let mut desktop = launch_desktop(
             &installation,
@@ -213,8 +222,8 @@ fn probe(options: ProbeOptions) -> Result<(), Box<dyn Error>> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn probe_macos(
+#[cfg(unix)]
+fn probe_unix(
     installation: &DesktopInstallation,
     options: &ProbeOptions,
     output_directory: &Path,
@@ -260,6 +269,10 @@ fn probe_macos(
 
     if options.exit_after_capture {
         desktop.disarm_cleanup();
+        return Ok(());
+    }
+    if options.shutdown_after_capture {
+        desktop.shutdown(Duration::from_secs(5))?;
         return Ok(());
     }
 
@@ -319,6 +332,14 @@ mod tests {
 
     use super::{DesktopLaunchMode, parse_options};
 
+    fn absolute_shim_path() -> &'static str {
+        if cfg!(target_os = "windows") {
+            r"C:\probe\codexhost-shim-probe.exe"
+        } else {
+            "/probe/codexhost-shim-probe"
+        }
+    }
+
     #[test]
     fn requires_absolute_shim_path() {
         let error = parse_options(&["--shim".into(), "shim.exe".into()])
@@ -328,14 +349,9 @@ mod tests {
 
     #[test]
     fn parses_probe_options() {
-        let absolute = if cfg!(target_os = "windows") {
-            r"C:\probe\codexhost-shim-probe.exe"
-        } else {
-            "/probe/codexhost-shim-probe"
-        };
         let options = parse_options(&[
             "--shim".into(),
-            absolute.into(),
+            absolute_shim_path().into(),
             "--launch-mode".into(),
             "direct-executable".into(),
             "--output".into(),
@@ -344,8 +360,37 @@ mod tests {
             "5".into(),
         ])
         .expect("valid options");
-        assert_eq!(options.shim_path, PathBuf::from(absolute));
+        assert_eq!(options.shim_path, PathBuf::from(absolute_shim_path()));
         assert_eq!(options.launch_mode, DesktopLaunchMode::DirectExecutable);
         assert_eq!(options.wait_timeout.as_secs(), 5);
+        assert!(!options.exit_after_capture);
+        assert!(!options.shutdown_after_capture);
+    }
+
+    #[test]
+    fn rejects_conflicting_capture_dispositions() {
+        let error = parse_options(&[
+            "--shim".into(),
+            absolute_shim_path().into(),
+            "--launch-mode".into(),
+            "direct-executable".into(),
+            "--exit-after-capture".into(),
+            "--shutdown-after-capture".into(),
+        ])
+        .expect_err("capture disposition must be unique");
+        assert!(error.contains("only be provided once"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_launch_services_on_linux() {
+        let error = parse_options(&[
+            "--shim".into(),
+            "/probe/codexhost-shim-probe".into(),
+            "--launch-mode".into(),
+            "launch-services".into(),
+        ])
+        .expect_err("LaunchServices must fail on Linux");
+        assert!(error.contains("direct-executable"));
     }
 }

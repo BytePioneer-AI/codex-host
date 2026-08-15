@@ -1,11 +1,16 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::fs::OpenOptions;
+use std::io;
+#[cfg(target_os = "macos")]
+use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
+#[cfg(target_os = "macos")]
 use codexhost_platform::atomic_replace_file;
 use serde::{Deserialize, Serialize};
 
@@ -153,6 +158,7 @@ fn pending_update_at(
     )))
 }
 
+#[cfg(target_os = "macos")]
 fn pending_startable_update_at(
     state_directory: &Path,
     launcher_pid: u32,
@@ -191,6 +197,7 @@ pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
     )
 }
 
+#[cfg(target_os = "macos")]
 fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Result<()> {
     let parent = pending
         .lock_path
@@ -262,10 +269,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{
-        ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, pending_startable_update_at, pending_update_at,
-        transfer_lock_to_updater, waiting_for_launcher_exit_at,
-    };
+    use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
+    #[cfg(target_os = "macos")]
+    use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
 
     fn fixture_directory(label: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -333,6 +339,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn resolves_only_a_request_for_the_current_launcher() {
         let fixture = fixture_directory("pending-update");
@@ -350,6 +357,7 @@ mod tests {
         fs::remove_dir_all(fixture).expect("remove pending update fixture");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn transfers_the_active_lock_to_the_updater_process() {
         let fixture = fixture_directory("update-owner");
@@ -369,6 +377,7 @@ mod tests {
         fs::remove_dir_all(fixture).expect("remove transferred lock fixture");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn waits_until_the_final_request_exists() {
         let fixture = fixture_directory("incomplete-update");
@@ -409,6 +418,7 @@ mod tests {
         )
         .expect("write waiting status fixture");
 
+        #[cfg(target_os = "macos")]
         assert_eq!(
             pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
             None

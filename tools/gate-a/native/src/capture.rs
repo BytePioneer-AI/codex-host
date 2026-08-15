@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, parent_process_id};
 use codexhost_shim::ProxyObserver;
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use crate::LAUNCH_MODE_ENV;
 use crate::{DESKTOP_VERSION_ENV, INSTALL_ROOT_ENV, PROBE_OUTPUT_ENV};
 
@@ -42,6 +42,15 @@ fn json_string(value: &str) -> String {
     output
 }
 
+#[cfg(any(unix, test))]
+fn release_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        architecture => architecture,
+    }
+}
+
 fn classify_invocation(arguments: &[OsString]) -> &'static str {
     if arguments.iter().any(|argument| argument == "app-server") {
         "app-server"
@@ -50,29 +59,42 @@ fn classify_invocation(arguments: &[OsString]) -> &'static str {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn platform_fields(process_id: u32) -> String {
-    let process_group_id = codexhost_platform::process_snapshot(process_id)
-        .map_or(0, |process| process.process_group_id);
+#[cfg(unix)]
+fn platform_fields_from_group(process_group_id: u32) -> String {
     format!(
-        "\"platform\":\"macos\",\"architecture\":{},\"process_group_id\":{},\"launch_mode\":{}",
-        json_string(std::env::consts::ARCH),
+        "\"platform\":{},\"architecture\":{},\"process_group_id\":{},\"launch_mode\":{}",
+        json_string(if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        }),
+        json_string(release_architecture()),
         process_group_id,
         json_string(&env::var(LAUNCH_MODE_ENV).unwrap_or_default()),
     )
 }
 
+#[cfg(unix)]
+fn platform_fields(process_id: u32) -> Result<String, String> {
+    codexhost_platform::process_snapshot(process_id)
+        .map(|snapshot| platform_fields_from_group(snapshot.process_group_id))
+        .map_err(|error| format!("could not inspect probe process {process_id}: {error}"))
+}
+
 #[cfg(target_os = "windows")]
-fn platform_fields(_process_id: u32) -> String {
-    "\"platform\":\"windows\"".into()
+fn platform_fields(_process_id: u32) -> Result<String, String> {
+    Ok("\"platform\":\"windows\"".into())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn platform_fields(_process_id: u32) -> String {
-    format!("\"platform\":{}", json_string(std::env::consts::OS))
+#[cfg(not(any(target_os = "windows", unix)))]
+fn platform_fields(_process_id: u32) -> Result<String, String> {
+    Ok(format!(
+        "\"platform\":{}",
+        json_string(std::env::consts::OS)
+    ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn exit_fields(status: &ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt;
 
@@ -84,7 +106,7 @@ fn exit_fields(status: &ExitStatus) -> String {
     )
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 fn exit_fields(_status: &ExitStatus) -> String {
     String::new()
 }
@@ -119,6 +141,13 @@ impl ProbeCapture {
 impl ProxyObserver for ProbeCapture {
     fn invocation(&self, arguments: &[OsString], stock_codex_path: &Path) {
         let process_id = process::id();
+        let platform = match platform_fields(process_id) {
+            Ok(fields) => fields,
+            Err(error) => {
+                eprintln!("codexhost Gate Shim: failed to inspect probe invocation: {error}");
+                return;
+            }
+        };
         let parent_id = parent_process_id(process_id)
             .ok()
             .flatten()
@@ -143,7 +172,7 @@ impl ProxyObserver for ProbeCapture {
                 "\"CODEXHOST_INSTALL_ROOT\":{}",
                 "}}}}"
             ),
-            platform_fields(process_id),
+            platform,
             unix_timestamp_millis(),
             process_id,
             parent_id,
@@ -165,6 +194,14 @@ impl ProxyObserver for ProbeCapture {
     }
 
     fn exit(&self, child_id: u32, status: &ExitStatus, elapsed: Duration) {
+        let process_id = process::id();
+        let platform = match platform_fields(process_id) {
+            Ok(fields) => fields,
+            Err(error) => {
+                eprintln!("codexhost Gate Shim: failed to inspect probe exit: {error}");
+                return;
+            }
+        };
         let exit_code = status
             .code()
             .map_or_else(|| "null".into(), |value| value.to_string());
@@ -174,9 +211,9 @@ impl ProxyObserver for ProbeCapture {
                 "\"timestamp_ms\":{},\"process_id\":{},\"child_process_id\":{},",
                 "\"exit_code\":{},\"success\":{},\"elapsed_ms\":{}{} }}"
             ),
-            platform_fields(process::id()),
+            platform,
             unix_timestamp_millis(),
-            process::id(),
+            process_id,
             child_id,
             exit_code,
             status.success(),
@@ -191,12 +228,30 @@ impl ProxyObserver for ProbeCapture {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_invocation, json_string};
+    #[cfg(unix)]
+    use super::platform_fields_from_group;
+    use super::{classify_invocation, json_string, release_architecture};
     use std::ffi::OsString;
 
     #[test]
     fn escapes_json_control_characters() {
         assert_eq!(json_string("a\n\"b\\c"), "\"a\\n\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn uses_release_architecture_names() {
+        let expected = match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            architecture => architecture,
+        };
+        assert_eq!(release_architecture(), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn formats_unix_process_group_evidence_without_a_process_lookup() {
+        assert!(platform_fields_from_group(42).contains("\"process_group_id\":42"));
     }
 
     #[test]

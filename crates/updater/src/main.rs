@@ -7,7 +7,7 @@ mod status;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +21,6 @@ use status::write_status;
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const RELAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
-const RUNTIME_DESCRIPTOR_FILE: &str = "desktop-runtime-v1.json";
 const MAX_RUNTIME_DESCRIPTOR_BYTES: u64 = 4 * 1024;
 
 #[derive(Deserialize)]
@@ -68,33 +67,6 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn runtime_descriptor_path(request: &UpdateRequest) -> Result<PathBuf, Box<dyn Error>> {
-    let operation = request
-        .status_path
-        .parent()
-        .ok_or("update status path has no operation directory")?;
-    let updates = operation
-        .parent()
-        .ok_or("update operation has no state directory")?;
-    if request
-        .status_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        != Some("status-v1.json")
-        || updates.file_name().and_then(|name| name.to_str()) != Some("updates")
-        || !operation
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("update-"))
-    {
-        return Err("update status path cannot identify the runtime state directory".into());
-    }
-    Ok(updates
-        .parent()
-        .ok_or("updates directory has no runtime state directory")?
-        .join(RUNTIME_DESCRIPTOR_FILE))
-}
-
 fn relaunched_launcher_is_ready(
     descriptor_launcher_pid: u32,
     previous_launcher_pid: u32,
@@ -104,16 +76,16 @@ fn relaunched_launcher_is_ready(
 }
 
 fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
-    let descriptor_path = runtime_descriptor_path(request)?;
+    let descriptor_path = &request.runtime_descriptor_path;
     let started = Instant::now();
     while started.elapsed() < RELAUNCH_TIMEOUT {
-        let bytes = match fs::symlink_metadata(&descriptor_path) {
+        let bytes = match fs::symlink_metadata(descriptor_path) {
             Ok(metadata)
                 if metadata.is_file()
                     && !metadata.file_type().is_symlink()
                     && metadata.len() <= MAX_RUNTIME_DESCRIPTOR_BYTES =>
             {
-                fs::read(&descriptor_path)?
+                fs::read(descriptor_path)?
             }
             Ok(_) => return Err("runtime descriptor is not a bounded regular file".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

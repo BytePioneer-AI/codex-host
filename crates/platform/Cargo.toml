@@ -6,14 +6,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 
 [lib]
 path = "src/lib.rs"
 
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+nix = { version = "0.31.3", features = ["feature", "fs", "process", "signal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.4", features = ["process"] }
+serde_json = "1.0.145"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14.11"
-nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
 plist = { version = "1.10.0", default-features = false }
 system-configuration = "0.7.0"
 

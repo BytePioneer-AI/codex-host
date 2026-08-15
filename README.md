@@ -70,9 +70,11 @@ npm install -g @codexhost/cli
 codexhost
 ```
 
+npm 支持 macOS、Windows 和 [x64 Linux](docs/linux.zh-CN.md)。
+
 **方式二：下载安装包**
 
-从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。
+从 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载最新版安装包，并选择与你的操作系统和 CPU 架构对应的文件。目前安装包支持 macOS 和 Windows。
 
 macOS 安装后，如果首次打开时提示 Apple 无法验证该应用，请在终端执行：
 ```bash

@@ -1,9 +1,13 @@
 use std::io;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::time::{Duration, Instant};
 
 use super::PlatformError;
-#[cfg(target_os = "macos")]
-use super::process::{ObservedProcessTree, macos_process_snapshot};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
 #[cfg(target_os = "windows")]
 use super::windows_process;
 
@@ -12,13 +16,13 @@ pub struct ChildProcessGuard {
     job: windows_process::ChildJob,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct ChildProcessGuard {
     tree: std::sync::Mutex<ObservedProcessTree>,
     armed: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ChildProcessGuard {
     fn with_tree<T>(
         &self,
@@ -35,42 +39,37 @@ impl ChildProcessGuard {
     }
 
     fn process_group_id(&self) -> Result<u32, PlatformError> {
-        self.with_tree(|tree| Ok(tree.root.process_group_id))
+        self.with_tree(|tree| Ok(tree.process_group_id()))
     }
 
     fn signal(&self, signal: nix::sys::signal::Signal) -> Result<(), PlatformError> {
+        #[cfg(target_os = "macos")]
         use nix::errno::Errno;
-        use nix::sys::signal::{kill, killpg};
+        #[cfg(target_os = "macos")]
+        use nix::sys::signal::killpg;
+        #[cfg(target_os = "macos")]
         use nix::unistd::Pid;
 
         self.with_tree(|tree| {
-            let root_group = tree.root.process_group_id;
+            let root_group = tree.process_group_id();
             let owned = tree.observe()?;
             if owned.is_empty() {
                 return Ok(());
             }
+            #[cfg(target_os = "macos")]
             let process_group = i32::try_from(root_group).map_err(|_| {
                 PlatformError::Invalid(format!("process group {root_group} exceeds i32::MAX"))
             })?;
-            if owned
+            let group_members = owned
                 .iter()
-                .any(|process| process.process_group_id == root_group)
-                && let Err(error) = killpg(Pid::from_raw(process_group), signal)
-                && error != Errno::ESRCH
-            {
-                return Err(PlatformError::Io(io::Error::from_raw_os_error(
-                    error as i32,
-                )));
-            }
-            let escaped = owned
-                .into_iter()
-                .filter(|process| process.process_group_id != root_group)
+                .filter(|process| process.process_group_id == root_group)
+                .cloned()
                 .collect::<Vec<_>>();
-            for process in escaped {
-                let process_id = i32::try_from(process.id).map_err(|_| {
-                    PlatformError::Invalid(format!("PID {} exceeds i32::MAX", process.id))
-                })?;
-                if let Err(error) = kill(Pid::from_raw(process_id), signal)
+            if !group_members.is_empty() {
+                #[cfg(target_os = "linux")]
+                tree.signal_processes(&group_members, signal)?;
+                #[cfg(target_os = "macos")]
+                if let Err(error) = killpg(Pid::from_raw(process_group), signal)
                     && error != Errno::ESRCH
                 {
                     return Err(PlatformError::Io(io::Error::from_raw_os_error(
@@ -78,12 +77,17 @@ impl ChildProcessGuard {
                     )));
                 }
             }
+            let escaped = owned
+                .into_iter()
+                .filter(|process| process.process_group_id != root_group)
+                .collect::<Vec<_>>();
+            tree.signal_processes(&escaped, signal)?;
             Ok(())
         })
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
         if self.armed {
@@ -92,7 +96,7 @@ impl Drop for ChildProcessGuard {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub struct ChildProcessGuard;
 
 pub struct SupervisedChild {
@@ -131,7 +135,7 @@ impl SupervisedChild {
         if let Some(guard) = &self.guard {
             return guard.job.terminate(1).map_err(PlatformError::Io);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &self.guard {
             return guard.signal(nix::sys::signal::Signal::SIGTERM);
         }
@@ -143,14 +147,14 @@ impl SupervisedChild {
         if let Some(guard) = &self.guard {
             return guard.job.terminate(1).map_err(PlatformError::Io);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &self.guard {
             return guard.signal(nix::sys::signal::Signal::SIGKILL);
         }
         self.child.kill().map_err(PlatformError::Io)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn forward_signal(&self, signal: i32) -> Result<(), PlatformError> {
         let signal = nix::sys::signal::Signal::try_from(signal)
             .map_err(|_| PlatformError::Invalid(format!("unsupported Unix signal {signal}")))?;
@@ -161,20 +165,20 @@ impl SupervisedChild {
     }
 
     pub fn disarm_cleanup(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &mut self.guard {
             guard.armed = false;
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn has_live_processes(&self) -> Result<bool, PlatformError> {
         self.guard
             .as_ref()
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[must_use]
     pub fn process_group_id(&self) -> u32 {
         self.guard
@@ -195,17 +199,69 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     Ok(SupervisedChild { child, guard })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn spawned_root_snapshot(
+    child: &mut Child,
+    expected_executable: Option<&Path>,
+) -> Result<Option<ProcessSnapshot>, PlatformError> {
+    const EXEC_IDENTITY_TIMEOUT: Duration = Duration::from_secs(1);
+    let started = Instant::now();
+    let mut process_instance = None;
+    loop {
+        match unix_process_snapshot(child.id()) {
+            Ok(snapshot) => {
+                if let Some((process_id, started_at_micros)) = process_instance {
+                    if snapshot.id != process_id || snapshot.started_at_micros != started_at_micros
+                    {
+                        return Err(PlatformError::Invalid(format!(
+                            "spawned PID {} was reused before supervision",
+                            child.id()
+                        )));
+                    }
+                } else {
+                    process_instance = Some((snapshot.id, snapshot.started_at_micros));
+                }
+                let Some(expected_executable) = expected_executable else {
+                    return Ok(Some(snapshot));
+                };
+                if snapshot.executable == expected_executable {
+                    return Ok(Some(snapshot));
+                }
+                if started.elapsed() >= EXEC_IDENTITY_TIMEOUT {
+                    return Err(PlatformError::Invalid(format!(
+                        "spawned PID {} did not exec expected executable {} (observed {})",
+                        child.id(),
+                        expected_executable.display(),
+                        snapshot.executable.display()
+                    )));
+                }
+            }
+            Err(error) => {
+                if child.try_wait()?.is_some() {
+                    return Ok(None);
+                }
+                if started.elapsed() >= EXEC_IDENTITY_TIMEOUT {
+                    return Err(error);
+                }
+            }
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     use std::os::unix::process::CommandExt;
 
+    let expected_executable = std::fs::canonicalize(command.get_program()).ok();
     command.process_group(0);
     let mut child = command.spawn()?;
-    let root = match macos_process_snapshot(child.id()) {
-        Ok(root) => root,
-        Err(_) if child.try_wait()?.is_some() => {
-            return Ok(SupervisedChild { child, guard: None });
-        }
+    let root = match spawned_root_snapshot(&mut child, expected_executable.as_deref()) {
+        Ok(Some(root)) => root,
+        Ok(None) => return Ok(SupervisedChild { child, guard: None }),
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -229,9 +285,9 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     })
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn spawn_supervised(_command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     Err(PlatformError::Unsupported(
-        "supervised child processes currently support Windows and macOS only",
+        "supervised child processes currently support Windows, macOS, and Linux only",
     ))
 }

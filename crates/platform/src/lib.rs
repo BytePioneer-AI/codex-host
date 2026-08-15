@@ -12,6 +12,8 @@ mod background;
 mod background;
 mod desktop_launch;
 mod installation;
+#[cfg(target_os = "linux")]
+mod linux_installation;
 #[cfg(target_os = "macos")]
 mod macos_ui;
 mod process;
@@ -26,18 +28,29 @@ mod windows_process;
 mod windows_ui;
 
 pub use background::detach_from_terminal;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
+#[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
+#[cfg(target_os = "linux")]
+pub use linux_installation::discover_codex_desktop;
 #[cfg(target_os = "macos")]
 pub use macos_ui::prompt_compatibility_warning;
-pub use process::{
-    ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
-    parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
-};
 #[cfg(target_os = "macos")]
-pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};
+pub use process::force_stop_desktop;
+pub use process::{
+    ProcessSnapshot, descendant_executable_exists, desktop_process_ids_for_installation,
+    desktop_root_process_ids_for_installation, parent_process_id, process_executable_path,
+    process_exists, terminate_process_by_id,
+};
+#[cfg(target_os = "windows")]
+pub use process::{desktop_process_ids, desktop_root_process_ids};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use process::{
+    desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshot,
+    process_snapshots,
+};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
@@ -62,6 +75,16 @@ pub enum CompatibilityChoice {
     OpenStockCodex,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinuxCompatibilityChoice {
+    ContinueOnce,
+    ContinueAndRemember,
+    OpenLatestRelease,
+    OpenStockCodex,
+    Cancel,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompatibilityUpdateAvailability {
     Started,
@@ -80,10 +103,16 @@ pub struct CompatibilityPrompt<'a> {
     pub degraded: bool,
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+mod linux_ui;
+
+#[cfg(target_os = "linux")]
+pub use linux_ui::prompt_linux_compatibility_warning;
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 #[must_use]
 pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
-    CompatibilityChoice::ContinueCodexhost
+    CompatibilityChoice::OpenStockCodex
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +140,11 @@ pub enum DesktopIdentity {
     MacOsBundle {
         bundle_identifier: String,
     },
+    LinuxPackage {
+        package_name: String,
+        brand: String,
+        flavor: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +154,7 @@ pub struct DesktopInstallation {
     pub build: String,
     pub asar_integrity: String,
     pub install_root: PathBuf,
+    pub desktop_launcher: PathBuf,
     pub desktop_executable: PathBuf,
     pub packaged_codex_cli: PathBuf,
     pub executable_codex_cli: PathBuf,
@@ -129,6 +164,7 @@ pub struct DesktopInstallation {
 pub enum PlatformError {
     Unsupported(&'static str),
     NotFound(String),
+    UnmanagedDesktopConflict,
     Invalid(String),
     Io(io::Error),
 }
@@ -138,6 +174,9 @@ impl Display for PlatformError {
         match self {
             Self::Unsupported(message) => write!(formatter, "{message}"),
             Self::NotFound(message) => write!(formatter, "{message}"),
+            Self::UnmanagedDesktopConflict => formatter.write_str(
+                "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost",
+            ),
             Self::Invalid(message) => write!(formatter, "{message}"),
             Self::Io(error) => Display::fmt(error, formatter),
         }

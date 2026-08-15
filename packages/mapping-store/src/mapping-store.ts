@@ -145,6 +145,20 @@ function isNodeExecutable(value: string): boolean {
 
 function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
   if (typeof lock.pid !== "number") return false;
+  if (lock.pid === process.pid) {
+    if (
+      lock.executablePath &&
+      normalizeExecutablePath(lock.executablePath) !== normalizeExecutablePath(process.execPath)
+    ) {
+      return false;
+    }
+    if (lock.processStartedAt) {
+      const expected = Date.parse(lock.processStartedAt);
+      const actual = Date.now() - process.uptime() * 1_000;
+      if (Number.isFinite(expected) && Math.abs(actual - expected) > 5_000) return false;
+    }
+    return true;
+  }
   const identity = processIdentity(lock.pid);
   if (!identity) return false;
   if (process.platform !== "win32") return true;

@@ -51,7 +51,7 @@ ${NPM_PACKAGE_DESCRIPTION}
 npm install -g ${NPM_PACKAGE_NAME}@${version}
 \`\`\`
 
-npm automatically installs the matching macOS or Windows platform package. Node.js 22 or newer and Codex Desktop are required.
+npm automatically installs the matching macOS, Windows, or Linux platform package. Node.js 22 or newer and the official ChatGPT/Codex Desktop are required.
 
 ## Usage
 

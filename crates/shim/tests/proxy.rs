@@ -1,14 +1,15 @@
 use std::fs;
-use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use codexhost_platform::process_exists;
@@ -72,13 +73,15 @@ fn run_shim(
         command.env(key, value);
     }
     let mut child = command.spawn().expect("spawn shim");
-    child
-        .stdin
-        .take()
-        .expect("shim stdin")
-        .write_all(input)
+    let mut stdin = child.stdin.take().expect("shim stdin");
+    let input = input.to_vec();
+    let writer = thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().expect("wait for shim");
+    writer
+        .join()
+        .expect("join shim stdin writer")
         .expect("write shim stdin");
-    child.wait_with_output().expect("wait for shim")
+    output
 }
 
 #[test]
@@ -96,6 +99,57 @@ fn preserves_arbitrary_bytes_and_chunk_boundaries() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, input);
+}
+
+#[test]
+fn forwards_response_before_stdin_eof() {
+    let mut shim = Command::new(shim_path())
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env("FAKE_CODEX_STREAM_RESPONSE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn streaming shim");
+    let mut stdin = shim.stdin.take().expect("shim stdin");
+    stdin.write_all(b"x").expect("write streaming request");
+
+    let mut stdout = shim.stdout.take().expect("shim stdout");
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        let mut response = [0_u8; 8];
+        stdout
+            .read_exact(&mut response)
+            .expect("read streaming response");
+        response_sender
+            .send(response)
+            .expect("send streaming response");
+        let mut trailing = Vec::new();
+        stdout
+            .read_to_end(&mut trailing)
+            .expect("drain streaming stdout");
+        (response, trailing)
+    });
+    let response = response_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Shim did not forward a response while stdin remained open");
+    assert_eq!(response, *b"response");
+    drop(stdin);
+    let status = shim.wait().expect("wait for streaming shim");
+    let mut stderr = Vec::new();
+    shim.stderr
+        .take()
+        .expect("shim stderr")
+        .read_to_end(&mut stderr)
+        .expect("read streaming shim stderr");
+    assert!(
+        status.success(),
+        "streaming shim exited {status}; stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let (response, trailing) = reader.join().expect("join response reader");
+    assert_eq!(response, *b"response");
+    assert!(trailing.is_empty());
 }
 
 #[test]
@@ -130,7 +184,12 @@ fn forwards_stderr_and_exit_code_without_polluting_stdout() {
 fn drains_large_output_after_stdin_eof() {
     let input = vec![b'x'; 2 * 1024 * 1024];
     let output = run_shim(&input, &[], &[]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "large-output shim exited {}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(output.stdout, input);
 }
 

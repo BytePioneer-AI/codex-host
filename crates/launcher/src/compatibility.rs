@@ -1,9 +1,19 @@
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use codexhost_platform::{DesktopIdentity, DesktopInstallation, atomic_replace_file};
+#[cfg(target_os = "linux")]
+use crate::secure_storage::{
+    SecureFileOpen, open_secure_file, replace_secure_file, state_directory,
+};
+#[cfg(not(target_os = "linux"))]
+use codexhost_platform::atomic_replace_file;
+use codexhost_platform::{DesktopIdentity, DesktopInstallation};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROLLER_READINESS_LINE_BYTES: usize = 513;
@@ -91,8 +101,8 @@ impl CompatibilityIssue {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ControllerReadiness {
-    schema_version: u8,
-    state: CompatibilityState,
+    pub(crate) schema_version: u8,
+    pub(crate) state: CompatibilityState,
     pub issues: Vec<CompatibilityIssue>,
 }
 
@@ -177,6 +187,11 @@ enum AcknowledgedDesktopIdentity {
     MacOsBundle {
         bundle_identifier: String,
     },
+    LinuxPackage {
+        package_name: String,
+        brand: String,
+        flavor: String,
+    },
 }
 
 impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
@@ -191,6 +206,15 @@ impl From<&DesktopIdentity> for AcknowledgedDesktopIdentity {
             },
             DesktopIdentity::MacOsBundle { bundle_identifier } => Self::MacOsBundle {
                 bundle_identifier: bundle_identifier.clone(),
+            },
+            DesktopIdentity::LinuxPackage {
+                package_name,
+                brand,
+                flavor,
+            } => Self::LinuxPackage {
+                package_name: package_name.clone(),
+                brand: brand.clone(),
+                flavor: flavor.clone(),
             },
         }
     }
@@ -260,31 +284,50 @@ fn safe_regular_file(path: &Path) -> io::Result<bool> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
-    #[cfg(target_os = "windows")]
+    Ok(state_directory()?.join(ACKNOWLEDGEMENT_FILE))
+}
+
+#[cfg(target_os = "windows")]
+pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
     let root = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable"))?;
+    Ok(root.join("codexhost").join(ACKNOWLEDGEMENT_FILE))
+}
 
-    #[cfg(target_os = "macos")]
+#[cfg(target_os = "macos")]
+pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
     let root = env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join("Library").join("Application Support"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let root = env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
-
     Ok(root.join("codexhost").join(ACKNOWLEDGEMENT_FILE))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn default_acknowledgement_path() -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "compatibility acknowledgement paths support Windows, macOS, and Linux only",
+    ))
 }
 
 pub fn acknowledgement_matches(path: &Path, expected: &CompatibilityAcknowledgementKey) -> bool {
     if !safe_regular_file(path).unwrap_or(false) {
         return false;
     }
-    let Ok(bytes) = fs::read(path) else {
+    #[cfg(target_os = "linux")]
+    let bytes = (|| -> io::Result<Vec<u8>> {
+        let mut file = open_secure_file(path, SecureFileOpen::ReadExisting)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })();
+    #[cfg(not(target_os = "linux"))]
+    let bytes = fs::read(path);
+    let Ok(bytes) = bytes else {
         return false;
     };
     if bytes.len() > MAX_ACKNOWLEDGEMENT_BYTES {
@@ -303,21 +346,33 @@ pub fn write_acknowledgement(path: &Path, key: &CompatibilityAcknowledgementKey)
             "compatibility acknowledgement is not a regular file",
         ));
     }
+    #[cfg(not(target_os = "linux"))]
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "compatibility acknowledgement has no parent",
         )
     })?;
-    fs::create_dir_all(parent)?;
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compatibility acknowledgement has no parent",
+        )
+    })?;
+    #[cfg(not(target_os = "linux"))]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
     }
     let temporary = parent.join(format!(
-        ".{ACKNOWLEDGEMENT_FILE}.{}.tmp",
-        std::process::id()
+        ".{ACKNOWLEDGEMENT_FILE}.{}.{}.tmp",
+        std::process::id(),
+        crate::runtime_instance::random_nonce()?
     ));
     let value = CompatibilityAcknowledgement {
         schema_version: ACKNOWLEDGEMENT_SCHEMA_VERSION,
@@ -331,11 +386,21 @@ pub fn write_acknowledgement(path: &Path, key: &CompatibilityAcknowledgementKey)
         ));
     }
     let result = (|| {
+        #[cfg(target_os = "linux")]
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "compatibility acknowledgement path is a symbolic link",
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        let mut file = open_secure_file(&temporary, SecureFileOpen::WriteNew)?;
+        #[cfg(not(target_os = "linux"))]
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "linux")))]
         {
             use std::os::unix::fs::PermissionsExt;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -343,7 +408,11 @@ pub fn write_acknowledgement(path: &Path, key: &CompatibilityAcknowledgementKey)
         file.write_all(&bytes)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
-        atomic_replace_file(&temporary, path).map_err(io::Error::other)
+        #[cfg(target_os = "linux")]
+        replace_secure_file(&temporary, path)?;
+        #[cfg(not(target_os = "linux"))]
+        atomic_replace_file(&temporary, path).map_err(io::Error::other)?;
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -379,6 +448,7 @@ mod tests {
             build: "6321".into(),
             asar_integrity: format!("sha256:{}", "a".repeat(64)),
             install_root: "/Applications/ChatGPT.app".into(),
+            desktop_launcher: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             desktop_executable: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT".into(),
             packaged_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),
             executable_codex_cli: "/Applications/ChatGPT.app/Contents/Resources/codex".into(),

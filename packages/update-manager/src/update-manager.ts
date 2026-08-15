@@ -20,6 +20,7 @@ import {
 } from "./status.js";
 
 const REQUEST_SCHEMA_VERSION = 1;
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
 
 export interface PreparedUpdateInfo {
   version: string;
@@ -31,6 +32,7 @@ export interface CommonUpdateOptions {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
+  runtimeDescriptorPath: string;
   updaterExecutable: string;
   stateDirectory: string;
   onPrepared?(info: PreparedUpdateInfo): void | Promise<void>;
@@ -89,6 +91,7 @@ interface InternalRequest {
   version: string;
   wait_pid: number;
   wait_executable: string;
+  runtime_descriptor_path: string;
   status_path: string;
   installation:
     | {
@@ -115,6 +118,7 @@ interface PreparedCommonUpdate {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
+  runtimeDescriptorPath: string;
   workDirectory: string;
   helperPath: string;
   requestPath: string;
@@ -123,6 +127,38 @@ interface PreparedCommonUpdate {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function systemErrorCode(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : null;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function replaceStatusFile(temporaryPath: string, statusPath: string): Promise<void> {
+  let retryIndex = 0;
+  for (;;) {
+    try {
+      await rename(temporaryPath, statusPath);
+      return;
+    } catch (error) {
+      const retryDelay = WINDOWS_RENAME_RETRY_DELAYS_MS[retryIndex];
+      const code = systemErrorCode(error);
+      if (
+        process.platform !== "win32" ||
+        retryDelay === undefined ||
+        (code !== "EACCES" && code !== "EBUSY" && code !== "EPERM")
+      ) {
+        throw error;
+      }
+      retryIndex += 1;
+      await delay(retryDelay);
+    }
+  }
 }
 
 function requireAbsolutePath(value: string, label: string): string {
@@ -187,7 +223,7 @@ export function createBackgroundUpdateManager(
         mode: 0o600,
         flag: "wx",
       });
-      await rename(temporaryPath, statusPath);
+      await replaceStatusFile(temporaryPath, statusPath);
     } catch (error) {
       await rm(temporaryPath, { force: true });
       throw error;
@@ -272,6 +308,10 @@ export function createBackgroundUpdateManager(
       options.launcherExecutable,
       "Launcher executable",
     );
+    const runtimeDescriptorPath = requireAbsolutePath(
+      options.runtimeDescriptorPath,
+      "runtime descriptor path",
+    );
     const updaterExecutable = await requireRegularFile(
       options.updaterExecutable,
       "Updater executable",
@@ -292,6 +332,7 @@ export function createBackgroundUpdateManager(
       version,
       launcherPid,
       launcherExecutable,
+      runtimeDescriptorPath,
       workDirectory,
       helperPath,
       requestPath,
@@ -338,6 +379,7 @@ export function createBackgroundUpdateManager(
       version: common.version,
       wait_pid: common.launcherPid,
       wait_executable: common.launcherExecutable,
+      runtime_descriptor_path: common.runtimeDescriptorPath,
       status_path: common.statusPath,
       installation,
     };

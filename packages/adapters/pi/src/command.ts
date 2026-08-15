@@ -46,14 +46,18 @@ function pathCandidates(
     );
 }
 
-function nvmCandidates(homeDirectory: string, executableName: string): string[] {
-  const versionsDirectory = path.join(homeDirectory, ".nvm", "versions", "node");
+function nvmCandidates(
+  homeDirectory: string,
+  executableName: string,
+  targetPath: typeof path,
+): string[] {
+  const versionsDirectory = targetPath.join(homeDirectory, ".nvm", "versions", "node");
   try {
     return readdirSync(versionsDirectory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
-      .map((version) => path.join(versionsDirectory, version, "bin", executableName));
+      .map((version) => targetPath.join(versionsDirectory, version, "bin", executableName));
   } catch {
     return [];
   }
@@ -64,18 +68,19 @@ function userInstallCandidates(
   environment: NodeJS.ProcessEnv,
   homeDirectory: string,
 ): string[] {
+  const targetPath = platform === "win32" ? path.win32 : path.posix;
   if (platform === "win32") {
-    const appData = environment.APPDATA ?? path.join(homeDirectory, "AppData", "Roaming");
+    const appData = environment.APPDATA ?? targetPath.join(homeDirectory, "AppData", "Roaming");
     return [
-      path.join(appData, "npm", "pi.cmd"),
-      path.join(homeDirectory, ".local", "bin", "pi.exe"),
-      path.join(homeDirectory, ".local", "bin", "pi.cmd"),
+      targetPath.join(appData, "npm", "pi.cmd"),
+      targetPath.join(homeDirectory, ".local", "bin", "pi.exe"),
+      targetPath.join(homeDirectory, ".local", "bin", "pi.cmd"),
     ];
   }
   return [
-    path.join(homeDirectory, ".npm-global", "bin", "pi"),
-    path.join(homeDirectory, ".local", "bin", "pi"),
-    ...nvmCandidates(homeDirectory, "pi"),
+    targetPath.join(homeDirectory, ".npm-global", "bin", "pi"),
+    targetPath.join(homeDirectory, ".local", "bin", "pi"),
+    ...nvmCandidates(homeDirectory, "pi", targetPath),
     "/opt/homebrew/bin/pi",
     "/usr/local/bin/pi",
   ];

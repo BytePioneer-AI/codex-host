@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "recordType": "invocation",
+  "timestampMs": 1786618487079,
+  "processId": 2875563,
+  "parentProcessId": 2875352,
+  "invocationKind": "app-server",
+  "args": ["-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled"],
+  "cwd": "<WORKING_DIRECTORY>",
+  "desktopVersion": "26.803.81509",
+  "stockCodexPath": "<STOCK_CODEX>",
+  "environmentPresence": {
+    "CODEX_CLI_PATH": true,
+    "CODEXHOST_STOCK_CODEX_PATH": true,
+    "CODEXHOST_PROBE_OUTPUT": true,
+    "CODEXHOST_DESKTOP_VERSION": true,
+    "CODEXHOST_INSTALL_ROOT": true
+  },
+  "platform": "linux",
+  "architecture": "x64",
+  "processGroupId": 2875352,
+  "launchMode": "direct-executable"
+}

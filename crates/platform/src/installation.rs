@@ -1,27 +1,31 @@
 #[cfg(target_os = "windows")]
 use std::env;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::fs::File;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::io::Read;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use plist::Value;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
 use windows::Management::Deployment::PackageManager;
 #[cfg(target_os = "windows")]
 use windows::core::HSTRING;
 
-use super::{DesktopIdentity, DesktopInstallation, PlatformError};
-
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn sha256_file(path: &Path) -> Result<String, PlatformError> {
+use super::DesktopIdentity;
+#[cfg(not(target_os = "linux"))]
+use super::DesktopInstallation;
+use super::PlatformError;
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
     let metadata = path.metadata().map_err(|error| {
         PlatformError::NotFound(format!(
             "Codex Desktop resource '{}' is unavailable: {error}",
@@ -255,6 +259,7 @@ fn windows_installation(
         version: details.version,
         asar_integrity: sha256_file(&asar_path)?,
         install_root,
+        desktop_launcher: desktop_executable.clone(),
         desktop_executable,
         packaged_codex_cli,
         executable_codex_cli,
@@ -432,34 +437,45 @@ fn macos_asar_integrity(
     )
 }
 
-#[cfg(target_os = "macos")]
-fn canonical_executable(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
-    let metadata = path.metadata().map_err(|error| {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) fn canonical_unix_executable(
+    path: &Path,
+    label: &str,
+) -> Result<PathBuf, PlatformError> {
+    let metadata = path.symlink_metadata().map_err(|error| {
         PlatformError::NotFound(format!(
             "{label} '{}' is unavailable: {error}",
             path.display()
         ))
     })?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
         return Err(PlatformError::Invalid(format!(
-            "{label} '{}' is not an executable file",
+            "{label} '{}' is not an executable regular file",
             path.display()
         )));
     }
+    path.canonicalize().map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "macos")]
+fn canonical_macho_executable(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
+    let canonical = canonical_unix_executable(path, label)?;
     let mut magic = [0_u8; 4];
-    File::open(path)?.read_exact(&mut magic).map_err(|error| {
-        PlatformError::Invalid(format!(
-            "{label} '{}' has no complete Mach-O header: {error}",
-            path.display()
-        ))
-    })?;
+    File::open(&canonical)?
+        .read_exact(&mut magic)
+        .map_err(|error| {
+            PlatformError::Invalid(format!(
+                "{label} '{}' has no complete Mach-O header: {error}",
+                path.display()
+            ))
+        })?;
     if !MACH_O_MAGICS.contains(&magic) {
         return Err(PlatformError::Invalid(format!(
             "{label} '{}' is not a Mach-O executable",
             path.display()
         )));
     }
-    path.canonicalize().map_err(PlatformError::Io)
+    Ok(canonical)
 }
 
 #[cfg(target_os = "macos")]
@@ -500,12 +516,12 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
     let version = required_string(dictionary, "CFBundleShortVersionString", &bundle)?.to_owned();
     let build = required_string(dictionary, "CFBundleVersion", &bundle)?.to_owned();
     let asar_integrity = macos_asar_integrity(dictionary, &bundle)?;
-    let desktop_executable = canonical_executable(
+    let desktop_executable = canonical_macho_executable(
         &bundle.join("Contents/MacOS").join(executable_name),
         "Desktop executable",
     )?;
     let packaged_codex_cli =
-        canonical_executable(&bundle.join("Contents/Resources/codex"), "Codex CLI")?;
+        canonical_macho_executable(&bundle.join("Contents/Resources/codex"), "Codex CLI")?;
     if !desktop_executable.starts_with(&bundle) || !packaged_codex_cli.starts_with(&bundle) {
         return Err(PlatformError::Invalid(format!(
             "App bundle '{}' resolves an executable outside the bundle",
@@ -521,6 +537,7 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         build,
         asar_integrity,
         install_root: bundle,
+        desktop_launcher: desktop_executable.clone(),
         desktop_executable,
         packaged_codex_cli: packaged_codex_cli.clone(),
         executable_codex_cli: packaged_codex_cli,
@@ -576,10 +593,10 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     discover_from_candidates(candidates)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(
-        "the Codex Desktop probe currently supports Windows and macOS only",
+        "the Codex Desktop probe currently supports Windows, macOS, and Linux only",
     ))
 }
 

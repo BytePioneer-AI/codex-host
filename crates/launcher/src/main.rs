@@ -26,8 +26,6 @@ use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(not(target_os = "macos"))]
 use codexhost_platform::launch_desktop;
-#[cfg(target_os = "macos")]
-use codexhost_platform::{DesktopSession, launch_desktop_session};
 use codexhost_platform::{
     CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity,
     DesktopInstallation, DesktopLaunchMode, SupervisedChild, canonical_existing_file,
@@ -35,6 +33,8 @@ use codexhost_platform::{
     discover_codex_desktop, launch_stock_desktop, node_entrypoint_path,
     open_latest_codexhost_release, prompt_compatibility_warning, spawn_supervised,
 };
+#[cfg(target_os = "macos")]
+use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
@@ -510,9 +510,7 @@ fn should_stop_desktop_for_update(helper_started: bool) -> bool {
     match update_waiting_for_launcher_exit() {
         Ok(waiting) => waiting,
         Err(error) => {
-            eprintln!(
-                "codexhost launcher: pending update exit state could not be read: {error}"
-            );
+            eprintln!("codexhost launcher: pending update exit state could not be read: {error}");
             false
         }
     }

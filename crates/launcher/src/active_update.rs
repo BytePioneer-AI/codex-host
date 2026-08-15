@@ -263,8 +263,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        pending_startable_update_at, pending_update_at, transfer_lock_to_updater,
-        waiting_for_launcher_exit_at, PendingUpdate, ACTIVE_UPDATE_LOCK_FILE,
+        ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, pending_startable_update_at, pending_update_at,
+        transfer_lock_to_updater, waiting_for_launcher_exit_at,
     };
 
     fn fixture_directory(label: &str) -> PathBuf {

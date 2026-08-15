@@ -18,8 +18,8 @@
 </p>
 
 <p>
-  <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a>
   <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
+  <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
@@ -103,7 +103,7 @@ CodexHost 尽量不走这条路：
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model">
+      <img src="docs/imgs/grok-agent-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Grok 已加入列表">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
@@ -114,6 +114,12 @@ CodexHost 尽量不走这条路：
     <td colspan="2" valign="top">
       <p><strong>Mermaid 图表可视化渲染</strong></p>
       <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Grok 效果展示</strong></p>
+      <img src="docs/imgs/grok-account-credits.png" alt="Grok 效果展示：账户额度与每周用量、重置时间一目了然">
     </td>
   </tr>
 </table>

@@ -16,8 +16,8 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
 </p>
 
 <p>
-  <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a>
   <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
+  <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
@@ -101,7 +101,7 @@ The goal is fidelity, not merely making the conversation work. Streaming, tool s
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it">
+      <img src="imgs/grok-agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Grok is now in the list">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage and cost information</strong></p>
@@ -112,6 +112,12 @@ The goal is fidelity, not merely making the conversation work. Streaming, tool s
     <td colspan="2" valign="top">
       <p><strong>Mermaid diagram rendering</strong></p>
       <img src="imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Grok showcase</strong></p>
+      <img src="imgs/grok-account-credits.png" alt="Grok showcase: account credits with weekly limits, usage, and reset time at a glance">
     </td>
   </tr>
 </table>

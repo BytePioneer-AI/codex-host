@@ -1293,11 +1293,14 @@ export function installRendererBindingProbe(
   const refreshHarnessAvailability = (refresh = false): Promise<void> => {
     if (!modelControl) return Promise.resolve();
     const client = modelControl;
+    if (availabilityRequest?.client === client) return availabilityRequest.promise;
     harnessAvailability = Object.fromEntries(
-      externalAgents.map((agent) => [agent, "checking"]),
+      externalAgents.map((agent) => [
+        agent,
+        harnessAvailability[agent] === "ready" ? "ready" : "checking",
+      ]),
     ) as HarnessAvailability;
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);
-    if (availabilityRequest?.client === client) return availabilityRequest.promise;
     const generation = ++availabilityRequestGeneration;
     const promise = (async () => {
       await Promise.all(

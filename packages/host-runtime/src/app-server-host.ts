@@ -451,11 +451,11 @@ export class AppServerHost {
         request.method === "codexhost/update/start" ||
         request.method === "codexhost/update/status"
       ) {
-        await this.#handleUpdateRequest(request);
+        this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
         continue;
       }
       if (request.method === "codexhost/harness/inspect") {
-        await this.#inspectHarness(request);
+        this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -500,7 +500,7 @@ export class AppServerHost {
           await writeFrame(official.stdin, frame);
           continue;
         }
-        await this.#listThreads(request, listRequest);
+        this.#dispatchDesktopRequest(() => this.#listThreads(request, listRequest));
         continue;
       }
       if (request.method === "thread/archive" || request.method === "thread/unarchive") {
@@ -2287,6 +2287,10 @@ export class AppServerHost {
       return;
     }
     await this.#writer.json(projection);
+  }
+
+  #dispatchDesktopRequest(run: () => Promise<void>): void {
+    void run().catch((error) => this.#diagnose(error));
   }
 
   #diagnose(error: unknown): void {

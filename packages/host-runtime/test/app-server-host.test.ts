@@ -399,6 +399,67 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("answers a later Harness inspect while an earlier inspect is still running", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    let releaseClaude = (): void => undefined;
+    const claudeReady = new Promise<void>((resolve) => {
+      releaseClaude = resolve;
+    });
+    const inspectClaude = claude.inspect.bind(claude);
+    claude.inspect = async (input) => {
+      await claudeReady;
+      return inspectClaude(input);
+    };
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "claude-code" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 34,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "pi" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 34)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(fixture.collector.messages.some((message) => requestId(message, 33))).toBe(false);
+    expect(pi.inspectionCalls).toBe(1);
+
+    releaseClaude();
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    await stopFixture(fixture);
+  });
+
+  it("answers a Harness inspect while official thread/list is still pending", async () => {
+    const fixture = createFixture();
+    writeRequest(fixture.desktopInput, {
+      id: 35,
+      method: "thread/list",
+      params: { limit: 10, sortKey: "created_at", sortDirection: "desc" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 36,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "pi" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 36)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(fixture.collector.messages.some((message) => requestId(message, 35))).toBe(false);
+    await stopFixture(fixture);
+  });
+
   it("inspects authoritative external and Codex Thread ownership locally", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

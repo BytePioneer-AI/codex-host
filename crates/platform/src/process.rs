@@ -4,9 +4,10 @@ use std::thread;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
+use super::DesktopInstallation;
 use super::PlatformError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use super::{DesktopInstallation, discover_codex_desktop};
+use super::discover_codex_desktop;
 #[cfg(target_os = "windows")]
 use super::{node_entrypoint_path, windows_process};
 
@@ -289,6 +290,36 @@ pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
         .collect())
 }
 
+#[cfg(target_os = "windows")]
+pub fn desktop_process_ids_for(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    let expected = windows_executable_key(&installation.desktop_executable);
+    Ok(windows_process::process_entries()?
+        .into_iter()
+        .filter(|process| {
+            windows_process::process_image_path(process.id)
+                .is_ok_and(|path| windows_executable_key(&path) == expected)
+        })
+        .map(|process| process.id)
+        .collect())
+}
+
+#[cfg(target_os = "windows")]
+pub fn desktop_root_process_ids_for(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    let entries = windows_process::process_entries()?;
+    let desktop_ids = desktop_process_ids_for(installation)?;
+    Ok(entries
+        .into_iter()
+        .filter(|process| {
+            desktop_ids.contains(&process.id) && !desktop_ids.contains(&process.parent_id)
+        })
+        .map(|process| process.id)
+        .collect())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
     let installation = discover_codex_desktop()?;
@@ -304,6 +335,24 @@ pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
     desktop_process_ids()
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn desktop_process_ids_for(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    Ok(desktop_process_tree(installation)?
+        .into_iter()
+        .filter(|process| process.executable == installation.desktop_executable)
+        .map(|process| process.id)
+        .collect())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn desktop_root_process_ids_for(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    desktop_process_ids_for(installation)
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
     Err(PlatformError::Unsupported(
@@ -314,6 +363,22 @@ pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn desktop_root_process_ids() -> Result<Vec<u32>, PlatformError> {
     desktop_process_ids()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn desktop_process_ids_for(
+    _installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    Err(PlatformError::Unsupported(
+        "Desktop process discovery currently supports Windows, macOS, and Linux only",
+    ))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn desktop_root_process_ids_for(
+    installation: &DesktopInstallation,
+) -> Result<Vec<u32>, PlatformError> {
+    desktop_process_ids_for(installation)
 }
 
 #[cfg(target_os = "windows")]

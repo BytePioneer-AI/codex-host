@@ -36,8 +36,9 @@ pub use installation::discover_codex_desktop_from_root;
 #[cfg(target_os = "macos")]
 pub use macos_ui::prompt_compatibility_warning;
 pub use process::{
-    ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_root_process_ids,
-    parent_process_id, process_executable_path, process_exists, terminate_process_by_id,
+    ProcessSnapshot, descendant_executable_exists, desktop_process_ids, desktop_process_ids_for,
+    desktop_root_process_ids, desktop_root_process_ids_for, parent_process_id,
+    process_executable_path, process_exists, terminate_process_by_id,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{desktop_process_tree, force_stop_desktop, process_snapshot, process_snapshots};

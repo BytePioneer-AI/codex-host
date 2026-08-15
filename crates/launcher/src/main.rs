@@ -31,15 +31,15 @@ use codexhost_platform::launch_desktop_session;
 use codexhost_platform::{
     CompatibilityChoice, CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity,
     DesktopInstallation, DesktopLaunchMode, SupervisedChild, canonical_existing_file,
-    configure_background_command, desktop_process_ids, desktop_root_process_ids,
+    configure_background_command, desktop_process_ids, desktop_root_process_ids_for,
     discover_codex_desktop, discover_codex_desktop_from_root, launch_stock_desktop,
     node_entrypoint_path, open_latest_codexhost_release, prompt_compatibility_warning,
     spawn_supervised,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
-    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    RunningDesktopChoice, desktop_process_ids_for, hide_console_window, process_executable_path,
+    process_exists, prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{
     CompatibilityAcknowledgementKey, CompatibilityState, ControllerReadiness,
@@ -474,12 +474,13 @@ fn start_desktop_controller(
 #[cfg(target_os = "windows")]
 fn wait_for_launched_desktop_ownership(
     desktop: &mut Child,
+    installation: &DesktopInstallation,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let desktop_pid = desktop.id();
     let started = Instant::now();
     loop {
-        let roots = desktop_root_process_ids()?;
+        let roots = desktop_root_process_ids_for(installation)?;
         if roots.iter().any(|process_id| *process_id != desktop_pid) {
             if desktop.try_wait()?.is_none() {
                 let _ = desktop.kill();
@@ -512,6 +513,7 @@ fn wait_for_launched_desktop_ownership(
 ))]
 fn wait_for_launched_desktop_ownership(
     _desktop: &mut Child,
+    _installation: &DesktopInstallation,
     _timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     Ok(())
@@ -753,7 +755,7 @@ fn supervise_desktop(
     )?;
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
-    wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
+    wait_for_launched_desktop_ownership(&mut desktop, installation, Duration::from_secs(5))?;
     let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
     {
         Ok(started) => started,
@@ -907,7 +909,7 @@ fn force_stop_external_desktop(
     let expected = windows_executable_key(&installation.desktop_executable);
     let started = Instant::now();
     loop {
-        let process_ids = desktop_process_ids()?;
+        let process_ids = desktop_process_ids_for(installation)?;
         if process_ids.is_empty() {
             return Ok(());
         }
@@ -960,7 +962,7 @@ fn launch(options: LaunchOptions, interactive_running_desktop: bool) -> Result<(
     startup_trace("Codex Desktop installation discovered");
 
     loop {
-        let roots = desktop_root_process_ids()?;
+        let roots = desktop_root_process_ids_for(&installation)?;
         let descriptor_path = default_descriptor_path()?;
         let descriptor = read_descriptor(&descriptor_path).ok().flatten();
         let descriptor_present = descriptor_path.exists();

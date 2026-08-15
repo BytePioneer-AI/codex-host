@@ -6,7 +6,7 @@
 
 # codexhost
 
-**Run Pi, Claude Code, DeepSeek Harness, and Grok inside [Codex Desktop](https://openai.com/codex/)**
+**Run Pi, Claude Code, DeepSeek Harness, and Grok inside Codex Desktop**
 
 We believe **Codex Desktop** currently provides one of the best desktop development experiences.
 

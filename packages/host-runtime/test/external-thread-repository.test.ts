@@ -156,4 +156,41 @@ describe("ExternalThreadRepository", () => {
     );
     await secondRepository.close();
   });
+
+  it("adopts Native Snapshot order when persisted mappings conflict", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-conflict",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const persisted = [mapping("host-a", "native-a"), mapping("host-missing", "native-missing")];
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: persisted,
+    });
+    const snapshot: HostThreadSnapshot = {
+      turns: ["native-a", "native-extra"].map(snapshotTurn),
+    };
+
+    const aligned = await repository.alignSnapshot(original, snapshot);
+    expect(
+      aligned.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+    ).toEqual(["native-a", "native-extra"]);
+    expect(aligned.record.turnMappings[0]?.hostTurnId).toBe(persisted[0]?.hostTurnId);
+    expect(aligned.record.turnMappings[1]?.hostTurnId).not.toBe(persisted[1]?.hostTurnId);
+    expect(aligned.turns.map((turn) => turn.id)).toEqual(
+      aligned.record.turnMappings.map(({ hostTurnId }) => hostTurnId),
+    );
+    await repository.close();
+  });
 });

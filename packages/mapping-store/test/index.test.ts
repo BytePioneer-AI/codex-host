@@ -199,25 +199,40 @@ describe("mapping-store package", () => {
       turnMappings: ordered,
     });
 
-    const changedCheckpoint = {
+    const dropped = await second.reconcileTurnMappings(threadId, [
+      mapping(1),
+      mapping(2),
+      mapping(4),
+    ]);
+    expect(dropped.turnMappings).toEqual([mapping(1), mapping(2), mapping(4)]);
+    const reordered = await second.reconcileTurnMappings(threadId, [
+      mapping(1),
+      mapping(4),
+      mapping(2),
+    ]);
+    expect(reordered.turnMappings).toEqual([mapping(1), mapping(4), mapping(2)]);
+    const nativeCheckpoint = {
       ...mapping(1),
       nativeCheckpointRef: {
         ...mapping(1).nativeCheckpointRef,
-        checkpointId: "changed-checkpoint",
+        checkpointId: "native-checkpoint",
       },
     } as StoredTurnMappingV1;
-    const invalidSets = [
-      [mapping(1), mapping(2), mapping(4)],
-      [mapping(1), mapping(3), mapping(2), mapping(4)],
-      [{ ...mapping(1), nativeTurnRef: mapping(4).nativeTurnRef }, ...ordered.slice(1)],
-      [changedCheckpoint, ...ordered.slice(1)],
-    ];
-    for (const invalid of invalidSets) {
-      await expect(second.reconcileTurnMappings(threadId, invalid)).rejects.toMatchObject({
-        code: "MAPPING_CONFLICT",
-      });
-    }
-    await expect(second.getThread(threadId)).resolves.toEqual(reconciled);
+    const adopted = await second.reconcileTurnMappings(threadId, [
+      nativeCheckpoint,
+      mapping(4),
+      mapping(2),
+    ]);
+    expect(adopted.turnMappings[0]).toEqual(nativeCheckpoint);
+
+    await expect(
+      second.reconcileTurnMappings(threadId, [
+        { ...mapping(1), nativeTurnRef: mapping(4).nativeTurnRef },
+        mapping(4),
+        mapping(2),
+      ]),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(second.getThread(threadId)).resolves.toEqual(adopted);
     await second.close();
   });
 

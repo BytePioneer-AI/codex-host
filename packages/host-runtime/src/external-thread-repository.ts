@@ -384,25 +384,14 @@ export class ExternalThreadRepository {
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         } satisfies StoredTurnMappingV1);
       return {
-        existing,
         snapshot: turn,
         mapping: {
           ...mapping,
+          nativeTurnRef: turn.nativeTurnRef,
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         },
       };
     });
-    let existingIndex = 0;
-    for (const { existing } of aligned) {
-      if (!existing) continue;
-      if (existing.hostTurnId !== record.turnMappings[existingIndex]?.hostTurnId) {
-        throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
-      }
-      existingIndex += 1;
-    }
-    if (existingIndex !== record.turnMappings.length) {
-      throw new Error("Persisted Turn mappings do not match the Native Snapshot order");
-    }
 
     const orderedMappings = aligned.map(({ mapping }) => mapping);
     const mappingsChanged =

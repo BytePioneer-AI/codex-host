@@ -63,6 +63,11 @@ export function mapGrokReplay(
   sessionId: string,
   knownTurnRefs: readonly NativeTurnRef[] = [],
 ): HostThreadSnapshot {
+  const knownByNativeKey = new Map(
+    knownTurnRefs
+      .filter((ref) => ref.harnessId === harnessId && ref.nativeSessionId === sessionId)
+      .map((ref) => [ref.nativeTurnKey, ref] as const),
+  );
   const turns: HostTurnSnapshot[] = [];
   let input = "";
   let items: HostItemSnapshot[] = [];
@@ -91,12 +96,10 @@ export function mapGrokReplay(
   };
   const completeTurn = (outcome: HistoricalTurnOutcome, terminalKey?: string): void => {
     if (input.length === 0) return;
-    const known = knownTurnRefs[turnIndex];
-    if (known && (known.harnessId !== harnessId || known.nativeSessionId !== sessionId)) {
-      throw new Error("Known Grok Turn identity does not belong to the Native Session");
-    }
-    const stableKey = known?.nativeTurnKey ?? terminalKey ?? nativeTurnKey;
-    if (!stableKey) throw new Error("Grok Native history Turn has no stable identity");
+    const reconstructedKey = terminalKey ?? nativeTurnKey;
+    if (!reconstructedKey) throw new Error("Grok Native history Turn has no stable identity");
+    const known = knownByNativeKey.get(reconstructedKey);
+    const stableKey = known?.nativeTurnKey ?? reconstructedKey;
     completeReasoning();
     completeAgent();
     completeTools();
@@ -180,8 +183,5 @@ export function mapGrokReplay(
     }
   }
   completeTurn({ status: "unknown", reason: "Grok Native history has no terminal signal" });
-  if (knownTurnRefs.length > turns.length) {
-    throw new Error("Grok Native history is missing persisted Turns");
-  }
   return { turns };
 }

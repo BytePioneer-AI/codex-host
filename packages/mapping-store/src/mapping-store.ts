@@ -403,39 +403,36 @@ export class MappingStore {
         );
       }
 
-      const merged = this.#mergeMappings(current.turnMappings, mappings);
-      if (merged.length !== mappings.length) {
-        throw new MappingStoreError(
-          "MAPPING_CONFLICT",
-          "Snapshot reconciliation must retain every existing Turn mapping",
-        );
-      }
-      const mergedByHost = new Map(merged.map((mapping) => [mapping.hostTurnId, mapping] as const));
-      const ordered = mappings.map(({ hostTurnId }) => {
-        const mapping = mergedByHost.get(hostTurnId);
-        if (!mapping) {
+      const byHost = new Map(
+        current.turnMappings.map((mapping) => [mapping.hostTurnId, mapping] as const),
+      );
+      const byNative = new Map(
+        current.turnMappings.map((mapping) => [nativeTurnKey(mapping), mapping] as const),
+      );
+      const seenHost = new Set<string>();
+      const seenNative = new Set<string>();
+      const ordered = mappings.map((update) => {
+        const hostMatch = byHost.get(update.hostTurnId);
+        const nativeMatch = byNative.get(nativeTurnKey(update));
+        if (hostMatch && nativeMatch && hostMatch !== nativeMatch) {
+          throw new MappingStoreError("MAPPING_CONFLICT", "Turn identity mapping conflicts");
+        }
+        if (hostMatch && !sameJson(hostMatch.nativeTurnRef, update.nativeTurnRef)) {
+          throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn maps to another Native Turn");
+        }
+        if (nativeMatch && nativeMatch.hostTurnId !== update.hostTurnId) {
+          throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn maps to another Host Turn");
+        }
+        if (seenHost.has(update.hostTurnId) || seenNative.has(nativeTurnKey(update))) {
           throw new MappingStoreError(
             "MAPPING_CONFLICT",
             "Snapshot reconciliation contains a duplicate Turn mapping",
           );
         }
-        return mapping;
+        seenHost.add(update.hostTurnId);
+        seenNative.add(nativeTurnKey(update));
+        return { ...update };
       });
-
-      const orderedIndexByHost = new Map(
-        ordered.map(({ hostTurnId }, index) => [hostTurnId, index] as const),
-      );
-      let previousIndex = -1;
-      for (const existing of current.turnMappings) {
-        const nextIndex = orderedIndexByHost.get(existing.hostTurnId);
-        if (nextIndex === undefined || nextIndex <= previousIndex) {
-          throw new MappingStoreError(
-            "MAPPING_CONFLICT",
-            "Snapshot reconciliation reordered an existing Turn mapping",
-          );
-        }
-        previousIndex = nextIndex;
-      }
 
       return sameJson(current.turnMappings, ordered) ? null : { ...current, turnMappings: ordered };
     });

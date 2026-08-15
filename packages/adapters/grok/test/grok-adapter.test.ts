@@ -309,7 +309,7 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
-  it("preserves persisted legacy Turn identity while resuming Native history", async () => {
+  it("keeps Native Turn keys when persisted identities do not match history", async () => {
     const transport = new FakeGrokTransport();
     transport.replay = [
       {
@@ -324,18 +324,101 @@ describe("Grok Adapter ACP projection", () => {
         stopReason: "end_turn",
       },
     ];
-    const legacyRef = nativeTurnRefSchema.parse({
+    const staleRef = nativeTurnRefSchema.parse({
       harnessId: "grok",
       nativeSessionId: transport.sessionId,
       nativeTurnKey: "legacy-random-key",
       formatVersion: 1,
     });
-    const resumed = await openedSession(transport, "resume", [legacyRef]);
+    const resumed = await openedSession(transport, "resume", [staleRef]);
     await expect(resumed.session.readSnapshot()).resolves.toMatchObject({
       ok: true,
-      value: { turns: [{ nativeTurnRef: legacyRef }] },
+      value: {
+        turns: [
+          {
+            nativeTurnRef: {
+              nativeTurnKey: "grok-prompt-1",
+            },
+          },
+        ],
+      },
     });
     await resumed.adapter.close();
+  });
+
+  it("does not reassign persisted Turn keys onto extra cancelled Native Turns", async () => {
+    const transport = new FakeGrokTransport();
+    transport.replay = [
+      {
+        type: "user.text",
+        text: "review",
+        metadata: { eventId: "grok-session-user-1" },
+      },
+      { type: "agent.text", text: "looks good", messageId: "agent-1" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-1",
+        stopReason: "end_turn",
+      },
+      {
+        type: "user.text",
+        text: "merge now",
+        metadata: { eventId: "grok-session-user-2" },
+      },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-cancelled",
+        stopReason: "cancelled",
+      },
+      {
+        type: "user.text",
+        text: "summarize",
+        metadata: { eventId: "grok-session-user-3" },
+      },
+      { type: "agent.text", text: "done", messageId: "agent-2" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-2",
+        stopReason: "end_turn",
+      },
+    ];
+    const known = [
+      nativeTurnRefSchema.parse({
+        harnessId: "grok",
+        nativeSessionId: transport.sessionId,
+        nativeTurnKey: "grok-prompt-1",
+        formatVersion: 1,
+      }),
+      nativeTurnRefSchema.parse({
+        harnessId: "grok",
+        nativeSessionId: transport.sessionId,
+        nativeTurnKey: "grok-prompt-2",
+        formatVersion: 1,
+      }),
+    ];
+    const { adapter, session } = await openedSession(transport, "resume", known);
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: known[0],
+            input: [{ type: "text", text: "review" }],
+          },
+          {
+            nativeTurnRef: { nativeTurnKey: "grok-prompt-cancelled" },
+            input: [{ type: "text", text: "merge now" }],
+            outcome: { status: "cancelled" },
+          },
+          {
+            nativeTurnRef: known[1],
+            input: [{ type: "text", text: "summarize" }],
+          },
+        ],
+      },
+    });
+    await adapter.close();
   });
 
   it("projects Thinking, Tool, Approval, Text, Usage, and terminal in order", async () => {

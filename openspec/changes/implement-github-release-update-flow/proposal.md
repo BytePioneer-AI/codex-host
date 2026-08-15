@@ -8,7 +8,7 @@ codexhost already has distribution-specific background installation, verificatio
 - Resolve the current installation from packaged distribution metadata and select exactly one expected GitHub Release asset by target, using GitHub's declared size and SHA-256 digest.
 - Add fixed check, start, and status operations that never accept a Renderer-supplied URL, digest, path, command, or version.
 - Compose the existing `@codexhost/update-manager` and native Updater into the production Host/Controller lifecycle, serialize update attempts, and request an orderly managed Desktop and Launcher exit only after the temporary Updater is running.
-- Add a browser-safe Updates settings page with current/latest version, bounded plain-text GitHub Release body, release-notes link, update-and-restart action, bounded progress, failure retry, and post-restart result recovery.
+- Add a browser-safe Updates settings page with current/latest version, bounded GitHub Release body rendered as Markdown, release-notes link, update-and-restart action, bounded progress, failure retry, and post-restart result recovery.
 - Persist discoverable local operation status, clean stale completed work, and keep update-check failures non-blocking for normal launch.
 - Update the PRD, engineering status, release checks, and focused automated/real-platform verification to match the implemented behavior.
 

@@ -66,6 +66,24 @@ function descendants(root: FakeElement): FakeElement[] {
   ];
 }
 
+function visibleNotesText(root: FakeElement): string {
+  const parts: string[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      if (node) parts.push(node);
+      return;
+    }
+    if (!(node instanceof FakeElement)) return;
+    if (node.children.length === 0) {
+      if (node.textContent) parts.push(node.textContent);
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return parts.join(" ");
+}
+
 function elementWithClass(root: FakeElement, className: string): FakeElement {
   const element = descendants(root).find((candidate) =>
     candidate.className.split(" ").includes(className),
@@ -191,6 +209,46 @@ describe("Renderer Updates page", () => {
     expect(releaseLink.href).toBe(
       "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
     );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("renders GitHub Release notes as structured Markdown", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({
+        ...updateCheck(),
+        releaseNotes: "## 本次发布\n\n- 新增 Grok CLI adapter\n- 集成 DeepSeek Harness",
+      })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      expect(elementWithClass(content, "settings-update-notes").children[0]).toMatchObject({
+        tagName: "h2",
+      });
+    });
+    const notes = elementWithClass(content, "settings-update-notes");
+    expect(notes.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "ul"]);
+    expect(visibleNotesText(notes)).toContain("本次发布");
+    expect(visibleNotesText(notes)).toContain("新增 Grok CLI adapter");
+    expect(visibleNotesText(notes)).not.toContain("##");
+    expect(visibleNotesText(notes)).not.toContain("- 新增");
 
     cleanup?.();
     scope.dispose();

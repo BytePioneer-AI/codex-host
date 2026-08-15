@@ -1,47 +1,55 @@
-import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 import { RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES } from "./renderer-model-picker.js";
+import { formatRendererCreditsPercent } from "./renderer-usage-control.js";
 
-export interface RendererUsageControl {
+export interface RendererCreditsControl {
   root: HTMLDivElement;
   trigger: HTMLButtonElement;
   popover: HTMLDivElement;
   anchor: HTMLElement | null;
-  label: HTMLSpanElement;
-  syncNativeModelClassName(className?: string): void;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
+  syncNativeModelClassName(className?: string): void;
 }
 
-function decimal(value: number, fractionDigits: number): string {
-  return value.toFixed(fractionDigits).replace(/\.?0+$/u, "");
+export type RendererCreditsTone = "ok" | "warn" | "hot";
+
+export function rendererCreditsTone(usedPercent: number): RendererCreditsTone {
+  if (usedPercent >= 90) return "hot";
+  if (usedPercent >= 70) return "warn";
+  return "ok";
 }
 
-export function formatRendererCacheHitRate(value: number): string {
-  return `CH ${decimal(value, 1)}%`;
+export function formatRendererCreditsReset(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
-export function formatRendererCost(value: number): string {
-  return `$${value.toFixed(3)}`;
+export function creditsPeriodLabel(periodType: AccountCreditsSnapshot["periodType"]): string {
+  if (periodType === "weekly") return "Weekly limit";
+  if (periodType === "monthly") return "Monthly limit";
+  return "Account limit";
 }
 
-export function formatRendererTokenRate(value: number): string {
-  return `${decimal(value, 1)} tok/s`;
+function productLabel(product: string): string {
+  if (product === "GrokBuild") return "Build";
+  if (product === "GrokChat") return "Chat";
+  if (product === "GrokImagine") return "Imagine";
+  if (product === "GrokVoice") return "Voice";
+  return product;
 }
 
-export function formatRendererTokenCount(value: number): string {
-  const sign = value < 0 ? "-" : "";
-  const absolute = Math.abs(value);
-  if (absolute < 1000) return `${sign}${Math.round(absolute)}`;
-  return `${sign}${decimal(absolute / 1000, 1)}k`;
-}
-
-export function formatRendererCreditsPercent(value: number): string {
-  return `${decimal(value, 1)}%`;
-}
-
-export function rendererUsageTriggerMaxWidth(): string {
-  return "min(180px, 30vw)";
+function toneColor(tone: RendererCreditsTone): string {
+  if (tone === "hot") return "#c45c4a";
+  if (tone === "warn") return "#c9a227";
+  return "#3d9a64";
 }
 
 function addDetailRow(parent: HTMLElement, label: string, value: string): void {
@@ -61,55 +69,23 @@ function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   parent.append(row);
 }
 
-function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | null): void {
+function renderDetails(popover: HTMLDivElement, credits: AccountCreditsSnapshot): void {
   popover.replaceChildren();
   const heading = document.createElement("div");
-  heading.textContent = "Usage";
+  heading.textContent = creditsPeriodLabel(credits.periodType);
   heading.style.fontWeight = "600";
   heading.style.marginBottom = "6px";
   popover.append(heading);
-
-  if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
-    const contextPercent =
-      usage.contextWindowTokens > 0
-        ? (usage.contextUsedTokens / usage.contextWindowTokens) * 100
-        : null;
+  addDetailRow(popover, "Used", formatRendererCreditsPercent(credits.usedPercent));
+  if (credits.resetsAt) {
+    addDetailRow(popover, "Resets", formatRendererCreditsReset(credits.resetsAt));
+  }
+  for (const product of credits.productUsage ?? []) {
     addDetailRow(
       popover,
-      "Context",
-      contextPercent === null
-        ? `/${formatRendererTokenCount(usage.contextWindowTokens)}`
-        : `${decimal(contextPercent, 1)}% / ${formatRendererTokenCount(usage.contextWindowTokens)}`,
+      productLabel(product.product),
+      formatRendererCreditsPercent(product.usagePercent),
     );
-  }
-  if (usage?.cacheHitRatePercent !== undefined) {
-    addDetailRow(
-      popover,
-      "Latest cache hit",
-      formatRendererCacheHitRate(usage.cacheHitRatePercent),
-    );
-  }
-  if (usage?.outputTokensPerSecond !== undefined) {
-    addDetailRow(popover, "Output speed", formatRendererTokenRate(usage.outputTokensPerSecond));
-  }
-  if (usage?.cachedInputTokens !== undefined) {
-    addDetailRow(popover, "Cache read", formatRendererTokenCount(usage.cachedInputTokens));
-  }
-  if (usage?.cacheWriteInputTokens !== undefined) {
-    addDetailRow(popover, "Cache write", formatRendererTokenCount(usage.cacheWriteInputTokens));
-  }
-  if (usage?.reasoningOutputTokens !== undefined) {
-    addDetailRow(popover, "Reasoning", formatRendererTokenCount(usage.reasoningOutputTokens));
-  }
-  if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
-    addDetailRow(
-      popover,
-      "Input / output",
-      `${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
-    );
-  }
-  if (usage?.totalCostUsd !== undefined) {
-    addDetailRow(popover, "Session cost estimate", formatRendererCost(usage.totalCostUsd));
   }
 }
 
@@ -121,9 +97,9 @@ function popoverIsOpen(popover: HTMLDivElement): boolean {
   }
 }
 
-function positionPopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function positionPopover(control: Pick<RendererCreditsControl, "trigger" | "popover">): void {
   const triggerRect = control.trigger.getBoundingClientRect();
-  const width = Math.min(320, Math.max(260, window.innerWidth - 24));
+  const width = Math.min(280, Math.max(220, window.innerWidth - 24));
   const left = Math.max(12, Math.min(triggerRect.left, window.innerWidth - width - 12));
   control.popover.style.width = `${width}px`;
   control.popover.style.left = `${left}px`;
@@ -132,7 +108,7 @@ function positionPopover(control: Pick<RendererUsageControl, "trigger" | "popove
   control.popover.style.bottom = `${Math.max(12, window.innerHeight - triggerRect.top + 8)}px`;
 }
 
-function closePopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function closePopover(control: Pick<RendererCreditsControl, "trigger" | "popover">): void {
   if (popoverIsOpen(control.popover) && typeof control.popover.hidePopover === "function") {
     control.popover.hidePopover();
   }
@@ -140,7 +116,7 @@ function closePopover(control: Pick<RendererUsageControl, "trigger" | "popover">
   control.trigger.setAttribute("aria-expanded", "false");
 }
 
-function openPopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function openPopover(control: Pick<RendererCreditsControl, "trigger" | "popover">): void {
   positionPopover(control);
   control.popover.hidden = false;
   if (typeof control.popover.showPopover === "function" && !popoverIsOpen(control.popover)) {
@@ -149,17 +125,17 @@ function openPopover(control: Pick<RendererUsageControl, "trigger" | "popover">)
   control.trigger.setAttribute("aria-expanded", "true");
 }
 
-function togglePopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function togglePopover(control: Pick<RendererCreditsControl, "trigger" | "popover">): void {
   if (control.trigger.getAttribute("aria-expanded") === "true") closePopover(control);
   else openPopover(control);
 }
 
-export function mountRendererUsageControl(
+export function mountRendererCreditsControl(
   composerId: string,
   nativeModelClassName?: string,
-): RendererUsageControl {
+): RendererCreditsControl {
   const root = document.createElement("div");
-  root.dataset.codexhostUsageControl = composerId;
+  root.dataset.codexhostCreditsControl = composerId;
   root.className = "relative min-w-0";
   root.style.display = "none";
 
@@ -171,14 +147,15 @@ export function mountRendererUsageControl(
   trigger.type = "button";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
-  trigger.setAttribute("aria-label", "Thread Usage");
-  trigger.title = "Thread Usage";
+  trigger.setAttribute("aria-label", "Account limit");
+  trigger.title = "Account limit";
   trigger.style.display = "inline-flex";
   trigger.style.alignItems = "center";
+  trigger.style.gap = "5px";
   trigger.style.width = "fit-content";
-  trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
+  trigger.style.maxWidth = "min(72px, 18vw)";
   trigger.style.height = "24px";
-  trigger.style.padding = "0 4px";
+  trigger.style.padding = "0 6px";
   trigger.style.borderRadius = "9999px";
   trigger.style.fontSize = "12px";
   trigger.style.lineHeight = "16px";
@@ -187,24 +164,34 @@ export function mountRendererUsageControl(
   trigger.style.whiteSpace = "nowrap";
   trigger.style.cursor = "pointer";
 
+  const dot = document.createElement("span");
+  dot.dataset.codexhostCreditsDot = "";
+  dot.setAttribute("aria-hidden", "true");
+  dot.style.display = "inline-block";
+  dot.style.width = "7px";
+  dot.style.height = "7px";
+  dot.style.borderRadius = "9999px";
+  dot.style.flex = "0 0 auto";
+
   const label = document.createElement("span");
+  label.dataset.codexhostCreditsLabel = "";
   label.style.display = "inline-block";
   label.style.maxWidth = "100%";
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
-  trigger.append(label);
+  trigger.append(dot, label);
 
   const popover = document.createElement("div");
-  popover.id = `${composerId}-usage-popover`;
+  popover.id = `${composerId}-credits-popover`;
   popover.setAttribute("role", "dialog");
-  popover.setAttribute("aria-label", "Thread Usage details");
+  popover.setAttribute("aria-label", "Account limit details");
   popover.setAttribute("popover", "auto");
   popover.hidden = typeof popover.showPopover !== "function";
   popover.style.position = "fixed";
   popover.style.inset = "auto";
-  popover.style.width = "260px";
-  popover.style.maxWidth = "min(320px, calc(100vw - 24px))";
+  popover.style.width = "240px";
+  popover.style.maxWidth = "min(280px, calc(100vw - 24px))";
   popover.style.padding = "10px 12px";
   popover.style.border = "1px solid rgba(127, 127, 127, 0.35)";
   popover.style.borderRadius = "6px";
@@ -217,12 +204,11 @@ export function mountRendererUsageControl(
   trigger.setAttribute("aria-controls", popover.id);
 
   let placementReference: Element | null = null;
-  const control: RendererUsageControl = {
+  const control: RendererCreditsControl = {
     root,
     trigger,
     popover,
     anchor: null,
-    label,
     syncNativeModelClassName,
     dispose() {
       closePopover(control);
@@ -233,27 +219,20 @@ export function mountRendererUsageControl(
     },
     place(anchor) {
       if (!anchor?.parentElement) return false;
-      let reference: Element = anchor;
-      let container = anchor.parentElement;
-      while (
-        container.parentElement &&
-        (getComputedStyle(container).display === "inline" ||
-          (container.tagName === "SPAN" && container.attributes.length === 0))
-      ) {
-        reference = container;
-        container = container.parentElement;
-      }
+      const parent = anchor.parentElement;
+      const next = anchor.nextElementSibling;
       if (
         control.anchor === anchor &&
-        placementReference === reference &&
-        root.parentElement === container &&
-        root.nextElementSibling === reference
+        placementReference === anchor &&
+        root.parentElement === parent &&
+        root.previousElementSibling === anchor
       ) {
         return true;
       }
       control.anchor = anchor;
-      placementReference = reference;
-      container.insertBefore(root, reference);
+      placementReference = anchor;
+      if (next && next !== root) parent.insertBefore(root, next);
+      else if (next !== root) parent.append(root);
       return true;
     },
   };
@@ -286,43 +265,32 @@ export function mountRendererUsageControl(
   popover.addEventListener("pointerenter", cancelClose);
   popover.addEventListener("pointerleave", scheduleClose);
   popover.addEventListener("toggle", () => {
-    const open = popoverIsOpen(popover);
-    trigger.setAttribute("aria-expanded", String(open));
+    trigger.setAttribute("aria-expanded", String(popoverIsOpen(popover)));
   });
   root.append(trigger);
   document.body.append(popover);
-
   return control;
 }
 
-export function renderRendererUsageControl(
-  control: RendererUsageControl,
-  usage: ThreadUsageSnapshot | null,
+export function renderRendererCreditsControl(
+  control: RendererCreditsControl,
+  accountCredits: AccountCreditsSnapshot | null,
 ): boolean {
-  const cacheHitRatePercent = usage?.cacheHitRatePercent;
-  const outputTokensPerSecond = usage?.outputTokensPerSecond;
-  const totalCostUsd = usage?.totalCostUsd;
-  const hasCacheHitRate = cacheHitRatePercent !== undefined;
-  const hasOutputSpeed = outputTokensPerSecond !== undefined;
-  const hasCost = totalCostUsd !== undefined;
-  const visible = hasCacheHitRate || hasOutputSpeed || hasCost;
-  control.root.style.display = visible ? "inline-flex" : "none";
-  if (!visible) {
+  if (accountCredits === null) {
+    control.root.style.display = "none";
     closePopover(control);
     return false;
   }
-
-  const summary = [
-    cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
-    outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,
-    totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
-  ].filter((value): value is string => value !== null);
-  const compactSummary = summary.join(" · ");
-  const accessibleSummary = `Thread Usage: ${compactSummary}`;
-  control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
-  control.trigger.setAttribute("aria-label", accessibleSummary);
-  control.trigger.title = accessibleSummary;
-  control.label.textContent = compactSummary;
-  renderDetails(control.popover, usage);
+  const percent = formatRendererCreditsPercent(accountCredits.usedPercent);
+  const title = `${creditsPeriodLabel(accountCredits.periodType)} ${percent}`;
+  const tone = rendererCreditsTone(accountCredits.usedPercent);
+  const dot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-dot]");
+  const label = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-label]");
+  if (dot) dot.style.background = toneColor(tone);
+  if (label) label.textContent = percent;
+  control.root.style.display = "inline-flex";
+  control.trigger.setAttribute("aria-label", title);
+  control.trigger.title = title;
+  renderDetails(control.popover, accountCredits);
   return true;
 }

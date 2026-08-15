@@ -46,6 +46,11 @@ export {
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
 export {
+  creditsPeriodLabel,
+  formatRendererCreditsReset,
+  rendererCreditsTone,
+} from "./renderer-credits-control.js";
+export {
   formatRendererCacheHitRate,
   formatRendererCost,
   formatRendererCreditsPercent,

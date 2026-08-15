@@ -28,6 +28,11 @@ import {
   type RendererPermissionModePickerControl,
 } from "./renderer-permission-mode-picker.js";
 import {
+  mountRendererCreditsControl,
+  renderRendererCreditsControl,
+  type RendererCreditsControl,
+} from "./renderer-credits-control.js";
+import {
   mountRendererUsageControl,
   renderRendererUsageControl,
   type RendererUsageControl,
@@ -59,6 +64,7 @@ export interface ComposerAgentControl {
   nativeModelControl: NativeModelControlState | null;
   nativePermissionModeControl: NativePermissionModeControlState | null;
   nativePermissionModeControlVerified: boolean;
+  credits: RendererCreditsControl;
   usage: RendererUsageControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
@@ -233,7 +239,12 @@ function nativeModelControlForComposer(composer: Element): HTMLElement | null {
 const contextUsageDescriptionPattern = /(context|token|上下文|令牌)/iu;
 
 export function isNativeContextUsageControlCandidate(element: Element): boolean {
-  if (element.hasAttribute("data-codexhost-usage-control")) return false;
+  if (
+    element.hasAttribute("data-codexhost-usage-control") ||
+    element.hasAttribute("data-codexhost-credits-control")
+  ) {
+    return false;
+  }
   const description = [
     element.getAttribute("aria-label"),
     element.getAttribute("title"),
@@ -274,6 +285,7 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
   if (!candidate) {
     control.usage.syncNativeModelClassName();
+    control.credits.syncNativeModelClassName();
     return;
   }
   if (candidate !== control.nativeModelControl?.element) {
@@ -282,6 +294,7 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
     syncRendererModelTriggerClass(control.modelPicker, candidate.className);
   }
   control.usage.syncNativeModelClassName(candidate.className);
+  control.credits.syncNativeModelClassName(candidate.className);
 }
 
 function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
@@ -293,14 +306,49 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
   return native?.parentElement ? native : null;
 }
 
+function firstMaterialChild(parent: Element): HTMLElement | null {
+  for (const child of parent.children) {
+    if (typeof (child as HTMLElement).hasAttribute !== "function") continue;
+    const element = child as HTMLElement;
+    if (element.hasAttribute("data-codexhost-credits-control")) continue;
+    return element;
+  }
+  return null;
+}
+
+export function creditsPlacementAnchor(
+  composer: Element,
+  usageRoot: HTMLElement,
+): HTMLElement | null {
+  let current: HTMLElement | null = usageRoot;
+  while (current && current !== composer) {
+    const parent: HTMLElement | null = current.parentElement;
+    if (!parent) break;
+    const first = firstMaterialChild(parent);
+    if (first && first !== current && !first.contains(usageRoot)) return first;
+    if (parent === composer) break;
+    current = parent;
+  }
+  return null;
+}
+
 function refreshUsagePlacement(control: ComposerAgentControl): void {
   const anchor = usagePlacementAnchor(control);
   if (!anchor) {
     if (control.usage.anchor) control.usage.root.remove();
     control.usage.anchor = null;
+    if (control.credits.anchor) control.credits.root.remove();
+    control.credits.anchor = null;
     return;
   }
   control.usage.place(anchor);
+  const leading = creditsPlacementAnchor(control.composer, control.usage.root);
+  if (!leading) {
+    if (control.credits.anchor) control.credits.root.remove();
+    control.credits.anchor = null;
+    return;
+  }
+  control.credits.place(leading);
 }
 
 function refreshNativePermissionModeControl(control: ComposerAgentControl): void {
@@ -381,6 +429,7 @@ export function mountComposerAgentControl(
     onSelectPermissionMode,
   );
   const usage = mountRendererUsageControl(composerId, nativeModelControl?.element.className);
+  const credits = mountRendererCreditsControl(composerId, nativeModelControl?.element.className);
 
   const permissionParent = nativePermissionModeControl?.element.parentElement;
   if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
@@ -405,6 +454,7 @@ export function mountComposerAgentControl(
     nativeModelControl,
     nativePermissionModeControl,
     nativePermissionModeControlVerified,
+    credits,
     usage,
     sendButton,
     sendDisabledBeforeSwitch: null,
@@ -475,7 +525,8 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  renderRendererUsageControl(control.usage, usage, accountCredits);
+  renderRendererUsageControl(control.usage, usage);
+  renderRendererCreditsControl(control.credits, accountCredits);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
@@ -484,6 +535,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativePermissionModeControl);
+  control.credits.dispose();
   control.usage.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();

@@ -10,6 +10,10 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import {
+        mountRendererCreditsControl,
+        renderRendererCreditsControl,
+      } from "./packages/renderer-extension/src/renderer-credits-control.ts";
+      import {
         mountRendererUsageControl,
         renderRendererUsageControl,
       } from "./packages/renderer-extension/src/renderer-usage-control.ts";
@@ -18,6 +22,10 @@ const { outputFiles } = await build({
         const toolbar = document.createElement("div");
         toolbar.style.display = "flex";
         toolbar.style.alignItems = "center";
+        const plus = document.createElement("button");
+        plus.type = "button";
+        plus.setAttribute("aria-label", "Add files");
+        plus.textContent = "+";
         const model = document.createElement("div");
         model.setAttribute("data-codexhost-model-control", "usage-composer");
         const modelButton = document.createElement("button");
@@ -25,14 +33,17 @@ const { outputFiles } = await build({
         modelButton.setAttribute("aria-label", "Model: gpt-test");
         modelButton.textContent = "gpt-test";
         model.append(modelButton);
-        toolbar.append(model);
+        toolbar.append(plus, model);
         document.body.append(toolbar);
 
-        const control = mountRendererUsageControl("usage-composer");
-        control.place(model);
-        renderRendererUsageControl(control, null);
+        const usage = mountRendererUsageControl("usage-composer");
+        const credits = mountRendererCreditsControl("usage-composer");
+        usage.place(model);
+        credits.place(plus);
+        renderRendererUsageControl(usage, null);
+        renderRendererCreditsControl(credits, null);
         globalThis.updateRendererUsage = () => {
-          renderRendererUsageControl(control, {
+          renderRendererUsageControl(usage, {
             cacheHitRatePercent: 99.9,
             cachedInputTokens: 375000,
             cacheWriteInputTokens: 1200,
@@ -44,11 +55,8 @@ const { outputFiles } = await build({
           });
         };
         globalThis.updateRendererCreditsUsage = () => {
-          renderRendererUsageControl(
-            control,
-            { cacheHitRatePercent: 99.3 },
-            { usedPercent: 47, periodType: "weekly" },
-          );
+          renderRendererUsageControl(usage, { cacheHitRatePercent: 99.3, totalCostUsd: 0.822 });
+          renderRendererCreditsControl(credits, { usedPercent: 47, periodType: "weekly" });
         };
       };
     `,
@@ -125,7 +133,7 @@ test("renders Usage immediately to the left of the model control", async ({ page
   await expect(popover).toContainText("$0.822");
 });
 
-test("widens Usage only when account credits are shown", async ({ page }) => {
+test("keeps Usage in place and shows credits after the leading composer control", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
@@ -137,38 +145,49 @@ test("widens Usage only when account credits are shown", async ({ page }) => {
     update();
   });
 
+  const model = page.locator('[data-codexhost-model-control="usage-composer"]');
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
   const trigger = usage.locator("button");
   await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(credits).toBeHidden();
   await expect(trigger).toHaveCSS("max-width", "180px");
-  const defaultBox = await usage.boundingBox();
-  if (!defaultBox) throw new Error("Usage geometry is unavailable");
-  expect(defaultBox.width).toBeLessThan(200);
+  await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
+    "data-codexhost-model-control",
+    "usage-composer",
+  );
 
   await page.evaluate(() => {
     const update = Reflect.get(globalThis, "updateRendererCreditsUsage");
     if (typeof update !== "function") throw new Error("Credits usage update is unavailable");
     update();
   });
-  await expect(usage).toHaveText("Weekly limit 47% · CH 99.3%");
-  await expect(trigger).toHaveCSS("max-width", "300px");
-  const overflowing = await trigger.evaluate((element) => {
-    const label = element.querySelector("span");
-    return label !== null && label.scrollWidth > label.clientWidth + 1;
-  });
-  expect(overflowing).toBe(false);
-  const creditsBox = await usage.boundingBox();
-  if (!creditsBox) throw new Error("Credits usage geometry is unavailable");
-  expect(creditsBox.width).toBeGreaterThan(defaultBox.width);
-
-  await page.evaluate(() => {
-    const update = Reflect.get(globalThis, "updateRendererUsage");
-    if (typeof update !== "function") throw new Error("Usage update is unavailable");
-    update();
-  });
-  await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(usage).toHaveText("CH 99.3% · $0.822");
+  await expect(credits).toBeVisible();
+  await expect(credits).toHaveText("47%");
+  await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 47%");
+  await expect(credits.locator("[data-codexhost-credits-dot]")).toHaveCount(1);
   await expect(trigger).toHaveCSS("max-width", "180px");
-  const restoredBox = await usage.boundingBox();
-  if (!restoredBox) throw new Error("Restored usage geometry is unavailable");
-  expect(restoredBox.width).toBeLessThan(200);
+  await expect(credits.locator("xpath=preceding-sibling::*[1]")).toHaveAttribute(
+    "aria-label",
+    "Add files",
+  );
+  await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
+    "data-codexhost-model-control",
+    "usage-composer",
+  );
+  const [creditsBox, usageBox, modelBox] = await Promise.all([
+    credits.boundingBox(),
+    usage.boundingBox(),
+    model.boundingBox(),
+  ]);
+  if (!creditsBox || !usageBox || !modelBox) throw new Error("Credits geometry is unavailable");
+  expect(creditsBox.x + creditsBox.width).toBeLessThanOrEqual(usageBox.x + 1);
+  expect(usageBox.x + usageBox.width).toBeLessThanOrEqual(modelBox.x + 1);
+
+  await credits.hover();
+  const popover = page.locator('[role="dialog"][aria-label="Account limit details"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("Weekly limit");
+  await expect(popover).toContainText("47%");
 });

@@ -25,6 +25,7 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   isComposerSubmitButton,
+  creditsPlacementAnchor,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
@@ -109,11 +110,18 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { trigger, root: { parentElement: {} } },
       nativeModelControl: { element: previous, hidden: false, ariaHidden: null },
       nativePermissionModeControl: null,
+      credits: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
       usage: {
         anchor: null,
         place: vi.fn(),
         syncNativeModelClassName: vi.fn(),
         dispose: vi.fn(),
+        root: { remove: vi.fn() },
       },
     } as unknown as ComposerAgentControl;
 
@@ -169,8 +177,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(formatRendererTokenCount(87000)).toBe("87k");
     expect(formatRendererTokenCount(6700)).toBe("6.7k");
     expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth(false)).toBe("min(180px, 30vw)");
-    expect(rendererUsageTriggerMaxWidth(true)).toBe("min(300px, 44vw)");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
   });
 
   it("places Usage before the native context circle when it is present", () => {
@@ -181,6 +188,8 @@ describe("Renderer Composer DOM behavior", () => {
       getAttribute: (name: string) => (name === "aria-label" ? "Context usage: 20%" : null),
     } as unknown as HTMLElement;
     const placeUsage = vi.fn();
+    const placeCredits = vi.fn();
+    const usageRoot = { remove: vi.fn() };
     const control = {
       composer: {
         querySelectorAll: (selector: string) =>
@@ -189,11 +198,17 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
+      credits: {
+        anchor: null,
+        place: placeCredits,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
       usage: {
         anchor: null,
         place: placeUsage,
         syncNativeModelClassName: vi.fn(),
-        root: { remove: vi.fn() },
+        root: usageRoot,
       },
     } as unknown as ComposerAgentControl;
 
@@ -201,27 +216,53 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(placeUsage).toHaveBeenCalledWith(nativeContext);
     expect(placeUsage).not.toHaveBeenCalledWith(modelRoot);
+    expect(placeCredits).not.toHaveBeenCalled();
   });
 
   it("places Usage before the model picker when the native context circle is absent", () => {
     const modelRoot = { parentElement: {} } as HTMLElement;
     const placeUsage = vi.fn();
+    const placeCredits = vi.fn();
+    const usageRoot = { remove: vi.fn() };
     const control = {
       composer: { querySelectorAll: () => [] },
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
+      credits: {
+        anchor: null,
+        place: placeCredits,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
       usage: {
         anchor: null,
         place: placeUsage,
         syncNativeModelClassName: vi.fn(),
-        root: { remove: vi.fn() },
+        root: usageRoot,
       },
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, true, false);
 
     expect(placeUsage).toHaveBeenCalledWith(modelRoot);
+    expect(placeCredits).not.toHaveBeenCalled();
+  });
+
+  it("anchors credits to the leading footer control instead of Usage", () => {
+    const plus = {
+      hasAttribute: () => false,
+      contains: () => false,
+    };
+    const usageRoot = {};
+    const footer = {
+      children: [plus, usageRoot],
+    };
+    Object.assign(plus, { parentElement: footer });
+    Object.assign(usageRoot, { parentElement: footer });
+    Object.assign(footer, { parentElement: {} });
+
+    expect(creditsPlacementAnchor({} as Element, usageRoot as HTMLElement)).toBe(plus);
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {
@@ -229,7 +270,12 @@ describe("Renderer Composer DOM behavior", () => {
       hasAttribute: (name: string) => name === "data-codexhost-usage-control",
       getAttribute: () => "Context window usage",
     } as unknown as HTMLElement;
+    const credits = {
+      hasAttribute: (name: string) => name === "data-codexhost-credits-control",
+      getAttribute: () => "Weekly limit",
+    } as unknown as HTMLElement;
     expect(isNativeContextUsageControlCandidate(usage)).toBe(false);
+    expect(isNativeContextUsageControlCandidate(credits)).toBe(false);
   });
 
   it("does not treat attachment controls as submission", () => {

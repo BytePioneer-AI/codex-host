@@ -79,8 +79,7 @@ import {
 import { fetchGrokCredits, type GrokCreditsSnapshot } from "./grok-credits.js";
 import {
   combineUsage,
-  lastTurnUsage,
-  usageFromNative,
+  sessionUsageFromHistory,
   usageFromPrompt,
   usageFromSignals,
   usageFromUpdate,
@@ -622,10 +621,7 @@ class GrokHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.text, event.messageId);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
-    else if (event.type === "turn.completed") {
-      const usage = usageFromNative(event.usage);
-      if (usage) this.#publishUsage(usage, active.command.turnId);
-    } else if (event.type === "usage") return;
+    else if (event.type === "usage" || event.type === "turn.completed") return;
   }
 
   #appendAgent(active: ActiveTurn, text: string, messageId?: string): void {
@@ -782,7 +778,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#finish(
       active,
       outcome,
-      lastTurnUsage(history) ?? (response ? usageFromPrompt(response) : null),
+      sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null),
       nativeTurnRef,
     );
   }
@@ -1053,7 +1049,7 @@ export class GrokAdapter implements HarnessAdapter {
       const history = await transport.getHistory();
       const initialUsage =
         input.kind === "resume"
-          ? combineUsage(lastTurnUsage(history), usageFromSignals(opened.signals))
+          ? combineUsage(sessionUsageFromHistory(history), usageFromSignals(opened.signals))
           : null;
       const openedSession = new GrokHarnessSession(
         cwd,

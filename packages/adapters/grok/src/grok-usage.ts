@@ -70,16 +70,75 @@ export function usageFromSignals(value: unknown): HostUsage | null {
   }
 }
 
-export function lastTurnUsage(
-  events: ReadonlyArray<{ type: string; usage?: unknown }>,
+const summedUsageFields = [
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "totalTokens",
+] as const;
+
+function nativeCostTicks(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined;
+  const ticks = value.costUsdTicks;
+  if (typeof ticks !== "number" || !Number.isSafeInteger(ticks) || ticks < 0) return undefined;
+  return ticks;
+}
+
+function historyTurnKey(event: { nativeTurnKey?: string }, index: number): string | null {
+  const key = event.nativeTurnKey;
+  if (typeof key === "string" && key.startsWith("task-completed-")) return null;
+  return typeof key === "string" && key.length > 0 ? key : `anon-${index}`;
+}
+
+/** Sum persisted per-turn Grok Usage. Cache hit rate stays the latest request. */
+export function sessionUsageFromHistory(
+  events: ReadonlyArray<{ type: string; usage?: unknown; nativeTurnKey?: string }>,
 ): HostUsage | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
+  const latestByKey = new Map<string, { usage: HostUsage; ticks?: number }>();
+  let lastCacheHitRatePercent: number | undefined;
+  let index = 0;
+  for (const event of events) {
     if (event?.type !== "turn.completed") continue;
+    const key = historyTurnKey(event, index);
+    index += 1;
+    if (key === null) continue;
     const usage = usageFromNative(event.usage);
-    if (usage) return usage;
+    if (!usage) continue;
+    const ticks = nativeCostTicks(event.usage);
+    latestByKey.set(key, ticks === undefined ? { usage } : { usage, ticks });
+    if (usage.cacheHitRatePercent !== undefined) {
+      lastCacheHitRatePercent = usage.cacheHitRatePercent;
+    }
   }
-  return null;
+  if (latestByKey.size === 0) return null;
+
+  const totals: Partial<Record<(typeof summedUsageFields)[number], number>> = {};
+  let ticks = 0;
+  let hasTicks = false;
+  for (const entry of latestByKey.values()) {
+    for (const field of summedUsageFields) {
+      const value = entry.usage[field];
+      if (value === undefined) continue;
+      totals[field] = (totals[field] ?? 0) + value;
+    }
+    if (entry.ticks === undefined) continue;
+    ticks += entry.ticks;
+    hasTicks = true;
+  }
+  const totalCostUsd = hasTicks ? optionalCostUsd(ticks) : undefined;
+  try {
+    return parseHostUsage({
+      ...totals,
+      ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+      ...(lastCacheHitRatePercent !== undefined
+        ? { cacheHitRatePercent: lastCacheHitRatePercent }
+        : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function usageFromUpdate(

@@ -456,6 +456,8 @@ describe("Grok Adapter ACP projection", () => {
         numTurns: 9,
       },
     });
+    transport.finish();
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.usage.changed",
       usage: {
@@ -471,8 +473,6 @@ describe("Grok Adapter ACP projection", () => {
         cacheHitRatePercent: (296448 / 330555) * 100,
       },
     });
-    transport.finish();
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
       outcome: { status: "succeeded" },
@@ -561,6 +561,138 @@ describe("Grok Adapter ACP projection", () => {
       reasoningOutputTokens: 4,
       totalCostUsd: 0.01268905,
       cacheHitRatePercent: 80,
+      contextUsedTokens: 52322,
+      contextWindowTokens: 500000,
+    });
+    await adapter.close();
+  });
+
+  it("sums persisted turn_completed Usage across the Native Session", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const firstTurnId = hostTurnIdSchema.parse("turn-history-sum-1");
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: firstTurnId,
+        input: [{ type: "text", text: "first" }],
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: firstTurnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.finish(
+      { stopReason: "end_turn" },
+      {
+        inputTokens: 100,
+        outputTokens: 10,
+        totalTokens: 110,
+        cachedReadTokens: 80,
+        cacheCreationTokens: 0,
+        reasoningTokens: 4,
+        costUsdTicks: 126890500,
+      },
+    );
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+
+    const secondTurnId = hostTurnIdSchema.parse("turn-history-sum-2");
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: secondTurnId,
+        input: [{ type: "text", text: "second" }],
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: secondTurnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.finish(
+      { stopReason: "end_turn" },
+      {
+        inputTokens: 50,
+        outputTokens: 5,
+        totalTokens: 55,
+        cachedReadTokens: 45,
+        cacheCreationTokens: 2,
+        reasoningTokens: 1,
+        costUsdTicks: 2388600000,
+      },
+    );
+    const events = [];
+    for (;;) {
+      const event = await nextEvent(iterator);
+      events.push(event);
+      if (event.type === "turn.completed") break;
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.usage.changed",
+        usage: {
+          inputTokens: 150,
+          cachedInputTokens: 125,
+          cacheWriteInputTokens: 2,
+          outputTokens: 15,
+          reasoningOutputTokens: 5,
+          totalTokens: 165,
+          totalCostUsd: 0.25154905,
+          cacheHitRatePercent: 90,
+        },
+      }),
+    );
+    await adapter.close();
+  });
+
+  it("restores resume Usage by summing Native history", async () => {
+    const transport = new FakeGrokTransport();
+    transport.replay = [
+      { type: "user.text", text: "first", metadata: { eventId: "grok-session-user-1" } },
+      { type: "agent.text", text: "one", messageId: "agent-1" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-1",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 10,
+          totalTokens: 110,
+          cachedReadTokens: 80,
+          cacheCreationTokens: 0,
+          reasoningTokens: 4,
+          costUsdTicks: 126890500,
+        },
+      },
+      { type: "user.text", text: "second", metadata: { eventId: "grok-session-user-2" } },
+      { type: "agent.text", text: "two", messageId: "agent-2" },
+      {
+        type: "turn.completed",
+        nativeTurnKey: "grok-prompt-2",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 50,
+          outputTokens: 5,
+          totalTokens: 55,
+          cachedReadTokens: 45,
+          cacheCreationTokens: 2,
+          reasoningTokens: 1,
+          costUsdTicks: 2388600000,
+        },
+      },
+    ];
+    transport.signals = {
+      contextTokensUsed: 52322,
+      contextWindowTokens: 500000,
+      turnCount: 2,
+    };
+    const { adapter, session } = await openedSession(transport, "resume");
+    expect(session.initialUsage).toEqual({
+      inputTokens: 150,
+      outputTokens: 15,
+      totalTokens: 165,
+      cachedInputTokens: 125,
+      cacheWriteInputTokens: 2,
+      reasoningOutputTokens: 5,
+      totalCostUsd: 0.25154905,
+      cacheHitRatePercent: 90,
       contextUsedTokens: 52322,
       contextWindowTokens: 500000,
     });

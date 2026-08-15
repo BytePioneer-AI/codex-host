@@ -62,9 +62,7 @@ describe("main-process title policy", () => {
     expect(functionDeclaration).toContain("webContents.fromId(rendererWebContentsId)");
     expect(functionDeclaration).toContain("ownService(sampleService, selected)");
     expect(functionDeclaration).not.toContain("querySelectorAll('*').length");
-    expect(functionDeclaration).toContain(
-      '["Dhe","Nye","wbe","nxe","tTe"].includes(serviceClass)',
-    );
+    expect(functionDeclaration).toContain('["Dhe","Nye","wbe","nxe","tTe"].includes(serviceClass)');
     expect(functionDeclaration).toContain("reason: 'unreviewed-title-service-identity'");
     expect(functionDeclaration).not.toContain("constructor?.name) ||");
     expect(inspector.command.mock.calls.at(-1)?.[1]).toEqual({

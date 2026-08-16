@@ -43,8 +43,8 @@ use codexhost_platform::{DesktopSession, launch_desktop_session};
 use codexhost_platform::{LinuxCompatibilityChoice, prompt_linux_compatibility_warning};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    RunningDesktopChoice, desktop_root_process_ids, hide_console_window, process_executable_path,
-    process_exists, prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
+    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{
     CompatibilityAcknowledgementKey, CompatibilityState, ControllerReadiness,
@@ -526,13 +526,14 @@ fn start_desktop_controller(
 
 #[cfg(target_os = "windows")]
 fn wait_for_launched_desktop_ownership(
+    installation: &DesktopInstallation,
     desktop: &mut Child,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let desktop_pid = desktop.id();
     let started = Instant::now();
     loop {
-        let roots = desktop_root_process_ids()?;
+        let roots = desktop_root_process_ids_for_installation(installation)?;
         if roots.iter().any(|process_id| *process_id != desktop_pid) {
             if desktop.try_wait()?.is_none() {
                 let _ = desktop.kill();
@@ -917,7 +918,7 @@ fn supervise_desktop(
     )?;
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
-    wait_for_launched_desktop_ownership(&mut desktop, Duration::from_secs(5))?;
+    wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
     let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
     {
         Ok(started) => started,

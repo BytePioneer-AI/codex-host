@@ -24,7 +24,19 @@ fn print_prompt(prompt: &CompatibilityPrompt<'_>, output: &mut impl Write) -> io
         CompatibilityUpdateAvailability::Started => {
             writeln!(
                 output,
-                "An adaptation update is being prepared in the background."
+                "A newer codexhost version was detected, and the update has started in the background."
+            )?;
+            writeln!(
+                output,
+                "You can continue using the current version. The application will restart automatically when the update is complete."
+            )?;
+            writeln!(
+                output,
+                "If the update takes too long, install it manually from GitHub Releases:"
+            )?;
+            writeln!(
+                output,
+                "https://github.com/BytePioneer-AI/codex-host/releases/latest"
             )?;
         }
         CompatibilityUpdateAvailability::Current => {

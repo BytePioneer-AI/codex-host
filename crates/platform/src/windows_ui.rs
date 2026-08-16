@@ -231,10 +231,10 @@ pub fn prompt_compatibility_warning(prompt: &CompatibilityPrompt<'_>) -> Compati
     };
     let update_message = match (prompt.update_availability, chinese) {
         (CompatibilityUpdateAvailability::Started, true) => {
-            "codexhost 已开始在后台准备适配更新，你可以继续使用当前版本。"
+            "\n\n已检测到较新的 codexhost 版本，已在后台开始更新；\n你可以继续使用当前版本。更新完成后，应用将自动重启；\n若长时间未完成，请前往 GitHub Releases 手动安装。\n地址：https://github.com/BytePioneer-AI/codex-host/releases/latest"
         }
         (CompatibilityUpdateAvailability::Started, false) => {
-            "codexhost started preparing an adapted update in the background, and you can continue with the current version."
+            "\n\nA newer codexhost version was detected, and the update has started in the background.\nYou can continue using the current version. The application will restart automatically when the update is complete.\nIf the update takes too long, install it manually from GitHub Releases:\nhttps://github.com/BytePioneer-AI/codex-host/releases/latest"
         }
         (CompatibilityUpdateAvailability::Current, true) => {
             "当前 codexhost 已是最新版。适配更新发布后会提示更新，你可以先继续使用当前版本。"

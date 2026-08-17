@@ -56,10 +56,10 @@ Pi, Claude Code, DeepSeek Harness, and Grok run as independent sessions in the s
 | Usage | Native | ✅ | ✅ | ✅ | ✅ |
 | Session resume | Native | ✅ | ✅ | ✅ | ✅ |
 | Thread management | Native | ✅ | 🚧 | 🚧 | 🚧 |
-| Fork | Native | ✅ | ✅ | — | — |
+| Fork | Native | ✅ | ✅ | ✅ | — |
 | Context compaction | Native | ✅ | ✅ | — | ✅ |
 | Slash commands | Native | 🚧 | 🚧 | — | — |
-| Revise the previous message | Native | ✅ | 🚧 | — | — |
+| Revise the previous message | Native | ✅ | 🚧 | ✅ | — |
 
 `✅` supported, `🚧` partial or in progress, `—` not currently supported.
 

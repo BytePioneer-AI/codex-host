@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { mapGrokReplay, resolveGrokTargetPromptIndex } from "../src/grok-history.js";
+import {
+  mapGrokReplay,
+  resolveGrokLastTurnPromptIndex,
+  resolveGrokTargetPromptIndex,
+} from "../src/grok-history.js";
 
 describe("Grok history Fork mapping", () => {
   it("assigns Native Prompt Index Checkpoints and skips synthetic user runs", () => {
@@ -38,6 +42,34 @@ describe("Grok history Fork mapping", () => {
     expect(resolveGrokTargetPromptIndex(snapshot, "0")).toBe(0);
     expect(resolveGrokTargetPromptIndex(snapshot, "2")).toBe(2);
     expect(resolveGrokTargetPromptIndex(snapshot, "1")).toBeNull();
+    expect(resolveGrokLastTurnPromptIndex(snapshot)).toBe(2);
+    expect(resolveGrokLastTurnPromptIndex({ turns: [] })).toBeNull();
+  });
+
+  it("applies rewind_marker by dropping the target Prompt Index and later Turns", () => {
+    const snapshot = mapGrokReplay(
+      [
+        { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+        { type: "agent.text", text: "answer-1" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+        { type: "agent.text", text: "answer-2" },
+        { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+        { type: "user.text", text: "third", metadata: { eventId: "user-3" } },
+        { type: "agent.text", text: "answer-3" },
+        { type: "turn.completed", nativeTurnKey: "prompt-3", stopReason: "end_turn" },
+        { type: "rewind.marker", targetPromptIndex: 2 },
+      ],
+      "grok",
+      "session-1",
+      "/workspace",
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "prompt-1",
+      "prompt-2",
+    ]);
+    expect(resolveGrokLastTurnPromptIndex(snapshot)).toBe(1);
   });
 
   it("prefers an explicit promptIndex on the user event", () => {

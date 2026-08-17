@@ -21,6 +21,7 @@ export type {
   GrokOpenInput,
   GrokOpenResult,
   GrokPermissionRequest,
+  GrokRewindOpenInput,
   GrokTransportEvent,
 } from "./acp-transport.js";
 export {
@@ -29,6 +30,13 @@ export {
   parseGrokForkResponse,
 } from "./grok-fork.js";
 export type { GrokForkParams, GrokForkResponse } from "./grok-fork.js";
+export {
+  GROK_REWIND_EXECUTE_METHOD,
+  GROK_REWIND_POINTS_METHOD,
+  buildGrokRewindParams,
+  parseGrokRewindResponse,
+} from "./grok-rewind.js";
+export type { GrokRewindParams, GrokRewindResponse } from "./grok-rewind.js";
 export { GrokExecutableError, resolveGrokExecutable } from "./command.js";
 
 export const packageMetadata = {

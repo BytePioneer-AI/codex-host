@@ -65,15 +65,11 @@ async function executeCurrentLastTurnRollback(input: {
 
   const session = opened.value;
   const finalNativeRef = session.initialState.nativeRef;
-  if (
-    !finalNativeRef ||
-    finalNativeRef.harnessId !== current.harnessId ||
-    finalNativeRef.nativeSessionId === currentNativeRef.nativeSessionId
-  ) {
+  if (!finalNativeRef || finalNativeRef.harnessId !== current.harnessId) {
     await session.close().catch(() => undefined);
     return {
       ok: false,
-      error: { code: -32076, message: "External rollback did not create a distinct Session" },
+      error: { code: -32076, message: "External rollback did not return a valid Session" },
     };
   }
   const snapshot = await session.readSnapshot();

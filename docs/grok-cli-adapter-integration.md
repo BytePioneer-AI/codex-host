@@ -342,7 +342,7 @@ const capabilities = {
   history: {
     fork: true,
     forkAcrossCwd: true,
-    rollbackLastTurn: false,
+    rollbackLastTurn: true,
   },
 };
 ```
@@ -367,11 +367,25 @@ Grok Adapter 声明：
 history: {
   fork: true,
   forkAcrossCwd: true,
-  rollbackLastTurn: false,
+  rollbackLastTurn: true,
 }
 ```
 
-`forkAcrossCwd` 让 Desktop 的「在新工作树中创建分支」可以把目标 cwd 交给 Grok `_x.ai/session/fork`。Adapter 不创建 Git Worktree。Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
+`forkAcrossCwd` 让 Desktop 的「在新工作树中创建分支」可以把目标 cwd 交给 Grok `_x.ai/session/fork`。Adapter 不创建 Git Worktree。
+
+「修订上一条」走 Grok 原生 Rewind，不是 Fork：
+
+```text
+当前 Native Session
+    -> 最后一轮 Host Turn 的 Prompt Index
+    -> session/load
+    -> _x.ai/rewind/execute { force: true, mode: "conversation_only" }
+    -> 同一 Native Session ID，历史少一轮
+```
+
+`targetPromptIndex` 是排除下标：传入最后一轮的 Prompt Index，会丢掉该轮及之后的内容。单轮会话可以 Rewind 成空历史。必须发送 `force: true`，否则 Grok 1.0.5 会返回 `success: false` 且不截断。`conversation_only` 只截断会话，不恢复磁盘文件。Grok 不会删掉 `updates.jsonl` 里的旧轮次，而是追加 `rewind_marker`；历史映射必须按该标记截断。
+
+Rewind 会改写当前 Native Session。Host last-turn 路径允许同一 Native Session ID；Fork 和 post-Fork 路径仍要求新的 Session ID。如果 Rewind 已经截断但 Host 持久化失败，原生文件无法自动恢复。
 
 ## 10. Edit Diff
 

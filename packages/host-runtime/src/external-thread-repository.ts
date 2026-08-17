@@ -293,7 +293,6 @@ export class ExternalThreadRepository {
       current.state !== "ready" ||
       !current.nativeSessionRef ||
       nativeSessionRef.harnessId !== current.harnessId ||
-      nativeSessionRef.nativeSessionId === current.nativeSessionRef.nativeSessionId ||
       snapshot.turns.length !== current.turnMappings.length - 1
     ) {
       throw new Error("Last-Turn rollback is not an exact ready Session replacement");

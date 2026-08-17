@@ -58,12 +58,14 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     this.histories.delete(sessionId);
   });
   readonly forkCalls: Extract<GrokOpenInput, { kind: "fork" }>[] = [];
+  readonly rewindCalls: Extract<GrokOpenInput, { kind: "rewind" }>[] = [];
   histories = new Map<string, GrokTransportEvent[]>();
   sessionLocations = new Map<string, { cwd: string; sourceWorkspaceDir?: string }>();
   replay: GrokTransportEvent[] = [];
   signals: unknown;
   methodNotFound = false;
   forkImpl?: (input: Extract<GrokOpenInput, { kind: "fork" }>) => Promise<{ sessionId: string }>;
+  rewindImpl?: (input: Extract<GrokOpenInput, { kind: "rewind" }>) => Promise<void>;
   #activePromptEvents: GrokTransportEvent[] = [];
   #activePromptText: string | null = null;
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
@@ -94,6 +96,21 @@ class FakeGrokTransport implements GrokAcpTransportLike {
         this.replay = [...(this.histories.get(forked.sessionId) ?? [])];
       } else {
         throw new GrokTransportError("unavailable", "Grok Native Fork failed");
+      }
+    } else if (input.kind === "rewind") {
+      this.rewindCalls.push(input);
+      if (this.methodNotFound) {
+        throw new GrokTransportError(
+          "protocolError",
+          "Grok ACP Method Not Found: _x.ai/rewind/execute",
+        );
+      }
+      this.sessionId = input.sessionId;
+      if (this.rewindImpl) {
+        await this.rewindImpl(input);
+        this.replay = [...(this.histories.get(input.sessionId) ?? [])];
+      } else {
+        throw new GrokTransportError("unavailable", "Grok Native Rewind failed");
       }
     }
     return {
@@ -1074,9 +1091,9 @@ describe("Grok Adapter ACP projection", () => {
       adapter.open({
         kind: "rollbackLastTurn",
         cwd: "/synthetic",
-        sourceRef: { harnessId: adapter.harnessId, nativeSessionId: "session", formatVersion: 1 },
+        sourceRef: { harnessId: adapter.harnessId, nativeSessionId: "missing", formatVersion: 1 },
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
     await adapter.close();
   });
 
@@ -1100,7 +1117,7 @@ describe("Grok Adapter ACP projection", () => {
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
       capabilities: {
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       },
     });
     await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
@@ -1208,7 +1225,7 @@ describe("Grok Adapter ACP projection", () => {
     expect(opened.value.capabilities.history).toEqual({
       fork: true,
       forkAcrossCwd: true,
-      rollbackLastTurn: false,
+      rollbackLastTurn: true,
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
@@ -1471,6 +1488,194 @@ describe("Grok Adapter ACP projection", () => {
       adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
     ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
     expect(transport.deleteSession).toHaveBeenCalledWith("child-session");
+    await adapter.close();
+  });
+
+  it("rewinds the last Native Turn in place", async () => {
+    const transport = new FakeGrokTransport();
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+      { type: "agent.text", text: "answer-2" },
+      { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+    ];
+    transport.histories.set("source-session", sourceHistory);
+    transport.rewindImpl = async (input) => {
+      transport.histories.set("source-session", [
+        ...sourceHistory,
+        { type: "rewind.marker", targetPromptIndex: input.targetPromptIndex },
+      ]);
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef: nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "source-session" },
+    });
+    expect(opened.value.capabilities.history).toEqual({
+      fork: true,
+      forkAcrossCwd: true,
+      rollbackLastTurn: true,
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: { nativeSessionId: "source-session", nativeTurnKey: "prompt-1" },
+            checkpoint: { nativeSessionId: "source-session", checkpointId: "0" },
+            input: [{ text: "first" }],
+          },
+        ],
+      },
+    });
+    expect(transport.rewindCalls).toEqual([
+      { kind: "rewind", sessionId: "source-session", targetPromptIndex: 1 },
+    ]);
+    await opened.value.close();
+  });
+
+  it("restores the source Session Model and Thinking after Rewind", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const created = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      thinkingOptionId: "low",
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+      { type: "agent.text", text: "answer-2" },
+      { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+    ];
+    transport.histories.set(created.value.initialState.nativeRef!.nativeSessionId, sourceHistory);
+    transport.rewindImpl = async (input) => {
+      transport.histories.set(input.sessionId, [
+        ...sourceHistory,
+        { type: "rewind.marker", targetPromptIndex: input.targetPromptIndex },
+      ]);
+    };
+    transport.setModel.mockClear();
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef: created.value.initialState.nativeRef!,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.setModel).toHaveBeenCalledWith("grok-4.6", "low");
+    expect(opened.value.initialState).toMatchObject({
+      effectiveModel: { id: "grok-4.6" },
+      effectiveThinkingOptionId: "low",
+    });
+    await created.value.close();
+    await opened.value.close();
+  });
+
+  it("rewinds the only Native Turn to empty history", async () => {
+    const transport = new FakeGrokTransport();
+    transport.histories.set("source-session", [
+      { type: "user.text", text: "only", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ]);
+    transport.rewindImpl = async (input) => {
+      transport.histories.set("source-session", [
+        { type: "user.text", text: "only", metadata: { eventId: "user-1" } },
+        { type: "agent.text", text: "answer" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        { type: "rewind.marker", targetPromptIndex: input.targetPromptIndex },
+      ]);
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef: nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+    expect(transport.rewindCalls).toEqual([
+      { kind: "rewind", sessionId: "source-session", targetPromptIndex: 0 },
+    ]);
+    await opened.value.close();
+  });
+
+  it("rejects last-Turn Rewind when Grok ACP is missing or history is unchanged", async () => {
+    const transport = new FakeGrokTransport();
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+      { type: "agent.text", text: "answer-2" },
+      { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+    ];
+    transport.histories.set("source-session", sourceHistory);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: adapter.harnessId,
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    transport.methodNotFound = true;
+    await expect(
+      adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    transport.methodNotFound = false;
+    transport.rewindImpl = async () => undefined;
+    await expect(
+      adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
     await adapter.close();
   });
 });

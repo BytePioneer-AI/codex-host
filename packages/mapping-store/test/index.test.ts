@@ -389,6 +389,27 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("replaces last-Turn mappings on the same Native Session identity", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+    await store.upsertTurnMappings(threadId, [mapping(1), mapping(2)]);
+    const before = await store.getThread(threadId);
+
+    const replaced = await store.replaceReadySessionAfterLastTurn({
+      hostThreadId: threadId,
+      nativeSessionRef: nativeRef,
+      turnMappings: [mapping(1)],
+    });
+    expect(replaced).toMatchObject({
+      revision: (before?.revision ?? 0) + 1,
+      nativeSessionRef: nativeRef,
+      turnMappings: [mapping(1)],
+    });
+    await store.close();
+  });
+
   it("keeps the latest ready Session authoritative when last-Turn replacement fails", async () => {
     const directory = await temporaryStoreDirectory();
     let fail = false;

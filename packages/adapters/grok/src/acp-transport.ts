@@ -28,6 +28,11 @@ import {
   parseGrokForkResponse,
   type GrokForkParams,
 } from "./grok-fork.js";
+import {
+  GROK_REWIND_EXECUTE_METHOD,
+  parseGrokRewindResponse,
+  type GrokRewindParams,
+} from "./grok-rewind.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -78,7 +83,8 @@ export type GrokTransportEvent =
       stopReason: string;
       usage?: unknown;
       metadata?: Record<string, unknown>;
-    };
+    }
+  | { type: "rewind.marker"; targetPromptIndex: number; metadata?: Record<string, unknown> };
 
 export interface GrokPermissionRequest {
   request: RequestPermissionRequest;
@@ -103,13 +109,22 @@ export interface GrokForkOpenInput {
   sourceWorkspaceDir?: string;
 }
 
+export interface GrokRewindOpenInput {
+  kind: "rewind";
+  sessionId: string;
+  targetPromptIndex: number;
+}
+
 export interface GrokNativeSessionLocation {
   cwd: string;
   sourceWorkspaceDir?: string;
 }
 
 export type GrokOpenInput =
-  { kind: "create" } | { kind: "resume"; sessionId: string } | GrokForkOpenInput;
+  | { kind: "create" }
+  | { kind: "resume"; sessionId: string }
+  | GrokForkOpenInput
+  | GrokRewindOpenInput;
 
 export interface GrokOpenResult {
   initialize: InitializeResponse;
@@ -208,6 +223,22 @@ function transportEvent(
       ...(extension.usage !== undefined ? { usage: extension.usage } : {}),
       ...(metadata ? { metadata } : {}),
     };
+  }
+  if (extension.sessionUpdate === "rewind_marker") {
+    const targetPromptIndex =
+      typeof extension.targetPromptIndex === "number"
+        ? extension.targetPromptIndex
+        : typeof extension.target_prompt_index === "number"
+          ? extension.target_prompt_index
+          : null;
+    if (
+      targetPromptIndex === null ||
+      !Number.isInteger(targetPromptIndex) ||
+      targetPromptIndex < 0
+    ) {
+      return null;
+    }
+    return { type: "rewind.marker", targetPromptIndex, ...(metadata ? { metadata } : {}) };
   }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
@@ -476,7 +507,8 @@ export class GrokAcpTransport {
       const initialize = await this.#ensureInitialized();
       const connection = this.#connection;
       if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
-      this.#replay = input.kind === "resume" || input.kind === "fork" ? [] : null;
+      this.#replay =
+        input.kind === "resume" || input.kind === "fork" || input.kind === "rewind" ? [] : null;
       let session: NewSessionResponse | LoadSessionResponse;
       let sessionId: string;
       if (input.kind === "create") {
@@ -525,6 +557,14 @@ export class GrokAcpTransport {
           "Grok Session load",
         );
         sessionId = input.sessionId;
+        if (input.kind === "rewind") {
+          await this.#rewindSession({
+            sessionId,
+            targetPromptIndex: input.targetPromptIndex,
+            force: true,
+            mode: "conversation_only",
+          });
+        }
       }
       if (typeof sessionId !== "string" || sessionId.length === 0) {
         throw new GrokTransportError("protocolError", "Grok ACP returned no Session identity");
@@ -533,7 +573,7 @@ export class GrokAcpTransport {
       const replay = this.#replay ?? [];
       this.#replay = null;
       const signals =
-        input.kind === "resume" || input.kind === "fork"
+        input.kind === "resume" || input.kind === "fork" || input.kind === "rewind"
           ? await readNativeSignals(this.#options, sessionId)
           : undefined;
       return {
@@ -547,6 +587,39 @@ export class GrokAcpTransport {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
       throw classified;
+    }
+  }
+
+  async #rewindSession(params: GrokRewindParams): Promise<void> {
+    if (!this.#connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    try {
+      const raw = await withTimeout(
+        this.#connection.request(GROK_REWIND_EXECUTE_METHOD, params),
+        this.#options.commandTimeoutMs,
+        "Grok Session rewind",
+      );
+      const parsed = parseGrokRewindResponse(raw);
+      if (!parsed) {
+        throw new GrokTransportError("protocolError", "Grok Rewind returned an invalid result");
+      }
+      if (!parsed.success) {
+        throw new GrokTransportError(
+          "unavailable",
+          parsed.error && parsed.error.length > 0
+            ? `Grok Native Rewind failed: ${parsed.error}`
+            : "Grok Native Rewind did not truncate history",
+        );
+      }
+    } catch (error) {
+      if (error instanceof GrokTransportError) throw error;
+      if (error instanceof RequestError && error.code === -32601) {
+        throw new GrokTransportError(
+          "protocolError",
+          `Grok ACP Method Not Found: ${GROK_REWIND_EXECUTE_METHOD}`,
+          { cause: error },
+        );
+      }
+      throw new GrokTransportError("unavailable", "Grok Native Rewind failed", { cause: error });
     }
   }
 

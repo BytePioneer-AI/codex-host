@@ -322,13 +322,13 @@ Fork 流程至少需要：
 history: {
   fork: true,
   forkAcrossCwd: true,
-  rollbackLastTurn: false,
+  rollbackLastTurn: true,
 }
 ```
 
 `forkAcrossCwd` 只表示可以把 Native Session 绑到 Desktop 已准备好的目标 cwd。Git Worktree 的创建仍由 Desktop 负责。如果 Grok 返回 Method Not Found、Prompt Index 映射失败，或 `session/load` 后历史不一致，单次 Fork 失败关闭，不把 child 当成已打开的 Session。
 
-Fork 支持不等于 Rollback 支持。codexhost 的 Rollback 要求独立 Derived Thread、边界一致性和后续提交状态处理，不能因为 Grok 有 `targetPromptIndex` 就自动打开 `rollbackLastTurn`。
+Fork 支持不等于 Rollback 支持。Grok 的「修订上一条」使用 `_x.ai/rewind/execute` 截断当前 Native Session，不创建 child Session。不能因为 Fork 有 `targetPromptIndex` 就把 last-turn 做成 Fork。
 
 ## 必须添加的测试
 

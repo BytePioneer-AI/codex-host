@@ -109,6 +109,43 @@ describe("ExternalThreadRepository", () => {
     await repository.close();
   });
 
+  it("commits a last-Turn replacement that keeps the same Native Session identity", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-rewind",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Grok Thread",
+      transportModelId: "codexhost/grok-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [mapping("host-a", "native-a"), mapping("host-b", "native-b")],
+    });
+
+    const committed = await repository.commitLastTurnRollback(original, nativeSessionRef, {
+      turns: [snapshotTurnForSession(nativeSessionRef, "native-a")],
+    });
+    expect(committed.record).toMatchObject({
+      nativeSessionRef,
+      turnMappings: [
+        {
+          hostTurnId: original.turnMappings[0]?.hostTurnId,
+          nativeTurnRef: { nativeSessionId: nativeSessionRef.nativeSessionId },
+        },
+      ],
+    });
+    expect(committed.turns).toMatchObject([{ id: original.turnMappings[0]?.hostTurnId }]);
+    await repository.close();
+  });
+
   it("converges across consecutive cold alignments with middle-inserted Native Turns", async () => {
     const directory = await temporaryStoreDirectory();
     const firstStore = new MappingStore({ directory, instanceId: "first" });

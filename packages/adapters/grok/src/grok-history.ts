@@ -99,7 +99,7 @@ export function mapGrokReplay(
       .filter((ref) => ref.harnessId === harnessId && ref.nativeSessionId === sessionId)
       .map((ref) => [ref.nativeTurnKey, ref] as const),
   );
-  const turns: HostTurnSnapshot[] = [];
+  let turns: HostTurnSnapshot[] = [];
   let input = "";
   let items: HostItemSnapshot[] = [];
   let turnIndex = 0;
@@ -209,6 +209,23 @@ export function mapGrokReplay(
   };
 
   for (const event of replay) {
+    if (event.type === "rewind.marker") {
+      turns = turns.filter((turn) => {
+        const index = turn.checkpoint ? parseGrokPromptIndex(turn.checkpoint.checkpointId) : null;
+        return index !== null && index < event.targetPromptIndex;
+      });
+      turnIndex = turns.length;
+      messageIndex = 0;
+      nativeTurnKey = null;
+      nativePromptIndex = event.targetPromptIndex;
+      currentPromptIndex = null;
+      input = "";
+      items = [];
+      agent = null;
+      reasoning = null;
+      tools.clear();
+      continue;
+    }
     if (event.type === "user.text") {
       if (isHostTurnEvent(event)) continue;
       if (isSyntheticGrokUserText(event.text)) {
@@ -290,4 +307,10 @@ export function resolveGrokTargetPromptIndex(
   const turn = snapshot.turns.find((entry) => entry.checkpoint?.checkpointId === checkpointId);
   if (!turn?.checkpoint) return null;
   return parseGrokPromptIndex(turn.checkpoint.checkpointId);
+}
+
+export function resolveGrokLastTurnPromptIndex(snapshot: HostThreadSnapshot): number | null {
+  const last = snapshot.turns.at(-1);
+  if (!last?.checkpoint) return null;
+  return parseGrokPromptIndex(last.checkpoint.checkpointId);
 }

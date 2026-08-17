@@ -58,4 +58,85 @@ describe("Grok history Fork mapping", () => {
     expect(snapshot.turns[0]?.checkpoint?.checkpointId).toBe("4");
     expect(resolveGrokTargetPromptIndex(snapshot, "4")).toBe(4);
   });
+
+  it("restores Command output and Generic Tool results from Native history", () => {
+    const snapshot = mapGrokReplay(
+      [
+        { type: "user.text", text: "inspect", metadata: { eventId: "user-1" } },
+        {
+          type: "tool.call",
+          callId: "bash-1",
+          title: "Run tests",
+          name: "bash",
+          rawInput: { command: "npm test" },
+          status: "in_progress",
+        },
+        {
+          type: "tool.update",
+          callId: "bash-1",
+          status: "completed",
+          rawOutput: { type: "Bash", output: [...Buffer.from("passed")], exit_code: 0 },
+        },
+        {
+          type: "tool.call",
+          callId: "read-1",
+          name: "read_file",
+          rawInput: { target_file: "/workspace/a.txt" },
+          status: "in_progress",
+        },
+        {
+          type: "tool.update",
+          callId: "read-1",
+          status: "completed",
+          content: [{ type: "content", content: { type: "text", text: "file body" } }],
+        },
+        {
+          type: "tool.call",
+          callId: "list-1",
+          name: "list_dir",
+          rawInput: { target_directory: "/workspace" },
+          status: "in_progress",
+        },
+        {
+          type: "tool.update",
+          callId: "list-1",
+          status: "completed",
+          rawOutput: { type: "ListDir", content: "a.ts\nb.ts" },
+        },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      ],
+      "grok",
+      "session-1",
+      "/workspace",
+    );
+
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      {
+        item: {
+          type: "commandExecution",
+          command: "npm test",
+          output: "passed",
+          exitCode: 0,
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "read_file",
+          arguments: { target_file: "/workspace/a.txt" },
+          output: { content: [{ type: "text", text: "file body" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "list_dir",
+          output: { content: [{ type: "text", text: "a.ts\nb.ts" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
 });

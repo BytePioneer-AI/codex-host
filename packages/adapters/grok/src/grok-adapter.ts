@@ -28,8 +28,6 @@ import {
   type HostItemSnapshot,
   type HostReasoningItem,
   type HostThreadSnapshot,
-  type HostToolExecutionItem,
-  type HostToolOutput,
   type HostUsage,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
@@ -52,12 +50,10 @@ import {
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
-  jsonValueSchema,
   nativeSessionRefSchema,
   type HarnessId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
-  type JsonValue,
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
@@ -76,6 +72,15 @@ import {
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
+import {
+  applyGrokToolProjection,
+  DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
+  grokToolLabel,
+  hasGrokToolProjection,
+  projectGrokToolOutput,
+  startGrokToolItem,
+  type GrokProjectedToolItem,
+} from "./grok-tool-output.js";
 import {
   modelStateFromInitialize,
   modelStateFromSessionResponse,
@@ -124,7 +129,7 @@ export interface GrokAcpTransportLike {
 }
 
 interface ActiveTool {
-  item: HostToolExecutionItem;
+  item: GrokProjectedToolItem;
   status?: string;
 }
 
@@ -163,11 +168,6 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
-const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -194,41 +194,6 @@ function nativeRef(sessionId: string): NativeSessionRef {
     nativeSessionId: sessionId,
     formatVersion: 1,
   });
-}
-
-function jsonValue(value: unknown): JsonValue {
-  const parsed = jsonValueSchema.safeParse(value);
-  return parsed.success ? parsed.data : {};
-}
-
-function contentText(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .flatMap((entry) => {
-      if (!isRecord(entry) || entry.type !== "content" || !isRecord(entry.content)) return [];
-      return entry.content.type === "text" && typeof entry.content.text === "string"
-        ? [entry.content.text]
-        : [];
-    })
-    .join("\n");
-}
-
-function outputText(value: unknown, limit: number): HostToolOutput | undefined {
-  let text: string;
-  if (typeof value === "string") text = value;
-  else if (value === undefined || value === null) return undefined;
-  else {
-    try {
-      text = JSON.stringify(value, null, 2);
-    } catch {
-      return undefined;
-    }
-  }
-  if (text.length === 0) return undefined;
-  return {
-    content: [{ type: "text", text: text.slice(0, limit) }],
-    ...(text.length > limit ? { truncated: true } : {}),
-  };
 }
 
 function effectForOption(option: PermissionOption): "allowOnce" | "allowAlways" | "deny" {
@@ -314,6 +279,7 @@ class GrokHarnessSession implements HarnessSession {
         opened.sessionId,
         cwd,
         options.knownTurnRefs,
+        this.#toolOutputLimit,
       ),
       state: this.#state,
     };
@@ -466,6 +432,7 @@ class GrokHarnessSession implements HarnessSession {
       this.#transport.sessionId,
       this.#cwd,
       knownTurnRefs,
+      this.#toolOutputLimit,
     );
     this.#snapshot.turns = refreshed.turns;
     return history;
@@ -693,19 +660,20 @@ class GrokHarnessSession implements HarnessSession {
   #startTool(active: ActiveTurn, event: Extract<GrokTransportEvent, { type: "tool.call" }>): void {
     this.#completeReasoning(active, { status: "succeeded" });
     this.#completeAgent(active, { status: "succeeded" });
-    const output = outputText(contentText(event.content) || event.rawOutput, this.#toolOutputLimit);
-    const item: HostToolExecutionItem = {
-      type: "toolExecution",
+    let item = startGrokToolItem({
       itemId: hostItemIdSchema.parse(this.#randomUUID()),
-      toolName: event.name ?? event.title,
-      namespace: "grok",
-      arguments: jsonValue(event.rawInput),
-      ...(output ? { output } : {}),
-    };
+      name: event.name,
+      title: event.title,
+      kind: event.kind,
+      rawInput: event.rawInput,
+      cwd: this.#cwd,
+    });
+    const projection = projectGrokToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
+    if (hasGrokToolProjection(projection)) item = applyGrokToolProjection(item, projection);
     active.tools.set(event.callId, { item, ...(event.status ? { status: event.status } : {}) });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
     if (event.status === "completed" || event.status === "failed") {
-      this.#completeTool(active, event.callId, event.status, event.content);
+      this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
     }
   }
 
@@ -715,19 +683,35 @@ class GrokHarnessSession implements HarnessSession {
   ): void {
     const tool = active.tools.get(event.callId);
     if (!tool) return;
-    const output = outputText(contentText(event.content) || event.rawOutput, this.#toolOutputLimit);
-    if (output) {
-      tool.item = { ...tool.item, output };
-      this.#event({
-        type: "item.updated",
-        turnId: active.command.turnId,
-        itemId: tool.item.itemId,
-        update: { type: "output.replace", output },
-      });
+    const projection = projectGrokToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
+    if (hasGrokToolProjection(projection)) {
+      const previous = tool.item.type === "commandExecution" ? (tool.item.output ?? "") : undefined;
+      tool.item = applyGrokToolProjection(tool.item, projection);
+      if (tool.item.type === "commandExecution" && projection.output) {
+        const next = tool.item.output ?? "";
+        if (previous !== undefined && next.startsWith(previous)) {
+          const delta = next.slice(previous.length);
+          if (delta.length > 0) {
+            this.#event({
+              type: "item.updated",
+              turnId: active.command.turnId,
+              itemId: tool.item.itemId,
+              update: { type: "output.append", text: delta },
+            });
+          }
+        }
+      } else if (tool.item.type === "toolExecution" && projection.output) {
+        this.#event({
+          type: "item.updated",
+          turnId: active.command.turnId,
+          itemId: tool.item.itemId,
+          update: { type: "output.replace", output: projection.output },
+        });
+      }
     }
     if (event.status) tool.status = event.status;
     if (event.status === "completed" || event.status === "failed") {
-      this.#completeTool(active, event.callId, event.status, event.content);
+      this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
     }
   }
 
@@ -736,17 +720,22 @@ class GrokHarnessSession implements HarnessSession {
     callId: string,
     status: string,
     content?: unknown[] | null,
+    rawOutput?: unknown,
   ): void {
     const tool = active.tools.get(callId);
     if (!tool) return;
     active.tools.delete(callId);
+    const projection = projectGrokToolOutput(content, rawOutput, this.#toolOutputLimit);
+    if (hasGrokToolProjection(projection)) {
+      tool.item = applyGrokToolProjection(tool.item, projection);
+    }
     const outcome: HostItemOutcome =
       status === "failed"
         ? {
             status: "failed",
             error: {
               code: "nativeFailure",
-              message: `Grok Tool '${tool.item.toolName}' failed`,
+              message: `Grok Tool '${grokToolLabel(tool.item)}' failed`,
               retryable: false,
             },
           }
@@ -924,7 +913,7 @@ export class GrokAdapter implements HarnessAdapter {
   constructor(options: GrokAdapterOptions = {}, dependencies?: GrokAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#environment = options.environment;
-    this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+    this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GROK_TOOL_OUTPUT_LIMIT;
     this.#dependencies = dependencies ?? {
       randomUUID,
       createTransport: (transportOptions) =>

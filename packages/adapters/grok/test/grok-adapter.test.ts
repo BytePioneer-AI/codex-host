@@ -380,7 +380,10 @@ describe("Grok Adapter ACP projection", () => {
       status: "in_progress",
     });
     expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "commandExecution", command: "npm test", cwd: "/synthetic" },
+    });
 
     const permission = transport.permission();
     const interactionOutput = await nextOutput(iterator);
@@ -411,8 +414,17 @@ describe("Grok Adapter ACP projection", () => {
       status: "completed",
       rawOutput: "passed",
     });
-    expect((await nextEvent(iterator)).type).toBe("item.updated");
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "output.append", text: "passed" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "commandExecution", command: "npm test", output: "passed" },
+        outcome: { status: "succeeded" },
+      },
+    });
     transport.event({ type: "agent.text", text: "done", messageId: "message-2" });
     expect((await nextEvent(iterator)).type).toBe("item.started");
     expect((await nextEvent(iterator)).type).toBe("item.updated");
@@ -428,6 +440,138 @@ describe("Grok Adapter ACP projection", () => {
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
       outcome: { status: "succeeded" },
+    });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            items: [
+              { item: { type: "reasoning", text: "checking" } },
+              {
+                item: { type: "commandExecution", command: "npm test", output: "passed" },
+                outcome: { status: "succeeded" },
+              },
+              { item: { type: "agentMessage", text: "done" } },
+            ],
+          },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("projects Generic Tool arguments and readable results, including raw_output-only tools", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-generic-tools");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "inspect" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.event({
+      type: "tool.call",
+      callId: "read-1",
+      name: "read_file",
+      rawInput: { target_file: "/synthetic/a.txt" },
+      status: "in_progress",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "toolExecution",
+        toolName: "read_file",
+        arguments: { target_file: "/synthetic/a.txt" },
+      },
+    });
+    transport.event({
+      type: "tool.update",
+      callId: "read-1",
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "file body" } }],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "output.replace",
+        output: { content: [{ type: "text", text: "file body" }] },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          output: { content: [{ type: "text", text: "file body" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport.event({
+      type: "tool.call",
+      callId: "list-1",
+      name: "list_dir",
+      rawInput: { target_directory: "/synthetic" },
+      status: "in_progress",
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transport.event({
+      type: "tool.update",
+      callId: "list-1",
+      status: "completed",
+      rawOutput: { type: "ListDir", content: "a.ts\nb.ts" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "output.replace",
+        output: { content: [{ type: "text", text: "a.ts\nb.ts" }] },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "toolExecution", toolName: "list_dir" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport.finish();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            items: [
+              {
+                item: {
+                  type: "toolExecution",
+                  toolName: "read_file",
+                  output: { content: [{ type: "text", text: "file body" }] },
+                },
+              },
+              {
+                item: {
+                  type: "toolExecution",
+                  toolName: "list_dir",
+                  output: { content: [{ type: "text", text: "a.ts\nb.ts" }] },
+                },
+              },
+            ],
+          },
+        ],
+      },
     });
     await adapter.close();
   });

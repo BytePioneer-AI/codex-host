@@ -5,7 +5,6 @@ import type {
   HostItemSnapshot,
   HostReasoningItem,
   HostThreadSnapshot,
-  HostToolExecutionItem,
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
 import {
@@ -13,20 +12,20 @@ import {
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
-  type JsonValue,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import type { GrokTransportEvent } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
-
-function jsonValue(value: unknown): JsonValue {
-  try {
-    return JSON.parse(JSON.stringify(value ?? {})) as JsonValue;
-  } catch {
-    return {};
-  }
-}
+import {
+  applyGrokToolProjection,
+  DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
+  grokToolLabel,
+  hasGrokToolProjection,
+  projectGrokToolOutput,
+  startGrokToolItem,
+  type GrokProjectedToolItem,
+} from "./grok-tool-output.js";
 
 function stableId(
   kind: string,
@@ -93,6 +92,7 @@ export function mapGrokReplay(
   sessionId: string,
   cwd: string,
   knownTurnRefs: readonly NativeTurnRef[] = [],
+  toolOutputLimit = DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
 ): HostThreadSnapshot {
   const knownByNativeKey = new Map(
     knownTurnRefs
@@ -109,7 +109,7 @@ export function mapGrokReplay(
   let currentPromptIndex: number | null = null;
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
-  const tools = new Map<string, HostToolExecutionItem>();
+  const tools = new Map<string, GrokProjectedToolItem>();
 
   const completeAgent = (): void => {
     if (!agent || agent.text.length === 0) return;
@@ -127,11 +127,25 @@ export function mapGrokReplay(
     }
     tools.clear();
   };
+  const applyToolProjection = (
+    callId: string,
+    content?: readonly unknown[] | null,
+    rawOutput?: unknown,
+  ): void => {
+    const tool = tools.get(callId);
+    if (!tool) return;
+    const projection = projectGrokToolOutput(content, rawOutput, toolOutputLimit);
+    if (hasGrokToolProjection(projection)) {
+      tools.set(callId, applyGrokToolProjection(tool, projection));
+    }
+  };
   const completeTool = (
     callId: string,
     status: string,
     content?: readonly unknown[] | null,
+    rawOutput?: unknown,
   ): void => {
+    applyToolProjection(callId, content, rawOutput);
     const tool = tools.get(callId);
     if (!tool) return;
     tools.delete(callId);
@@ -141,7 +155,7 @@ export function mapGrokReplay(
             status: "failed",
             error: {
               code: "nativeFailure",
-              message: `Grok Tool '${tool.toolName}' failed`,
+              message: `Grok Tool '${grokToolLabel(tool)}' failed`,
               retryable: false,
             },
           }
@@ -243,26 +257,25 @@ export function mapGrokReplay(
     } else if (event.type === "tool.call") {
       completeReasoning();
       completeAgent();
-      tools.set(event.callId, {
-        type: "toolExecution",
-        itemId: stableId("tool", turnIndex, ++messageIndex),
-        toolName: event.name ?? event.title,
-        namespace: "grok",
-        arguments: jsonValue(event.rawInput),
-      });
+      tools.set(
+        event.callId,
+        startGrokToolItem({
+          itemId: stableId("tool", turnIndex, ++messageIndex),
+          name: event.name,
+          title: event.title,
+          kind: event.kind,
+          rawInput: event.rawInput,
+          cwd,
+        }),
+      );
+      applyToolProjection(event.callId, event.content, event.rawOutput);
       if (event.status === "completed" || event.status === "failed") {
-        completeTool(event.callId, event.status, event.content);
+        completeTool(event.callId, event.status, event.content, event.rawOutput);
       }
     } else if (event.type === "tool.update") {
-      const tool = tools.get(event.callId);
-      if (tool && event.rawOutput !== undefined) {
-        tools.set(event.callId, {
-          ...tool,
-          output: { content: [{ type: "text", text: String(event.rawOutput) }] },
-        });
-      }
+      applyToolProjection(event.callId, event.content, event.rawOutput);
       if (event.status === "completed" || event.status === "failed") {
-        completeTool(event.callId, event.status, event.content);
+        completeTool(event.callId, event.status, event.content, event.rawOutput);
       }
     }
   }

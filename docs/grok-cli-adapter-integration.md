@@ -60,8 +60,8 @@ ACP 和 `HarnessAdapter` 解决的问题不同：
 
 例如，Grok 发出的 ACP `tool_call` / `tool_call_update` 不能直接交给 Host Runtime，需要由 GrokAdapter 转换成：
 
-- `HostCommandExecutionItem`
-- `HostToolExecutionItem`
+- `HostCommandExecutionItem`（bash 等可验证命令，带 stdout 和 exit code）
+- `HostToolExecutionItem`（通用 Tool，带参数和可读结果文本）
 - `HostFileChangeItem`（仅当存在可靠 Diff）
 
 ACP `session/request_permission` 也需要转换为 `HostApprovalInteraction`，ACP `PromptResponse.stopReason` 需要转换为 codexhost 的 `TurnOutcome`。
@@ -396,6 +396,7 @@ GrokAdapter 只接受成功终态 `status: "completed"` 携带的 Diff Content�
 - 创建、恢复、关闭 Native Session
 - 流式文本和 Reasoning
 - Tool 开始、更新和完成
+- 可验证命令（`bash` / `run_terminal_command` / ACP `kind: execute`）投影为 Command Execution，通用 Tool 带上参数和可读结果
 - Tool Approval
 - Turn Cancel
 - Model Catalog

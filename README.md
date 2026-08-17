@@ -4,15 +4,17 @@
 
 <div align="center">
 
-# codexhost
+# CodexHost
 
-**Run Pi, Claude Code, DeepSeek Harness, and Grok inside Codex Desktop**
+**Run Pi and other Agent Harnesses inside Codex Desktop**
 
-We believe **Codex Desktop** currently provides one of the best desktop development experiences.
+We believe **Codex Desktop** provides one of the best desktop development experiences.
 
-But **Codex** is not the only capable **Agent Harness**. Some developers prefer **Claude Code**, **Pi Agent**, **DeepSeek Harness**, or **Grok CLI**.
+But **Codex** is not the only capable **Agent Harness**. Some developers prefer **Claude Code** or **Pi Agent**.
 
-**codexhost** lets you choose the **Agent** that actually executes your tasks inside **Codex Desktop**, while preserving the native Codex experience.
+**CodexHost** lets you choose the **Agent** that actually executes your tasks inside **Codex Desktop**, while preserving the native Codex experience.
+
+⭐ If this project helps you, please give it a Star! ⭐
 
 <p>
   <a href="https://opensource.org/licenses/MIT"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>

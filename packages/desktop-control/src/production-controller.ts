@@ -19,19 +19,16 @@ export interface DesktopControllerOptions {
   attachmentNonce: string;
 }
 
-export type DesktopControllerCompatibilityState =
-  "compatible" | "compatible-with-warning" | "degraded";
+export type DesktopControllerCompatibilityState = "compatible" | "degraded";
 
 export interface DesktopControllerCompatibilityIssue {
   capability:
-    | "title-isolation"
     | "permission-control"
     | "sidebar-decoration"
     | "fork-control"
     | "usage-surface"
     | "settings-surface";
-  reason: "unreviewed-title-service-identity" | "capability-unavailable";
-  observedIdentity?: string;
+  reason: "capability-unavailable";
 }
 
 export interface DesktopControllerReadiness {
@@ -79,15 +76,6 @@ function validCompatibilityIssue(
   issue: DesktopControllerCompatibilityIssue,
 ): boolean {
   const keys = Object.keys(issue);
-  if (state === "compatible-with-warning") {
-    return (
-      issue.capability === "title-isolation" &&
-      issue.reason === "unreviewed-title-service-identity" &&
-      typeof issue.observedIdentity === "string" &&
-      /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(issue.observedIdentity) &&
-      keys.length === 3
-    );
-  }
   if (state === "degraded") {
     return (
       [
@@ -98,7 +86,6 @@ function validCompatibilityIssue(
         "settings-surface",
       ].includes(issue.capability) &&
       issue.reason === "capability-unavailable" &&
-      issue.observedIdentity === undefined &&
       keys.length === 2
     );
   }
@@ -108,7 +95,7 @@ function validCompatibilityIssue(
 export function serializeDesktopControllerReadiness(readiness: DesktopControllerReadiness): string {
   if (
     readiness.schemaVersion !== 2 ||
-    !["compatible", "compatible-with-warning", "degraded"].includes(readiness.state) ||
+    !["compatible", "degraded"].includes(readiness.state) ||
     !Array.isArray(readiness.issues) ||
     readiness.issues.length > 1 ||
     (readiness.state === "compatible" && readiness.issues.length !== 0) ||
@@ -355,12 +342,11 @@ export async function runDesktopController(
         }),
     });
     startupTrace("attachment server ready");
-    const issues = session?.snapshot.titlePolicy.warnings ?? [];
     startupTrace("publishing readiness");
     dependencies.ready({
       schemaVersion: 2,
-      state: issues.length === 0 ? "compatible" : "compatible-with-warning",
-      issues,
+      state: "compatible",
+      issues: [],
     });
     while (!signal.aborted) {
       await dependencies.sleep(dependencies.monitorIntervalMs);

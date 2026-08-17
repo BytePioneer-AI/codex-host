@@ -86,9 +86,11 @@ interface PrewarmTarget {
     method: string | readonly string[],
     callback: (notification: unknown) => void,
   ) => () => void;
+  enqueueRequest?: (...args: unknown[]) => unknown;
   prewarmThreadStart?: (params: unknown, options?: unknown) => Promise<unknown> | unknown;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
   requestClient?: PrewarmTarget;
+  hostId?: unknown;
 }
 
 export interface ModelPowerSelection {
@@ -309,6 +311,14 @@ function isActiveRequestManager(value: unknown): value is PrewarmTarget {
 }
 
 function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
+  const bridge = target.requestClient ?? target;
+  const stableApiShape =
+    bridge.hostId === "local" &&
+    typeof bridge.sendRequest === "function" &&
+    typeof bridge.prewarmThreadStart === "function" &&
+    typeof bridge.enqueueRequest === "function";
+  if (stableApiShape) return true;
+
   const prewarm = target.prewarmThreadStart ?? target.requestClient?.prewarmThreadStart;
   if (!prewarm) return false;
   const source = Function.prototype.toString.call(prewarm);

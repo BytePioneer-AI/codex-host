@@ -77,6 +77,30 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([manager]);
   });
 
+  it("finds a current request bridge after codexhost wraps its methods", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const requestClient = {
+      hostId: "local",
+      sendRequest: (_method: string, _params: unknown) => undefined,
+      prewarmThreadStart: () => undefined,
+      enqueueRequest: () => undefined,
+    };
+    const manager = {
+      requestClient,
+      sendRequest: async () => requestClient.sendRequest("method", {}),
+    };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: { memoizedState: { memoizedState: manager, next: null }, return: null },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([requestClient]);
+  });
+
   it("finds the current seven-slot new Thread draft identity", () => {
     const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
     const draftAtom = { get: vi.fn(() => wrapper) };

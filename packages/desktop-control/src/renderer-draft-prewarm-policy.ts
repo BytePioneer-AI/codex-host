@@ -43,25 +43,32 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
         typeof value === 'object' &&
         value.requestClient != null &&
         typeof value.requestClient.prewarmThreadStart === 'function' &&
-        typeof value.sendRequest === 'function' &&
-        Function.prototype.toString.call(value.sendRequest).includes(
-          'send-cli-request-for-host',
-        )
+        typeof value.requestClient.sendRequest === 'function' &&
+        typeof value.requestClient.enqueueRequest === 'function' &&
+        typeof value.sendRequest === 'function'
       ) {
         managers.add(value);
       }
     }
   }
   const manager = managers.size === 1 ? managers.values().next().value : null;
+  const requestClient =
+    manager != null &&
+    typeof manager.requestClient?.sendRequest === 'function' &&
+    typeof manager.requestClient?.prewarmThreadStart === 'function' &&
+    typeof manager.requestClient?.enqueueRequest === 'function'
+      ? manager.requestClient
+      : manager;
   return {
     candidateCount: managers.size,
-    hostId: manager?.getHostId?.() ?? null,
-    manager,
+    hostId: manager?.getHostId?.() ?? requestClient?.hostId ?? null,
+    manager: requestClient,
+    prewarmedThreadManager: manager?.prewarmedThreadManager ?? null,
   };
 })()`;
 
-const INSTALL_RENDERER_POLICY_FUNCTION = `function(hostId) {
-  return (${installDraftPrewarmPolicyBridge.toString()})(this, hostId, window);
+const INSTALL_RENDERER_POLICY_FUNCTION = `function(hostId, prewarmedThreadManager) {
+  return (${installDraftPrewarmPolicyBridge.toString()})(this, hostId, window, prewarmedThreadManager);
 }`;
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
 const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;

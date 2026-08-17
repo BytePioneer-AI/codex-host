@@ -34,7 +34,6 @@ describe("main-process title policy", () => {
             state: "ready",
             reason: "ready",
             requiresRendererReload: true,
-            warnings: [],
           },
         },
       },
@@ -44,7 +43,6 @@ describe("main-process title policy", () => {
       state: "ready",
       reason: "ready",
       requiresRendererReload: true,
-      warnings: [],
     });
     expect(inspector.command.mock.calls.map(([method]) => method)).toEqual([
       "Runtime.evaluate",
@@ -62,84 +60,11 @@ describe("main-process title policy", () => {
     expect(functionDeclaration).toContain("webContents.fromId(rendererWebContentsId)");
     expect(functionDeclaration).toContain("ownService(sampleService, selected)");
     expect(functionDeclaration).not.toContain("querySelectorAll('*').length");
-    expect(functionDeclaration).toContain('["Dhe","Nye","wbe","nxe","tTe"].includes(serviceClass)');
-    expect(functionDeclaration).toContain("reason: 'unreviewed-title-service-identity'");
-    expect(functionDeclaration).not.toContain("constructor?.name) ||");
+    expect(functionDeclaration).not.toContain("constructor?.name");
     expect(inspector.command.mock.calls.at(-1)?.[1]).toEqual({
       promiseObjectId: "install-promise",
       returnByValue: true,
     });
-  });
-
-  it("returns a bounded warning for an unreviewed service identity", async () => {
-    const inspector = commandSequence([
-      { result: { objectId: "listener" } },
-      {
-        result: [],
-        internalProperties: [{ name: "[[Scopes]]", value: { objectId: "scopes" } }],
-      },
-      { result: [{ name: "0", value: { objectId: "local-scope" } }] },
-      { result: [{ name: "f", value: { objectId: "get-context" } }] },
-      { result: { objectId: "install-promise" } },
-      {
-        result: {
-          value: {
-            state: "ready",
-            reason: "ready",
-            requiresRendererReload: true,
-            warnings: [
-              {
-                capability: "title-isolation",
-                reason: "unreviewed-title-service-identity",
-                observedIdentity: "FutureTitleService",
-              },
-            ],
-          },
-        },
-      },
-    ]);
-
-    await expect(installMainProcessTitlePolicy(inspector, 17)).resolves.toMatchObject({
-      state: "ready",
-      warnings: [
-        {
-          capability: "title-isolation",
-          reason: "unreviewed-title-service-identity",
-          observedIdentity: "FutureTitleService",
-        },
-      ],
-    });
-  });
-
-  it("rejects malformed or unbounded compatibility warnings", async () => {
-    const inspector = commandSequence([
-      { result: { objectId: "listener" } },
-      {
-        result: [],
-        internalProperties: [{ name: "[[Scopes]]", value: { objectId: "scopes" } }],
-      },
-      { result: [{ name: "0", value: { objectId: "local-scope" } }] },
-      { result: [{ name: "f", value: { objectId: "get-context" } }] },
-      { result: { objectId: "install-promise" } },
-      {
-        result: {
-          value: {
-            state: "ready",
-            reason: "ready",
-            requiresRendererReload: true,
-            warnings: [
-              {
-                capability: "title-isolation",
-                reason: "unreviewed-title-service-identity",
-                observedIdentity: "unsafe identity with spaces",
-              },
-            ],
-          },
-        },
-      },
-    ]);
-
-    await expect(installMainProcessTitlePolicy(inspector, 17)).rejects.toThrow("invalid status");
   });
 
   it("fails closed when the required title service structure is unsupported", async () => {

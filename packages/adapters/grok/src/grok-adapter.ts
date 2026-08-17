@@ -22,6 +22,7 @@ import {
   type HostApprovalInteraction,
   type HostCommand,
   type HostEvent,
+  type HostFileChangeItem,
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
@@ -69,6 +70,7 @@ import {
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
+import { projectGrokFileChanges } from "./grok-file-change.js";
 import { mapGrokReplay } from "./grok-history.js";
 import {
   modelStateFromInitialize,
@@ -192,8 +194,8 @@ function jsonValue(value: unknown): JsonValue {
   return parsed.success ? parsed.data : {};
 }
 
-function contentText(content: unknown[] | null | undefined): string {
-  if (!content) return "";
+function contentText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
   return content
     .flatMap((entry) => {
       if (!isRecord(entry) || entry.type !== "content" || !isRecord(entry.content)) return [];
@@ -299,7 +301,13 @@ class GrokHarnessSession implements HarnessSession {
     this.#state = stateForGrokModel(modelState, { nativeRef: nativeRef(opened.sessionId) });
     this.initialState = this.#state;
     this.#snapshot = {
-      ...mapGrokReplay(options.history, this.harnessId, opened.sessionId, options.knownTurnRefs),
+      ...mapGrokReplay(
+        options.history,
+        this.harnessId,
+        opened.sessionId,
+        cwd,
+        options.knownTurnRefs,
+      ),
       state: this.#state,
     };
     this.outputs = this.#channel.outputs;
@@ -449,6 +457,7 @@ class GrokHarnessSession implements HarnessSession {
       history,
       this.harnessId,
       this.#transport.sessionId,
+      this.#cwd,
       knownTurnRefs,
     );
     this.#snapshot.turns = refreshed.turns;
@@ -688,8 +697,9 @@ class GrokHarnessSession implements HarnessSession {
     };
     active.tools.set(event.callId, { item, ...(event.status ? { status: event.status } : {}) });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
-    if (event.status === "completed" || event.status === "failed")
-      this.#completeTool(active, event.callId, event.status);
+    if (event.status === "completed" || event.status === "failed") {
+      this.#completeTool(active, event.callId, event.status, event.content);
+    }
   }
 
   #updateTool(
@@ -709,11 +719,17 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     if (event.status) tool.status = event.status;
-    if (event.status === "completed" || event.status === "failed")
-      this.#completeTool(active, event.callId, event.status);
+    if (event.status === "completed" || event.status === "failed") {
+      this.#completeTool(active, event.callId, event.status, event.content);
+    }
   }
 
-  #completeTool(active: ActiveTurn, callId: string, status: string): void {
+  #completeTool(
+    active: ActiveTurn,
+    callId: string,
+    status: string,
+    content?: unknown[] | null,
+  ): void {
     const tool = active.tools.get(callId);
     if (!tool) return;
     active.tools.delete(callId);
@@ -729,6 +745,16 @@ class GrokHarnessSession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
+    if (status !== "completed") return;
+    const changes = projectGrokFileChanges(content, this.#cwd);
+    if (!changes) return;
+    const fileItem: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: hostItemIdSchema.parse(this.#randomUUID()),
+      changes,
+    };
+    this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+    this.#completeItem(active, fileItem, { status: "succeeded" });
   }
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {

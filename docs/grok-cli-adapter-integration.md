@@ -11,7 +11,7 @@ codexhost 当前已经接入两个非 Codex Harness：
 
 现在需要判断 Grok CLI 是否能够以相同方式作为独立 Harness 接入，以及应该使用 Grok 专用接口还是 ACP（Agent Client Protocol）。
 
-本文结论基于本机 Grok CLI `1.0.3` 的命令、初始化响应和随安装提供的文档。后续版本可能改变 Grok 扩展字段，因此实现必须进行运行时能力探测。
+本文结论最初基于本机 Grok CLI `1.0.3`，并使用 `1.0.4` 的命令、初始化响应、ACP Diff Content 和随安装文档复核。后续版本可能改变 Grok 扩展字段，因此实现必须进行运行时能力探测和结构校验。
 
 ## 2. 核心结论
 
@@ -176,7 +176,7 @@ xAI Model API、OpenAI-compatible API 或 `@ai-sdk/xai` 属于 Model/Provider �
 | 流式回复 | 原生 | 支持 | 支持 | 支持 | 不需要增强 |
 | Reasoning / Thinking 流 | 原生 | 支持 | 支持 | 支持 | 不需要增强 |
 | 工具状态 | 原生 | 支持 | 支持 | 支持 | 可补充 Grok 元数据 |
-| Edit Diff | 原生 | 支持 | 支持 | 不保证 Unified Diff | 可研究 `x.ai/git/diffs` |
+| Edit Diff | 原生 | 支持 | 支持 | Tool Content 可提供前后文本 | 成功终态提供可靠 ACP Diff Content |
 | 提问 | 原生 | 支持 | 支持 | 取决于 Agent 实现 | Grok 可通过原生交互补充 |
 | 工具审批 | 原生 | 支持 | 支持 | 支持 | 保留 Grok 原生 Option ID |
 | 取消 Turn | 原生 | 支持 | 支持 | 支持 | 不需要增强 |
@@ -394,23 +394,20 @@ fork: "none" | "latest" | "checkpoint";
 
 Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
 
-## 10. Edit Diff 限制
+## 10. Edit Diff
 
-标准 ACP Tool Update 通常提供：
+Grok CLI `1.0.4` 已验证会在 Tool-owned ACP `tool_call_update.content` 中提供标准 Diff Content：
 
-- Tool Call ID
-- Tool kind
-- Input/Output
-- Locations
-- Status
+- `type: "diff"`
+- 绝对 `path`
+- 原生 `oldText`
+- 原生 `newText`
 
-但不保证提供 codexhost `HostFileChangeItem` 所需的 Unified Diff。首版应遵循：
+GrokAdapter 只接受成功终态 `status: "completed"` 携带的 Diff Content。进行中更新可能包含不完整的 `oldText`，失败、取消、无终态、无效、no-op 或超限数据保持 Tool-only。Adapter 使用原生前后文本确定性生成 Unified Diff，不读取修改后的文件，不检查 Git，也不根据 Tool 名称或参数推断。
 
-- 有可靠 Unified Diff 时投影为 `HostFileChangeItem`。
-- 只有 Tool 参数和输出时投影为 `HostToolExecutionItem`。
-- 不通过文件路径或工具名称猜测 Diff。
+`oldText: null` 是唯一可靠的新增文件信号；空字符串仍按更新处理。ACP v1 没有无歧义的删除文件表示，因此不推断 `delete`。`x.ai/git/diffs` 和 `diff_review` 属于工作区或审阅状态，不作为具体 Tool/Turn 的 File Change 证据。
 
-后续可以验证 `x.ai/git/diffs` 是否能稳定关联到具体 Tool/Turn，再开放 Edit Diff 能力。
+恢复历史时使用同一成功终态规则重建 `HostFileChangeItem`，codexhost 不另行持久化 Diff。
 
 ## 11. 推荐的首版范围
 
@@ -427,13 +424,14 @@ Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback �
 - 运行时 Model/Thinking 切换（仅 capability 探测成功时）
 - Token、Cache、Reasoning、Context 和 Cost Usage
 - 从 `updates.jsonl` 读取历史快照
+- 成功终态 ACP Diff Content 的实时与历史 File Change 投影
 - Session Fault 和进程退出映射
 
 ### 暂不支持
 
 - 任意历史 Turn Fork
 - codexhost 语义的 Rollback Last Turn
-- 未经验证的 Unified Diff
+- ACP 无法无歧义表达的删除文件 Diff
 - 依赖未文档化 RPC 的功能
 - 直接修改 Grok Session 文件
 - 远程 WebSocket Grok Agent
@@ -517,7 +515,7 @@ Grok CLI 接入应满足以下原则：
 - 标准 ACP 承担核心实时链路。
 - Grok 扩展只用于可探测、可降级的增强能力。
 - Grok Session 文件只读，作为历史事实来源和 Usage 兜底。
-- 首版不虚假声明 Fork、Rollback 和 Diff 能力。
+- 只从成功终态 ACP Diff Content 投影可归因 File Change，不推断 Fork、Rollback 或删除语义。
 - 接入第二个 ACP Harness 后再抽取共享 `AcpAdapterCore`。
 
 该结构既保留 codexhost 的统一领域语义，也能复用 ACP 的标准实时能力，同时避免把不同 ACP Harness 错误地当成能力完全相同的实现。

@@ -1,6 +1,7 @@
 import type {
   HistoricalTurnOutcome,
   HostAgentMessageItem,
+  HostFileChangeItem,
   HostItemSnapshot,
   HostReasoningItem,
   HostThreadSnapshot,
@@ -16,6 +17,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { GrokTransportEvent } from "./acp-transport.js";
+import { projectGrokFileChanges } from "./grok-file-change.js";
 
 function jsonValue(value: unknown): JsonValue {
   try {
@@ -61,6 +63,7 @@ export function mapGrokReplay(
   replay: readonly GrokTransportEvent[],
   harnessId: HarnessId,
   sessionId: string,
+  cwd: string,
   knownTurnRefs: readonly NativeTurnRef[] = [],
 ): HostThreadSnapshot {
   const knownByNativeKey = new Map(
@@ -93,6 +96,36 @@ export function mapGrokReplay(
       items.push({ item: tool, outcome: { status: "succeeded" } });
     }
     tools.clear();
+  };
+  const completeTool = (
+    callId: string,
+    status: string,
+    content?: readonly unknown[] | null,
+  ): void => {
+    const tool = tools.get(callId);
+    if (!tool) return;
+    tools.delete(callId);
+    const outcome: HostItemSnapshot["outcome"] =
+      status === "failed"
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: `Grok Tool '${tool.toolName}' failed`,
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" };
+    items.push({ item: tool, outcome });
+    if (status !== "completed") return;
+    const changes = projectGrokFileChanges(content, cwd);
+    if (!changes) return;
+    const fileItem: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: stableId("file-change", turnIndex, ++messageIndex),
+      changes,
+    };
+    items.push({ item: fileItem, outcome: { status: "succeeded" } });
   };
   const completeTurn = (outcome: HistoricalTurnOutcome, terminalKey?: string): void => {
     if (input.length === 0) return;
@@ -172,6 +205,9 @@ export function mapGrokReplay(
         namespace: "grok",
         arguments: jsonValue(event.rawInput),
       });
+      if (event.status === "completed" || event.status === "failed") {
+        completeTool(event.callId, event.status, event.content);
+      }
     } else if (event.type === "tool.update") {
       const tool = tools.get(event.callId);
       if (tool && event.rawOutput !== undefined) {
@@ -179,6 +215,9 @@ export function mapGrokReplay(
           ...tool,
           output: { content: [{ type: "text", text: String(event.rawOutput) }] },
         });
+      }
+      if (event.status === "completed" || event.status === "failed") {
+        completeTool(event.callId, event.status, event.content);
       }
     }
   }

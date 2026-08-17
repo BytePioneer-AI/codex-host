@@ -385,6 +385,163 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("projects only successful terminal ACP Diff Content and restores it from history", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-file-change");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "edit" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.event({
+      type: "tool.call",
+      callId: "edit-1",
+      title: "Edit sample.txt",
+      name: "search_replace",
+      status: "in_progress",
+      rawInput: { file_path: "/synthetic/sample.txt" },
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+
+    transport.event({
+      type: "tool.update",
+      callId: "edit-1",
+      kind: "edit",
+      content: [
+        {
+          type: "diff",
+          path: "/synthetic/sample.txt",
+          oldText: "",
+          newText: "final\n",
+        },
+      ],
+    });
+    transport.event({
+      type: "tool.update",
+      callId: "edit-1",
+      status: "completed",
+      content: [
+        {
+          type: "diff",
+          path: "/synthetic/sample.txt",
+          oldText: "before\n",
+          newText: "final\n",
+        },
+      ],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution" }, outcome: { status: "succeeded" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "fileChange",
+        changes: [
+          {
+            path: "sample.txt",
+            kind: "update",
+            unifiedDiff: expect.stringMatching(/-before[\s\S]*\+final/u),
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
+    });
+    transport.finish();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            items: [
+              { item: { type: "toolExecution" }, outcome: { status: "succeeded" } },
+              {
+                item: {
+                  type: "fileChange",
+                  changes: [
+                    {
+                      path: "sample.txt",
+                      kind: "update",
+                      unifiedDiff: expect.stringMatching(/-before[\s\S]*\+final/u),
+                    },
+                  ],
+                },
+                outcome: { status: "succeeded" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("keeps failed terminal ACP Diff Content Tool-only", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-failed-file-change");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "edit" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.event({
+      type: "tool.call",
+      callId: "edit-1",
+      title: "Edit sample.txt",
+      status: "in_progress",
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transport.event({
+      type: "tool.update",
+      callId: "edit-1",
+      status: "failed",
+      content: [
+        {
+          type: "diff",
+          path: "/synthetic/sample.txt",
+          oldText: "before\n",
+          newText: "after\n",
+        },
+      ],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution" }, outcome: { status: "failed" } },
+    });
+    transport.finish();
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            items: [{ item: { type: "toolExecution" }, outcome: { status: "failed" } }],
+          },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
   it("publishes Grok turn_completed Usage without dropping context", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);

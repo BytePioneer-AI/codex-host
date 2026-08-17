@@ -1,6 +1,7 @@
 const HEADING_PATTERN = /^(#{1,6})[ \t]+(.+?)\s*$/u;
 const BLOCKQUOTE_PATTERN = /^>[ \t]?(.*?)\s*$/u;
 const UNORDERED_ITEM_PATTERN = /^[-*][ \t]+(.+?)\s*$/u;
+const CONTINUATION_PATTERN = /^[ \t]+(.+?)\s*$/u;
 const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
 const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
 const THEMATIC_BREAK_PATTERN = /^(?:---|___|\*\*\*)[ \t]*$/u;
@@ -126,8 +127,22 @@ function appendList(
     if (!item?.[1]) break;
     const entry = document.createElement("li");
     appendInline(document, entry, item[1]);
-    list.append(entry);
     index += 1;
+
+    const continuationLines: string[] = [];
+    while (index < lines.length) {
+      const continuation = CONTINUATION_PATTERN.exec(lines[index] ?? "");
+      if (!continuation?.[1]) break;
+      continuationLines.push(continuation[1]);
+      index += 1;
+    }
+    if (continuationLines.length > 0) {
+      const continuation = document.createElement("span");
+      continuation.className = "release-note-translation";
+      appendInline(document, continuation, continuationLines.join(" "));
+      entry.append(continuation);
+    }
+    list.append(entry);
   }
   root.append(list);
   return index;
@@ -158,7 +173,10 @@ function appendParagraph(
     index += 1;
   }
   const paragraph = document.createElement("p");
-  appendInline(document, paragraph, paragraphLines.join(" "));
+  paragraphLines.forEach((line, lineIndex) => {
+    appendInline(document, paragraph, line);
+    if (lineIndex < paragraphLines.length - 1) paragraph.append(document.createElement("br"));
+  });
   root.append(paragraph);
   return index;
 }

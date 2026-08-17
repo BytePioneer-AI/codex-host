@@ -120,10 +120,10 @@
 
       .settings-update-notes {
         display: grid;
-        gap: 10px;
+        gap: 12px;
         color: var(--settings-muted);
-        font-size: 13px;
-        line-height: 20px;
+        font-size: 14px;
+        line-height: 22px;
         overflow-wrap: anywhere;
       }
 
@@ -139,21 +139,21 @@
       }
 
       .settings-update-notes h1 {
-        font-size: 16px;
-        line-height: 24px;
+        font-size: 18px;
+        line-height: 26px;
       }
 
       .settings-update-notes h2 {
-        font-size: 15px;
-        line-height: 22px;
+        font-size: 17px;
+        line-height: 24px;
       }
 
       .settings-update-notes h3,
       .settings-update-notes h4,
       .settings-update-notes h5,
       .settings-update-notes h6 {
-        font-size: 13px;
-        line-height: 20px;
+        font-size: 14px;
+        line-height: 22px;
       }
 
       .settings-update-notes p,
@@ -165,11 +165,28 @@
 
       .settings-update-notes ul,
       .settings-update-notes ol {
-        padding-left: 20px;
+        padding-left: 24px;
+      }
+
+      .settings-update-notes li {
+        padding-left: 4px;
+      }
+
+      .settings-update-notes li::marker {
+        color: var(--settings-muted);
+        font-size: 0.85em;
       }
 
       .settings-update-notes li + li {
-        margin-top: 4px;
+        margin-top: 14px;
+      }
+
+      .settings-update-notes .release-note-translation {
+        display: block;
+        margin-top: 3px;
+        color: var(--settings-muted);
+        font-size: 13px;
+        line-height: 20px;
       }
 
       .settings-update-notes strong {
@@ -239,13 +256,13 @@
   <body>
     <main class="preview-page">
       <p class="preview-hint">
-        本地预览：修改下面的 SAMPLE_MARKDOWN 后刷新即可。生产设置页不再给更新说明加灰色底。
+        本地预览：以下内容使用当前 Release Notes Markdown 解析器和更新页样式渲染。
       </p>
       <div class="settings-section-label">更新</div>
       <div class="settings-update-metadata">
         <div class="settings-update-metadata__item">
           <span>当前版本</span>
-          <strong>v0.2.0</strong>
+          <strong>v0.2.3</strong>
         </div>
         <div class="settings-update-metadata__item">
           <span>安装方式</span>
@@ -255,7 +272,7 @@
       <section class="settings-update-panel" data-update-state="current" aria-live="polite">
         <div class="settings-update-version-row">
           <span>最新版本</span>
-          <strong>v0.2.0</strong>
+          <strong>v0.2.3</strong>
         </div>
         <p class="settings-update-summary">更新安装成功。</p>
         <div id="release-notes"></div>
@@ -263,7 +280,7 @@
       <div class="settings-update-actions">
         <a
           class="settings-update-link"
-          href="https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.0"
+          href="https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.3"
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -281,20 +298,22 @@
       </div>
     </main>
     <script>
-      const SAMPLE_MARKDOWN = `codexhost 是一个将 Pi 和 Claude Code 接入 Codex Desktop 的跨平台 Host。用户可以继续使用 Codex Desktop 的桌面交互，同时选择由不同 Harness 执行当前任务。
+      const SAMPLE_MARKDOWN = `codexhost v0.2.3
 
-## 本次发布
+## What's New / 本次发布
 
-- 新增 Grok CLI adapter：支持在 Codex Desktop 中通过 Grok 执行任务，跨重启保留线程身份，并将 Grok 原生 Usage（token、缓存、推理、成本）映射到 HostUsage 展示。
-- 集成 DeepSeek Harness：通过本地 Host 接入 DeepSeek，暴露 token 生成速度，并基于上下文窗口投影 Usage 显示。
-- 修复当前 Codex 创建的任务未经过请求桥接的问题。
-- 隔离 Chat 编辑器输入绑定，确保 Renderer Extension 只绑定已验证的 Codex 根节点，避免误绑普通输入框。
-- 修复模型选择器弹层定位不稳定的问题。
-- 优化启动性能：模型加载与路由策略安装并行执行。
-- 移除 Agent 与 Model 选择器的边框样式，并刷新品牌与 Grok agent 图标。
-- 新增 MIT LICENSE，并在 package.json 中声明许可证。
+- **feat**: Support Grok Build Diff
+  支持 Grok Build 的 Diff
+- **feat**: Discover portable Codex Desktop installations on Windows
+  支持在 Windows 上发现便携版 Codex Desktop 安装
+- **fix**: Accept the launcher shell interpreter on Linux
+  支持 Linux Launcher 的 shell interpreter
+- **feat**: Enhance Release Notes Markdown rendering in the Renderer
+  增强 Renderer 中 Release Notes 的 Markdown 渲染
+- **fix**: Remove the obsolete Launcher agent option
+  移除已废弃的 Launcher agent 选项
 
-## 安装方式
+## Installation / 安装方式
 
 ### npm
 
@@ -303,17 +322,24 @@ npm install -g @codexhost/cli
 codexhost
 \`\`\`
 
-### 安装包
+### Installer / 安装包
 
-下载与你的操作系统和 CPU 架构对应的安装包，或查看 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.0)。
+Download the installer matching your OS and CPU architecture:
+下载与你的操作系统和 CPU 架构对应的安装包：
 
-1. 选择 macOS / Windows 与对应 CPU 架构
-2. 下载后打开安装包完成更新
-3. 通过 **codexhost** 重新启动 Desktop
+### macOS Gatekeeper / macOS 首次打开提示
+
+After installing on macOS, if codexhost shows "Apple cannot verify this app" when you open it for the first time, run the following command in Terminal and reopen codexhost:
+macOS 安装后，如果首次打开时提示「Apple 无法验证该应用」，请在终端执行以下命令，然后重新打开 codexhost：
+
+\`\`\`bash
+xattr -dr com.apple.quarantine /Applications/codexhost.app
+\`\`\`
 `;
 
       const HEADING_PATTERN = /^(#{1,6})[ \t]+(.+?)\s*$/u;
       const UNORDERED_ITEM_PATTERN = /^[-*][ \t]+(.+?)\s*$/u;
+      const CONTINUATION_PATTERN = /^[ \t]+(.+?)\s*$/u;
       const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
       const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
       const INLINE_PATTERN = /(`+)((?:(?!\1).)+)\1|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)/gu;
@@ -369,8 +395,22 @@ codexhost
           if (!item?.[1]) break;
           const entry = document.createElement("li");
           appendInline(entry, item[1]);
-          list.append(entry);
           index += 1;
+
+          const translationLines = [];
+          while (index < lines.length) {
+            const continuation = CONTINUATION_PATTERN.exec(lines[index] ?? "");
+            if (!continuation?.[1]) break;
+            translationLines.push(continuation[1]);
+            index += 1;
+          }
+          if (translationLines.length > 0) {
+            const translation = document.createElement("span");
+            translation.className = "release-note-translation";
+            appendInline(translation, translationLines.join(" "));
+            entry.append(translation);
+          }
+          list.append(entry);
         }
         root.append(list);
         return index;
@@ -394,7 +434,10 @@ codexhost
           index += 1;
         }
         const paragraph = document.createElement("p");
-        appendInline(paragraph, paragraphLines.join(" "));
+        paragraphLines.forEach((line, lineIndex) => {
+          appendInline(paragraph, line);
+          if (lineIndex < paragraphLines.length - 1) paragraph.append(document.createElement("br"));
+        });
         root.append(paragraph);
         return index;
       }

@@ -103,6 +103,19 @@ describe("Release notes Markdown", () => {
     expect(code?.textContent).toBe("npm install -g @codexhost/cli\ncodexhost");
   });
 
+  it("preserves authored line breaks within bilingual paragraphs", () => {
+    const root = render(
+      [
+        "Download the installer matching your OS and CPU architecture:",
+        "下载与你的操作系统和 CPU 架构对应的安装包：",
+      ].join("\n"),
+    );
+
+    const paragraph = descendants(root).find((element) => element.tagName === "p");
+    expect(paragraph?.children).toHaveLength(3);
+    expect((paragraph?.children[1] as FakeElement).tagName).toBe("br");
+  });
+
   it("renders inline code, emphasis, links, and ordered lists", () => {
     const root = render(
       [

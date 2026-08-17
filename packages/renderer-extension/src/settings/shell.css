@@ -471,10 +471,10 @@ button {
 .settings-update-notes {
   display: grid;
   min-width: 0;
-  gap: 10px;
+  gap: 12px;
   color: var(--settings-muted);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   overflow-wrap: anywhere;
 }
 
@@ -498,21 +498,21 @@ button {
 }
 
 .settings-update-notes h1 {
-  font-size: 16px;
-  line-height: 24px;
+  font-size: 18px;
+  line-height: 26px;
 }
 
 .settings-update-notes h2 {
-  font-size: 15px;
-  line-height: 22px;
+  font-size: 17px;
+  line-height: 24px;
 }
 
 .settings-update-notes h3,
 .settings-update-notes h4,
 .settings-update-notes h5,
 .settings-update-notes h6 {
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .settings-update-notes p,
@@ -525,11 +525,28 @@ button {
 
 .settings-update-notes ul,
 .settings-update-notes ol {
-  padding-left: 20px;
+  padding-left: 24px;
+}
+
+.settings-update-notes li {
+  padding-left: 4px;
+}
+
+.settings-update-notes li::marker {
+  color: var(--settings-muted);
+  font-size: 0.85em;
 }
 
 .settings-update-notes li + li {
-  margin-top: 4px;
+  margin-top: 14px;
+}
+
+.settings-update-notes .release-note-translation {
+  display: block;
+  margin-top: 3px;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .settings-update-notes blockquote {

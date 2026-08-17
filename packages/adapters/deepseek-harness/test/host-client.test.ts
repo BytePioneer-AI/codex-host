@@ -121,6 +121,39 @@ describe("DeepSeek local Host connection", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("classifies an npx DSH package startup exit as not installed", async () => {
+    const executableDirectory = mkdtempSync(path.join(os.tmpdir(), "codexhost-npx-command-"));
+    const executable = path.join(
+      executableDirectory,
+      process.platform === "win32" ? "npx.cmd" : "npx",
+    );
+    writeFileSync(
+      executable,
+      process.platform === "win32" ? "@echo off\r\nexit /b 1\r\n" : "#!/bin/sh\nexit 1\n",
+    );
+    chmodSync(executable, 0o755);
+    const child = childProcess();
+    Object.assign(child, { exitCode: 1 });
+    const spawn = vi.fn(() => child);
+    const environment = { PATH: executableDirectory };
+    const dependencies: DeepSeekHostConnectionDependencies = {
+      createClient: () => fakeClient(() => Promise.reject(new TypeError("fetch failed"))),
+      spawn,
+      sleep: () => Promise.resolve(),
+    };
+    const connection = new DeepSeekHostConnection(
+      { endpoint: "http://127.0.0.1:43123", environment },
+      dependencies,
+    );
+
+    await expect(connection.connect()).rejects.toMatchObject({ code: "notInstalled" });
+    expect(spawn).toHaveBeenCalledWith(
+      executable,
+      ["--no-install", "@deepseek-ai/dsh", "web", "--host", "127.0.0.1", "--port", "43123"],
+      { env: environment, stdio: "ignore" },
+    );
+  });
+
   it("rejects non-loopback endpoints and incompatible Hosts", async () => {
     expect(() => new NodeDeepSeekHostClient("http://example.com:3080")).toThrow(
       "endpoint must use HTTP on loopback",

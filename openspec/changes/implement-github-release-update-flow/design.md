@@ -51,7 +51,7 @@ Alternative: run updates directly in Renderer or Desktop Controller. Rejected be
 
 Launcher adds its PID, canonical executable, Controller loopback port, and nonce to the managed Desktop environment. These values identify the exact Launcher the temporary helper must wait for. npm launcher additionally supplies the absolute system Node, npm CLI, npm meta launcher, and platform package root; installer layouts derive from the Host bundle location.
 
-After the helper is started, or when the discoverable status is `waiting-for-exit` for this Launcher, the Launcher stops the owned Desktop process tree with SIGTERM then SIGKILL (or the Windows equivalent), then exits. The helper observes that Launcher exit and installs. Controller Inspector `app.quit()` is not part of the update path.
+After the helper reaches its `waiting-for-exit` state, or when the discoverable status is already `waiting-for-exit` for this Launcher, the Launcher stops the owned Desktop process tree with SIGTERM then SIGKILL (or the Windows equivalent), then exits. The helper observes that Launcher exit and installs. Controller Inspector `app.quit()` is not part of the update path.
 
 Alternative: ask Electron to quit through the Inspector session. Rejected because Codex Desktop can cancel or ignore `app.quit()` without exiting.
 

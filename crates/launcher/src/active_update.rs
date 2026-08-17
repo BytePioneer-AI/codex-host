@@ -8,11 +8,15 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 #[cfg(target_os = "macos")]
 use codexhost_platform::atomic_replace_file;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::thread;
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 use crate::runtime_instance::default_descriptor_path;
 
@@ -21,6 +25,10 @@ const STATUS_FILE: &str = "status-v1.json";
 const REQUEST_FILE: &str = "request-v1.json";
 const UPDATER_FILE: &str = "codexhost-updater";
 const MAX_STATE_FILE_BYTES: u64 = 4 * 1024;
+#[cfg(target_os = "macos")]
+const UPDATER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const UPDATER_READY_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -198,6 +206,51 @@ pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
 }
 
 #[cfg(target_os = "macos")]
+fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
+    let Some(status_bytes) = read_bounded_regular_file(status_path)? else {
+        return Ok(None);
+    };
+    let status = serde_json::from_slice::<UpdateStatusProbe>(&status_bytes)
+        .map_err(|error| invalid(format!("invalid active update status: {error}")))?;
+    if status.schema_version != 1 {
+        return Err(invalid("active update status schema is unsupported"));
+    }
+    Ok(Some(status.phase))
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<()> {
+    let started = Instant::now();
+    loop {
+        match read_update_phase(status_path)?.as_deref() {
+            Some("waiting-for-exit") => return Ok(()),
+            Some("prepared") | None => {}
+            Some("failed") => {
+                return Err(invalid(
+                    "background Updater failed before waiting for Launcher exit",
+                ));
+            }
+            Some(phase) => {
+                return Err(invalid(format!(
+                    "background Updater reported unexpected phase {phase} before waiting for Launcher exit"
+                )));
+            }
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(invalid(format!(
+                "background Updater exited before waiting for Launcher exit: {status}"
+            )));
+        }
+        if started.elapsed() >= UPDATER_READY_TIMEOUT {
+            return Err(invalid(
+                "background Updater did not reach waiting-for-exit before the startup timeout",
+            ));
+        }
+        thread::sleep(UPDATER_READY_POLL);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Result<()> {
     let parent = pending
         .lock_path
@@ -257,6 +310,12 @@ pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io:
         let _ = child.wait();
         return Err(error);
     }
+    // Keep the old Launcher alive until the Updater has taken its wait position.
+    if let Err(error) = wait_for_updater_ready(&mut child, &pending.status_path) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     *started_request = Some(pending.request_path);
     Ok(())
 }
@@ -269,9 +328,14 @@ mod tests {
 
     use serde_json::json;
 
+    #[cfg(target_os = "macos")]
+    use super::STATUS_FILE;
     use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
     #[cfg(target_os = "macos")]
-    use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
+    use super::{
+        pending_startable_update_at, pending_update_at, transfer_lock_to_updater,
+        wait_for_updater_ready,
+    };
 
     fn fixture_directory(label: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -355,6 +419,59 @@ mod tests {
         );
         assert!(pending_update_at(&root, 43, &launcher).is_err());
         fs::remove_dir_all(fixture).expect("remove pending update fixture");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn waits_for_the_updater_ready_handshake_before_returning() {
+        let fixture = fixture_directory("updater-ready");
+        let status_path = fixture.join(STATUS_FILE);
+        fs::write(
+            &status_path,
+            format!(
+                "{}\n",
+                json!({
+                    "schemaVersion": 1,
+                    "version": "1.2.3",
+                    "installation": "macos-dmg",
+                    "phase": "prepared",
+                    "updatedAt": 1,
+                })
+            ),
+        )
+        .expect("write prepared status fixture");
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("2")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn updater fixture");
+        let ready_status_path = status_path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            fs::write(
+                ready_status_path,
+                format!(
+                    "{}\n",
+                    json!({
+                        "schemaVersion": 1,
+                        "version": "1.2.3",
+                        "installation": "macos-dmg",
+                        "phase": "waiting-for-exit",
+                        "updatedAt": 2,
+                    })
+                ),
+            )
+            .expect("write waiting status fixture");
+        });
+        let started = std::time::Instant::now();
+        wait_for_updater_ready(&mut child, &status_path).expect("wait for updater readiness");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+        writer.join().expect("join status writer");
+        child.kill().expect("stop updater fixture");
+        let _ = child.wait().expect("reap updater fixture");
+        fs::remove_dir_all(fixture).expect("remove updater ready fixture");
     }
 
     #[cfg(target_os = "macos")]

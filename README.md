@@ -48,7 +48,7 @@ Pi, Claude Code, DeepSeek Harness, and Grok run as independent sessions in the s
 | Streaming replies | Native | ✅ | ✅ | ✅ | ✅ |
 | Thinking | Native | ✅ | ✅ | ✅ | — |
 | Tool status | Native | ✅ | ✅ | ✅ | ✅ |
-| Edit diffs | Native | ✅ | ✅ | — | ✅ |
+| Edit diffs | Native | ✅ | ✅ | ✅ | ✅ |
 | Ask / cancel | Native | ✅ | ✅ | 🚧 | ✅ |
 | Model / thinking selection | Native | ✅ | ✅ | ✅ | 🚧 |
 | Tool approvals | Native | ✅ | ✅ | ✅ | ✅ |

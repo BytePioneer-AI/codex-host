@@ -48,7 +48,7 @@ Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作�
 | 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ |
 | Thinking | 原生 | ✅ | ✅ | ✅ | — |
 | 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | — | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ |
 | 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
 | 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |

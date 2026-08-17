@@ -26,10 +26,8 @@ function attachmentServer() {
   return { close: vi.fn(async () => {}) };
 }
 
-function controllerSnapshot(
-  warnings: RendererControlSession["snapshot"]["titlePolicy"]["warnings"] = [],
-): RendererControlSession["snapshot"] {
-  return { titlePolicy: { warnings } } as RendererControlSession["snapshot"];
+function controllerSnapshot(): RendererControlSession["snapshot"] {
+  return { titlePolicy: {} } as RendererControlSession["snapshot"];
 }
 
 describe("production Desktop Controller", () => {
@@ -102,29 +100,11 @@ describe("production Desktop Controller", () => {
         issues: [],
       } as never),
     ).toThrow("readiness is invalid");
-    expect(() =>
-      serializeDesktopControllerReadiness({
-        schemaVersion: 2,
-        state: "compatible-with-warning",
-        issues: [
-          {
-            capability: "title-isolation",
-            reason: "unreviewed-title-service-identity",
-            observedIdentity: "identity with spaces",
-          },
-        ],
-      }),
-    ).toThrow("readiness is invalid");
   });
 
-  it("signals ready with sanitized warnings, serves attachment, and monitors recovery", async () => {
+  it("signals compatible readiness, serves attachment, and monitors recovery", async () => {
     const abort = new AbortController();
-    const warning = {
-      capability: "title-isolation" as const,
-      reason: "unreviewed-title-service-identity" as const,
-      observedIdentity: "FutureTitleService",
-    };
-    const snapshot = controllerSnapshot([warning]);
+    const snapshot = controllerSnapshot();
     const ensureInstalled = vi.fn(async () => {
       abort.abort();
       return snapshot;
@@ -178,8 +158,8 @@ describe("production Desktop Controller", () => {
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,
-      state: "compatible-with-warning",
-      issues: [warning],
+      state: "compatible",
+      issues: [],
     });
     expect(ensureInstalled).toHaveBeenCalledOnce();
     expect(server.close).toHaveBeenCalledOnce();

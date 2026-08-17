@@ -40,6 +40,7 @@ function rendererFixture(
                 { name: "candidateCount", value: { value: options.candidateCount ?? 1 } },
                 { name: "hostId", value: { value: options.hostId ?? "local" } },
                 { name: "manager", value: { objectId: "request-manager" } },
+                { name: "prewarmedThreadManager", value: { objectId: "prewarm-manager" } },
               ],
             };
           case "request-manager":
@@ -114,7 +115,12 @@ describe("Renderer draft prewarm policy", () => {
       reason: "owned-request-bridge",
     });
     expect(evaluate).toHaveBeenCalledOnce();
-    expect(evaluate.mock.calls[0]?.[0]).toContain("webContents.fromId(17)");
+    const expression = evaluate.mock.calls[0]?.[0] ?? "";
+    expect(expression).toContain("webContents.fromId(17)");
+    expect(expression).toContain("typeof value.requestClient.enqueueRequest === 'function'");
+    expect(expression).not.toContain(
+      "Function.prototype.toString.call(value.sendRequest).includes(\n          'send-cli-request-for-host',\n        )",
+    );
   });
 
   it("retries while the current Renderer request manager is mounting", async () => {
@@ -156,7 +162,7 @@ describe("Renderer draft prewarm policy", () => {
       expect.objectContaining({
         objectId: "host-bridge-0",
         functionDeclaration: "function syntheticPolicy() {}",
-        arguments: [{ value: "local" }],
+        arguments: [{ value: "local" }, { objectId: "prewarm-manager" }],
       }),
     );
   });
@@ -207,6 +213,21 @@ describe("Renderer draft prewarm policy", () => {
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the current prewarmed Thread manager when available", async () => {
+    const discardAllPrewarmedThreads = vi.fn();
+    const sendRequest = vi.fn();
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge({ sendRequest }, "local", target, {
+      discardAllPrewarmedThreads,
+    });
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as { clear(): Promise<void> };
+
+    await policy.clear();
+
+    expect(discardAllPrewarmedThreads).toHaveBeenCalledOnce();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
   it("routes direct and prewarmed creates through the selected transport Model", async () => {
     const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
       async () => undefined,
@@ -233,6 +254,37 @@ describe("Renderer draft prewarm policy", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(2, "prewarm-thread-start-for-host", {
       hostId: "local",
       params: { model: "codexhost/pi-native" },
+    });
+  });
+
+  it("routes the current request client's direct and prewarm Thread starts", async () => {
+    const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
+      async () => undefined,
+    );
+    const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
+    const bridge = { sendRequest, prewarmThreadStart };
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(bridge, "local", target);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      select(model: string | null): boolean;
+    };
+
+    policy.select("codexhost/pi-native");
+    await bridge.sendRequest("thread/start", { cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.prewarmThreadStart?.({ ephemeral: true, model: "gpt-5" });
+
+    expect(sendRequest).toHaveBeenCalledWith("thread/start", {
+      cwd: "/tmp/project",
+      model: "codexhost/pi-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
+      cwd: "/tmp/project",
+      model: "codexhost/pi-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(2, {
+      ephemeral: true,
+      model: "gpt-5",
     });
   });
 

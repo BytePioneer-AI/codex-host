@@ -118,13 +118,8 @@ describe("Renderer Control Session", () => {
     expect(markReadiness).toHaveBeenCalledTimes(2);
   });
 
-  it("owns the fixed policy, warning, reload, injection, and recovery order", async () => {
+  it("owns the fixed policy, reload, injection, and recovery order", async () => {
     const calls: string[] = [];
-    const compatibilityWarning = {
-      capability: "title-isolation" as const,
-      reason: "unreviewed-title-service-identity" as const,
-      observedIdentity: "FutureTitleService",
-    };
     let binding: unknown = null;
     let selected = renderer(17, "primary", 100);
     const inspector = {
@@ -143,7 +138,6 @@ describe("Renderer Control Session", () => {
           state: "ready" as const,
           reason: "ready" as const,
           requiresRendererReload: true as const,
-          warnings: [compatibilityWarning],
         };
       },
       async markTitlePolicyReady(_inspector: unknown, rendererId: number) {
@@ -195,7 +189,11 @@ describe("Renderer Control Session", () => {
       "read-binding",
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
-    expect(session.snapshot.titlePolicy.warnings).toEqual([compatibilityWarning]);
+    expect(session.snapshot.titlePolicy).toEqual({
+      state: "ready",
+      reason: "ready",
+      requiresRendererReload: true,
+    });
 
     calls.length = 0;
     await expect(session.requestCompatibilityUpdate()).resolves.toBe("current");
@@ -240,7 +238,6 @@ describe("Renderer Control Session", () => {
           state: "ready" as const,
           reason: "ready" as const,
           requiresRendererReload: true as const,
-          warnings: [],
         };
       },
       async markTitlePolicyReady() {
@@ -284,7 +281,6 @@ describe("Renderer Control Session", () => {
           state: "ready" as const,
           reason: "ready" as const,
           requiresRendererReload: true as const,
-          warnings: [],
         };
       },
       async markTitlePolicyReady() {

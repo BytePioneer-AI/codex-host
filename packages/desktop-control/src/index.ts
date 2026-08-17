@@ -43,7 +43,6 @@ export {
   readMainProcessTitlePolicyCounters,
 } from "./main-process-title-policy.js";
 export type {
-  MainProcessCompatibilityWarning,
   MainProcessTitlePolicyCounters,
   MainProcessTitlePolicyStatus,
   RendererTitlePolicyReadiness,

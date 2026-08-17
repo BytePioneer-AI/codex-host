@@ -394,6 +394,9 @@ export function installRendererBindingProbe(
   ) as HarnessAvailability;
   let availabilityRequestGeneration = 0;
   let availabilityRequest: { client: RendererModelClient; promise: Promise<void> } | null = null;
+  let availabilityRetryTimer: number | null = null;
+  let availabilityRetryAttempt = 0;
+  const availabilityRetryDelays = [500, 1000, 2000, 4000, 8000] as const;
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
@@ -1313,7 +1316,32 @@ export function installRendererBindingProbe(
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  const refreshHarnessAvailability = (refresh = false): Promise<void> => {
+  const resetHarnessAvailabilityRetry = (): void => {
+    if (availabilityRetryTimer !== null) {
+      window.clearTimeout(availabilityRetryTimer);
+      availabilityRetryTimer = null;
+    }
+    availabilityRetryAttempt = 0;
+  };
+
+  const scheduleHarnessAvailabilityRetry = (): void => {
+    if (
+      disposed ||
+      availabilityRetryTimer !== null ||
+      availabilityRetryAttempt >= availabilityRetryDelays.length
+    ) {
+      return;
+    }
+    const delay = availabilityRetryDelays[availabilityRetryAttempt];
+    availabilityRetryAttempt += 1;
+    availabilityRetryTimer = window.setTimeout(() => {
+      availabilityRetryTimer = null;
+      void refreshHarnessAvailability(true, true);
+    }, delay);
+  };
+
+  const refreshHarnessAvailability = (refresh = false, retry = false): Promise<void> => {
+    if (!retry) resetHarnessAvailabilityRetry();
     if (!modelControl) return Promise.resolve();
     const client = modelControl;
     if (availabilityRequest?.client === client) return availabilityRequest.promise;
@@ -1360,6 +1388,11 @@ export function installRendererBindingProbe(
           }
         }),
       );
+      if (externalAgents.every((agent) => harnessAvailability[agent] === "ready")) {
+        resetHarnessAvailabilityRetry();
+      } else {
+        scheduleHarnessAvailabilityRetry();
+      }
     })();
     const request = { client, promise };
     availabilityRequest = request;
@@ -1821,6 +1854,7 @@ export function installRendererBindingProbe(
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
+      resetHarnessAvailabilityRetry();
       for (const timer of usageRefreshTimers.values()) window.clearTimeout(timer);
       usageRefreshTimers.clear();
       for (const mounted of mountedByComposer.values()) {

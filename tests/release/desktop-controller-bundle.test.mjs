@@ -55,7 +55,7 @@ describe("Desktop Controller release Bundle", () => {
       expect(source).toContain("schemaVersion: 2");
       expect(source).not.toContain("detection-failed");
       expect(source).not.toContain("agent-routing-structure-unavailable");
-      expect(source).toContain("unreviewed-title-service-identity");
+      expect(source).not.toContain("unreviewed-title-service-identity");
       expect(source).not.toContain('process.stdout.write("ready\\n")');
       expect(source).not.toContain("tools/renderer-binding");
       expect(source).not.toContain("@anthropic-ai/");

@@ -14,17 +14,10 @@ interface RuntimeProperty {
   value?: RemoteObject;
 }
 
-export interface MainProcessCompatibilityWarning {
-  capability: "title-isolation";
-  reason: "unreviewed-title-service-identity";
-  observedIdentity: string;
-}
-
 export interface MainProcessTitlePolicyStatus {
   state: "ready";
   reason: "ready";
   requiresRendererReload: true;
-  warnings: MainProcessCompatibilityWarning[];
 }
 
 export interface MainProcessTitlePolicyCounters {
@@ -83,7 +76,6 @@ const ELECTRON_MODULE_EXPRESSION = `(() => {
 })()`;
 
 const CONNECT_APP_HOST_CHANNEL = "codex_desktop:connect-app-host";
-const REVIEWED_TITLE_SERVICE_IDENTITIES = ["Dhe", "Nye", "wbe", "nxe", "tTe"] as const;
 const POLICY_STATE_SYMBOL = "codexhost.main-process-title-policy.v1";
 const SERVICE_OWNER_SYMBOL = "codexhost.main-process-title-policy.owner.v1";
 const RENDERER_READY_EXPRESSION =
@@ -119,18 +111,6 @@ const INSTALL_POLICY_FUNCTION = `async function (rendererWebContentsId) {
   ) {
     throw new Error('ThreadMetadataGenerationService signature mismatch');
   }
-  const rawServiceClass = sampleService?.constructor?.name;
-  const serviceClass = typeof rawServiceClass === 'string' && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(rawServiceClass)
-    ? rawServiceClass
-    : 'unknown';
-  const warnings = ${JSON.stringify(REVIEWED_TITLE_SERVICE_IDENTITIES)}.includes(serviceClass)
-    ? []
-    : [{
-        capability: 'title-isolation',
-        reason: 'unreviewed-title-service-identity',
-        observedIdentity: serviceClass,
-      }];
-
   const counters = {
     codexTitleCalls: 0,
     piTitleSkips: 0,
@@ -204,7 +184,6 @@ const INSTALL_POLICY_FUNCTION = `async function (rendererWebContentsId) {
     state: 'ready',
     reason: 'ready',
     requiresRendererReload: true,
-    warnings,
   };
 }`;
 
@@ -290,17 +269,7 @@ export async function installMainProcessTitlePolicy(
     value.state !== "ready" ||
     value.reason !== "ready" ||
     value.requiresRendererReload !== true ||
-    !Array.isArray(value.warnings) ||
-    value.warnings.length > 1 ||
-    value.warnings.some(
-      (warning) =>
-        !isRecord(warning) ||
-        warning.capability !== "title-isolation" ||
-        warning.reason !== "unreviewed-title-service-identity" ||
-        typeof warning.observedIdentity !== "string" ||
-        !/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(warning.observedIdentity) ||
-        Object.keys(warning).length !== 3,
-    )
+    Object.keys(value).length !== 3
   ) {
     throw new Error("Main-process title policy returned an invalid status");
   }

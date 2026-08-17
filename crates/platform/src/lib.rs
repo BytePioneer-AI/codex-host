@@ -33,6 +33,8 @@ pub use desktop_launch::{DesktopSession, launch_desktop_session};
 pub use desktop_launch::{launch_desktop, launch_stock_desktop, open_latest_codexhost_release};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
+#[cfg(target_os = "windows")]
+pub use installation::discover_codex_desktop_from_root;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 #[cfg(target_os = "macos")]
@@ -67,6 +69,13 @@ pub const PROBE_PACKAGE_NAME_ENV: &str = "CODEXHOST_PROBE_PACKAGE_NAME";
 pub const PROBE_PACKAGE_FAMILY_ENV: &str = "CODEXHOST_PROBE_PACKAGE_FAMILY";
 pub const PROBE_DESKTOP_VERSION_ENV: &str = "CODEXHOST_PROBE_DESKTOP_VERSION";
 pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
+/// Points at a portable/unpacked Codex Desktop installation root.
+///
+/// Unlike the `CODEXHOST_PROBE_*` Gate A overrides, which must be supplied as a
+/// complete set, this one stands alone: it names the directory that holds
+/// `app/ChatGPT.exe` so that installations with no registered AppX package can
+/// still be discovered.
+pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompatibilityChoice {

@@ -213,7 +213,7 @@ codexhost 首版应分别验证：
 3. Worktree Fork。
 4. 来源 Session 是 Worktree 的再次 Fork。
 
-在不同 cwd 的行为完成真实测试前，不应把 `forkAcrossCwd` 标为 `true`。`sourceWorkspaceDir` 不是任意 cwd 安全校验的替代品，目标目录仍必须由 Host 侧校验。
+Grok Adapter 将 Desktop 准备好的目标 cwd 传给 `newCwd`。目录不同时使用 `sessionKind: "worktree"`，并设置 `sourceWorkspaceDir`（若来源已是 Worktree，则继承其原始 workspace）。`sourceWorkspaceDir` 不是任意 cwd 安全校验的替代品，目标目录仍必须由 Host 侧校验。Adapter 不创建或删除 Git Worktree。
 
 ## 官方 CLI 与 ACP 的差异
 
@@ -316,17 +316,17 @@ Fork 流程至少需要：
 
 ### Capability
 
-当前 Grok Adapter 在 Adapter 协议测试通过后声明：
+当前 Grok Adapter 声明：
 
 ```ts
 history: {
   fork: true,
-  forkAcrossCwd: false,
+  forkAcrossCwd: true,
   rollbackLastTurn: false,
 }
 ```
 
-`forkAcrossCwd` 仍保持 `false`，直到不同 cwd / Worktree 行为完成真实测试。如果 Grok 返回 Method Not Found、Prompt Index 映射失败，或 `session/load` 后历史不一致，单次 Fork 失败关闭，不把 child 当成已打开的 Session。
+`forkAcrossCwd` 只表示可以把 Native Session 绑到 Desktop 已准备好的目标 cwd。Git Worktree 的创建仍由 Desktop 负责。如果 Grok 返回 Method Not Found、Prompt Index 映射失败，或 `session/load` 后历史不一致，单次 Fork 失败关闭，不把 child 当成已打开的 Session。
 
 Fork 支持不等于 Rollback 支持。codexhost 的 Rollback 要求独立 Derived Thread、边界一致性和后续提交状态处理，不能因为 Grok 有 `targetPromptIndex` 就自动打开 `rollbackLastTurn`。
 

@@ -9,7 +9,9 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import type { GrokTransportEvent } from "./acp-transport.js";
+import path from "node:path";
+
+import type { GrokNativeSessionLocation, GrokTransportEvent } from "./acp-transport.js";
 import { mapGrokReplay, resolveGrokTargetPromptIndex } from "./grok-history.js";
 
 export const GROK_SESSION_FORK_METHOD = "_x.ai/session/fork";
@@ -40,6 +42,7 @@ export interface GrokForkInput {
   checkpoint: NativeCheckpointRef;
   cwd: string;
   harnessId: HarnessId;
+  locateSource(sessionId: string): Promise<GrokNativeSessionLocation | null>;
   readHistory(cwd: string, sessionId: string): Promise<GrokTransportEvent[]>;
   sourceRef: NativeSessionRef;
   forkAndLoad(params: GrokForkParams): Promise<{ sessionId: string }>;
@@ -96,11 +99,36 @@ export function parseGrokForkResponse(value: unknown): GrokForkResponse | null {
   };
 }
 
-function comparableTurn(turn: HostThreadSnapshot["turns"][number]): unknown {
+function projectRelativePath(value: string, cwds: readonly string[]): string {
+  const normalized = value.replaceAll("\\", "/");
+  if (!path.isAbsolute(value)) return normalized;
+  for (const cwd of cwds) {
+    const relative = path.relative(path.resolve(cwd), path.resolve(value));
+    if (relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`)) {
+      return relative.replaceAll("\\", "/");
+    }
+  }
+  return normalized;
+}
+
+function comparableTurn(
+  turn: HostThreadSnapshot["turns"][number],
+  cwds: readonly string[],
+): unknown {
   return {
     input: turn.input,
     items: turn.items.map(({ item, outcome }) => ({
-      item: { ...item, itemId: undefined },
+      item:
+        item.type === "fileChange"
+          ? {
+              ...item,
+              itemId: undefined,
+              changes: item.changes.map((change) => ({
+                ...change,
+                path: projectRelativePath(change.path, cwds),
+              })),
+            }
+          : { ...item, itemId: undefined },
       outcome,
     })),
     outcome: turn.outcome,
@@ -155,7 +183,16 @@ export async function forkGrokSession(
     };
   }
 
-  const source = await readSnapshot(input, sourceRef.data.nativeSessionId);
+  const located = await input.locateSource(sourceRef.data.nativeSessionId);
+  if (!located) {
+    return {
+      ok: false,
+      error: error("sessionNotFound", "Grok Native Session is unavailable"),
+    };
+  }
+  const sourceCwd = path.resolve(located.cwd);
+  const targetCwd = path.resolve(input.cwd);
+  const source = await readSnapshot({ ...input, cwd: sourceCwd }, sourceRef.data.nativeSessionId);
   if (!source.ok) return source;
   const boundaryIndex = source.value.turns.findIndex(
     (turn) => turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
@@ -171,15 +208,17 @@ export async function forkGrokSession(
     };
   }
 
+  const sameCwd = sourceCwd === targetCwd;
   let derivedSessionId: string;
   try {
     const forked = await input.forkAndLoad(
       buildGrokForkParams({
         sourceSessionId: sourceRef.data.nativeSessionId,
-        sourceCwd: input.cwd,
-        newCwd: input.cwd,
+        sourceCwd,
+        newCwd: targetCwd,
         targetPromptIndex,
-        sessionKind: "fork",
+        sessionKind: sameCwd ? "fork" : "worktree",
+        ...(!sameCwd ? { sourceWorkspaceDir: located.sourceWorkspaceDir ?? sourceCwd } : {}),
       }),
     );
     const derivedRef = nativeSessionRefSchema.safeParse({
@@ -210,11 +249,11 @@ export async function forkGrokSession(
   }
 
   const cleanup = async (): Promise<void> => {
-    await input.deleteSession(input.cwd, derivedSessionId).catch(() => undefined);
+    await input.deleteSession(targetCwd, derivedSessionId).catch(() => undefined);
   };
   const [derived, sourceAfter] = await Promise.all([
-    readSnapshot(input, derivedSessionId),
-    readSnapshot(input, sourceRef.data.nativeSessionId),
+    readSnapshot({ ...input, cwd: targetCwd }, derivedSessionId),
+    readSnapshot({ ...input, cwd: sourceCwd }, sourceRef.data.nativeSessionId),
   ]);
   if (!derived.ok) {
     await cleanup();
@@ -225,13 +264,19 @@ export async function forkGrokSession(
     return sourceAfter;
   }
 
+  const compareCwds = [sourceCwd, targetCwd];
   const sourcePrefix = source.value.turns.slice(0, boundaryIndex + 1);
   if (
     !isDeepStrictEqual(
-      sourceAfter.value.turns.slice(0, boundaryIndex + 1).map(comparableTurn),
-      sourcePrefix.map(comparableTurn),
+      sourceAfter.value.turns
+        .slice(0, boundaryIndex + 1)
+        .map((turn) => comparableTurn(turn, compareCwds)),
+      sourcePrefix.map((turn) => comparableTurn(turn, compareCwds)),
     ) ||
-    !isDeepStrictEqual(derived.value.turns.map(comparableTurn), sourcePrefix.map(comparableTurn)) ||
+    !isDeepStrictEqual(
+      derived.value.turns.map((turn) => comparableTurn(turn, compareCwds)),
+      sourcePrefix.map((turn) => comparableTurn(turn, compareCwds)),
+    ) ||
     derived.value.turns.length === 0 ||
     derived.value.turns.some(
       (turn) =>

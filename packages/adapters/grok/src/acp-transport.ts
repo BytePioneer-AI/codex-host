@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -99,6 +99,13 @@ export interface GrokForkOpenInput {
   sourceSessionId: string;
   sourceCwd: string;
   targetPromptIndex: number;
+  sessionKind?: string;
+  sourceWorkspaceDir?: string;
+}
+
+export interface GrokNativeSessionLocation {
+  cwd: string;
+  sourceWorkspaceDir?: string;
 }
 
 export type GrokOpenInput =
@@ -250,16 +257,19 @@ function transportEvent(
   }
 }
 
+function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
+  const environment = { ...process.env, ...options.environment };
+  const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
+  return environment.GROK_HOME ?? path.join(home, ".grok");
+}
+
 function nativeSessionFile(
   options: GrokAcpTransportOptions,
   sessionId: string,
   fileName: string,
 ): string {
-  const environment = { ...process.env, ...options.environment };
-  const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
-  const grokHome = environment.GROK_HOME ?? path.join(home, ".grok");
   return path.join(
-    grokHome,
+    grokHomeDir(options),
     "sessions",
     encodeURIComponent(path.resolve(options.cwd)),
     sessionId,
@@ -286,6 +296,63 @@ async function readNativeSignals(
 
 function isMissingFile(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
+}
+
+export async function locateGrokNativeSession(
+  options: Pick<GrokAcpTransportOptions, "environment">,
+  sessionId: string,
+): Promise<GrokNativeSessionLocation | null> {
+  if (sessionId.length === 0) return null;
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = await readdir(path.join(grokHomeDir(options), "sessions"), { withFileTypes: true });
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw new GrokTransportError("unavailable", "Grok Native Session directory could not be read", {
+      cause: error,
+    });
+  }
+  const matches: GrokNativeSessionLocation[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    let summaryRaw: string;
+    try {
+      summaryRaw = await readFile(
+        path.join(grokHomeDir(options), "sessions", entry.name, sessionId, "summary.json"),
+        "utf8",
+      );
+    } catch (error) {
+      if (isMissingFile(error) || (isRecord(error) && error.code === "ENOTDIR")) continue;
+      throw new GrokTransportError(
+        "unavailable",
+        "Grok Native Session metadata could not be read",
+        {
+          cause: error,
+        },
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(summaryRaw);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) continue;
+    const info = parsed.info;
+    const cwd =
+      isRecord(info) && typeof info.cwd === "string" && info.cwd.length > 0
+        ? path.resolve(info.cwd)
+        : path.resolve(decodeURIComponent(entry.name));
+    const sourceWorkspaceDir =
+      typeof parsed.source_workspace_dir === "string" && parsed.source_workspace_dir.length > 0
+        ? path.resolve(parsed.source_workspace_dir)
+        : undefined;
+    matches.push({
+      cwd,
+      ...(sourceWorkspaceDir ? { sourceWorkspaceDir } : {}),
+    });
+  }
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export async function readGrokNativeHistory(
@@ -381,8 +448,12 @@ export class GrokAcpTransport {
     return this.readHistory(this.sessionId);
   }
 
-  async readHistory(sessionId: string): Promise<GrokTransportEvent[]> {
-    return readGrokNativeHistory(this.#options, sessionId);
+  async readHistory(sessionId: string, cwd = this.#options.cwd): Promise<GrokTransportEvent[]> {
+    return readGrokNativeHistory({ ...this.#options, cwd }, sessionId);
+  }
+
+  async locateSession(sessionId: string): Promise<GrokNativeSessionLocation | null> {
+    return locateGrokNativeSession(this.#options, sessionId);
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -422,7 +493,8 @@ export class GrokAcpTransport {
           sourceCwd: input.sourceCwd,
           newCwd: this.#options.cwd,
           targetPromptIndex: input.targetPromptIndex,
-          sessionKind: "fork",
+          ...(input.sessionKind ? { sessionKind: input.sessionKind } : {}),
+          ...(input.sourceWorkspaceDir ? { sourceWorkspaceDir: input.sourceWorkspaceDir } : {}),
         });
         try {
           session = await withTimeout(
@@ -461,7 +533,9 @@ export class GrokAcpTransport {
       const replay = this.#replay ?? [];
       this.#replay = null;
       const signals =
-        input.kind === "resume" ? await readNativeSignals(this.#options, sessionId) : undefined;
+        input.kind === "resume" || input.kind === "fork"
+          ? await readNativeSignals(this.#options, sessionId)
+          : undefined;
       return {
         initialize,
         session,

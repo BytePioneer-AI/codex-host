@@ -59,6 +59,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   });
   readonly forkCalls: Extract<GrokOpenInput, { kind: "fork" }>[] = [];
   histories = new Map<string, GrokTransportEvent[]>();
+  sessionLocations = new Map<string, { cwd: string; sourceWorkspaceDir?: string }>();
   replay: GrokTransportEvent[] = [];
   signals: unknown;
   methodNotFound = false;
@@ -112,6 +113,17 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     const stored = this.histories.get(sessionId);
     if (stored) return [...stored];
     return sessionId === this.sessionId ? [...this.replay] : [];
+  }
+
+  async locateSession(
+    sessionId: string,
+  ): Promise<{ cwd: string; sourceWorkspaceDir?: string } | null> {
+    const explicit = this.sessionLocations.get(sessionId);
+    if (explicit) return explicit;
+    if (this.histories.has(sessionId) || sessionId === this.sessionId) {
+      return { cwd: "/synthetic" };
+    }
+    return null;
   }
 
   runTurn(
@@ -944,7 +956,7 @@ describe("Grok Adapter ACP projection", () => {
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
       capabilities: {
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
       },
     });
     await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
@@ -1051,7 +1063,7 @@ describe("Grok Adapter ACP projection", () => {
     });
     expect(opened.value.capabilities.history).toEqual({
       fork: true,
-      forkAcrossCwd: false,
+      forkAcrossCwd: true,
       rollbackLastTurn: false,
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
@@ -1072,9 +1084,113 @@ describe("Grok Adapter ACP projection", () => {
         sourceSessionId: "source-session",
         sourceCwd: "/synthetic",
         targetPromptIndex: 0,
+        sessionKind: "fork",
       },
     ]);
     expect(transport.deleteSession).not.toHaveBeenCalled();
+    await opened.value.close();
+  });
+
+  it("forks into a caller-selected cwd as a Worktree Session", async () => {
+    const transport = new FakeGrokTransport();
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ];
+    transport.histories.set("source-session", sourceHistory);
+    transport.sessionLocations.set("source-session", { cwd: "/source-project" });
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", sourceHistory);
+      return { sessionId: "child-session" };
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/worktree/fork-1",
+      sourceRef: nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        checkpointId: "0",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.forkCalls).toEqual([
+      {
+        kind: "fork",
+        sourceSessionId: "source-session",
+        sourceCwd: "/source-project",
+        targetPromptIndex: 0,
+        sessionKind: "worktree",
+        sourceWorkspaceDir: "/source-project",
+      },
+    ]);
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [{ input: [{ text: "first" }] }],
+      },
+    });
+    await opened.value.close();
+  });
+
+  it("keeps the original workspace when the source is already a Worktree", async () => {
+    const transport = new FakeGrokTransport();
+    transport.histories.set("source-session", [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ]);
+    transport.sessionLocations.set("source-session", {
+      cwd: "/worktree/first",
+      sourceWorkspaceDir: "/source-project",
+    });
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", transport.histories.get("source-session") ?? []);
+      return { sessionId: "child-session" };
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/worktree/second",
+      sourceRef: nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        checkpointId: "0",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.forkCalls[0]).toMatchObject({
+      sourceCwd: "/worktree/first",
+      sessionKind: "worktree",
+      sourceWorkspaceDir: "/source-project",
+    });
     await opened.value.close();
   });
 

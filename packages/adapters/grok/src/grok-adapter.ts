@@ -67,6 +67,7 @@ import {
   GrokAcpTransport,
   GrokTransportError,
   type GrokAcpTransportOptions,
+  type GrokNativeSessionLocation,
   type GrokOpenInput,
   type GrokOpenResult,
   type GrokPermissionRequest,
@@ -109,7 +110,8 @@ export interface GrokAcpTransportLike {
   inspect(): Promise<GrokOpenResult["initialize"]>;
   open(input: GrokOpenInput): Promise<GrokOpenResult>;
   getHistory(): Promise<GrokTransportEvent[]>;
-  readHistory(sessionId: string): Promise<GrokTransportEvent[]>;
+  readHistory(sessionId: string, cwd?: string): Promise<GrokTransportEvent[]>;
+  locateSession(sessionId: string): Promise<GrokNativeSessionLocation | null>;
   deleteSession(sessionId: string): Promise<void>;
   runTurn(
     text: string,
@@ -157,7 +159,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: false,
     },
-    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -1053,13 +1055,18 @@ export class GrokAdapter implements HarnessAdapter {
           cwd,
           harnessId: this.harnessId,
           sourceRef: input.sourceRef,
-          readHistory: (_historyCwd, sessionId) => transport.readHistory(sessionId),
+          locateSource: (sessionId) => transport.locateSession(sessionId),
+          readHistory: (historyCwd, sessionId) => transport.readHistory(sessionId, historyCwd),
           forkAndLoad: async (params) => {
             opened = await transport.open({
               kind: "fork",
               sourceSessionId: params.sourceSessionId,
               sourceCwd: params.sourceCwd,
               targetPromptIndex: params.targetPromptIndex,
+              ...(params.sessionKind ? { sessionKind: params.sessionKind } : {}),
+              ...(params.sourceWorkspaceDir
+                ? { sourceWorkspaceDir: params.sourceWorkspaceDir }
+                : {}),
             });
             return { sessionId: opened.sessionId };
           },

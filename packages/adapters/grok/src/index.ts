@@ -8,10 +8,16 @@ export type {
 } from "./grok-adapter.js";
 export { fetchGrokCredits, parseGrokCreditsResponse } from "./grok-credits.js";
 export type { GrokCreditsSnapshot, GrokProductUsage } from "./grok-credits.js";
-export { GrokAcpTransport, GrokTransportError, readGrokNativeHistory } from "./acp-transport.js";
+export {
+  GrokAcpTransport,
+  GrokTransportError,
+  locateGrokNativeSession,
+  readGrokNativeHistory,
+} from "./acp-transport.js";
 export type {
   GrokAcpTransportOptions,
   GrokForkOpenInput,
+  GrokNativeSessionLocation,
   GrokOpenInput,
   GrokOpenResult,
   GrokPermissionRequest,

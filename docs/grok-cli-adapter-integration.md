@@ -341,7 +341,7 @@ const capabilities = {
   },
   history: {
     fork: true,
-    forkAcrossCwd: false,
+    forkAcrossCwd: true,
     rollbackLastTurn: false,
   },
 };
@@ -361,17 +361,17 @@ codexhost 的映射是：
     -> 创建独立 Native Session
 ```
 
-Grok Adapter 在端到端验证后声明：
+Grok Adapter 声明：
 
 ```ts
 history: {
   fork: true,
-  forkAcrossCwd: false,
+  forkAcrossCwd: true,
   rollbackLastTurn: false,
 }
 ```
 
-`forkAcrossCwd` 在不同 cwd / Worktree 行为完成真实测试前必须保持 `false`。Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
+`forkAcrossCwd` 让 Desktop 的「在新工作树中创建分支」可以把目标 cwd 交给 Grok `_x.ai/session/fork`。Adapter 不创建 Git Worktree。Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
 
 ## 10. Edit Diff
 

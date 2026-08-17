@@ -470,9 +470,8 @@ button {
 
 .settings-update-notes {
   display: grid;
+  min-width: 0;
   gap: 10px;
-  max-height: 320px;
-  overflow: auto;
   color: var(--settings-muted);
   font-size: 13px;
   line-height: 20px;
@@ -519,7 +518,8 @@ button {
 .settings-update-notes p,
 .settings-update-notes ul,
 .settings-update-notes ol,
-.settings-update-notes pre {
+.settings-update-notes pre,
+.settings-update-notes blockquote {
   margin: 0;
 }
 
@@ -530,6 +530,20 @@ button {
 
 .settings-update-notes li + li {
   margin-top: 4px;
+}
+
+.settings-update-notes blockquote {
+  padding: 8px 12px;
+  color: var(--settings-muted);
+  border-left: 3px solid var(--settings-focus);
+  background: rgb(255 255 255 / 4%);
+}
+
+.settings-update-notes hr {
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--settings-divider);
 }
 
 .settings-update-notes strong {
@@ -558,8 +572,11 @@ button {
 }
 
 .settings-update-notes pre {
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: rgb(0 0 0 / 28%);
   border-radius: 6px;
 }

@@ -126,4 +126,25 @@ describe("Release notes Markdown", () => {
     expect(link?.attributes.get("target")).toBe("_blank");
     expect(link?.attributes.get("rel")).toBe("noopener noreferrer");
   });
+
+  it("renders release-note blockquotes and does not create unsafe links", () => {
+    const root = render(
+      [
+        "> **Note / 提示**: Linux x64 users install via npm.",
+        ">",
+        "> See [the release](javascript:alert(1)).",
+        "---",
+      ].join("\n"),
+    );
+
+    expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual([
+      "blockquote",
+      "hr",
+    ]);
+    const blockquote = descendants(root).find((element) => element.tagName === "blockquote");
+    expect(visibleText(blockquote as FakeElement)).toContain("Note / 提示");
+    expect(descendants(root).some((element) => element.tagName === "a")).toBe(false);
+    expect(visibleText(root)).toContain("the release");
+    expect(visibleText(root)).not.toContain("> ");
+  });
 });

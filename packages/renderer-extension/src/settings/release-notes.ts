@@ -1,7 +1,9 @@
 const HEADING_PATTERN = /^(#{1,6})[ \t]+(.+?)\s*$/u;
+const BLOCKQUOTE_PATTERN = /^>[ \t]?(.*?)\s*$/u;
 const UNORDERED_ITEM_PATTERN = /^[-*][ \t]+(.+?)\s*$/u;
 const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
 const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
+const THEMATIC_BREAK_PATTERN = /^(?:---|___|\*\*\*)[ \t]*$/u;
 const INLINE_PATTERN = /(`+)((?:(?!\1).)+)\1|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)/gu;
 
 type ReleaseNotesDocument = Pick<Document, "createElement">;
@@ -43,6 +45,15 @@ function appendReleaseNotesBlocks(
       index += 1;
       continue;
     }
+    if (BLOCKQUOTE_PATTERN.test(line)) {
+      index = appendBlockquote(document, root, lines, index);
+      continue;
+    }
+    if (THEMATIC_BREAK_PATTERN.test(line)) {
+      root.append(document.createElement("hr"));
+      index += 1;
+      continue;
+    }
     if (UNORDERED_ITEM_PATTERN.test(line)) {
       index = appendList(document, root, lines, index, "ul", UNORDERED_ITEM_PATTERN);
       continue;
@@ -75,6 +86,28 @@ function appendFencedCode(
   code.textContent = body.join("\n");
   pre.append(code);
   root.append(pre);
+  return index;
+}
+
+function appendBlockquote(
+  document: ReleaseNotesDocument,
+  root: HTMLElement,
+  lines: readonly string[],
+  start: number,
+): number {
+  const blockquote = document.createElement("blockquote");
+  const content: string[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const match = BLOCKQUOTE_PATTERN.exec(lines[index] ?? "");
+    if (!match) break;
+    content.push(match[1] ?? "");
+    index += 1;
+  }
+  const paragraph = document.createElement("p");
+  appendInline(document, paragraph, content.join(" ").trim());
+  blockquote.append(paragraph);
+  root.append(blockquote);
   return index;
 }
 
@@ -114,6 +147,8 @@ function appendParagraph(
       current.trim().length === 0 ||
       FENCE_PATTERN.test(current) ||
       HEADING_PATTERN.test(current) ||
+      BLOCKQUOTE_PATTERN.test(current) ||
+      THEMATIC_BREAK_PATTERN.test(current) ||
       UNORDERED_ITEM_PATTERN.test(current) ||
       ORDERED_ITEM_PATTERN.test(current)
     ) {
@@ -142,14 +177,28 @@ function appendInline(document: ReleaseNotesDocument, parent: HTMLElement, text:
       strong.textContent = match[3];
       parent.append(strong);
     } else {
-      const link = document.createElement("a");
-      link.textContent = match[4] ?? "";
-      link.setAttribute("href", match[5] ?? "");
-      link.setAttribute("target", "_blank");
-      link.setAttribute("rel", "noopener noreferrer");
-      parent.append(link);
+      const href = match[5] ?? "";
+      if (!isSafeLink(href)) {
+        parent.append(match[4] ?? "");
+      } else {
+        const link = document.createElement("a");
+        link.textContent = match[4] ?? "";
+        link.setAttribute("href", href);
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+        parent.append(link);
+      }
     }
     lastIndex = index + match[0].length;
   }
   if (lastIndex < text.length) parent.append(text.slice(lastIndex));
+}
+
+function isSafeLink(href: string): boolean {
+  try {
+    const url = new URL(href, "https://codexhost.invalid");
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

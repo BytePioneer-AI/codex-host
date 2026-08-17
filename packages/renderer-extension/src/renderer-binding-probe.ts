@@ -377,8 +377,29 @@ export function installRendererBindingProbe(
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
   let usageNotificationDispose: (() => void) | null = null;
+  const localAgentForSidebarThread = (input: {
+    threadId: string | null;
+    draftId: string | null;
+  }): RendererAgent | null => {
+    for (const mounted of mountedByComposer.values()) {
+      const target = mounted.modelTarget;
+      if (target?.[0] === "default" && input.draftId !== null && target[1] === input.draftId) {
+        return controller.get(mounted.composer).agent;
+      }
+      if (
+        target?.[0] === "conversation" &&
+        input.threadId !== null &&
+        target[1] === input.threadId &&
+        mounted.ownershipStatus === "ready"
+      ) {
+        return controller.get(mounted.composer).agent;
+      }
+    }
+    return null;
+  };
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: () => modelControl,
+    getLocalAgent: localAgentForSidebarThread,
   });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
@@ -628,6 +649,7 @@ export function installRendererBindingProbe(
     } finally {
       if (isCurrentOwnershipRequest(mounted, generation)) {
         renderMounted(mounted);
+        sidebarAgentIcons.refresh();
         if (
           mounted.ownershipStatus !== "error" &&
           shouldRetryExternalThreadUsage(
@@ -681,6 +703,7 @@ export function installRendererBindingProbe(
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
+    sidebarAgentIcons.refresh();
     return true;
   };
 
@@ -1295,6 +1318,7 @@ export function installRendererBindingProbe(
         mounted.modelView = { status: "idle" };
         mounted.permissionModeView = { status: "idle" };
       }
+      sidebarAgentIcons.refresh();
       return switched;
     } catch {
       adapterStatus = {
@@ -1484,6 +1508,7 @@ export function installRendererBindingProbe(
       );
     }
     renderMounted(mounted);
+    sidebarAgentIcons.refresh();
     if (threadIdFromComposerModelTarget(modelTarget) && !inherited) {
       void loadThreadOwnership(mounted);
     } else if (

@@ -14,15 +14,38 @@ export const SIDEBAR_THREAD_ID_ATTRIBUTE = "data-app-action-sidebar-thread-id";
 export const SIDEBAR_THREAD_HOST_ID_ATTRIBUTE = "data-app-action-sidebar-thread-host-id";
 export const SIDEBAR_AGENT_ICON_ATTRIBUTE = "data-codexhost-sidebar-agent-icon";
 
+const OWNERSHIP_RETRY_DELAYS_MS = [100, 300, 800, 1_500, 3_000] as const;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function threadIdFromSidebarRowElement(element: HTMLElement): string | null {
+function sidebarThreadAttributes(element: HTMLElement): {
+  taskKey: string;
+  hostId: string;
+  rowMarker: string;
+} | null {
   const taskKey = element.getAttribute(SIDEBAR_THREAD_ID_ATTRIBUTE);
   const hostId = element.getAttribute(SIDEBAR_THREAD_HOST_ID_ATTRIBUTE);
   const rowMarker = element.getAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE);
   if (taskKey === null || hostId === null || rowMarker === null) return null;
+  return { taskKey, hostId, rowMarker };
+}
+
+export function draftIdFromSidebarRowElement(element: HTMLElement): string | null {
+  const attributes = sidebarThreadAttributes(element);
+  if (!attributes) return null;
+  const hostPrefix = `${attributes.hostId}:`;
+  const taskKey = attributes.taskKey.startsWith(hostPrefix)
+    ? attributes.taskKey.slice(hostPrefix.length)
+    : attributes.taskKey;
+  return taskKey.startsWith("client-new-thread:") ? taskKey : null;
+}
+
+export function threadIdFromSidebarRowElement(element: HTMLElement): string | null {
+  const attributes = sidebarThreadAttributes(element);
+  if (!attributes) return null;
+  const { taskKey, hostId, rowMarker } = attributes;
 
   const fiberNames = Object.getOwnPropertyNames(element).filter((name) =>
     name.startsWith("__reactFiber$"),
@@ -56,6 +79,7 @@ export function threadIdFromSidebarRowElement(element: HTMLElement): string | nu
 export interface SidebarAgentIconRow {
   isConnected(): boolean;
   threadId(): string | null;
+  draftId(): string | null;
   render(agent: Exclude<RendererAgent, "codex">): void;
   clear(): void;
 }
@@ -91,6 +115,10 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
 
   threadId(): string | null {
     return threadIdFromSidebarRowElement(this.element);
+  }
+
+  draftId(): string | null {
+    return draftIdFromSidebarRowElement(this.element);
   }
 
   render(agent: Exclude<RendererAgent, "codex">): void {
@@ -178,12 +206,16 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
 export function installRendererSidebarAgentIcons(options: {
   getClient(): RendererModelClient | null;
+  getLocalAgent?(input: { threadId: string | null; draftId: string | null }): RendererAgent | null;
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
   const dom = options.dom ?? new BrowserSidebarAgentIconDom(document.documentElement);
   const ownershipByThread = new Map<string, Exclude<RendererAgent, "codex"> | null>();
   const pending = new Set<string>();
   const failed = new Set<string>();
+  const provisionalCodex = new Set<string>();
+  const ownershipRetryAttempts = new Map<string, number>();
+  const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
   let scanScheduled = false;
 
@@ -191,6 +223,37 @@ export function installRendererSidebarAgentIcons(options: {
     if (disposed || scanScheduled) return;
     scanScheduled = true;
     queueMicrotask(scan);
+  };
+
+  const clearOwnershipRetry = (threadId: string): void => {
+    const timer = ownershipRetryTimers.get(threadId);
+    if (timer !== undefined) clearTimeout(timer);
+    ownershipRetryTimers.delete(threadId);
+    ownershipRetryAttempts.delete(threadId);
+    provisionalCodex.delete(threadId);
+  };
+
+  const scheduleOwnershipRetry = (threadId: string): void => {
+    if (
+      disposed ||
+      !provisionalCodex.has(threadId) ||
+      pending.has(threadId) ||
+      ownershipRetryTimers.has(threadId)
+    ) {
+      return;
+    }
+    const attempt = ownershipRetryAttempts.get(threadId) ?? 0;
+    const delay = OWNERSHIP_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    ownershipRetryAttempts.set(threadId, attempt + 1);
+    const timer = setTimeout(() => {
+      ownershipRetryTimers.delete(threadId);
+      if (disposed) return;
+      failed.delete(threadId);
+      ownershipByThread.delete(threadId);
+      scheduleScan();
+    }, delay);
+    ownershipRetryTimers.set(threadId, timer);
   };
 
   const requestOwnership = (
@@ -206,6 +269,12 @@ export function installRendererSidebarAgentIcons(options: {
         for (const ownership of threads) {
           ownershipByThread.set(ownership.threadId, rendererAgentForThreadOwnership(ownership));
           failed.delete(ownership.threadId);
+          if (ownership.owner === "codex") {
+            provisionalCodex.add(ownership.threadId);
+            scheduleOwnershipRetry(ownership.threadId);
+          } else {
+            clearOwnershipRetry(ownership.threadId);
+          }
         }
         succeeded = true;
       })
@@ -215,6 +284,7 @@ export function installRendererSidebarAgentIcons(options: {
       })
       .finally(() => {
         for (const threadId of threadIds) pending.delete(threadId);
+        for (const threadId of threadIds) scheduleOwnershipRetry(threadId);
         if (succeeded) scheduleScan();
       });
   };
@@ -224,8 +294,25 @@ export function installRendererSidebarAgentIcons(options: {
     if (disposed) return;
     const unresolved = new Set<ReturnType<typeof hostThreadIdSchema.parse>>();
     for (const row of dom.rows()) {
+      if (!row.isConnected()) {
+        row.clear();
+        continue;
+      }
       const threadId = hostThreadIdSchema.safeParse(row.threadId());
-      if (!row.isConnected() || !threadId.success) {
+      const localAgent = options.getLocalAgent?.({
+        threadId: threadId.success ? threadId.data : null,
+        draftId: row.draftId(),
+      });
+      if (localAgent !== null && localAgent !== undefined) {
+        if (threadId.success) {
+          ownershipByThread.set(threadId.data, localAgent === "codex" ? null : localAgent);
+          clearOwnershipRetry(threadId.data);
+        }
+        if (localAgent === "codex") row.clear();
+        else row.render(localAgent);
+        continue;
+      }
+      if (!threadId.success) {
         row.clear();
         continue;
       }
@@ -254,6 +341,13 @@ export function installRendererSidebarAgentIcons(options: {
   return {
     refresh() {
       failed.clear();
+      for (const threadId of provisionalCodex) {
+        const timer = ownershipRetryTimers.get(threadId);
+        if (timer !== undefined) clearTimeout(timer);
+        ownershipRetryTimers.delete(threadId);
+        ownershipRetryAttempts.delete(threadId);
+        ownershipByThread.delete(threadId);
+      }
       scheduleScan();
     },
     dispose() {
@@ -264,6 +358,10 @@ export function installRendererSidebarAgentIcons(options: {
       ownershipByThread.clear();
       pending.clear();
       failed.clear();
+      provisionalCodex.clear();
+      for (const timer of ownershipRetryTimers.values()) clearTimeout(timer);
+      ownershipRetryTimers.clear();
+      ownershipRetryAttempts.clear();
     },
   };
 }

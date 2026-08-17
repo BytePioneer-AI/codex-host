@@ -306,27 +306,54 @@ The Renderer SHALL keep the selected Pi Model Ref and asynchronous Model-control
 - **WHEN** an earlier inspection or selection resolves after the logical Composer, Agent, target, or request generation changed
 - **THEN** Renderer ignores that result and preserves the newer state
 
-### Requirement: Supported sidebar rows show immutable external Agent ownership
-For a supported Desktop build, Renderer Extension SHALL recover each mounted sidebar row's Host Thread ID only from a bounded React Fiber chain where one or more equal `conversationId` props have `dataAttributes` matching that exact DOM row's task-key, host, and row-marker attributes. It SHALL NOT treat the opaque sidebar task key as a Host Thread ID. Renderer SHALL batch validated Host Thread IDs through the fixed ownership-list client and render a compact title-prefix icon for a known external Agent. Codex rows SHALL remain unchanged, and sidebar decoration SHALL NOT alter Thread routing, selection, rename, status, pin, archive, hover, or action behavior.
+### Requirement: Sidebar Agent decoration converges from draft intent to persisted ownership
+For a supported Desktop build, Renderer Extension SHALL decorate a mounted sidebar row from the earliest authoritative Agent source available for that row. An exact mounted default Composer match SHALL provide the selected local draft Agent before an external Mapping Store record is observable. An exact transferred or Host-confirmed conversation Composer MAY provide the same process-local Agent after creation. For rows without a matching logical Composer, Renderer SHALL use the fixed ownership-list client and persisted Host ownership.
 
-#### Scenario: Pi and Claude Code rows are mounted
-- **WHEN** mounted sidebar rows belong to Pi and Claude Code Threads
-- **THEN** Renderer SHALL display the reviewed Pi and Claude Code icons before their respective titles
+Renderer MAY normalize an opaque `client-new-thread` sidebar task key only to correlate that row with the exact default Composer Model target. It MUST NOT treat that task key as a Host Thread ID, send it to Host, persist it, or infer an Agent from its contents. A Host Thread ID SHALL still be accepted only from a bounded React Fiber chain where one or more equal `conversationId` props have `dataAttributes` matching that exact DOM row's task-key, host, and row-marker attributes.
+
+When a local Agent and a validated Host Thread ID become associated, Renderer MAY seed its process-local sidebar ownership cache so the icon survives Composer replacement or navigation. Persisted Host ownership remains authoritative for unmatched, restored, and later-process conversations. Sidebar decoration SHALL NOT alter Thread routing, selection, rename, status, pin, archive, hover, or action behavior.
+
+#### Scenario: External draft appears before its Mapping Store record
+- **WHEN** a mounted `client-new-thread` row exactly matches a default Composer whose selected Agent is a known external Agent
+- **THEN** Renderer SHALL display that Agent's title-prefix icon without waiting for ownership-list success
+- **AND** it SHALL NOT send the draft task key to Host
+
+#### Scenario: External draft becomes a conversation
+- **WHEN** the logical external Composer transfers from its default target to a validated conversation target
+- **THEN** the row SHALL retain the same Agent icon
+- **AND** the validated Host Thread ID MAY retain that ownership in the process-local sidebar cache after the Composer is replaced
+
+#### Scenario: Existing external rows have no matching Composer
+- **WHEN** mounted sidebar rows resolve validated Host Thread IDs whose persisted ownership belongs to known external Agents
+- **THEN** Renderer SHALL display each reviewed Agent icon before its corresponding title
 - **AND** each icon SHALL provide the Agent label without intercepting pointer input
 
-#### Scenario: Codex row is mounted
-- **WHEN** Host reports Codex ownership for a mounted sidebar row
-- **THEN** Renderer SHALL leave the row undecorated
+#### Scenario: No safe Agent source is available
+- **WHEN** local draft correlation is absent or ambiguous and the row/Fiber association, fixed request manager, Host response, or Harness icon is unavailable or malformed
+- **THEN** Renderer SHALL leave the affected row undecorated
+- **AND** it SHALL NOT infer ownership from title, Model Provider, Subagent fields, ordering, task-key contents, or elapsed time
 
-#### Scenario: Ownership lookup is unavailable or malformed
-- **WHEN** the row/Fiber association is missing or ambiguous, the fixed request manager is unavailable, Host rejects the request, the response does not exactly match requested IDs, or the Harness has no known icon
-- **THEN** Renderer SHALL leave affected rows undecorated and SHALL NOT infer ownership from title, Model Provider, Subagent fields, ordering, or timing
+### Requirement: Sidebar ownership lookup tolerates new-Thread persistence ordering
+An ownership-list result of Codex means that no external Mapping Store record was observable for that Host Thread ID at that request. Because a new row can become visible before external persistence is observable, Renderer SHALL treat an initial Codex result as provisional and SHALL revalidate it with a finite bounded backoff. Renderer SHALL accept an external icon only from an exact local Composer association or a later validated Host external-ownership result; retry timing alone MUST NOT infer external ownership. After the retry budget is exhausted with only Codex results, the row SHALL remain undecorated.
+
+#### Scenario: Mapping appears after the first ownership lookup
+- **WHEN** the first ownership-list result for a new row is Codex and a bounded retry later reports a known external Harness
+- **THEN** Renderer SHALL replace the provisional Codex cache entry with that external Agent
+- **AND** it SHALL render the matching icon and stop retrying that Thread
+
+#### Scenario: Persisted Codex ownership remains absent
+- **WHEN** every ownership result through the bounded retry budget is Codex and no exact local external Composer matches the row
+- **THEN** Renderer SHALL leave the row undecorated and stop automatic retries
+
+#### Scenario: Local state resolves during ownership retry
+- **WHEN** an exact local Composer association identifies the row while a provisional Codex retry is pending
+- **THEN** Renderer SHALL use the local Agent, cancel the pending retry, and retain any validated Host Thread association in the process-local cache
 
 ### Requirement: Sidebar ownership decoration survives virtualized row lifecycle
-Renderer SHALL cache successful immutable ownership by Host Thread ID, coalesce DOM scans, and revalidate row connectivity plus its exact DOM/Fiber-derived Host Thread ID before applying asynchronous results. It SHALL remove or replace owned decoration when React replaces title content, recycles a row for another Thread, or the extension is disposed.
+Renderer SHALL cache successful process-local ownership by validated Host Thread ID, coalesce DOM scans, and revalidate row connectivity plus its exact DOM/Fiber-derived Host Thread ID before applying asynchronous results. It SHALL remove or replace owned decoration when React replaces title content, recycles a row for another Thread, or the extension is disposed. Ownership retries SHALL be finite and their timers and provisional state SHALL be cleared when ownership resolves, an explicit refresh invalidates the provisional result, or Renderer is disposed.
 
 #### Scenario: Row is reused before ownership resolves
-- **WHEN** a mounted row changes from one Thread ID to another before the earlier ownership request completes
+- **WHEN** a mounted row changes from one Thread ID to another before the earlier ownership request or retry completes
 - **THEN** Renderer SHALL NOT apply the earlier Thread's Agent icon to the reused row
 
 #### Scenario: React replaces the row title DOM
@@ -335,7 +362,7 @@ Renderer SHALL cache successful immutable ownership by Host Thread ID, coalesce 
 
 #### Scenario: Renderer Extension is disposed
 - **WHEN** the Renderer Binding Probe is disposed
-- **THEN** it SHALL disconnect sidebar observation, remove owned Agent icons, and ignore pending ownership results
+- **THEN** it SHALL disconnect sidebar observation, cancel ownership retry timers, remove owned Agent icons, and ignore pending ownership results
 
 ### Requirement: Fork-created conversations recover immutable Agent ownership
 When the supported Renderer mounts a conversation target that did not come from the current draft replacement, it SHALL query a fixed Host Thread inspection operation. A mapped external Thread SHALL initialize as that Harness and locked; an official Thread SHALL initialize as Codex without exposing Native identity.

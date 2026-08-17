@@ -10,6 +10,7 @@ import type { RendererAgent } from "../src/agent-selection-state.js";
 import type { RendererModelClient } from "../src/renderer-model-client.js";
 import {
   installRendererSidebarAgentIcons,
+  draftIdFromSidebarRowElement,
   rendererAgentForThreadOwnership,
   threadIdFromSidebarRowElement,
   type SidebarAgentIconDom,
@@ -26,7 +27,10 @@ class FakeRow implements SidebarAgentIconRow {
   renders = 0;
   clears = 0;
 
-  constructor(public id: string | null) {}
+  constructor(
+    public id: string | null,
+    public draft: string | null = null,
+  ) {}
 
   isConnected(): boolean {
     return this.connected;
@@ -34,6 +38,10 @@ class FakeRow implements SidebarAgentIconRow {
 
   threadId(): string | null {
     return this.id;
+  }
+
+  draftId(): string | null {
+    return this.draft;
   }
 
   render(agent: Exclude<RendererAgent, "codex">): void {
@@ -128,13 +136,94 @@ function fiberRow(
 }
 
 describe("Renderer sidebar Agent ownership", () => {
-  it("resolves one validated Fiber conversation identity instead of the opaque task key", () => {
+  it("resolves the draft key separately from the Fiber conversation identity", () => {
+    const attributes = {
+      "data-app-action-sidebar-thread-row": "",
+      "data-app-action-sidebar-thread-id": "local:client-new-thread:opaque",
+      "data-app-action-sidebar-thread-host-id": "local",
+    };
+    const row = {
+      getAttribute(attribute: string) {
+        return attributes[attribute as keyof typeof attributes] ?? null;
+      },
+    } as HTMLElement;
+    expect(draftIdFromSidebarRowElement(row)).toBe("client-new-thread:opaque");
     expect(threadIdFromSidebarRowElement(fiberRow(["thread-1", "thread-1"]))).toBe("thread-1");
     expect(
       threadIdFromSidebarRowElement(fiberRow(["thread-1"], { matchingAttributes: false })),
     ).toBeNull();
     expect(threadIdFromSidebarRowElement(fiberRow(["thread-1", "thread-2"]))).toBeNull();
     expect(threadIdFromSidebarRowElement(fiberRow(["thread-1"], { fiberCount: 2 }))).toBeNull();
+  });
+
+  it("uses a mounted draft Agent before querying ownership", async () => {
+    const row = new FakeRow(null, "client-new-thread:opaque");
+    const dom = new FakeDom([row]);
+    const client = clientWith(async () => ({ threads: [] }));
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getLocalAgent: ({ draftId }) => (draftId === "client-new-thread:opaque" ? "pi" : null),
+      dom,
+    });
+
+    await settle();
+
+    expect(row.agent).toBe("pi");
+    expect(client.listThreadOwnership).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("retains local ownership after the draft Composer is no longer matched", async () => {
+    const row = new FakeRow("draft-thread", "client-new-thread:opaque");
+    const dom = new FakeDom([row]);
+    let localAgent: RendererAgent | null = "pi";
+    const client = clientWith(async () => ({ threads: [] }));
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getLocalAgent: () => localAgent,
+      dom,
+    });
+
+    await settle();
+    localAgent = null;
+    dom.change();
+    await settle();
+
+    expect(row.agent).toBe("pi");
+    expect(client.listThreadOwnership).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("rechecks provisional Codex ownership until an external mapping appears", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("new-thread");
+      const dom = new FakeDom([row]);
+      const listThreadOwnership = vi
+        .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
+        .mockResolvedValueOnce({
+          threads: [{ threadId: "new-thread" as HostThreadId, owner: "codex" }],
+        })
+        .mockResolvedValueOnce({
+          threads: [
+            {
+              threadId: "new-thread" as HostThreadId,
+              owner: "external",
+              harnessId: PI_HARNESS_ID,
+            },
+          ],
+        });
+      const client = clientWith(listThreadOwnership);
+      const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+
+      await vi.runAllTimersAsync();
+
+      expect(listThreadOwnership).toHaveBeenCalledTimes(2);
+      expect(row.agent).toBe("pi");
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("batches mounted rows and decorates only known external Agents", async () => {

@@ -1,7 +1,6 @@
 # Local-only references, private documentation, and agent state
 /docsp/
 /reference/
-/grok-build/
 /.pi/
 /downloads/
 /.codexhost/

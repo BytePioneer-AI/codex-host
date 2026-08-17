@@ -212,6 +212,7 @@ function executableCandidates(command: string, environment: NodeJS.ProcessEnv): 
 export interface DeepSeekCommandInvocation {
   command: string;
   arguments: string[];
+  kind: "configured" | "dsh" | "npx";
 }
 
 function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): string | null {
@@ -233,12 +234,14 @@ export function resolveDeepSeekCommand(
 ): DeepSeekCommandInvocation | null {
   if (configured) {
     const command = resolveExecutable(configured, environment);
-    return command ? { command, arguments: [] } : null;
+    return command ? { command, arguments: [], kind: "configured" } : null;
   }
   const dsh = resolveExecutable("dsh", environment);
-  if (dsh) return { command: dsh, arguments: [] };
+  if (dsh) return { command: dsh, arguments: [], kind: "dsh" };
   const npx = resolveExecutable(process.platform === "win32" ? "npx.cmd" : "npx", environment);
-  return npx ? { command: npx, arguments: ["--no-install", "@deepseek-ai/dsh"] } : null;
+  return npx
+    ? { command: npx, arguments: ["--no-install", "@deepseek-ai/dsh"], kind: "npx" }
+    : null;
 }
 
 function unwrap<T>(
@@ -358,6 +361,12 @@ export class DeepSeekHostConnection {
       for (;;) {
         if (processError) throw processError;
         if (child.exitCode !== null || child.signalCode !== null) {
+          if (invocation.kind === "npx") {
+            throw new DeepSeekHarnessTransportError(
+              "notInstalled",
+              "DeepSeek Harness package is not installed",
+            );
+          }
           throw new DeepSeekHarnessTransportError(
             "processExited",
             "DeepSeek Harness Web exited during startup",

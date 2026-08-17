@@ -10,6 +10,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
   type JsonValue,
@@ -59,6 +60,33 @@ function isSyntheticGrokTurnKey(nativeTurnKey: string): boolean {
   return taskCompletedTurnKeyPattern.test(nativeTurnKey);
 }
 
+function isHostTurnEvent(event: GrokTransportEvent): boolean {
+  return event.metadata?.hostTurn === true || event.metadata?.host_turn === true;
+}
+
+function userEventIdentity(
+  event: Extract<GrokTransportEvent, { type: "user.text" }>,
+): string | null {
+  const eventId = event.metadata?.eventId;
+  if (typeof eventId === "string" && eventId.length > 0) return eventId;
+  return event.messageId && event.messageId.length > 0 ? event.messageId : null;
+}
+
+function explicitPromptIndex(event: GrokTransportEvent): number | null {
+  const value = event.metadata?.promptIndex ?? event.metadata?.prompt_index;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+export function grokCheckpointId(promptIndex: number): string {
+  return String(promptIndex);
+}
+
+export function parseGrokPromptIndex(checkpointId: string): number | null {
+  if (!/^\d+$/u.test(checkpointId)) return null;
+  const index = Number(checkpointId);
+  return Number.isInteger(index) ? index : null;
+}
+
 export function mapGrokReplay(
   replay: readonly GrokTransportEvent[],
   harnessId: HarnessId,
@@ -77,6 +105,8 @@ export function mapGrokReplay(
   let turnIndex = 0;
   let messageIndex = 0;
   let nativeTurnKey: string | null = null;
+  let nativePromptIndex = 0;
+  let currentPromptIndex: number | null = null;
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, HostToolExecutionItem>();
@@ -136,11 +166,20 @@ export function mapGrokReplay(
     completeReasoning();
     completeAgent();
     completeTools();
+    if (currentPromptIndex === null) {
+      throw new Error("Grok Native history Turn has no Prompt Index");
+    }
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId,
         nativeSessionId: sessionId,
         nativeTurnKey: stableKey,
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId,
+        nativeSessionId: sessionId,
+        checkpointId: grokCheckpointId(currentPromptIndex),
         formatVersion: 1,
       }),
       input: [{ type: "text", text: input }],
@@ -150,26 +189,32 @@ export function mapGrokReplay(
     turnIndex += 1;
     messageIndex = 0;
     nativeTurnKey = null;
+    currentPromptIndex = null;
     input = "";
     items = [];
   };
 
   for (const event of replay) {
     if (event.type === "user.text") {
-      if (isSyntheticGrokUserText(event.text)) continue;
+      if (isHostTurnEvent(event)) continue;
+      if (isSyntheticGrokUserText(event.text)) {
+        if (input.length > 0) {
+          completeTurn({
+            status: "unknown",
+            reason: "Grok Native history has no terminal signal",
+          });
+        }
+        nativePromptIndex = (explicitPromptIndex(event) ?? nativePromptIndex) + 1;
+        continue;
+      }
       if (input.length > 0) {
-        completeTurn({
-          status: "unknown",
-          reason: "Grok Native history has no terminal signal",
-        });
+        input += event.text;
+        continue;
       }
-      input += event.text;
-      const eventId = event.metadata?.eventId;
-      if (!nativeTurnKey && typeof eventId === "string" && eventId.length > 0) {
-        nativeTurnKey = eventId;
-      } else if (!nativeTurnKey && event.messageId) {
-        nativeTurnKey = event.messageId;
-      }
+      currentPromptIndex = explicitPromptIndex(event) ?? nativePromptIndex;
+      nativePromptIndex = currentPromptIndex + 1;
+      input = event.text;
+      nativeTurnKey = userEventIdentity(event);
       continue;
     }
     if (input.length === 0) continue;
@@ -223,4 +268,13 @@ export function mapGrokReplay(
   }
   completeTurn({ status: "unknown", reason: "Grok Native history has no terminal signal" });
   return { turns };
+}
+
+export function resolveGrokTargetPromptIndex(
+  snapshot: HostThreadSnapshot,
+  checkpointId: string,
+): number | null {
+  const turn = snapshot.turns.find((entry) => entry.checkpoint?.checkpointId === checkpointId);
+  if (!turn?.checkpoint) return null;
+  return parseGrokPromptIndex(turn.checkpoint.checkpointId);
 }

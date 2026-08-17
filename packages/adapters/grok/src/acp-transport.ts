@@ -7,6 +7,7 @@ import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
   PROTOCOL_VERSION,
+  RequestError,
   ndJsonStream,
   type Client,
   type InitializeResponse,
@@ -21,6 +22,12 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./command.js";
+import {
+  GROK_SESSION_DELETE_METHOD,
+  GROK_SESSION_FORK_METHOD,
+  parseGrokForkResponse,
+  type GrokForkParams,
+} from "./grok-fork.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -86,6 +93,16 @@ export interface GrokAcpTransportOptions {
   closeTimeoutMs?: number;
   onFault?: (error: GrokTransportError) => void;
 }
+
+export interface GrokForkOpenInput {
+  kind: "fork";
+  sourceSessionId: string;
+  sourceCwd: string;
+  targetPromptIndex: number;
+}
+
+export type GrokOpenInput =
+  { kind: "create" } | { kind: "resume"; sessionId: string } | GrokForkOpenInput;
 
 export interface GrokOpenResult {
   initialize: InitializeResponse;
@@ -271,6 +288,27 @@ function isMissingFile(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
 }
 
+export async function readGrokNativeHistory(
+  options: GrokAcpTransportOptions,
+  sessionId: string,
+): Promise<GrokTransportEvent[]> {
+  try {
+    return parseNativeHistory(
+      await readFile(
+        nativeHistoryPath({ ...options, cwd: path.resolve(options.cwd) }, sessionId),
+        "utf8",
+      ),
+      sessionId,
+    );
+  } catch (error) {
+    if (isMissingFile(error)) return [];
+    if (error instanceof GrokTransportError) throw error;
+    throw new GrokTransportError("unavailable", "Grok Native history could not be read", {
+      cause: error,
+    });
+  }
+}
+
 function parseNativeHistory(contents: string, sessionId: string): GrokTransportEvent[] {
   const events: GrokTransportEvent[] = [];
   for (const line of contents.split("\n")) {
@@ -340,31 +378,34 @@ export class GrokAcpTransport {
   }
 
   async getHistory(): Promise<GrokTransportEvent[]> {
-    const sessionId = this.sessionId;
-    try {
-      return parseNativeHistory(
-        await readFile(nativeHistoryPath(this.#options, sessionId), "utf8"),
-        sessionId,
-      );
-    } catch (error) {
-      if (isMissingFile(error)) return [];
-      if (error instanceof GrokTransportError) throw error;
-      throw new GrokTransportError("unavailable", "Grok Native history could not be read", {
-        cause: error,
-      });
-    }
+    return this.readHistory(this.sessionId);
   }
 
-  async open(
-    input: { kind: "create" } | { kind: "resume"; sessionId: string },
-  ): Promise<GrokOpenResult> {
+  async readHistory(sessionId: string): Promise<GrokTransportEvent[]> {
+    return readGrokNativeHistory(this.#options, sessionId);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.#ensureInitialized();
+    if (!this.#connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    await withTimeout(
+      this.#connection.request(GROK_SESSION_DELETE_METHOD, {
+        sessionId,
+        cwd: this.#options.cwd,
+      }),
+      this.#options.commandTimeoutMs,
+      "Grok Session delete",
+    );
+  }
+
+  async open(input: GrokOpenInput): Promise<GrokOpenResult> {
     if (this.#sessionId || this.#closed)
       throw new Error("Grok ACP Transport cannot be opened twice");
     try {
       const initialize = await this.#ensureInitialized();
       const connection = this.#connection;
       if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
-      this.#replay = input.kind === "resume" ? [] : null;
+      this.#replay = input.kind === "resume" || input.kind === "fork" ? [] : null;
       let session: NewSessionResponse | LoadSessionResponse;
       let sessionId: string;
       if (input.kind === "create") {
@@ -375,6 +416,32 @@ export class GrokAcpTransport {
         );
         session = created;
         sessionId = created.sessionId;
+      } else if (input.kind === "fork") {
+        const forked = await this.#forkSession({
+          sourceSessionId: input.sourceSessionId,
+          sourceCwd: input.sourceCwd,
+          newCwd: this.#options.cwd,
+          targetPromptIndex: input.targetPromptIndex,
+          sessionKind: "fork",
+        });
+        try {
+          session = await withTimeout(
+            connection.loadSession({
+              cwd: this.#options.cwd,
+              mcpServers: [],
+              sessionId: forked.newSessionId,
+            }),
+            this.#options.commandTimeoutMs,
+            "Grok Session load",
+          );
+        } catch (error) {
+          throw new GrokTransportError(
+            "unavailable",
+            `Grok Fork succeeded as ${forked.newSessionId} but session/load failed`,
+            { cause: error },
+          );
+        }
+        sessionId = forked.newSessionId;
       } else {
         session = await withTimeout(
           connection.loadSession({
@@ -406,6 +473,38 @@ export class GrokAcpTransport {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
       throw classified;
+    }
+  }
+
+  async #forkSession(params: GrokForkParams): Promise<{ newSessionId: string }> {
+    if (!this.#connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    try {
+      const raw = await withTimeout(
+        this.#connection.request(GROK_SESSION_FORK_METHOD, params),
+        this.#options.commandTimeoutMs,
+        "Grok Session fork",
+      );
+      const parsed = parseGrokForkResponse(raw);
+      if (!parsed) {
+        throw new GrokTransportError("protocolError", "Grok Fork returned no Session identity");
+      }
+      if (parsed.newSessionId === params.sourceSessionId) {
+        throw new GrokTransportError(
+          "protocolError",
+          "Grok Fork returned the source Session identity",
+        );
+      }
+      return parsed;
+    } catch (error) {
+      if (error instanceof GrokTransportError) throw error;
+      if (error instanceof RequestError && error.code === -32601) {
+        throw new GrokTransportError(
+          "protocolError",
+          `Grok ACP Method Not Found: ${GROK_SESSION_FORK_METHOD}`,
+          { cause: error },
+        );
+      }
+      throw new GrokTransportError("unavailable", "Grok Native Fork failed", { cause: error });
     }
   }
 

@@ -7,6 +7,8 @@ import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessModelRefSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
   nativeTurnRefSchema,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -14,7 +16,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   GrokAdapter,
+  GrokTransportError,
+  GROK_SESSION_FORK_METHOD,
   type GrokAcpTransportLike,
+  type GrokOpenInput,
   type GrokOpenResult,
   type GrokPermissionRequest,
   type GrokTransportEvent,
@@ -49,8 +54,15 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly cancel = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
+  readonly deleteSession = vi.fn(async (sessionId: string) => {
+    this.histories.delete(sessionId);
+  });
+  readonly forkCalls: Extract<GrokOpenInput, { kind: "fork" }>[] = [];
+  histories = new Map<string, GrokTransportEvent[]>();
   replay: GrokTransportEvent[] = [];
   signals: unknown;
+  methodNotFound = false;
+  forkImpl?: (input: Extract<GrokOpenInput, { kind: "fork" }>) => Promise<{ sessionId: string }>;
   #activePromptEvents: GrokTransportEvent[] = [];
   #activePromptText: string | null = null;
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
@@ -62,10 +74,27 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     return initialize;
   }
 
-  async open(
-    input: { kind: "create" } | { kind: "resume"; sessionId: string },
-  ): Promise<GrokOpenResult> {
-    if (input.kind === "resume") this.sessionId = input.sessionId;
+  async open(input: GrokOpenInput): Promise<GrokOpenResult> {
+    if (input.kind === "resume") {
+      this.sessionId = input.sessionId;
+      const stored = this.histories.get(input.sessionId);
+      if (stored) this.replay = [...stored];
+    } else if (input.kind === "fork") {
+      this.forkCalls.push(input);
+      if (this.methodNotFound) {
+        throw new GrokTransportError(
+          "protocolError",
+          `Grok ACP Method Not Found: ${GROK_SESSION_FORK_METHOD}`,
+        );
+      }
+      if (this.forkImpl) {
+        const forked = await this.forkImpl(input);
+        this.sessionId = forked.sessionId;
+        this.replay = [...(this.histories.get(forked.sessionId) ?? [])];
+      } else {
+        throw new GrokTransportError("unavailable", "Grok Native Fork failed");
+      }
+    }
     return {
       initialize,
       session: { sessionId: this.sessionId },
@@ -76,7 +105,13 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   }
 
   async getHistory(): Promise<GrokTransportEvent[]> {
-    return [...this.replay];
+    return this.readHistory(this.sessionId);
+  }
+
+  async readHistory(sessionId: string): Promise<GrokTransportEvent[]> {
+    const stored = this.histories.get(sessionId);
+    if (stored) return [...stored];
+    return sessionId === this.sessionId ? [...this.replay] : [];
   }
 
   runTurn(
@@ -908,6 +943,9 @@ describe("Grok Adapter ACP projection", () => {
     expect(adapter.credits()).toBeNull();
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
+      capabilities: {
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
     });
     await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
     expect(adapter.credits()).toEqual(snapshot);
@@ -960,6 +998,219 @@ describe("Grok Adapter ACP projection", () => {
     }
     expect(fetches).toBeGreaterThan(fetchesAfterOpen);
     expect(adapter.credits()?.usedPercent).toBe(Math.min(fetches * 10, 100));
+    await adapter.close();
+  });
+
+  it("forks an exact Native prefix at the requested Prompt Index", async () => {
+    const transport = new FakeGrokTransport();
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+      { type: "agent.text", text: "answer-2" },
+      { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+      { type: "user.text", text: "third", metadata: { eventId: "user-3" } },
+      { type: "agent.text", text: "answer-3" },
+      { type: "turn.completed", nativeTurnKey: "prompt-3", stopReason: "end_turn" },
+    ];
+    transport.histories.set("source-session", sourceHistory);
+    transport.forkImpl = async () => {
+      const prefix = sourceHistory.slice(0, 3);
+      transport.histories.set("child-session", prefix);
+      return { sessionId: "child-session" };
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: adapter.harnessId,
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: adapter.harnessId,
+      nativeSessionId: "source-session",
+      checkpointId: "0",
+      formatVersion: 1,
+    });
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "child-session" },
+    });
+    expect(opened.value.capabilities.history).toEqual({
+      fork: true,
+      forkAcrossCwd: false,
+      rollbackLastTurn: false,
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: { nativeSessionId: "child-session", nativeTurnKey: "prompt-1" },
+            checkpoint: { nativeSessionId: "child-session", checkpointId: "0" },
+            input: [{ text: "first" }],
+          },
+        ],
+      },
+    });
+    expect(transport.forkCalls).toEqual([
+      {
+        kind: "fork",
+        sourceSessionId: "source-session",
+        sourceCwd: "/synthetic",
+        targetPromptIndex: 0,
+      },
+    ]);
+    expect(transport.deleteSession).not.toHaveBeenCalled();
+    await opened.value.close();
+  });
+
+  it("maps Host Turn past a synthetic Prompt to the Native Prompt Index", async () => {
+    const transport = new FakeGrokTransport();
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      {
+        type: "user.text",
+        text: "<system-reminder>\nBackground task done.\n</system-reminder>",
+        metadata: { eventId: "user-bg" },
+      },
+      { type: "turn.completed", nativeTurnKey: "task-completed-1", stopReason: "end_turn" },
+      { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+      { type: "agent.text", text: "answer-2" },
+      { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+    ];
+    transport.histories.set("source-session", sourceHistory);
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", sourceHistory);
+      return { sessionId: "child-session" };
+    };
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef: nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: "source-session",
+        checkpointId: "2",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.forkCalls[0]?.targetPromptIndex).toBe(2);
+    await opened.value.close();
+  });
+
+  it("rejects a stale Checkpoint before calling Grok Fork", async () => {
+    const transport = new FakeGrokTransport();
+    transport.histories.set("source-session", [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ]);
+    transport.forkImpl = async () => ({ sessionId: "child-session" });
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic",
+        sourceRef: nativeSessionRefSchema.parse({
+          harnessId: adapter.harnessId,
+          nativeSessionId: "source-session",
+          formatVersion: 1,
+        }),
+        checkpoint: nativeCheckpointRefSchema.parse({
+          harnessId: adapter.harnessId,
+          nativeSessionId: "source-session",
+          checkpointId: "9",
+          formatVersion: 1,
+        }),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(transport.forkCalls).toEqual([]);
+    await adapter.close();
+  });
+
+  it("maps Method Not Found to unsupported Fork and deletes an inexact child", async () => {
+    const transport = new FakeGrokTransport();
+    transport.histories.set("source-session", [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ]);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: adapter.harnessId,
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: adapter.harnessId,
+      nativeSessionId: "source-session",
+      checkpointId: "0",
+      formatVersion: 1,
+    });
+    transport.methodNotFound = true;
+    await expect(
+      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    transport.methodNotFound = false;
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", [
+        { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+        { type: "agent.text", text: "answer-1" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        { type: "user.text", text: "extra", metadata: { eventId: "user-x" } },
+        { type: "agent.text", text: "too-much" },
+        { type: "turn.completed", nativeTurnKey: "prompt-x", stopReason: "end_turn" },
+      ]);
+      return { sessionId: "child-session" };
+    };
+    await expect(
+      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(transport.deleteSession).toHaveBeenCalledWith("child-session");
     await adapter.close();
   });
 });

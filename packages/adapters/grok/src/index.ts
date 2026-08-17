@@ -8,13 +8,21 @@ export type {
 } from "./grok-adapter.js";
 export { fetchGrokCredits, parseGrokCreditsResponse } from "./grok-credits.js";
 export type { GrokCreditsSnapshot, GrokProductUsage } from "./grok-credits.js";
-export { GrokAcpTransport, GrokTransportError } from "./acp-transport.js";
+export { GrokAcpTransport, GrokTransportError, readGrokNativeHistory } from "./acp-transport.js";
 export type {
   GrokAcpTransportOptions,
+  GrokForkOpenInput,
+  GrokOpenInput,
   GrokOpenResult,
   GrokPermissionRequest,
   GrokTransportEvent,
 } from "./acp-transport.js";
+export {
+  GROK_SESSION_FORK_METHOD,
+  buildGrokForkParams,
+  parseGrokForkResponse,
+} from "./grok-fork.js";
+export type { GrokForkParams, GrokForkResponse } from "./grok-fork.js";
 export { GrokExecutableError, resolveGrokExecutable } from "./command.js";
 
 export const packageMetadata = {

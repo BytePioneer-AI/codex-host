@@ -58,6 +58,7 @@ import {
   type HarnessThinkingOptionId,
   type HostInteractionId,
   type JsonValue,
+  type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -66,11 +67,13 @@ import {
   GrokAcpTransport,
   GrokTransportError,
   type GrokAcpTransportOptions,
+  type GrokOpenInput,
   type GrokOpenResult,
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
+import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
 import {
   modelStateFromInitialize,
@@ -104,8 +107,10 @@ export interface GrokAdapterDependencies {
 export interface GrokAcpTransportLike {
   readonly sessionId: string;
   inspect(): Promise<GrokOpenResult["initialize"]>;
-  open(input: { kind: "create" } | { kind: "resume"; sessionId: string }): Promise<GrokOpenResult>;
+  open(input: GrokOpenInput): Promise<GrokOpenResult>;
   getHistory(): Promise<GrokTransportEvent[]>;
+  readHistory(sessionId: string): Promise<GrokTransportEvent[]>;
+  deleteSession(sessionId: string): Promise<void>;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
@@ -152,7 +157,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: false,
     },
-    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -788,6 +793,7 @@ class GrokHarnessSession implements HarnessSession {
   ): Promise<void> {
     let history: GrokTransportEvent[] = [];
     let nativeTurnRef: NativeTurnRef | undefined;
+    let checkpoint: NativeCheckpointRef | undefined;
     try {
       history = await this.#refreshSnapshot();
       const created = this.#snapshot.turns.filter(
@@ -799,6 +805,7 @@ class GrokHarnessSession implements HarnessSession {
         );
       }
       nativeTurnRef = created[0]?.nativeTurnRef;
+      checkpoint = created[0]?.checkpoint;
     } catch (error) {
       if (outcome.status === "succeeded") {
         outcome = { status: "failed", error: normalizeError(error, "protocolError") };
@@ -807,7 +814,7 @@ class GrokHarnessSession implements HarnessSession {
     await this.#refreshCredits().catch(() => undefined);
     this.#finish(
       active,
-      outcome,
+      checkpoint ? { ...outcome, checkpoint } : outcome,
       sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null),
       nativeTurnRef,
     );
@@ -1003,12 +1010,12 @@ export class GrokAdapter implements HarnessAdapter {
         ok: false,
         error: { code: "invalidRequest", message: "Grok Adapter requires cwd", retryable: false },
       };
-    if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
+    if (input.kind === "rollbackLastTurn") {
       return {
         ok: false,
         error: {
           code: "unsupported",
-          message: "Grok MVP does not support exact history mutation",
+          message: "Grok does not support last-turn Rollback",
           retryable: false,
         },
       };
@@ -1039,11 +1046,47 @@ export class GrokAdapter implements HarnessAdapter {
     let session: GrokHarnessSession | null = null;
     const transport = this.#createTransport(cwd, (error) => session?.handleTransportFault(error));
     try {
-      const opened = await transport.open(
-        parsedRef?.success
-          ? { kind: "resume", sessionId: parsedRef.data.nativeSessionId }
-          : { kind: "create" },
-      );
+      let opened: GrokOpenResult | undefined;
+      if (input.kind === "fork") {
+        const forked = await forkGrokSession({
+          checkpoint: input.checkpoint,
+          cwd,
+          harnessId: this.harnessId,
+          sourceRef: input.sourceRef,
+          readHistory: (_historyCwd, sessionId) => transport.readHistory(sessionId),
+          forkAndLoad: async (params) => {
+            opened = await transport.open({
+              kind: "fork",
+              sourceSessionId: params.sourceSessionId,
+              sourceCwd: params.sourceCwd,
+              targetPromptIndex: params.targetPromptIndex,
+            });
+            return { sessionId: opened.sessionId };
+          },
+          deleteSession: async (_historyCwd, sessionId) => transport.deleteSession(sessionId),
+        });
+        if (!forked.ok) {
+          await transport.close().catch(() => undefined);
+          return forked;
+        }
+      } else {
+        opened = await transport.open(
+          parsedRef?.success
+            ? { kind: "resume", sessionId: parsedRef.data.nativeSessionId }
+            : { kind: "create" },
+        );
+      }
+      if (!opened) {
+        await transport.close().catch(() => undefined);
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Grok Native Fork did not open a Session",
+            retryable: true,
+          },
+        };
+      }
       const modelState =
         modelStateFromSessionResponse(opened.session) ??
         modelStateFromInitialize(opened.initialize);
@@ -1078,7 +1121,7 @@ export class GrokAdapter implements HarnessAdapter {
       }
       const history = await transport.getHistory();
       const initialUsage =
-        input.kind === "resume"
+        input.kind === "resume" || input.kind === "fork"
           ? combineUsage(sessionUsageFromHistory(history), usageFromSignals(opened.signals))
           : null;
       const openedSession = new GrokHarnessSession(

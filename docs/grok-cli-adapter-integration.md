@@ -187,7 +187,7 @@ xAI Model API、OpenAI-compatible API 或 `@ai-sdk/xai` 属于 Model/Provider �
 | 会话恢复 | 原生 | 支持 | 支持 | 支持 | `updates.jsonl` 校验历史 |
 | 完整历史读取 | 原生 | 支持 | 支持 | 可回放但稳定身份不足 | `updates.jsonl`、`summary.json` |
 | Thread / Session 管理 | 原生 | 支持 | 部分支持 | 基础能力可协商 | Grok Session 扩展 |
-| Fork | 原生 | 任意 Turn | 任意 Turn | ACP v1 不统一保证 | Grok 当前仅支持会话末尾 Fork |
+| Fork | 原生 | 任意 Turn | 任意 Turn | ACP v1 不统一保证 | `_x.ai/session/fork` 支持按 Prompt Index Fork |
 | 上下文压缩 | 原生 | 支持 | 支持 | 不统一保证 | Grok Compaction 通知/扩展 |
 | 斜杠命令 | 原生 | 开发中 | 开发中 | 可发现，执行语义不统一 | Grok Commands 扩展 |
 | 修订/回滚上一条 | 原生 | 支持 | 部分支持 | 标准能力不足 | Grok Rewind 语义需验证 |
@@ -340,7 +340,7 @@ const capabilities = {
     selectPermissionMode: hasSessionModes,
   },
   history: {
-    fork: false,
+    fork: true,
     forkAcrossCwd: false,
     rollbackLastTurn: false,
   },
@@ -349,50 +349,29 @@ const capabilities = {
 
 ## 9. Fork 和 Rollback 限制
 
-Grok 提供 `x.ai/session/fork`，但当前 Grok CLI 只能从 Session 当前末尾创建新 Session，不能指定某个历史 Turn。
+Grok 通过同一条 ACP JSON-RPC 提供 `_x.ai/session/fork`，参数使用 camelCase。本机 `grok 1.0.5` 已验证该扩展支持完整历史和 `targetPromptIndex` 部分历史 Fork。这不是标准 ACP `session/fork`，也不是 `ext_method` 信封。
 
-codexhost 当前的 Fork 语义是：
+codexhost 的映射是：
 
 ```text
 指定 Host Turn
-    -> Native Checkpoint
+    -> Native Checkpoint（Grok Prompt Index）
+    -> _x.ai/session/fork
+    -> session/load
     -> 创建独立 Native Session
 ```
 
-Grok 当前能力是：
-
-```text
-Native Session 当前末尾
-    -> Fork
-    -> 创建独立 Native Session
-```
-
-两者不等价。当前 `HarnessSessionCapabilities` 只有布尔 `history.fork`，无法表达“仅末尾 Fork”。因此 Grok 首版应声明：
+Grok Adapter 在端到端验证后声明：
 
 ```ts
 history: {
-  fork: false,
+  fork: true,
   forkAcrossCwd: false,
   rollbackLastTurn: false,
 }
 ```
 
-长期可以考虑把 Fork 能力改为：
-
-```ts
-fork: "none" | "latest" | "checkpoint";
-```
-
-对应：
-
-| Harness | Fork 模式 |
-| --- | --- |
-| Pi | `checkpoint` |
-| Claude Code | `checkpoint` |
-| Grok | `latest` |
-| 普通 ACP Harness | 按能力探测 |
-
-Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
+`forkAcrossCwd` 在不同 cwd / Worktree 行为完成真实测试前必须保持 `false`。Grok Rewind 会截断或修改原生会话历史，而 codexhost 的 Rollback 还要求生成独立 Native Session 并保持配置。未验证满足该语义之前，不能声明 `rollbackLastTurn: true`。
 
 ## 10. Edit Diff
 

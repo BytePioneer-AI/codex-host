@@ -271,7 +271,7 @@ describe("npm package release", () => {
     expect(source).toContain('"linux-x64": "@codexhost/cli-linux-x64"');
     expect(source).toContain("require.resolve");
     expect(source).toContain("--omit=optional");
-    expect(source).toContain('launchArguments = ["launch", "--agent", "pi"]');
+    expect(source).toContain('launchArguments = ["launch"]');
     expect(source).toContain('extras.push("--node", process.execPath)');
     expect(source).toContain('extras.push("--shim", shim)');
     expect(source).toContain('extras.push("--host-runtime", hostRuntime)');

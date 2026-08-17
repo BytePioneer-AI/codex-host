@@ -49,7 +49,7 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     fs::copy(&source, &installed).expect("copy installed launcher");
 
     let output = Command::new(&installed)
-        .args(["launch", "--agent", "codex"])
+        .args(["launch"])
         .output()
         .expect("run installed launcher");
     fs::remove_dir_all(&root).expect("remove release layout");
@@ -64,7 +64,7 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn finder_launch_resolves_standard_app_resources_and_defaults_to_pi() {
+fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")

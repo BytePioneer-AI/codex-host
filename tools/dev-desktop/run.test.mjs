@@ -61,15 +61,13 @@ afterEach(() => {
 });
 
 describe("development Desktop start", () => {
-  it("parses a production-like default and bounded options", () => {
-    expect(parseArguments([])).toEqual({ agent: "codex", build: true, help: false });
-    expect(parseArguments(["--agent", "codex", "--no-build"])).toEqual({
-      agent: "codex",
+  it("parses the default and bounded options", () => {
+    expect(parseArguments([])).toEqual({ build: true, help: false });
+    expect(parseArguments(["--no-build"])).toEqual({
       build: false,
       help: false,
     });
-    expect(parseArguments(["--agent=pi", "--help"])).toEqual({
-      agent: "pi",
+    expect(parseArguments(["--help"])).toEqual({
       build: true,
       help: true,
     });
@@ -79,10 +77,7 @@ describe("development Desktop start", () => {
 
   it("rejects unknown, duplicate, and malformed options", () => {
     expect(() => parseArguments(["--desktop", "private.exe"])).toThrow("unknown option");
-    expect(() => parseArguments(["--agent", "claude-code"])).toThrow("must be 'codex' or 'pi'");
-    expect(() => parseArguments(["--agent", "pi", "--agent=codex"])).toThrow(
-      "may only be provided once",
-    );
+    expect(() => parseArguments(["--agent", "codex"])).toThrow("unknown option");
     expect(() => parseArguments(["--no-build", "--no-build"])).toThrow("may only be provided once");
   });
 
@@ -161,12 +156,10 @@ describe("development Desktop start", () => {
     const nodePath = path.join(root, "runtime", "node");
     const piPath = path.join(root, "tools", "pi");
     const artifacts = developmentArtifacts(root, "linux", nodePath);
-    const invocation = launcherInvocation(artifacts, "codex", piPath);
+    const invocation = launcherInvocation(artifacts, piPath);
     expect(invocation.command).toBe(artifacts.launcher);
     expect(invocation.arguments).toEqual([
       "launch",
-      "--agent",
-      "codex",
       "--shim",
       artifacts.shim,
       "--node",
@@ -199,7 +192,7 @@ describe("development Desktop start", () => {
 
     await expect(
       runDevelopmentDesktop({
-        arguments_: ["--agent", "codex"],
+        arguments_: [],
         root,
         platform: "win32",
         nodePath,
@@ -271,7 +264,7 @@ describe("development Desktop start", () => {
     expect(invocations[0].command).toBe("powershell.exe");
     expect(invocations[1]).toMatchObject({
       command: artifacts.launcher,
-      arguments: expect.arrayContaining(["launch", "--agent", "codex"]),
+      arguments: expect.arrayContaining(["launch"]),
       options: expect.objectContaining({
         cwd: root,
         stdio: ["ignore", "pipe", "inherit"],

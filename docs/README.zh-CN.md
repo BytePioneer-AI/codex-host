@@ -84,19 +84,13 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 然后重新打开 `codexhost`。
 
-Windows 上如果使用的是解压版 Codex Desktop（把官方 MSIX 解压出来直接运行，没有注册 AppX 包），系统包管理器查不到它，`codexhost` 会提示 `official OpenAI.Codex AppX package is not installed for the current user`。把 `CODEXHOST_INSTALL_ROOT` 指向解压根目录（即包含 `app\ChatGPT.exe` 的那一层）即可：
+Windows 上如果使用绿色解压版 Codex Desktop，请在启动 codexhost 前手动设置 `CODEXHOST_INSTALL_ROOT`，将其指向包含 `app\ChatGPT.exe` 的目录：
 
 ```powershell
-$env:CODEXHOST_INSTALL_ROOT = "D:\CodexPortable"
-codexhost
+[Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-也可以在单次命令上显式指定，`codexhost inspect` 与 `codexhost launch` 均支持：
-
-```powershell
-codexhost inspect --custom-install D:\CodexPortable
-```
-
+然后重新打开终端并启动 codexhost。NPM 命令和 Windows 安装版都适用。
 <details>
 <summary><h3>怎么做的</h3></summary>
 

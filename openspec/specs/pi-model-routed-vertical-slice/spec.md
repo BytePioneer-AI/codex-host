@@ -2,21 +2,21 @@
 
 ## Purpose
 
-定义 Launcher 级 Agent 选择、Pi Thread 进程内路由、真实 Pi 文本多轮投影和有界进程关闭的技术 PoC 行为基线，并明确该入口不替代公开 MVP 的页面内独立 Agent 选择器。
+定义 Launcher 无需进程级 Agent 参数即可启动完整 Agent 选择器、Pi Thread 进程内路由、真实 Pi 文本多轮投影和有界进程关闭的技术 PoC 行为基线。
 ## Requirements
-### Requirement: Launcher 显式选择技术 PoC Agent
+### Requirement: Launcher 启动完整 Agent 选择器
 
-在技术 PoC中，Launcher MUST要求显式选择本次受控 Desktop使用的 `codex`或 `pi` Agent，并 MUST只通过该 Desktop进程的正式 Host配置传递选择。Protocol Facade MUST在接收真实 `thread/start`的同一处理步骤中把 Pi选择绑定为内部 transport model。系统内部 MUST继续区分 Harness、Model、Provider、Account和 Billing Source。公开 MVP MUST NOT将进程级 Launcher选择声明为最终 Agent选择 UI。
+Launcher MUST支持不带 Agent 参数启动受控 Desktop，并 MUST加载公开 MVP 的全部可用 Agent。生产 Renderer 的初始 Agent固定为 `codex`，用户通过页面内选择器选择其他 Agent。Protocol Facade MUST在接收真实 `thread/start`的同一处理步骤中把 Pi选择绑定为内部 transport model。系统内部 MUST继续区分 Harness、Model、Provider、Account和 Billing Source。
 
-#### Scenario: 启动 Pi Agent技术 PoC
+#### Scenario: 启动并选择 Pi Agent
 
-- **WHEN**用户通过 `codexhost launch --agent pi`启动受控 Desktop并创建新 Thread
+- **WHEN**用户通过 `codexhost launch`启动受控 Desktop，并在页面内选择 Pi 后创建新 Thread
 - **THEN**Protocol Facade MUST在该真实 `thread/start`的接收边界建立 Pi创建路由
 - **AND**内部 transport model MUST只映射到 Pi Harness Native Mode，而不是伪装成 Pi实际调用的 Model
 
-#### Scenario: 启动 Codex Agent
+#### Scenario: 启动并使用默认 Codex Agent
 
-- **WHEN**用户通过 `codexhost launch --agent codex`启动受控 Desktop并创建新 Thread
+- **WHEN**用户通过 `codexhost launch`启动受控 Desktop并创建新 Thread，且未切换页面内 Agent
 - **THEN**创建 Request MUST保持官方 app-server行为
 - **AND**Protocol Facade MUST NOT把官方 Model或 Thread改写为 Pi
 

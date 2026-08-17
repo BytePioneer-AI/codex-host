@@ -400,7 +400,7 @@ const updateEnvironment = {
 
 let launchArguments;
 if (userArguments.length === 0) {
-  launchArguments = ["launch", "--agent", "pi"];
+  launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
@@ -412,7 +412,7 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
-      "  codexhost launch --agent <codex|pi> [launcher options]",
+      "  codexhost launch [launcher options]",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
       "Rust launcher/shim. Codex Desktop must already be installed.",
@@ -531,8 +531,7 @@ This package is platform-specific (\`os=${npmPackageOs(target).join(",")}\`, \`c
 codexhost
 codexhost --version
 codexhost inspect
-codexhost launch --agent pi
-codexhost launch --agent codex
+codexhost launch
 \`\`\`
 
 The \`codexhost\` command launches the packaged Rust launcher with:

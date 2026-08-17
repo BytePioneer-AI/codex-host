@@ -167,19 +167,17 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 `;
 
 export function usage() {
-  return `usage: npm start -- [--agent <codex|pi>] [--no-build]
+  return `usage: npm start -- [--no-build]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 
 options:
-  --agent <codex|pi>  process-level default Agent (default: codex)
   --no-build          reuse existing development artifacts
   --help              show this help`;
 }
 
 export function parseArguments(arguments_) {
-  const options = { agent: "codex", build: true, help: false };
-  let agentProvided = false;
+  const options = { build: true, help: false };
   let buildProvided = false;
 
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -192,17 +190,6 @@ export function parseArguments(arguments_) {
       if (buildProvided) throw new Error("--no-build may only be provided once");
       buildProvided = true;
       options.build = false;
-      continue;
-    }
-    if (argument === "--agent" || argument.startsWith("--agent=")) {
-      if (agentProvided) throw new Error("--agent may only be provided once");
-      agentProvided = true;
-      const value =
-        argument === "--agent" ? arguments_[++index] : argument.slice("--agent=".length);
-      if (value !== "codex" && value !== "pi") {
-        throw new Error(`--agent must be 'codex' or 'pi', got '${value ?? ""}'`);
-      }
-      options.agent = value;
       continue;
     }
     throw new Error(`unknown option: ${argument}`);
@@ -319,11 +306,9 @@ export function runningDesktopCleanupInvocation(platform = process.platform) {
   return null;
 }
 
-export function launcherInvocation(artifacts, agent, piPath = null) {
+export function launcherInvocation(artifacts, piPath = null) {
   const arguments_ = [
     "launch",
-    "--agent",
-    agent,
     "--shim",
     artifacts.shim,
     "--node",
@@ -435,9 +420,8 @@ export async function runDevelopmentDesktop({
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
-  console.log(`codexhost dev: launching with default Agent '${options.agent}'`);
   const launchResult = await runLauncher(
-    launcherInvocation(artifacts, options.agent, piPath),
+    launcherInvocation(artifacts, piPath),
     root,
     spawnImplementation,
   );

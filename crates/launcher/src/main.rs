@@ -97,7 +97,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch --agent <codex|pi> [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]"
+        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]"
     );
 }
 
@@ -206,32 +206,8 @@ fn inspect(custom_install_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Agent {
-    Codex,
-    Pi,
-}
-
-impl Agent {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "codex" => Ok(Self::Codex),
-            "pi" => Ok(Self::Pi),
-            _ => Err(format!("--agent must be 'codex' or 'pi', got '{value}'")),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Pi => "pi",
-        }
-    }
-}
-
 #[derive(Debug)]
 struct LaunchOptions {
-    agent: Agent,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
@@ -243,7 +219,6 @@ struct LaunchOptions {
 
 #[derive(Debug)]
 struct ResolvedLaunchOptions {
-    agent: Agent,
     shim: PathBuf,
     node: PathBuf,
     host_runtime: PathBuf,
@@ -261,20 +236,7 @@ fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Resul
         .ok_or_else(|| format!("{option} requires a path"))
 }
 
-fn required_value<'a>(
-    arguments: &'a [String],
-    index: &mut usize,
-    option: &str,
-) -> Result<&'a str, String> {
-    *index += 1;
-    arguments
-        .get(*index)
-        .map(String::as_str)
-        .ok_or_else(|| format!("{option} requires a value"))
-}
-
 fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
-    let mut agent = None;
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
@@ -285,11 +247,6 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
-            "--agent" => {
-                agent = Some(Agent::parse(required_value(
-                    arguments, &mut index, "--agent",
-                )?)?)
-            }
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
@@ -315,7 +272,6 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         index += 1;
     }
     Ok(LaunchOptions {
-        agent: agent.ok_or("--agent is required")?,
         shim,
         node,
         host_runtime,
@@ -377,7 +333,6 @@ impl LaunchOptions {
     fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
         Ok(ResolvedLaunchOptions {
-            agent: self.agent,
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
             node: resolve_resource_path(
                 self.node,
@@ -428,7 +383,7 @@ fn desktop_controller_command(
         .arg("--renderer")
         .arg(&options.renderer_extension)
         .arg("--default-agent")
-        .arg(options.agent.as_str())
+        .arg("codex")
         .arg("--attachment-port")
         .arg(control.attachment_port.to_string())
         .arg("--attachment-nonce")
@@ -1020,10 +975,7 @@ fn desktop_environment(
             OsString::from(HOST_RUNTIME_PATH_ENV),
             options.host_runtime.as_os_str().to_owned(),
         ),
-        (
-            OsString::from(DEFAULT_AGENT_ENV),
-            OsString::from(Agent::Codex.as_str()),
-        ),
+        (OsString::from(DEFAULT_AGENT_ENV), OsString::from("codex")),
         (
             OsString::from(LAUNCHER_PID_ENV),
             OsString::from(std::process::id().to_string()),
@@ -1296,7 +1248,6 @@ fn launch(
 
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
-        agent: Agent::Codex,
         shim: None,
         node: None,
         host_runtime: None,
@@ -1379,12 +1330,11 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::wait_for_desktop_exit;
     use super::{
-        Agent, CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
+        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
         ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
-        allocate_runtime_control, default_launch_options, desktop_controller_command,
-        desktop_environment, emit_ready_line, parse_inspect_options, parse_launch_options,
-        read_bounded_controller_line,
+        allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
+        parse_inspect_options, parse_launch_options, read_bounded_controller_line,
     };
     #[cfg(target_os = "linux")]
     use crate::compatibility::{
@@ -1497,11 +1447,6 @@ mod tests {
     }
 
     #[test]
-    fn no_argument_launch_defaults_to_codex() {
-        assert_eq!(default_launch_options().agent.as_str(), "codex");
-    }
-
-    #[test]
     fn ready_line_is_the_exact_wrapper_protocol() {
         let mut output = Vec::new();
         emit_ready_line(&mut output).expect("emit ready line");
@@ -1572,10 +1517,8 @@ mod tests {
 
     #[test]
     fn bundled_runtime_paths_are_optional_launch_arguments() {
-        let options =
-            parse_launch_options(&["--agent".into(), "pi".into()]).expect("bundled launch options");
+        let options = parse_launch_options(&[]).expect("bundled launch options");
 
-        assert_eq!(options.agent.as_str(), "pi");
         assert!(options.shim.is_none());
         assert!(options.node.is_none());
         assert!(options.host_runtime.is_none());
@@ -1586,8 +1529,6 @@ mod tests {
     #[test]
     fn explicit_development_paths_remain_supported() {
         let options = parse_launch_options(&[
-            "--agent".into(),
-            "codex".into(),
             "--shim".into(),
             "/opt/codexhost-shim".into(),
             "--node".into(),
@@ -1610,13 +1551,9 @@ mod tests {
 
     #[test]
     fn custom_install_root_is_accepted_by_launch_and_inspect() {
-        let options = parse_launch_options(&[
-            "--agent".into(),
-            "codex".into(),
-            "--custom-install".into(),
-            "/opt/CodexPortable".into(),
-        ])
-        .expect("launch accepts a custom install root");
+        let options =
+            parse_launch_options(&["--custom-install".into(), "/opt/CodexPortable".into()])
+                .expect("launch accepts a custom install root");
         assert_eq!(
             options.custom_install_root.as_deref(),
             Some(Path::new("/opt/CodexPortable"))
@@ -1632,11 +1569,13 @@ mod tests {
     }
 
     #[test]
+    fn removed_agent_option_is_rejected() {
+        assert!(parse_launch_options(&["--agent".into(), "pi".into()]).is_err());
+    }
+
+    #[test]
     fn custom_install_root_rejects_missing_values_and_unknown_options() {
-        assert!(
-            parse_launch_options(&["--agent".into(), "codex".into(), "--custom-install".into()])
-                .is_err()
-        );
+        assert!(parse_launch_options(&["--custom-install".into()]).is_err());
         assert!(parse_inspect_options(&["--custom-install".into()]).is_err());
         assert!(parse_inspect_options(&["--unknown".into()]).is_err());
     }
@@ -1656,7 +1595,6 @@ mod tests {
 
     fn resolved_options() -> ResolvedLaunchOptions {
         ResolvedLaunchOptions {
-            agent: Agent::Pi,
             shim: PathBuf::from("/opt/codexhost-shim"),
             node: PathBuf::from("/opt/node"),
             host_runtime: PathBuf::from("/opt/host-runtime.mjs"),
@@ -1690,7 +1628,7 @@ mod tests {
                 "--renderer",
                 "/opt/renderer-extension.js",
                 "--default-agent",
-                "pi",
+                "codex",
                 "--attachment-port",
                 "43124",
                 "--attachment-nonce",

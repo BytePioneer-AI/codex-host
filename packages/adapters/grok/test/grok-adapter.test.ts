@@ -4,6 +4,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
+import { resolve } from "node:path";
 import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
@@ -400,7 +401,7 @@ describe("Grok Adapter ACP projection", () => {
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
-      item: { type: "commandExecution", command: "npm test", cwd: "/synthetic" },
+      item: { type: "commandExecution", command: "npm test", cwd: resolve("/synthetic") },
     });
 
     const permission = transport.permission();
@@ -1246,7 +1247,7 @@ describe("Grok Adapter ACP projection", () => {
       {
         kind: "fork",
         sourceSessionId: "source-session",
-        sourceCwd: "/synthetic",
+        sourceCwd: resolve("/synthetic"),
         targetPromptIndex: 0,
         sessionKind: "fork",
       },
@@ -1296,10 +1297,10 @@ describe("Grok Adapter ACP projection", () => {
       {
         kind: "fork",
         sourceSessionId: "source-session",
-        sourceCwd: "/source-project",
+        sourceCwd: resolve("/source-project"),
         targetPromptIndex: 0,
         sessionKind: "worktree",
-        sourceWorkspaceDir: "/source-project",
+        sourceWorkspaceDir: resolve("/source-project"),
       },
     ]);
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
@@ -1351,9 +1352,9 @@ describe("Grok Adapter ACP projection", () => {
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.forkCalls[0]).toMatchObject({
-      sourceCwd: "/worktree/first",
+      sourceCwd: resolve("/worktree/first"),
       sessionKind: "worktree",
-      sourceWorkspaceDir: "/source-project",
+      sourceWorkspaceDir: resolve("/source-project"),
     });
     await opened.value.close();
   });

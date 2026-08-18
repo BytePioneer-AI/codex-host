@@ -64,6 +64,7 @@ class JsonLineCollector {
   readonly #waiters: Array<{
     predicate: (message: JsonObject) => boolean;
     resolve(message: JsonObject): void;
+    timeout: ReturnType<typeof setTimeout>;
   }> = [];
   #buffer = "";
 
@@ -77,8 +78,12 @@ class JsonLineCollector {
         this.#buffer = this.#buffer.slice(newline + 1);
         this.messages.push(message);
         const matched = this.#waiters.filter(({ predicate }) => predicate(message));
-        for (const waiter of matched) waiter.resolve(message);
-        for (const waiter of matched) this.#waiters.splice(this.#waiters.indexOf(waiter), 1);
+        for (const waiter of matched) {
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          clearTimeout(waiter.timeout);
+          waiter.resolve(message);
+        }
         newline = this.#buffer.indexOf("\n");
       }
     });
@@ -87,12 +92,18 @@ class JsonLineCollector {
   waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
-    return Promise.race([
-      new Promise<JsonObject>((resolve) => this.#waiters.push({ predicate, resolve })),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("Timed out waiting for Host output")), 2_000),
-      ),
-    ]);
+    return new Promise<JsonObject>((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve,
+        timeout: setTimeout(() => {
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          reject(new Error("Timed out waiting for Host output"));
+        }, 2_000),
+      };
+      this.#waiters.push(waiter);
+    });
   }
 }
 
@@ -3253,8 +3264,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ]);
 
     session.appendText("continued");
+    const turnCompleted = fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
     session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await turnCompleted;
     await stopFixture(fixture);
   });
 
@@ -3280,8 +3294,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(
       fixture.collector.messages.filter((message) => method(message, "item/tool/requestUserInput")),
     ).toHaveLength(0);
+    const turnCompleted = fixture.collector.waitFor((message) => method(message, "turn/completed"));
     session.succeedTurn();
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    await turnCompleted;
     await stopFixture(fixture);
   });
 

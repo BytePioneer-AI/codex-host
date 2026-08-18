@@ -1354,7 +1354,7 @@ describe("Grok Adapter ACP projection", () => {
     expect(transport.forkCalls[0]).toMatchObject({
       sourceCwd: resolve("/worktree/first"),
       sessionKind: "worktree",
-      sourceWorkspaceDir: resolve("/source-project"),
+      sourceWorkspaceDir: "/source-project",
     });
     await opened.value.close();
   });

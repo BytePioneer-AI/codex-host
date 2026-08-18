@@ -6,6 +6,7 @@ import type {
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -495,6 +496,7 @@ describe("Grok Adapter ACP projection", () => {
     transport.event({
       type: "tool.call",
       callId: "read-1",
+      title: "Read a.txt",
       name: "read_file",
       rawInput: { target_file: "/synthetic/a.txt" },
       status: "in_progress",
@@ -533,6 +535,7 @@ describe("Grok Adapter ACP projection", () => {
     transport.event({
       type: "tool.call",
       callId: "list-1",
+      title: "List /synthetic",
       name: "list_dir",
       rawInput: { target_directory: "/synthetic" },
       status: "in_progress",
@@ -1565,7 +1568,7 @@ describe("Grok Adapter ACP projection", () => {
     const created = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
-      thinkingOptionId: "low",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
     });
     if (!created.ok) throw new Error(created.error.message);
     const sourceHistory: GrokTransportEvent[] = [

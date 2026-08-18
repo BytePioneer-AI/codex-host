@@ -85,7 +85,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const root = { querySelector: () => editor } as unknown as ParentNode;
     const requestClient = {
       hostId: "local",
-      sendRequest: (_method: string, _params: unknown) => undefined,
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
       prewarmThreadStart: () => undefined,
       enqueueRequest: () => undefined,
     };

@@ -1,3 +1,4 @@
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +6,8 @@ import {
   resolveGrokLastTurnPromptIndex,
   resolveGrokTargetPromptIndex,
 } from "../src/grok-history.js";
+
+const grokHarnessId = harnessIdSchema.parse("grok");
 
 describe("Grok history Fork mapping", () => {
   it("assigns Native Prompt Index Checkpoints and skips synthetic user runs", () => {
@@ -23,7 +26,7 @@ describe("Grok history Fork mapping", () => {
         { type: "agent.text", text: "answer-2" },
         { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
       ],
-      "grok",
+      grokHarnessId,
       "session-1",
       "/workspace",
     );
@@ -60,7 +63,7 @@ describe("Grok history Fork mapping", () => {
         { type: "turn.completed", nativeTurnKey: "prompt-3", stopReason: "end_turn" },
         { type: "rewind.marker", targetPromptIndex: 2 },
       ],
-      "grok",
+      grokHarnessId,
       "session-1",
       "/workspace",
     );
@@ -83,7 +86,7 @@ describe("Grok history Fork mapping", () => {
         { type: "agent.text", text: "answer" },
         { type: "turn.completed", nativeTurnKey: "prompt-4", stopReason: "end_turn" },
       ],
-      "grok",
+      grokHarnessId,
       "session-1",
       "/workspace",
     );
@@ -112,6 +115,7 @@ describe("Grok history Fork mapping", () => {
         {
           type: "tool.call",
           callId: "read-1",
+          title: "Read a.txt",
           name: "read_file",
           rawInput: { target_file: "/workspace/a.txt" },
           status: "in_progress",
@@ -125,6 +129,7 @@ describe("Grok history Fork mapping", () => {
         {
           type: "tool.call",
           callId: "list-1",
+          title: "List workspace",
           name: "list_dir",
           rawInput: { target_directory: "/workspace" },
           status: "in_progress",
@@ -137,7 +142,7 @@ describe("Grok history Fork mapping", () => {
         },
         { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
       ],
-      "grok",
+      grokHarnessId,
       "session-1",
       "/workspace",
     );

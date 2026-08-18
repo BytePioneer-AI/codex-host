@@ -4,8 +4,10 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
+import { resolve } from "node:path";
 import {
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -399,7 +401,7 @@ describe("Grok Adapter ACP projection", () => {
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
-      item: { type: "commandExecution", command: "npm test", cwd: "/synthetic" },
+      item: { type: "commandExecution", command: "npm test", cwd: resolve("/synthetic") },
     });
 
     const permission = transport.permission();
@@ -495,6 +497,7 @@ describe("Grok Adapter ACP projection", () => {
     transport.event({
       type: "tool.call",
       callId: "read-1",
+      title: "Read a.txt",
       name: "read_file",
       rawInput: { target_file: "/synthetic/a.txt" },
       status: "in_progress",
@@ -533,6 +536,7 @@ describe("Grok Adapter ACP projection", () => {
     transport.event({
       type: "tool.call",
       callId: "list-1",
+      title: "List /synthetic",
       name: "list_dir",
       rawInput: { target_directory: "/synthetic" },
       status: "in_progress",
@@ -1243,7 +1247,7 @@ describe("Grok Adapter ACP projection", () => {
       {
         kind: "fork",
         sourceSessionId: "source-session",
-        sourceCwd: "/synthetic",
+        sourceCwd: resolve("/synthetic"),
         targetPromptIndex: 0,
         sessionKind: "fork",
       },
@@ -1293,10 +1297,10 @@ describe("Grok Adapter ACP projection", () => {
       {
         kind: "fork",
         sourceSessionId: "source-session",
-        sourceCwd: "/source-project",
+        sourceCwd: resolve("/source-project"),
         targetPromptIndex: 0,
         sessionKind: "worktree",
-        sourceWorkspaceDir: "/source-project",
+        sourceWorkspaceDir: resolve("/source-project"),
       },
     ]);
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
@@ -1348,7 +1352,7 @@ describe("Grok Adapter ACP projection", () => {
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.forkCalls[0]).toMatchObject({
-      sourceCwd: "/worktree/first",
+      sourceCwd: resolve("/worktree/first"),
       sessionKind: "worktree",
       sourceWorkspaceDir: "/source-project",
     });
@@ -1565,7 +1569,7 @@ describe("Grok Adapter ACP projection", () => {
     const created = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
-      thinkingOptionId: "low",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
     });
     if (!created.ok) throw new Error(created.error.message);
     const sourceHistory: GrokTransportEvent[] = [
@@ -1576,7 +1580,9 @@ describe("Grok Adapter ACP projection", () => {
       { type: "agent.text", text: "answer-2" },
       { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
     ];
-    transport.histories.set(created.value.initialState.nativeRef!.nativeSessionId, sourceHistory);
+    const sourceRef = created.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+    transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
     transport.rewindImpl = async (input) => {
       transport.histories.set(input.sessionId, [
         ...sourceHistory,
@@ -1587,7 +1593,7 @@ describe("Grok Adapter ACP projection", () => {
     const opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: "/synthetic",
-      sourceRef: created.value.initialState.nativeRef!,
+      sourceRef,
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.setModel).toHaveBeenCalledWith("grok-4.6", "low");

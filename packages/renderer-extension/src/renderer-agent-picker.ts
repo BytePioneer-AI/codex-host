@@ -17,6 +17,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
+const AGENT_MENU_WIDTH = 200;
 
 interface AgentOptionControl {
   button: HTMLButtonElement;
@@ -75,7 +76,7 @@ export function rendererAgentPickerView(
 
 function setMenuPosition(control: RendererAgentPickerControl): void {
   const rect = control.trigger.getBoundingClientRect();
-  const width = 190;
+  const width = AGENT_MENU_WIDTH;
   const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
   control.menu.style.left = `${left}px`;
   control.menu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
@@ -156,13 +157,16 @@ export function mountRendererAgentPicker(
   menu.hidden = typeof menu.showPopover !== "function";
   menu.style.position = "fixed";
   menu.style.inset = "auto";
-  menu.style.width = "190px";
+  menu.style.width = `${AGENT_MENU_WIDTH}px`;
   menu.style.padding = "4px";
   menu.style.border = "0";
   menu.style.borderRadius = "6px";
   menu.style.background = "Canvas";
   menu.style.color = "CanvasText";
   menu.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.28)";
+  menu.style.boxSizing = "border-box";
+  menu.style.overflowX = "hidden";
+  menu.style.overflowY = "auto";
   menu.style.zIndex = "2147483647";
   trigger.setAttribute("aria-controls", menu.id);
 
@@ -200,6 +204,7 @@ export function mountRendererAgentPicker(
     button.style.display = "flex";
     button.style.alignItems = "center";
     button.style.gap = "8px";
+    button.style.minWidth = "0";
     button.style.width = "100%";
     button.style.flex = "1 1 auto";
     button.style.height = "36px";
@@ -227,8 +232,9 @@ export function mountRendererAgentPicker(
     const check = document.createElement("span");
     check.textContent = "\u2713";
     check.setAttribute("aria-hidden", "true");
-    check.style.width = "12px";
+    check.style.width = "24px";
     check.style.flex = "none";
+    check.style.textAlign = "center";
     check.style.visibility = "hidden";
 
     const label = document.createElement("span");
@@ -238,7 +244,7 @@ export function mountRendererAgentPicker(
     label.style.overflow = "hidden";
     label.style.textOverflow = "ellipsis";
     label.style.whiteSpace = "nowrap";
-    button.append(check, createRendererAgentIcon(agent), label);
+    button.append(createRendererAgentIcon(agent), label);
     button.addEventListener("click", () => {
       const selected = button.getAttribute("aria-pressed") === "true";
       close();
@@ -252,9 +258,11 @@ export function mountRendererAgentPicker(
         : (() => {
             const control = document.createElement("button");
             control.type = "button";
-            control.textContent = "\u2193";
+            control.textContent = "+";
             control.setAttribute("aria-label", `Install ${RENDERER_AGENT_LABELS[agent]}`);
-            control.title = `Open ${RENDERER_AGENT_LABELS[agent]} installation page`;
+            control.title = `Install ${RENDERER_AGENT_LABELS[agent]}`;
+            control.style.position = "absolute";
+            control.style.inset = "0";
             control.style.display = "inline-flex";
             control.style.alignItems = "center";
             control.style.justifyContent = "center";
@@ -267,7 +275,7 @@ export function mountRendererAgentPicker(
             control.style.background = "transparent";
             control.style.color = "inherit";
             control.style.cursor = "pointer";
-            control.style.font = "600 16px/1 system-ui, sans-serif";
+            control.style.font = "600 18px/1 system-ui, sans-serif";
             control.style.opacity = "0.72";
             control.addEventListener("pointerenter", () => {
               if (!control.disabled) control.style.background = "rgba(127, 127, 127, 0.16)";
@@ -282,16 +290,20 @@ export function mountRendererAgentPicker(
             return control;
           })();
     options[agent] = { button, check, download };
-    if (download) {
-      const row = document.createElement("div");
-      row.style.display = "flex";
-      row.style.alignItems = "center";
-      row.style.gap = "2px";
-      row.append(button, download);
-      menu.append(row);
-    } else {
-      menu.append(button);
-    }
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "2px";
+    const actionSlot = document.createElement("span");
+    actionSlot.style.position = "relative";
+    actionSlot.style.display = "inline-block";
+    actionSlot.style.width = "24px";
+    actionSlot.style.height = "24px";
+    actionSlot.style.flex = "none";
+    actionSlot.append(check);
+    if (download) actionSlot.append(download);
+    row.append(actionSlot, button);
+    menu.append(row);
   }
   root.append(trigger, menu);
 
@@ -412,9 +424,12 @@ export function renderRendererAgentPicker(
     option.check.style.visibility = selected ? "visible" : "hidden";
     if (option.download) {
       const visible = view.downloadVisible[agent as ExternalRendererAgent] === true;
-      option.download.hidden = !visible;
+      option.download.hidden = false;
       option.download.disabled = !visible;
-      option.download.style.display = visible ? "inline-flex" : "none";
+      option.download.setAttribute("aria-hidden", String(!visible));
+      option.download.style.display = "inline-flex";
+      option.download.style.visibility = visible ? "visible" : "hidden";
+      option.download.style.pointerEvents = visible ? "auto" : "none";
     }
   }
   return view;

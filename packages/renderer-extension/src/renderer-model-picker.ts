@@ -23,6 +23,7 @@ const MODEL_MENU_MAX_HEIGHT = 360;
 const MAIN_MENU_LEFT_OFFSET = 96;
 const MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
+const MODEL_SCROLLBAR_STYLE_ATTRIBUTE = "data-codexhost-model-picker-scrollbar";
 
 export interface RendererModelControlView {
   status: "idle" | "waitingForAdapter" | "loading" | "ready" | "selecting" | "empty" | "error";
@@ -69,6 +70,42 @@ export interface RendererModelPickerControl {
 
 function popoverOpen(menu: HTMLElement): boolean {
   return menu.matches(":popover-open");
+}
+
+function ensureModelScrollbarStyle(ownerDocument: Document): void {
+  if (ownerDocument.querySelector(`style[${MODEL_SCROLLBAR_STYLE_ATTRIBUTE}]`)) return;
+  const style = ownerDocument.createElement("style");
+  style.setAttribute(MODEL_SCROLLBAR_STYLE_ATTRIBUTE, "true");
+  style.textContent = `
+    [data-codexhost-model-scrollable] {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    }
+    [data-codexhost-model-scrollable]::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    [data-codexhost-model-scrollable]::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    [data-codexhost-model-scrollable]::-webkit-scrollbar-thumb {
+      min-height: 28px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.28);
+      background-clip: padding-box;
+    }
+    [data-codexhost-model-scrollable]::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.42);
+      background-clip: padding-box;
+    }
+    [data-codexhost-model-scrollable]::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+  `;
+  (ownerDocument.head ?? ownerDocument.documentElement).append(style);
 }
 
 export function thinkingOptionsForModel(
@@ -270,6 +307,8 @@ export function mountRendererModelPicker(
   modelMenu.setAttribute("aria-label", "Model");
   modelMenu.setAttribute("popover", "manual");
   modelMenu.className = MENU_CLASSES;
+  modelMenu.dataset.codexhostModelScrollable = "true";
+  ensureModelScrollbarStyle(document);
   modelMenu.style.position = "fixed";
   modelMenu.style.inset = "auto";
   modelMenu.style.margin = "0";

@@ -146,7 +146,11 @@ export interface DeepSeekHostConnectionDependencies {
   spawn(
     command: string,
     args: string[],
-    options: { env: NodeJS.ProcessEnv; stdio: "ignore" },
+    options: {
+      env: NodeJS.ProcessEnv;
+      stdio: "ignore";
+      windowsVerbatimArguments?: boolean;
+    },
   ): ChildProcess;
   sleep(milliseconds: number): Promise<void>;
 }
@@ -240,8 +244,44 @@ export function resolveDeepSeekCommand(
   if (dsh) return { command: dsh, arguments: [], kind: "dsh" };
   const npx = resolveExecutable(process.platform === "win32" ? "npx.cmd" : "npx", environment);
   return npx
-    ? { command: npx, arguments: ["--no-install", "@deepseek-ai/dsh"], kind: "npx" }
+    ? {
+        command: npx,
+        arguments: ["--offline", "--no-install", "@deepseek-ai/dsh"],
+        kind: "npx",
+      }
     : null;
+}
+
+export function deepSeekProcessInvocation(
+  command: string,
+  arguments_: string[],
+  environment: NodeJS.ProcessEnv,
+  platform = process.platform,
+): {
+  command: string;
+  arguments: string[];
+  windowsVerbatimArguments: boolean;
+} {
+  const extension = path.win32.extname(command).toLowerCase();
+  if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
+    return { command, arguments: arguments_, windowsVerbatimArguments: false };
+  }
+  const quote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
+  const commandLine = [command, ...arguments_].map(quote).join(" ");
+  return {
+    command: environmentValue(environment, "ComSpec") ?? "cmd.exe",
+    arguments: ["/d", "/v:off", "/s", "/c", `"${commandLine}"`],
+    windowsVerbatimArguments: true,
+  };
+}
+
+function isMissingExecutableError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 function unwrap<T>(
@@ -279,6 +319,7 @@ export class DeepSeekHostConnection {
           env: spawnOptions.env,
           stdio: spawnOptions.stdio,
           windowsHide: true,
+          windowsVerbatimArguments: spawnOptions.windowsVerbatimArguments,
         }),
       sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     },
@@ -348,10 +389,20 @@ export class DeepSeekHostConnection {
         "--port",
         endpoint.port || "80",
       ];
-      const child = this.#dependencies.spawn(invocation.command, args, {
-        env: this.#environment,
-        stdio: "ignore",
-      });
+      const processInvocation = deepSeekProcessInvocation(
+        invocation.command,
+        args,
+        this.#environment,
+      );
+      const child = this.#dependencies.spawn(
+        processInvocation.command,
+        processInvocation.arguments,
+        {
+          env: this.#environment,
+          stdio: "ignore",
+          windowsVerbatimArguments: processInvocation.windowsVerbatimArguments,
+        },
+      );
       this.#managedProcess = child;
       let processError: Error | null = null;
       child.once("error", (error) => {
@@ -359,7 +410,18 @@ export class DeepSeekHostConnection {
       });
       const deadline = Date.now() + this.#startupTimeoutMs;
       for (;;) {
-        if (processError) throw processError;
+        if (processError) {
+          if (isMissingExecutableError(processError)) {
+            throw new DeepSeekHarnessTransportError(
+              "notInstalled",
+              "DeepSeek Harness command is not installed",
+            );
+          }
+          throw new DeepSeekHarnessTransportError(
+            "unavailable",
+            `DeepSeek Harness Web could not start: ${String(processError)}`,
+          );
+        }
         if (child.exitCode !== null || child.signalCode !== null) {
           if (invocation.kind === "npx") {
             throw new DeepSeekHarnessTransportError(

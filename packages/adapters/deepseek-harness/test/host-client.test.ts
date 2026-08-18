@@ -10,6 +10,7 @@ import type { DeepSeekHostClient } from "../src/host-client.js";
 import {
   DeepSeekHostConnection,
   NodeDeepSeekHostClient,
+  deepSeekProcessInvocation,
   resolveDeepSeekCommand,
   type DeepSeekHostConnectionDependencies,
 } from "../src/host-client.js";
@@ -109,14 +110,16 @@ describe("DeepSeek local Host connection", () => {
     );
 
     await connection.connect();
-    expect(spawn).toHaveBeenCalledWith(
+    const expectedInvocation = deepSeekProcessInvocation(
       executable,
       ["web", "--host", "127.0.0.1", "--port", "43123"],
-      {
-        env: process.env,
-        stdio: "ignore",
-      },
+      process.env,
     );
+    expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
+      env: process.env,
+      stdio: "ignore",
+      windowsVerbatimArguments: expectedInvocation.windowsVerbatimArguments,
+    });
     await connection.close();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
@@ -147,11 +150,51 @@ describe("DeepSeek local Host connection", () => {
     );
 
     await expect(connection.connect()).rejects.toMatchObject({ code: "notInstalled" });
-    expect(spawn).toHaveBeenCalledWith(
+    const expectedInvocation = deepSeekProcessInvocation(
       executable,
-      ["--no-install", "@deepseek-ai/dsh", "web", "--host", "127.0.0.1", "--port", "43123"],
-      { env: environment, stdio: "ignore" },
+      [
+        "--offline",
+        "--no-install",
+        "@deepseek-ai/dsh",
+        "web",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "43123",
+      ],
+      environment,
     );
+    expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
+      env: environment,
+      stdio: "ignore",
+      windowsVerbatimArguments: expectedInvocation.windowsVerbatimArguments,
+    });
+  });
+
+  it("classifies a missing DSH executable spawn as not installed", async () => {
+    const executableDirectory = mkdtempSync(path.join(os.tmpdir(), "codexhost-dsh-spawn-"));
+    const executable = path.join(executableDirectory, "dsh");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    const child = childProcess();
+    const spawn = vi.fn(() => {
+      queueMicrotask(() =>
+        child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })),
+      );
+      return child;
+    });
+    const environment = { PATH: executableDirectory };
+    const dependencies: DeepSeekHostConnectionDependencies = {
+      createClient: () => fakeClient(() => Promise.reject(new TypeError("fetch failed"))),
+      spawn,
+      sleep: () => Promise.resolve(),
+    };
+    const connection = new DeepSeekHostConnection(
+      { endpoint: "http://127.0.0.1:43123", environment },
+      dependencies,
+    );
+
+    await expect(connection.connect()).rejects.toMatchObject({ code: "notInstalled" });
   });
 
   it("rejects non-loopback endpoints and incompatible Hosts", async () => {

@@ -1576,7 +1576,9 @@ describe("Grok Adapter ACP projection", () => {
       { type: "agent.text", text: "answer-2" },
       { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
     ];
-    transport.histories.set(created.value.initialState.nativeRef!.nativeSessionId, sourceHistory);
+    const sourceRef = created.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+    transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
     transport.rewindImpl = async (input) => {
       transport.histories.set(input.sessionId, [
         ...sourceHistory,
@@ -1587,7 +1589,7 @@ describe("Grok Adapter ACP projection", () => {
     const opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: "/synthetic",
-      sourceRef: created.value.initialState.nativeRef!,
+      sourceRef,
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.setModel).toHaveBeenCalledWith("grok-4.6", "low");

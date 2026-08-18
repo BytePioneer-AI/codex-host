@@ -99,6 +99,15 @@ describe("Renderer Control Session", () => {
     ]);
   });
 
+  it("checks all Electron webContents concurrently within one Inspector evaluation", async () => {
+    const evaluate = vi.fn(async (expression: string) => {
+      expect(expression).toContain("Promise.all(webContents.getAllWebContents().map");
+      return [];
+    });
+
+    await expect(inspectElectronWebContents({ evaluate })).resolves.toEqual([]);
+  });
+
   it("waits for metadata ownership before readiness", async () => {
     let currentTime = 0;
     const markReadiness = vi

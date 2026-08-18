@@ -234,8 +234,7 @@ export async function inspectElectronWebContents(
 ): Promise<ElectronRendererSummary[]> {
   const value = await inspector.evaluate<unknown>(`(async () => {
     const { webContents } = ${electronModuleExpression};
-    const result = [];
-    for (const contents of webContents.getAllWebContents()) {
+    const result = await Promise.all(webContents.getAllWebContents().map(async (contents) => {
       let runtime = { available: false, elementCount: null };
       try {
         const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
@@ -250,7 +249,7 @@ export async function inspectElectronWebContents(
         surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
         runtime,
       });
-    }
+    }));
     return result;
   })()`);
   if (!Array.isArray(value)) throw new Error("Electron webContents inspection returned an array");

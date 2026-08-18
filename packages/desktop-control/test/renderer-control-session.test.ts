@@ -1,3 +1,5 @@
+import { runInThisContext } from "node:vm";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -100,14 +102,52 @@ describe("Renderer Control Session", () => {
   });
 
   it("checks all Electron webContents concurrently within one Inspector evaluation", async () => {
-    const inspector = {
-      async evaluate<T>(expression: string): Promise<T> {
-        expect(expression).toContain("Promise.all(webContents.getAllWebContents().map");
-        return [] as T;
+    const contents = [
+      {
+        id: 17,
+        executeJavaScript: vi.fn(async () => ({ elementCount: 100 })),
+        getType: () => "window",
+        getURL: () => "app://-/index.html",
       },
-    };
+      {
+        id: 18,
+        executeJavaScript: vi.fn(async () => ({ elementCount: 0 })),
+        getType: () => "window",
+        getURL: () => "app://-/avatar-overlay.html",
+      },
+    ];
+    const previousMainModule = Object.getOwnPropertyDescriptor(process, "mainModule");
+    Object.defineProperty(process, "mainModule", {
+      configurable: true,
+      value: {
+        require: () => ({
+          webContents: {
+            getAllWebContents: () => contents,
+          },
+        }),
+      },
+    });
 
-    await expect(inspectElectronWebContents(inspector)).resolves.toEqual([]);
+    try {
+      const inspector = {
+        async evaluate<T>(expression: string): Promise<T> {
+          return (await runInThisContext(expression)) as T;
+        },
+      };
+
+      await expect(inspectElectronWebContents(inspector)).resolves.toEqual([
+        renderer(17, "primary", 100),
+        renderer(18, "overlay", 0),
+      ]);
+      expect(contents[0]?.executeJavaScript).toHaveBeenCalledOnce();
+      expect(contents[1]?.executeJavaScript).toHaveBeenCalledOnce();
+    } finally {
+      if (previousMainModule) {
+        Object.defineProperty(process, "mainModule", previousMainModule);
+      } else {
+        delete (process as { mainModule?: unknown }).mainModule;
+      }
+    }
   });
 
   it("waits for metadata ownership before readiness", async () => {

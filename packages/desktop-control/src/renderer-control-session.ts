@@ -243,12 +243,12 @@ export async function inspectElectronWebContents(
         });
         runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
       } catch {}
-      result.push({
+      return {
         id: contents.id,
         type: contents.getType(),
         surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
         runtime,
-      });
+      };
     }));
     return result;
   })()`);

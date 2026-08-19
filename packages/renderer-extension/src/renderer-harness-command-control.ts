@@ -5,6 +5,27 @@ const MENU_ATTRIBUTE = "data-codexhost-harness-command-menu";
 const MENU_WIDTH = 320;
 const VIEWPORT_MARGIN = 8;
 const MENU_GAP = 8;
+const SVG_NS = "http://www.w3.org/2000/svg";
+const COMMAND_ICON_PATHS = [
+  "M409.6 377.6h204.8a32 32 0 0 1 32 32v204.8a32 32 0 0 1-32 32H409.6a32 32 0 0 1-32-32V409.6a32 32 0 0 1 32-32z m172.8 64h-140.8v140.8h140.8z",
+  "M332.8 800a108.8 108.8 0 0 1 0-217.6h76.8a32 32 0 0 1 32 32v76.8a108.928 108.928 0 0 1-108.8 108.8z m0-153.6a44.8 44.8 0 1 0 44.8 44.8v-44.8zM409.6 441.6H332.8a108.8 108.8 0 1 1 108.8-108.8v76.8a32 32 0 0 1-32 32z m-76.8-153.6a44.8 44.8 0 0 0 0 89.6h44.8V332.8A44.842667 44.842667 0 0 0 332.8 288zM691.2 441.6h-76.8a32 32 0 0 1-32-32V332.8a108.8 108.8 0 1 1 108.8 108.8z m-44.8-64h44.8a44.8 44.8 0 1 0-44.8-44.8zM691.2 800a108.928 108.928 0 0 1-108.8-108.8v-76.8a32 32 0 0 1 32-32h76.8a108.8 108.8 0 0 1 0 217.6z m-44.8-153.6v44.8a44.8 44.8 0 1 0 44.8-44.8z",
+  "M640 970.666667H384c-118.186667 0-198.272-25.002667-251.946667-78.72S53.333333 758.186667 53.333333 640V384c0-118.186667 25.002667-198.272 78.72-251.946667S265.813333 53.333333 384 53.333333h256c118.186667 0 198.272 25.002667 251.946667 78.72S970.666667 265.813333 970.666667 384v256c0 118.186667-25.002667 198.272-78.72 251.946667S758.186667 970.666667 640 970.666667z m-256-853.333334c-100.096 0-165.802667 19.2-206.72 59.946667S117.333333 283.904 117.333333 384v256c0 100.096 19.072 165.802667 59.946667 206.72S283.904 906.666667 384 906.666667h256c100.096 0 165.802667-19.072 206.72-59.946667S906.666667 740.096 906.666667 640V384c0-100.096-19.072-165.802667-59.946667-206.72S740.096 117.333333 640 117.333333z",
+];
+
+function commandIcon(ownerDocument: Document): SVGSVGElement {
+  const svg = ownerDocument.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 1024 1024");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  for (const path of COMMAND_ICON_PATHS) {
+    const element = ownerDocument.createElementNS(SVG_NS, "path");
+    element.setAttribute("d", path);
+    svg.append(element);
+  }
+  return svg;
+}
 
 export interface RendererHarnessCommandControl {
   root: HTMLElement;
@@ -30,11 +51,11 @@ function menuItem(
   item.style.display = "flex";
   item.style.alignItems = "center";
   item.style.width = "100%";
-  item.style.minHeight = "48px";
-  item.style.gap = "10px";
-  item.style.padding = "7px 9px";
+  item.style.minHeight = "38px";
+  item.style.gap = "8px";
+  item.style.padding = "6px 8px";
   item.style.border = "0";
-  item.style.borderRadius = "8px";
+  item.style.borderRadius = "6px";
   item.style.background = "transparent";
   item.style.color = "inherit";
   item.style.textAlign = "left";
@@ -88,14 +109,13 @@ function setButtonClass(button: HTMLButtonElement): void {
   button.style.alignItems = "center";
   button.style.justifyContent = "center";
   button.style.gap = "0";
-  button.style.height = "36px";
-  button.style.maxWidth = "220px";
-  button.style.padding = "0 11px 0 8px";
-  button.style.border = "1px solid rgba(127, 127, 127, 0.23)";
-  button.style.borderRadius = "10px";
-  button.style.background = "rgba(127, 127, 127, 0.04)";
+  button.style.width = "28px";
+  button.style.height = "28px";
+  button.style.padding = "0";
+  button.style.border = "0";
+  button.style.borderRadius = "8px";
+  button.style.background = "transparent";
   button.style.color = "inherit";
-  button.style.font = "600 12px/16px system-ui, sans-serif";
   button.style.cursor = "pointer";
   button.style.whiteSpace = "nowrap";
 }
@@ -117,14 +137,9 @@ export function mountRendererHarnessCommandControl(
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("aria-label", "Harness commands");
+  trigger.title = "Harness commands";
   setButtonClass(trigger);
-
-  const label = ownerDocument.createElement("span");
-  label.textContent = "Commands";
-  label.style.overflow = "hidden";
-  label.style.textOverflow = "ellipsis";
-  label.style.whiteSpace = "nowrap";
-  trigger.append(label);
+  trigger.append(commandIcon(ownerDocument));
   root.append(trigger);
 
   const menu = ownerDocument.createElement("div");
@@ -139,9 +154,9 @@ export function mountRendererHarnessCommandControl(
   menu.style.maxWidth = `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`;
   menu.style.maxHeight = "min(360px, calc(100vh - 16px))";
   menu.style.overflowY = "auto";
-  menu.style.padding = "6px";
+  menu.style.padding = "4px";
   menu.style.border = "1px solid rgba(127, 127, 127, 0.24)";
-  menu.style.borderRadius = "12px";
+  menu.style.borderRadius = "10px";
   menu.style.background = "Canvas";
   menu.style.color = "CanvasText";
   menu.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.22)";
@@ -154,6 +169,7 @@ export function mountRendererHarnessCommandControl(
   let items: HTMLButtonElement[] = [];
   let activeIndex = 0;
   let executingCommandId: string | null = null;
+  let triggerHovered = false;
   let disposed = false;
 
   const positionMenu = (): void => {
@@ -178,17 +194,40 @@ export function mountRendererHarnessCommandControl(
     item.scrollIntoView({ block: "nearest" });
   };
 
+  const syncTriggerBackground = (): void => {
+    trigger.style.background =
+      !trigger.disabled && (triggerHovered || !menu.hidden)
+        ? "rgba(127, 127, 127, 0.16)"
+        : "transparent";
+  };
+
   const close = (): void => {
     menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
+    syncTriggerBackground();
   };
 
-  const open = (): void => {
+  const open = (shouldFocus = true): void => {
     if (commands.length === 0 || executingCommandId !== null) return;
     menu.hidden = false;
     positionMenu();
     trigger.setAttribute("aria-expanded", "true");
-    queueMicrotask(focusActive);
+    syncTriggerBackground();
+    if (shouldFocus) queueMicrotask(focusActive);
+  };
+
+  let closeTimer: number | null = null;
+  const cancelClose = (): void => {
+    if (closeTimer === null) return;
+    window.clearTimeout(closeTimer);
+    closeTimer = null;
+  };
+  const scheduleClose = (): void => {
+    cancelClose();
+    closeTimer = window.setTimeout(() => {
+      closeTimer = null;
+      if (!trigger.matches(":hover") && !menu.matches(":hover")) close();
+    }, 140);
   };
 
   const select = (command: HarnessCommandDescriptor): void => {
@@ -199,12 +238,10 @@ export function mountRendererHarnessCommandControl(
   const renderItems = (): void => {
     menu.replaceChildren();
     const header = ownerDocument.createElement("div");
-    header.textContent = "Harness commands";
-    header.style.padding = "7px 9px 6px";
-    header.style.color = "rgba(127, 127, 127, 0.9)";
-    header.style.font = "700 10px/14px system-ui, sans-serif";
-    header.style.letterSpacing = "0.08em";
-    header.style.textTransform = "uppercase";
+    header.textContent = "Commands";
+    header.style.padding = "5px 8px 4px";
+    header.style.color = "rgba(127, 127, 127, 0.75)";
+    header.style.font = "600 11px/16px system-ui, sans-serif";
     menu.append(header);
     items = commands.map((command) => menuItem(ownerDocument, command, () => select(command)));
     menu.append(...items);
@@ -258,10 +295,23 @@ export function mountRendererHarnessCommandControl(
   };
 
   trigger.addEventListener("click", () => {
-    if (menu.hidden) open();
-    else close();
+    cancelClose();
+    open(true);
+  });
+  trigger.addEventListener("pointerenter", () => {
+    triggerHovered = true;
+    syncTriggerBackground();
+    cancelClose();
+    if (menu.hidden) open(false);
+  });
+  trigger.addEventListener("pointerleave", () => {
+    triggerHovered = false;
+    syncTriggerBackground();
+    scheduleClose();
   });
   trigger.addEventListener("keydown", onTriggerKeyDown);
+  menu.addEventListener("pointerenter", cancelClose);
+  menu.addEventListener("pointerleave", scheduleClose);
   menu.addEventListener("keydown", onMenuKeyDown);
   ownerDocument.addEventListener("pointerdown", onDocumentPointerDown, true);
   ownerDocument.defaultView?.addEventListener("resize", onViewportChange);
@@ -296,16 +346,20 @@ export function mountRendererHarnessCommandControl(
       }
       trigger.disabled = commandId !== null;
       trigger.style.opacity = commandId !== null ? "0.65" : "1";
+      syncTriggerBackground();
     },
     close,
     dispose() {
       if (disposed) return;
       disposed = true;
+      cancelClose();
       close();
       ownerDocument.removeEventListener("pointerdown", onDocumentPointerDown, true);
       ownerDocument.defaultView?.removeEventListener("resize", onViewportChange);
       ownerDocument.defaultView?.removeEventListener("scroll", onViewportChange, true);
       trigger.removeEventListener("keydown", onTriggerKeyDown);
+      menu.removeEventListener("pointerenter", cancelClose);
+      menu.removeEventListener("pointerleave", scheduleClose);
       menu.removeEventListener("keydown", onMenuKeyDown);
       menu.remove();
       root.remove();

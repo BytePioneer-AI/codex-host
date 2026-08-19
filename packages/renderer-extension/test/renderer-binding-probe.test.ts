@@ -289,7 +289,7 @@ describe("Renderer Composer DOM behavior", () => {
     Object.assign(cluster, { parentElement: footer });
     Object.assign(footer, { parentElement: {} });
 
-    expect(creditsPlacementAnchor({} as Element, usageRoot as HTMLElement)).toBe(plus);
+    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

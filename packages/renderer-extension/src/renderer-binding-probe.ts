@@ -44,8 +44,8 @@ import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodePiTransportModelId,
   findComposerModelTarget,
-  isPiTransportModelId,
   threadIdFromComposerModelTarget,
   waitForRendererDraftPrewarmPolicy,
   type LockedComposerSelection,
@@ -198,14 +198,17 @@ export function draftPermissionMode(
 export function restoredThreadOwnership(inspection: ThreadInspection): RestoredThreadOwnership {
   if (inspection.owner === "codex") return { agent: "codex" };
   if (inspection.harnessId === "pi") {
-    if (!isPiTransportModelId(inspection.transportModelId)) {
+    const transportSelection = decodePiTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
       throw new Error("Pi Thread reported an incompatible transport Model");
     }
-    const piThinkingOptionId = selectableThinkingOptionId(inspection);
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
     return {
       agent: "pi",
-      ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
-      ...(piThinkingOptionId ? { thinkingOptionId: piThinkingOptionId } : {}),
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(inspection.effectivePermissionModeId
         ? { permissionModeId: inspection.effectivePermissionModeId }
         : {}),

@@ -271,18 +271,30 @@ export function isDeepSeekHarnessTransportModelId(value: unknown): value is stri
   return decodeDeepSeekHarnessTransportModelId(value) !== null;
 }
 
-export function isPiTransportModelId(value: unknown): value is string {
-  if (value === PI_TRANSPORT_MODEL_ID) return true;
-  if (typeof value !== "string" || !value.startsWith(PI_TRANSPORT_MODEL_PREFIX)) return false;
+export function decodePiTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+} | null {
+  if (value === PI_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(PI_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(PI_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return false;
+  if (components.length < 1 || components.length > 2) return null;
   const [modelId, thinkingOptionId] = components;
-  if (!harnessModelRefSchema.safeParse({ id: modelId }).success) return false;
-  return (
-    components.length === 1 ||
-    (thinkingOptionId !== undefined &&
-      harnessThinkingOptionIdSchema.safeParse(thinkingOptionId).success)
-  );
+  if (components.length === 2 && !thinkingOptionId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return {
+    model: model.data,
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
+export function isPiTransportModelId(value: unknown): value is string {
+  return decodePiTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(

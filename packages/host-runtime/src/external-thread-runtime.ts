@@ -143,6 +143,12 @@ export class ExternalThreadRuntime {
       input.requestedThinkingOptionId ?? initialState.effectiveThinkingOptionId;
     const effectivePermissionModeId =
       input.requestedPermissionModeId ?? initialState.effectivePermissionModeId;
+    const observerState: HarnessSessionState = {
+      ...initialState,
+      ...(effectiveModel ? { effectiveModel } : {}),
+      ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+      ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
+    };
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -158,7 +164,7 @@ export class ExternalThreadRuntime {
         : {}),
       record: input.record,
       sessionId: input.sessionId,
-      stateObserver: new SessionStateObserver(initialState),
+      stateObserver: new SessionStateObserver(observerState),
       thread: input.thread,
       transportModelId: input.record.transportModelId,
       turns: input.turns,

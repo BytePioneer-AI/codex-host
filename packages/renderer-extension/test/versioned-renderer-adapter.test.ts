@@ -12,9 +12,11 @@ import {
   PI_TRANSPORT_MODEL_ID,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
+  decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   isClaudeTransportModelId,
+  isPiTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
@@ -195,6 +197,12 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(modelSelectionForAgent(null, null, "pi", model, thinkingOptionId)?.model).toBe(
       `${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`,
     );
+    expect(isPiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`)).toBe(
+      true,
+    );
+    expect(
+      decodePiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`),
+    ).toEqual({ model, thinkingOptionId });
   });
 
   it("encodes Claude Model, Permission Mode, and Thinking in the transport carrier", () => {

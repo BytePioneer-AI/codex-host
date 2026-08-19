@@ -320,6 +320,15 @@ describe("Renderer Composer DOM behavior", () => {
         locked: true,
       }),
     ).toEqual({ agent: "pi", model, thinkingOptionId });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "pi",
+        transportModelId: `codexhost/pi-native@${model.id}@${thinkingOptionId}`,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({ agent: "pi", model, thinkingOptionId });
     expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
       agent: "codex",
     });

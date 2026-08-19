@@ -93,6 +93,7 @@ export {
   decodeDeepSeekHarnessTransportModelId,
   deepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   installCurrentRendererAdapter,

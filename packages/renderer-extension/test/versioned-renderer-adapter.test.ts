@@ -77,12 +77,13 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([manager]);
   });
 
-  it("finds a current request bridge after codexhost wraps its methods", () => {
+  it("keeps the outer manager so Usage notifications stay attached after wrapping", () => {
     const editor = {
       parentElement: null,
       querySelectorAll: () => [],
     } as unknown as Element;
     const root = { querySelector: () => editor } as unknown as ParentNode;
+    const addNotificationCallback = vi.fn(() => () => undefined);
     const requestClient = {
       hostId: "local",
       sendRequest: vi.fn<(method: string, params: unknown) => void>(),
@@ -91,14 +92,19 @@ describe("current Codex Renderer Agent adapter", () => {
     };
     const manager = {
       requestClient,
-      sendRequest: async () => requestClient.sendRequest("method", {}),
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+      addNotificationCallback,
     };
     Object.defineProperty(editor, "__reactFiber$test", {
       configurable: true,
       value: { memoizedState: { memoizedState: manager, next: null }, return: null },
     });
 
-    expect(findActivePrewarmTargets(root)).toEqual([requestClient]);
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+    expect(findActivePrewarmTargets(root)[0]?.addNotificationCallback).toBe(
+      addNotificationCallback,
+    );
   });
 
   it("finds the current seven-slot new Thread draft identity", () => {

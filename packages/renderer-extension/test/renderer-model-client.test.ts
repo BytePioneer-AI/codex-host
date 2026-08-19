@@ -298,6 +298,14 @@ describe("Renderer fixed Model request client", () => {
     expect(createRendererModelClient([{}])).toBeNull();
   });
 
+  it("fails closed when Usage notifications cannot be attached", () => {
+    const client = createRendererModelClient([{ sendRequest: vi.fn() }]);
+    expect(client).not.toBeNull();
+    expect(() => client?.subscribeThreadUsage?.(() => undefined)).toThrow(
+      "Renderer Usage notification callback is unavailable",
+    );
+  });
+
   it("rejects a Thread inspection that leaks Native identity", async () => {
     const sendRequest = vi.fn(async () => ({
       owner: "external",

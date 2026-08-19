@@ -72,6 +72,13 @@ interface RequestManagerCandidate {
     callback: (notification: unknown) => void,
   ) => () => void;
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
+  requestClient?: RequestManagerCandidate;
+}
+
+function usageNotificationTarget(manager: RequestManagerCandidate): RequestManagerCandidate | null {
+  if (typeof manager.addNotificationCallback === "function") return manager;
+  const nested = manager.requestClient;
+  return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
 export interface RendererModelClient {
@@ -202,10 +209,13 @@ export function createRendererModelClient(
     },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
-      if (typeof manager.addNotificationCallback !== "function") return () => undefined;
+      const notifications = usageNotificationTarget(manager);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer Usage notification callback is unavailable");
+      }
       let disposed = false;
       const generations = new Map<ThreadUsageInspectionParams["threadId"], number>();
-      const removeNotificationCallback = manager.addNotificationCallback(
+      const removeNotificationCallback = notifications.addNotificationCallback(
         THREAD_TOKEN_USAGE_UPDATED_METHOD,
         (notification) => {
           const threadId = notifiedThreadId(notification);

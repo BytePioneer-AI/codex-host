@@ -370,7 +370,7 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
           hasPrewarmMethod(requestClient) &&
           matchesCurrentPrewarmSignature(requestClient)
         ) {
-          targets.add(requestClient);
+          targets.add(typeof hookState.sendRequest === "function" ? hookState : requestClient);
         }
       }
       hook =

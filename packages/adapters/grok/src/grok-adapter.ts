@@ -160,6 +160,7 @@ interface ActiveTurn {
   reasoningMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
   compactionContextWindow: number | undefined;
+  compactionTerminal: Extract<GrokTransportEvent, { type: "compaction.completed" }> | null;
   tools: Map<string, ActiveTool>;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
@@ -429,6 +430,7 @@ class GrokHarnessSession implements HarnessSession {
       reasoningMessageId: null,
       compactionItem: null,
       compactionContextWindow: undefined,
+      compactionTerminal: null,
       tools: new Map(),
       completedItems: [],
       approvals: new Map(),
@@ -521,6 +523,7 @@ class GrokHarnessSession implements HarnessSession {
       reasoningMessageId: null,
       compactionItem: null,
       compactionContextWindow: undefined,
+      compactionTerminal: null,
       tools: new Map(),
       completedItems: [],
       approvals: new Map(),
@@ -536,20 +539,23 @@ class GrokHarnessSession implements HarnessSession {
       .then(
         (result) => this.#settleManualCompact(active, result),
         (error) =>
-          this.#finish(active, {
-            status: "failed",
-            error: normalizeError(error, "nativeFailure"),
-          }),
+          this.#finish(
+            active,
+            active.compactionTerminal
+              ? this.#turnOutcomeFromCompaction(active.compactionTerminal)
+              : {
+                  status: "failed",
+                  error: normalizeError(error, "nativeFailure"),
+                },
+          ),
       );
     return { ok: true, value: { turnId: command.turnId } };
   }
 
   #settleManualCompact(active: ActiveTurn, result: GrokCompactResult): void {
     if (this.#active !== active) return;
-    const hasCompletedCompaction = active.completedItems.some(
-      ({ item }) => item.type === "contextCompaction",
-    );
-    if (!hasCompletedCompaction) {
+    const terminal = active.compactionTerminal;
+    if (!terminal) {
       this.#completeCompaction(active, {
         type: "compaction.completed",
         outcome: result.outcome,
@@ -561,20 +567,40 @@ class GrokHarnessSession implements HarnessSession {
         ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
       });
     }
-    const outcome: TurnOutcome =
-      result.outcome === "succeeded"
-        ? { status: "succeeded" }
-        : result.outcome === "cancelled"
-          ? { status: "cancelled", reason: "Context compaction was cancelled" }
-          : {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: result.errorMessage ?? "Grok context compaction failed",
-                retryable: true,
+    this.#finish(
+      active,
+      terminal
+        ? this.#turnOutcomeFromCompaction(terminal)
+        : result.outcome === "succeeded"
+          ? { status: "succeeded" }
+          : result.outcome === "cancelled"
+            ? { status: "cancelled", reason: "Context compaction was cancelled" }
+            : {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: result.errorMessage ?? "Grok context compaction failed",
+                  retryable: true,
+                },
               },
-            };
-    this.#finish(active, outcome);
+    );
+  }
+
+  #turnOutcomeFromCompaction(
+    event: Extract<GrokTransportEvent, { type: "compaction.completed" }>,
+  ): TurnOutcome {
+    return event.outcome === "succeeded"
+      ? { status: "succeeded" }
+      : event.outcome === "cancelled"
+        ? { status: "cancelled", reason: "Context compaction was cancelled" }
+        : {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: event.errorMessage ?? "Grok context compaction failed",
+              retryable: true,
+            },
+          };
   }
 
   close(): Promise<void> {
@@ -771,8 +797,10 @@ class GrokHarnessSession implements HarnessSession {
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
     else if (event.type === "compaction.started") this.#startCompaction(active, event);
-    else if (event.type === "compaction.completed") this.#completeCompaction(active, event);
-    else if (event.type === "usage" || event.type === "turn.completed") return;
+    else if (event.type === "compaction.completed") {
+      active.compactionTerminal = event;
+      this.#completeCompaction(active, event);
+    } else if (event.type === "usage" || event.type === "turn.completed") return;
   }
 
   #startCompaction(

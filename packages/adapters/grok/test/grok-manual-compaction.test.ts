@@ -1,25 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildGrokCompactConversationParams,
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
   parseGrokCompactResult,
-} from "../src/index.js";
+} from "../src/grok-manual-compaction.js";
 
 describe("Grok manual compact protocol helpers", () => {
-  it("builds compact params with optional user context", () => {
-    expect(
-      buildGrokCompactConversationParams({
-        sessionId: "session-1",
-        userContext: "Keep implementation details",
-      }),
-    ).toEqual({ sessionId: "session-1", userContext: "Keep implementation details" });
-    expect(buildGrokCompactConversationParams({ sessionId: "session-1" })).toEqual({
-      sessionId: "session-1",
-    });
-  });
-
   it("parses native compact success, failure, and cancellation results", () => {
     expect(
       parseGrokCompactResult({

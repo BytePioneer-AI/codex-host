@@ -1,15 +1,5 @@
-export function isGrokCompactMethodNotFound(error: unknown): boolean {
-  if (isRecord(error) && error.code === -32601) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /method not found/iu.test(message);
-}
 export const GROK_COMPACT_CONVERSATION_METHOD = "x.ai/compact_conversation";
 export const GROK_COMPACT_CONVERSATION_FALLBACK_METHOD = "_x.ai/compact_conversation";
-
-export interface GrokCompactConversationParams {
-  sessionId: string;
-  userContext?: string;
-}
 
 export interface GrokCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
@@ -29,15 +19,6 @@ function optionalNonNegativeInt(value: unknown): number | undefined {
 
 function optionalErrorMessage(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-export function buildGrokCompactConversationParams(
-  params: GrokCompactConversationParams,
-): GrokCompactConversationParams {
-  return {
-    sessionId: params.sessionId,
-    ...(params.userContext !== undefined ? { userContext: params.userContext } : {}),
-  };
 }
 
 export function parseGrokCompactResult(value: unknown, cancelled = false): GrokCompactResult {

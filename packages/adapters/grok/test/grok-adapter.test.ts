@@ -1733,12 +1733,42 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("uses the native terminal compact outcome over the RPC result", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("manual-grok-compact-conflict");
+    if (!session.commands) throw new Error("Grok Session did not expose commands");
+
+    await session.commands.execute({ turnId, commandId: "grok.compact" });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    transport.compactEvent({ type: "compaction.started" });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transport.compactEvent({
+      type: "compaction.completed",
+      outcome: "failed",
+      errorMessage: "native compact failed",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction" },
+        outcome: { status: "failed", error: { message: "native compact failed" } },
+      },
+    });
+    transport.finishCompact({ outcome: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "failed", error: { message: "native compact failed" } },
+    });
+    await adapter.close();
+  });
   it("validates Grok compact arguments and rejects it while busy", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);
     const commands = session.commands;
     if (!commands) throw new Error("Grok Session did not expose commands");
-
     await expect(
       commands.execute({
         turnId: hostTurnIdSchema.parse("invalid-compact"),

@@ -26,6 +26,7 @@ import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./co
 import {
   GROK_SESSION_DELETE_METHOD,
   GROK_SESSION_FORK_METHOD,
+  isGrokMethodNotFound,
   parseGrokForkResponse,
   type GrokForkParams,
 } from "./grok-fork.js";
@@ -34,10 +35,8 @@ import {
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
 import {
-  buildGrokCompactConversationParams,
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
-  isGrokCompactMethodNotFound,
   parseGrokCompactResult,
   type GrokCompactResult,
 } from "./grok-manual-compaction.js";
@@ -814,15 +813,15 @@ export class GrokAcpTransport {
     const active: ActiveCompact = { onEvent, cancellationRequested: false };
     this.#activeCompact = active;
     try {
-      const params = buildGrokCompactConversationParams({
+      const params = {
         sessionId: this.#sessionId,
         ...(userContext !== undefined ? { userContext } : {}),
-      });
+      };
       let raw: unknown;
       try {
         raw = await connection.request<unknown, unknown>(GROK_COMPACT_CONVERSATION_METHOD, params);
       } catch (error) {
-        if (!isGrokCompactMethodNotFound(error)) throw error;
+        if (!isGrokMethodNotFound(error)) throw error;
         raw = await connection.request<unknown, unknown>(
           GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
           params,

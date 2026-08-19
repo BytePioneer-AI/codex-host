@@ -170,7 +170,7 @@ fn desktop_launch_command(
                 "LaunchServices is available on macOS only",
             ));
         }
-        let mut command = Command::new(&installation.desktop_launcher);
+        let mut command = Command::new(&installation.desktop_executable);
         command.args(additional_arguments).envs(environment);
         #[cfg(target_os = "linux")]
         command.process_group(0);
@@ -668,10 +668,9 @@ pub fn launch_desktop_session(
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::ffi::OsString;
+    #[cfg(target_os = "macos")]
     use std::fs;
     use std::io::{BufRead, BufReader};
-    #[cfg(target_os = "linux")]
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "linux")]
     use std::path::Path;
@@ -686,11 +685,12 @@ mod tests {
     };
     #[cfg(target_os = "linux")]
     use super::{
-        desktop_launch_command, is_managed_desktop_root, launch_desktop_session,
-        select_managed_desktop_root, stock_desktop_command,
+        desktop_launch_command, is_managed_desktop_root, select_managed_desktop_root,
+        stock_desktop_command,
     };
     use crate::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
     use crate::process_exists;
+    #[cfg(target_os = "macos")]
     use crate::temporary_directory;
     #[cfg(target_os = "macos")]
     use crate::{DesktopIdentity, DesktopInstallation, DesktopLaunchMode};
@@ -751,7 +751,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_launches_through_the_official_launcher_but_tracks_the_desktop_executable() {
+    fn linux_managed_launches_the_desktop_executable_without_the_official_launcher() {
         let installation = linux_installation();
         let stock = stock_desktop_command(&installation).expect("stock Desktop command");
         assert_eq!(stock.get_program(), installation.desktop_launcher);
@@ -763,51 +763,11 @@ mod tests {
             &[],
         )
         .expect("managed Desktop command");
-        assert_eq!(managed.get_program(), installation.desktop_launcher);
+        assert_eq!(managed.get_program(), installation.desktop_executable);
         assert_ne!(
             installation.desktop_launcher,
             installation.desktop_executable
         );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn managed_launch_accepts_the_official_shell_wrapper_interpreter() {
-        let directory = temporary_directory("codexhost-shell-launcher");
-        let desktop = directory.join("ChatGPT");
-        fs::copy("/bin/sleep", &desktop).expect("copy fake Desktop");
-        fs::set_permissions(&desktop, fs::Permissions::from_mode(0o755))
-            .expect("make fake Desktop executable");
-        let desktop = desktop.canonicalize().expect("canonical fake Desktop");
-        let launcher = directory.join("codex-launcher");
-        fs::write(
-            &launcher,
-            format!("#!/bin/sh\nsleep 0.1\nexec \"{}\" 30\n", desktop.display()),
-        )
-        .expect("write shell launcher");
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
-            .expect("make shell launcher executable");
-        let mut installation = linux_installation();
-        installation.install_root = directory.clone();
-        installation.desktop_launcher = launcher;
-        installation.desktop_executable = desktop.clone();
-        installation.packaged_codex_cli = "/bin/true".into();
-        installation.executable_codex_cli = "/bin/true".into();
-
-        let mut session = launch_desktop_session(
-            &installation,
-            Path::new("/bin/true"),
-            DesktopLaunchMode::DirectExecutable,
-            &[],
-            &[],
-            Duration::from_secs(2),
-        )
-        .expect("launch Desktop through shell wrapper");
-        assert_eq!(session.root_snapshot().executable, desktop);
-        session
-            .shutdown(Duration::from_secs(2))
-            .expect("stop fake Desktop");
-        fs::remove_dir_all(directory).expect("remove shell launcher fixture");
     }
 
     #[cfg(target_os = "linux")]

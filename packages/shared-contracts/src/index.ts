@@ -69,6 +69,20 @@ export type {
   ThreadOwnershipListResult,
 } from "./harness-models.js";
 export {
+  harnessCommandCatalogSchema,
+  harnessCommandDescriptorSchema,
+  threadCommandExecuteParamsSchema,
+  threadCommandExecuteResultSchema,
+  threadCommandsInspectParamsSchema,
+} from "./harness-commands.js";
+export type {
+  HarnessCommandCatalog,
+  HarnessCommandDescriptor,
+  ThreadCommandExecuteParams,
+  ThreadCommandExecuteResult,
+  ThreadCommandsInspectParams,
+} from "./harness-commands.js";
+export {
   accountCreditsProductUsageSchema,
   accountCreditsSnapshotSchema,
   threadUsageInspectionParamsSchema,

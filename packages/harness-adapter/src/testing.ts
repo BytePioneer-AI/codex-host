@@ -27,6 +27,7 @@ import { HarnessOutputChannel } from "./output-channel.js";
 import { parseHostUsage, type HostUsage } from "./usage.js";
 import type {
   HarnessAdapter,
+  HarnessCommandCapability,
   HarnessError,
   HarnessOutput,
   HarnessResult,
@@ -153,6 +154,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly cwd: string;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
+  commands?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
@@ -243,6 +245,18 @@ export class FakeHarnessSession implements HarnessSession {
   setStateForSnapshot(state: HarnessSessionState): void {
     if (this.#closed) throw new Error("Fake Harness Session is closed");
     this.#state = cloneJson(state);
+  }
+
+  publishEphemeralCommand(turnId: HostTurnId, item: HostItem): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.#event({ type: "turn.started", turnId });
+    this.#event({ type: "item.started", turnId, item });
+    this.#event({
+      type: "item.completed",
+      turnId,
+      snapshot: { item, outcome: { status: "succeeded" } },
+    });
+    this.#event({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
   }
 
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {

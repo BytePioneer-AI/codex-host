@@ -9,6 +9,8 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostThreadId,
+  type ThreadCommandExecuteParams,
+  type ThreadCommandsInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
   type ThreadPermissionModeSelectParams,
@@ -581,6 +583,10 @@ export function installCurrentRendererAdapter(): {
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
+      currentModelClient().inspectThreadCommands(input),
+    executeThreadCommand: (input: ThreadCommandExecuteParams) =>
+      currentModelClient().executeThreadCommand(input),
     inspectThreadUsage: (input: ThreadUsageInspectionParams) =>
       currentModelClient().inspectThreadUsage(input),
     subscribeThreadUsage: (listener: (update: ThreadUsageInspection) => void) =>

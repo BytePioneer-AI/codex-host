@@ -1,6 +1,7 @@
 import {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
+  harnessCommandCatalogSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
@@ -8,6 +9,9 @@ import {
   hostThreadIdSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
+  threadCommandExecuteParamsSchema,
+  threadCommandExecuteResultSchema,
+  threadCommandsInspectParamsSchema,
   threadModelSelectParamsSchema,
   threadPermissionModeSelectParamsSchema,
   threadThinkingSelectParamsSchema,
@@ -21,12 +25,16 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type HarnessCommandCatalog,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
+  type ThreadCommandExecuteParams,
+  type ThreadCommandExecuteResult,
+  type ThreadCommandsInspectParams,
   type ThreadModelSelectParams,
   type ThreadPermissionModeSelectParams,
   type ThreadThinkingSelectParams,
@@ -42,6 +50,8 @@ import {
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
+export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
+export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
@@ -85,6 +95,8 @@ export interface RendererModelClient {
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
+  executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
@@ -152,6 +164,20 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
     return harnessInspectionSchema.parse(result);
   };
+  const inspectThreadCommands = async (
+    input: ThreadCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = threadCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_COMMANDS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
+  };
+  const executeThreadCommand = async (
+    input: ThreadCommandExecuteParams,
+  ): Promise<ThreadCommandExecuteResult> => {
+    const params = threadCommandExecuteParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_COMMAND_EXECUTE_METHOD, params);
+    return threadCommandExecuteResultSchema.parse(result);
+  };
   const inspectThreadUsage = async (
     input: ThreadUsageInspectionParams,
   ): Promise<ThreadUsageInspection> => {
@@ -193,6 +219,8 @@ export function createRendererModelClient(
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
       return threadInspectionSchema.parse(result);
     },
+    inspectThreadCommands,
+    executeThreadCommand,
     async listThreadOwnership(
       input: ThreadOwnershipListParams,
     ): Promise<ThreadOwnershipListResult> {

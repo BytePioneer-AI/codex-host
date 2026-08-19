@@ -20,6 +20,7 @@ import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
+  hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
@@ -1428,6 +1429,66 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(readResponse).toMatchObject({
       result: { thread: { turns: [{ status: "completed" }] } },
     });
+    await stopFixture(fixture);
+  });
+
+  it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            {
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "text" as const,
+            },
+          ],
+        },
+      }),
+      execute: async ({ turnId, commandId, arguments: arguments_ }) => {
+        expect(commandId).toBe("fake.compact");
+        expect(arguments_).toEqual({ text: "Keep implementation details" });
+        session.publishEphemeralCommand(turnId, {
+          type: "contextCompaction",
+          itemId: hostItemIdSchema.parse("fake-compaction-item"),
+        });
+        return { ok: true, value: { turnId } };
+      },
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [{ type: "text", text: "/compact Keep implementation details" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/started") &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "contextCompaction",
+      ),
+    ).resolves.toMatchObject({ params: { item: { type: "contextCompaction" } } });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "contextCompaction",
+      ),
+    ).resolves.toMatchObject({ params: { item: { type: "contextCompaction" } } });
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    expect(session.persistedSnapshot().turns).toHaveLength(0);
     await stopFixture(fixture);
   });
 

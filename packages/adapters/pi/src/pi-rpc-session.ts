@@ -99,6 +99,10 @@ export interface PiTurnResult {
   cancelled: boolean;
 }
 
+export interface PiCompactResult {
+  outcome: "succeeded" | "cancelled" | "failed";
+  errorMessage?: string;
+}
 
 export type PiRpcFaultKind = "notInstalled" | "unavailable" | "protocolError" | "processExited";
 
@@ -151,6 +155,12 @@ interface PendingCommand {
   resolve(value: Record<string, unknown>): void;
   reject(error: Error): void;
   timeout: NodeJS.Timeout | null;
+}
+
+interface ManualCompaction {
+  onEvent(event: PiTurnEvent): void;
+  resolve(result: PiCompactResult): void;
+  reject(error: Error): void;
 }
 
 interface ActiveTurn {
@@ -439,6 +449,7 @@ export class PiRpcSession {
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
+  #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
 
   constructor(
@@ -543,6 +554,30 @@ export class PiRpcSession {
       if (error instanceof PiRpcFaultError) this.#fail(error);
       throw error;
     }
+  }
+
+  async compact(
+    customInstructions: string | undefined,
+    onEvent: (event: PiTurnEvent) => void,
+  ): Promise<PiCompactResult> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (this.#activeTurn || this.#manualCompaction || this.#compactionActive) {
+      throw new Error("Pi RPC Session already has an active operation");
+    }
+
+    const result = new Promise<PiCompactResult>((resolve, reject) => {
+      this.#manualCompaction = { onEvent, resolve, reject };
+    });
+    try {
+      await this.#send("compact", customInstructions ? { customInstructions } : {});
+    } catch (error) {
+      const pending = this.#manualCompaction as ManualCompaction | null;
+      this.#manualCompaction = null;
+      pending?.reject(error instanceof Error ? error : new Error(message(error)));
+    }
+    return result;
   }
 
   async getSessionUsage(): Promise<HostUsage | null> {
@@ -828,9 +863,11 @@ export class PiRpcSession {
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
-      this.#compactionTurn?.onEvent({ type: "compaction.started" });
+      const onEvent = this.#activeTurn?.onEvent ?? this.#manualCompaction?.onEvent;
+      onEvent?.({ type: "compaction.started" });
       for (const pending of this.#pending.values()) {
-        if (pending.command !== "prompt" || !pending.timeout) continue;
+        if ((pending.command !== "prompt" && pending.command !== "compact") || !pending.timeout)
+          continue;
         clearTimeout(pending.timeout);
         pending.timeout = null;
       }
@@ -841,13 +878,24 @@ export class PiRpcSession {
       const compactionTurn = this.#compactionTurn;
       this.#compactionTurn = null;
       for (const [id, pending] of this.#pending) {
-        if (pending.command === "prompt") this.#armCommandTimeout(id, pending);
+        if (pending.command === "prompt" || pending.command === "compact") {
+          this.#armCommandTimeout(id, pending);
+        }
       }
-      compactionTurn?.onEvent({
+      const outcome =
+        value.aborted === true ? "cancelled" : isRecord(value.result) ? "succeeded" : "failed";
+      const event: PiTurnEvent = {
         type: "compaction.completed",
-        outcome:
-          value.aborted === true ? "cancelled" : isRecord(value.result) ? "succeeded" : "failed",
+        outcome,
         ...(nonBlankString(value.errorMessage) ? { errorMessage: value.errorMessage } : {}),
+      };
+      compactionTurn?.onEvent(event);
+      const manual = this.#manualCompaction;
+      this.#manualCompaction = null;
+      manual?.onEvent(event);
+      manual?.resolve({
+        outcome,
+        ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
       });
       return;
     }
@@ -1251,7 +1299,8 @@ export class PiRpcSession {
     if (
       pending.timeout ||
       this.#pending.get(id) !== pending ||
-      (pending.command === "prompt" && this.#compactionActive)
+      ((pending.command === "prompt" || pending.command === "compact") &&
+        this.#compactionActive)
     ) {
       return;
     }
@@ -1317,6 +1366,9 @@ export class PiRpcSession {
       pending.reject(error);
     }
     this.#pending.clear();
+    const manual = this.#manualCompaction;
+    this.#manualCompaction = null;
+    manual?.reject(error);
     this.#rejectActiveTurn(error);
   }
 

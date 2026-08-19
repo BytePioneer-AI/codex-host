@@ -23,6 +23,7 @@ type Scenario =
   | "retry-success"
   | "prompt-preflight-compaction"
   | "prompt-preflight-compaction-timeout"
+  | "manual-compaction"
   | "empty"
   | "tools"
   | "long-running"
@@ -242,6 +243,30 @@ class FakePiRpcProcess extends EventEmitter {
         ? String(command.level)
         : "high";
       this.#respond(command);
+      return;
+    }
+    if (command.type === "compact" && this.#scenario === "manual-compaction") {
+      this.#output({ type: "compaction_start", reason: "manual" });
+      setTimeout(() => {
+        this.#output({
+          type: "compaction_end",
+          reason: "manual",
+          result: {
+            summary: "Synthetic manual summary",
+            firstKeptEntryId: "user-1",
+            tokensBefore: 275_729,
+            estimatedTokensAfter: 32_000,
+          },
+          aborted: false,
+          willRetry: false,
+        });
+        this.#respond(command, {
+          summary: "Synthetic manual summary",
+          firstKeptEntryId: "user-1",
+          tokensBefore: 275_729,
+          estimatedTokensAfter: 32_000,
+        });
+      }, 10);
       return;
     }
     if (
@@ -857,6 +882,43 @@ describe("Pi RPC Turn aggregation", () => {
     );
     expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await rpc.close();
+  });
+
+  it("correlates manual Compact RPC events without an active Prompt Turn", async () => {
+    const rpc = session("manual-compaction");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(
+      rpc.compact("Keep implementation details", (event) => events.push(event)),
+    ).resolves.toEqual({
+      outcome: "succeeded",
+    });
+    expect(events).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "succeeded" },
+    ]);
+    await rpc.close();
+  });
+
+  it("does not time out the Compact RPC while native compaction is active", async () => {
+    vi.useFakeTimers();
+    const rpc = session("manual-compaction", vi.fn(), { commandTimeoutMs: 5 });
+    const events: PiTurnEvent[] = [];
+
+    try {
+      await rpc.start();
+      const compact = rpc.compact(undefined, (event) => events.push(event));
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(compact).resolves.toEqual({ outcome: "succeeded" });
+      expect(events).toEqual([
+        { type: "compaction.started" },
+        { type: "compaction.completed", outcome: "succeeded" },
+      ]);
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps Prompt correlation alive while preflight auto-compaction exceeds the command timeout", async () => {

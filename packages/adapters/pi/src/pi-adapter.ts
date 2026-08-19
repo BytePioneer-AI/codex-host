@@ -5,6 +5,9 @@ import {
   HarnessOutputChannel,
   validateHostQuestionResponse,
   type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
@@ -45,6 +48,7 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  harnessCommandCatalogSchema,
   harnessIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
@@ -71,6 +75,7 @@ import {
   type PiInteractionResponse,
   type PiRpcSessionOptions,
   type PiSessionState,
+  type PiCompactResult,
   type PiTurnEvent,
   type PiTurnResult,
 } from "./pi-rpc-session.js";
@@ -106,6 +111,10 @@ export interface PiTurnTransport {
   verifySessionCwd(expectedCwd: string): Promise<void>;
   selectModel(model: PiNativeModelRef): Promise<PiSessionState>;
   selectThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<PiSessionState>;
+  compact(
+    customInstructions: string | undefined,
+    onEvent: (event: PiTurnEvent) => void,
+  ): Promise<PiCompactResult>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
@@ -146,6 +155,17 @@ interface ActiveTurn {
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const piHarnessId = harnessIdSchema.parse("pi");
+const piCommandCatalog = harnessCommandCatalogSchema.parse({
+  commands: [
+    {
+      id: "pi.compact",
+      invocation: "/compact",
+      label: "Compact context",
+      description: "Compact the current conversation context",
+      argumentMode: "text",
+    },
+  ],
+});
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -334,6 +354,7 @@ function delay(milliseconds: number): Promise<void> {
 class PiHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = piHarnessId;
   readonly capabilities: HarnessSessionCapabilities;
+  readonly commands: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -386,6 +407,10 @@ class PiHarnessSession implements HarnessSession {
         selectPermissionMode: false,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    };
+    this.commands = {
+      list: async () => ({ ok: true, value: piCommandCatalog }),
+      execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
     this.initialState = options.startedTransport
@@ -818,6 +843,119 @@ class PiHarnessSession implements HarnessSession {
         void transport.close().catch(() => undefined);
       }
       return { ok: false, error: normalized };
+    }
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (command.commandId !== "pi.compact") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `Pi does not expose Harness command '${command.commandId}'`,
+          retryable: false,
+        },
+      };
+    }
+    if (this.#acceptingTurn || this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Pi Session already has an active operation",
+          retryable: true,
+        },
+      };
+    }
+    const arguments_ = command.arguments;
+    const customInstructions = arguments_?.text;
+    if (customInstructions !== undefined && typeof customInstructions !== "string") {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi compact command argument 'text' must be a string",
+          retryable: false,
+        },
+      };
+    }
+    if (arguments_ && Object.keys(arguments_).some((key) => key !== "text")) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi compact command has an unknown argument",
+          retryable: false,
+        },
+      };
+    }
+
+    this.#acceptingTurn = true;
+    try {
+      let transport: PiTurnTransport;
+      try {
+        transport = await this.#ensureTransport();
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "unavailable") };
+      }
+      const turnCommand: TurnStartCommand = {
+        type: "turn.start",
+        turnId: command.turnId,
+        input: [],
+      };
+      let resolveCompletion = (): void => undefined;
+      const completion = new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      });
+      const active: ActiveTurn = {
+        command: turnCommand,
+        agentItem: null,
+        agentMessageId: null,
+        compactionItem: null,
+        sawAssistantMessage: false,
+        reasoningItem: null,
+        tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
+        cancellationRequested: false,
+        beforeNativeTurnKeys: new Set(),
+        completion,
+        resolveCompletion,
+      };
+      this.#active = active;
+      this.#event({ type: "turn.started", turnId: command.turnId });
+      void transport
+        .compact(customInstructions, (event) => this.#handleTurnEvent(active, event))
+        .then((result) => {
+          if (result.outcome === "succeeded") {
+            this.#completeTurn(active, { status: "succeeded" });
+          } else if (result.outcome === "cancelled") {
+            this.#completeTurn(active, {
+              status: "cancelled",
+              reason: "Context compaction was cancelled",
+            });
+          } else {
+            this.#completeTurn(active, {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: result.errorMessage ?? "Pi context compaction failed",
+                retryable: true,
+              },
+            });
+          }
+        })
+        .catch((error: unknown) => {
+          this.#completeTurn(active, {
+            status: "failed",
+            error: normalizedError(error, "nativeFailure"),
+          });
+        });
+      return { ok: true, value: { turnId: command.turnId } };
+    } finally {
+      this.#acceptingTurn = false;
     }
   }
 

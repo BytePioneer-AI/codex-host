@@ -24,6 +24,7 @@ import type { PiSessionHistory } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import {
   PiRpcFaultError,
+  type PiCompactResult,
   type PiInteractionResponse,
   type PiRpcSessionOptions,
   type PiSessionState,
@@ -104,6 +105,17 @@ class FakePiTransport implements PiTurnTransport {
   readonly close = vi.fn(async () => {
     this.fail(new Error("Fake Pi transport closed"));
   });
+  readonly compact = vi.fn(
+    async (
+      customInstructions: string | undefined,
+      onEvent: (event: PiTurnEvent) => void,
+    ): Promise<PiCompactResult> => {
+      void customInstructions;
+      onEvent({ type: "compaction.started" });
+      onEvent({ type: "compaction.completed", outcome: "succeeded" });
+      return { outcome: "succeeded" };
+    },
+  );
   readonly runTurn = vi.fn((text: string, onEvent: (event: PiTurnEvent) => void) => {
     this.text = text;
     this.onEvent = onEvent;
@@ -835,6 +847,63 @@ describe("Pi HarnessAdapter Session", () => {
 
     await session.close();
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("exposes Pi compact as a command whose native events drive the standard UI lifecycle", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const commands = session.commands;
+    if (!commands) throw new Error("Pi Session did not expose commands");
+    await expect(commands.list()).resolves.toMatchObject({
+      ok: true,
+      value: { commands: [{ id: "pi.compact", invocation: "/compact" }] },
+    });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-compact"),
+        commandId: "pi.compact",
+        arguments: { text: "Keep implementation details" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: "manual-compact" } });
+
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.started",
+      turnId: "manual-compact",
+    });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Manual compaction did not start a Context Compaction Item");
+    }
+    expect(started).toMatchObject({
+      type: "item.started",
+      turnId: "manual-compact",
+      item: { type: "contextCompaction" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      turnId: "manual-compact",
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "manual-compact",
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId: "manual-compact",
+      outcome: { status: "succeeded" },
+    });
+    expect(transports[0]?.compact).toHaveBeenCalledWith(
+      "Keep implementation details",
+      expect.any(Function),
+    );
+    await session.close();
   });
 
   it("publishes native context compaction before continuing the Assistant reply", async () => {

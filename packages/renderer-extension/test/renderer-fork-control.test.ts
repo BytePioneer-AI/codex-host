@@ -35,6 +35,8 @@ function clientWith(inspection: ThreadInspection): RendererModelClient {
     forkThread: vi.fn(async () => ({ threadId: hostThreadIdSchema.parse("derived-thread") })),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(async () => inspection),
+    inspectThreadCommands: vi.fn(),
+    executeThreadCommand: vi.fn(),
     inspectThreadUsage: vi.fn(),
     listThreadOwnership: vi.fn(),
     selectThreadModel: vi.fn(),

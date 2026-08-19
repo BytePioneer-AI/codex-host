@@ -87,6 +87,8 @@ function clientWith(
     forkThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
+    inspectThreadCommands: vi.fn(),
+    executeThreadCommand: vi.fn(),
     inspectThreadUsage: vi.fn(),
     listThreadOwnership: vi.fn(listThreadOwnership),
     selectThreadModel: vi.fn(),

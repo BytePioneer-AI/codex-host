@@ -55,6 +55,7 @@ export interface ExternalThread {
   usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
+  ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
 }
@@ -168,6 +169,7 @@ export class ExternalThreadRuntime {
       usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),
+      ephemeralTurnIds: new Set(),
       persistenceError: null,
       ignoredInteractionIds: new Set(),
     };

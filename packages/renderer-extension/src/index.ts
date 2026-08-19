@@ -30,6 +30,8 @@ export {
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
+  THREAD_COMMANDS_INSPECT_METHOD,
+  THREAD_COMMAND_EXECUTE_METHOD,
   THREAD_MODEL_SELECT_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
@@ -45,6 +47,8 @@ export {
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
+export { mountRendererCommandPicker } from "./renderer-command-picker.js";
+export type { RendererCommandPickerControl } from "./renderer-command-picker.js";
 export {
   creditsPeriodLabel,
   formatRendererCreditsReset,

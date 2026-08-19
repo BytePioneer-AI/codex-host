@@ -1,5 +1,6 @@
 import {
   harnessIdSchema,
+  type HarnessCommandDescriptor,
   type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessModelSelectionState,
@@ -51,6 +52,10 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+import {
+  mountRendererCommandPicker,
+  type RendererCommandPickerControl,
+} from "./renderer-command-picker.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
@@ -260,6 +265,7 @@ interface MountedComposer {
   composer: Element;
   composerId: string;
   control: ComposerAgentControl;
+  commandPicker: RendererCommandPickerControl;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -492,6 +498,47 @@ export function installRendererBindingProbe(
     );
   };
 
+  const refreshCommands = async (mounted: MountedComposer): Promise<void> => {
+    const state = controller.get(mounted.composer);
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (state.agent === "codex" || !threadId || !modelControl) {
+      mounted.commandPicker.setCommands([]);
+      return;
+    }
+    try {
+      const catalog = await modelControl.inspectThreadCommands({ threadId });
+      if (
+        disposed ||
+        mountedByComposer.get(mounted.composer) !== mounted ||
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
+        controller.get(mounted.composer).agent === "codex"
+      ) {
+        return;
+      }
+      mounted.commandPicker.setCommands(catalog.commands);
+    } catch {
+      if (mountedByComposer.get(mounted.composer) === mounted) {
+        mounted.commandPicker.setCommands([]);
+      }
+    }
+  };
+
+  const executeCommand = async (
+    mounted: MountedComposer,
+    command: HarnessCommandDescriptor,
+  ): Promise<void> => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") return;
+    try {
+      await modelControl.executeThreadCommand({ threadId, commandId: command.id });
+    } catch (error) {
+      console.error(
+        "codexhost Harness command failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+
   const applyThreadUsageUpdate = (update: ThreadUsageInspection): void => {
     for (const mounted of mountedByComposer.values()) {
       if (threadIdFromComposerModelTarget(mounted.modelTarget) !== update.threadId) continue;
@@ -666,6 +713,7 @@ export function installRendererBindingProbe(
     } finally {
       if (isCurrentOwnershipRequest(mounted, generation)) {
         renderMounted(mounted);
+        if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
         sidebarAgentIcons.refresh();
         if (
           mounted.ownershipStatus !== "error" &&
@@ -1505,6 +1553,12 @@ export function installRendererBindingProbe(
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
+    const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    if (!editor) return;
+    const commandPicker = mountRendererCommandPicker(composer, editor, (command) => {
+      const mounted = mountedByComposer.get(composer);
+      if (mounted) void executeCommand(mounted, command);
+    });
     const state = controller.mount(
       composer,
       modelTarget,
@@ -1542,6 +1596,7 @@ export function installRendererBindingProbe(
       composer,
       composerId: state.composerId,
       control,
+      commandPicker,
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -1582,6 +1637,7 @@ export function installRendererBindingProbe(
     } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {
       void loadExternalCatalog(mounted);
     }
+    void refreshCommands(mounted);
   };
 
   const scan = (): void => {
@@ -1618,6 +1674,7 @@ export function installRendererBindingProbe(
           usageRefreshTimers.delete(composer);
         }
         disposeComposerAgentControl(mounted.control);
+        mounted.commandPicker.dispose();
         mountedByComposer.delete(composer);
         continue;
       }
@@ -1950,6 +2007,7 @@ export function installRendererBindingProbe(
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
         disposeComposerAgentControl(mounted.control);
+        mounted.commandPicker.dispose();
       }
       mountedByComposer.clear();
       pendingReplacements.clear();

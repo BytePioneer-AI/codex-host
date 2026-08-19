@@ -1,4 +1,5 @@
 import type {
+  HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
   HarnessModelRef,
@@ -9,6 +10,7 @@ import type {
   HostInteractionId,
   HostItemId,
   HostTurnId,
+  JsonObject,
   JsonValue,
   NativeCheckpointRef,
   NativeSessionRef,
@@ -209,6 +211,21 @@ export interface ThinkingSelectCommand {
 export interface PermissionModeSelectCommand {
   type: "permissionMode.select";
   permissionModeId: HarnessPermissionModeId;
+}
+
+export interface HarnessCommandInvocation {
+  turnId: HostTurnId;
+  commandId: string;
+  arguments?: JsonObject;
+}
+
+export interface HarnessCommandAccepted {
+  turnId: HostTurnId;
+}
+
+export interface HarnessCommandCapability {
+  list(): Promise<HarnessResult<HarnessCommandCatalog>>;
+  execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
 }
 
 export type HostCommand =
@@ -424,6 +441,7 @@ export interface HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
+  readonly commands?: HarnessCommandCapability;
 
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;

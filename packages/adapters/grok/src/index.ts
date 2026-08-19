@@ -38,6 +38,14 @@ export {
 } from "./grok-rewind.js";
 export type { GrokRewindParams, GrokRewindResponse } from "./grok-rewind.js";
 export { GrokExecutableError, resolveGrokExecutable } from "./command.js";
+export {
+  GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
+  GROK_COMPACT_CONVERSATION_METHOD,
+  buildGrokCompactConversationParams,
+  isGrokCompactMethodNotFound,
+  parseGrokCompactResult,
+} from "./grok-manual-compaction.js";
+export type { GrokCompactConversationParams, GrokCompactResult } from "./grok-manual-compaction.js";
 
 export const packageMetadata = {
   name: "@codexhost/adapter-grok",

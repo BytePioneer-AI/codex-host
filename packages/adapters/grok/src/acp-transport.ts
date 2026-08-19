@@ -34,6 +34,14 @@ import {
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
 import {
+  buildGrokCompactConversationParams,
+  GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
+  GROK_COMPACT_CONVERSATION_METHOD,
+  isGrokCompactMethodNotFound,
+  parseGrokCompactResult,
+  type GrokCompactResult,
+} from "./grok-manual-compaction.js";
+import {
   GROK_REWIND_EXECUTE_METHOD,
   parseGrokRewindResponse,
   type GrokRewindParams,
@@ -156,10 +164,14 @@ export interface GrokOpenResult {
   replay: GrokTransportEvent[];
   signals?: unknown;
 }
-
 interface ActivePrompt {
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
+}
+
+interface ActiveCompact {
+  onEvent(event: GrokTransportEvent): void;
+  cancellationRequested: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -204,6 +216,9 @@ function withTimeout<T>(promise: Promise<T>, milliseconds: number, operation: st
   });
 }
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return Promise.race([
@@ -457,6 +472,7 @@ export class GrokAcpTransport {
     Pick<GrokAcpTransportOptions, "commandTimeoutMs" | "closeTimeoutMs">
   > &
     GrokAcpTransportOptions;
+  #activeCompact: ActiveCompact | null = null;
   #activePrompt: ActivePrompt | null = null;
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -781,6 +797,46 @@ export class GrokAcpTransport {
     }
   }
 
+  async compact(
+    userContext: string | undefined,
+    onEvent: (event: GrokTransportEvent) => void,
+  ): Promise<GrokCompactResult> {
+    const connection = this.#connection;
+    if (!connection || !this.#sessionId || this.#closed || this.#closing) {
+      throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
+    }
+    if (this.#activePrompt || this.#activeCompact) {
+      throw new GrokTransportError(
+        "unavailable",
+        "Grok ACP Session already has an active operation",
+      );
+    }
+    const active: ActiveCompact = { onEvent, cancellationRequested: false };
+    this.#activeCompact = active;
+    try {
+      const params = buildGrokCompactConversationParams({
+        sessionId: this.#sessionId,
+        ...(userContext !== undefined ? { userContext } : {}),
+      });
+      let raw: unknown;
+      try {
+        raw = await connection.request<unknown, unknown>(GROK_COMPACT_CONVERSATION_METHOD, params);
+      } catch (error) {
+        if (!isGrokCompactMethodNotFound(error)) throw error;
+        raw = await connection.request<unknown, unknown>(
+          GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
+          params,
+        );
+      }
+      await yieldToEventLoop();
+      return parseGrokCompactResult(raw, active.cancellationRequested);
+    } catch (error) {
+      if (error instanceof GrokTransportError) throw error;
+      throw new GrokTransportError("unavailable", "Grok Native Compact failed", { cause: error });
+    } finally {
+      if (this.#activeCompact === active) this.#activeCompact = null;
+    }
+  }
   async setModel(modelId: string, reasoningEffort?: string): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Grok ACP Session is unavailable");
@@ -803,9 +859,10 @@ export class GrokAcpTransport {
 
   cancel(): Promise<void> {
     const connection = this.#connection;
-    if (!connection || !this.#sessionId || !this.#activePrompt) {
-      return Promise.reject(new Error("Grok ACP Session has no cancellable Prompt"));
+    if (!connection || !this.#sessionId || (!this.#activePrompt && !this.#activeCompact)) {
+      return Promise.reject(new Error("Grok ACP Session has no cancellable operation"));
     }
+    if (this.#activeCompact) this.#activeCompact.cancellationRequested = true;
     return connection.cancel({ sessionId: this.#sessionId });
   }
 
@@ -832,6 +889,7 @@ export class GrokAcpTransport {
     this.#closed = true;
     this.#closing = false;
     this.#activePrompt = null;
+    this.#activeCompact = null;
   }
 
   #handleUpdate(notification: SessionNotification): void {
@@ -841,7 +899,8 @@ export class GrokAcpTransport {
     if (!event) return;
     const enriched = metadata ? { ...event, metadata } : event;
     if (this.#replay) this.#replay.push(enriched);
-    else this.#activePrompt?.onEvent(enriched);
+    else if (this.#activePrompt) this.#activePrompt.onEvent(enriched);
+    else this.#activeCompact?.onEvent(enriched);
   }
 
   #handleExtensionNotification(method: string, params: Record<string, unknown>): void {

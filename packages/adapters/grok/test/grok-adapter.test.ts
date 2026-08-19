@@ -16,6 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import type { GrokCompactResult } from "../src/grok-manual-compaction.js";
 import {
   GrokAdapter,
   GrokTransportError,
@@ -53,6 +54,7 @@ const initialize: InitializeResponse = {
 
 class FakeGrokTransport implements GrokAcpTransportLike {
   sessionId = "grok-session";
+  readonly compactCalls: Array<string | undefined> = [];
   readonly cancel = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
@@ -74,6 +76,8 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #onPermission: ((request: GrokPermissionRequest) => Promise<RequestPermissionResponse>) | null =
     null;
   #resolve: ((response: PromptResponse) => void) | null = null;
+  #compactResolve: ((result: GrokCompactResult) => void) | null = null;
+  #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
 
   async inspect(): Promise<InitializeResponse> {
     return initialize;
@@ -162,6 +166,27 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   event(event: GrokTransportEvent): void {
     this.#activePromptEvents.push(event);
     this.#onEvent?.(event);
+  }
+
+  compactEvent(event: GrokTransportEvent): void {
+    this.#compactOnEvent?.(event);
+  }
+
+  finishCompact(result: GrokCompactResult = { outcome: "succeeded" }): void {
+    this.#compactResolve?.(result);
+    this.#compactResolve = null;
+    this.#compactOnEvent = null;
+  }
+
+  compact(
+    userContext: string | undefined,
+    onEvent: (event: GrokTransportEvent) => void,
+  ): Promise<GrokCompactResult> {
+    this.compactCalls.push(userContext);
+    this.#compactOnEvent = onEvent;
+    return new Promise((resolve) => {
+      this.#compactResolve = resolve;
+    });
   }
 
   permission(): Promise<RequestPermissionResponse> {
@@ -1648,6 +1673,133 @@ describe("Grok Adapter ACP projection", () => {
     await opened.value.close();
   });
 
+  it("exposes Grok compact as a command backed by native compact and a temporary Turn", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("manual-grok-compact");
+
+    if (!session.commands) throw new Error("Grok Session did not expose commands");
+    await expect(session.commands.list()).resolves.toMatchObject({
+      ok: true,
+      value: { commands: [{ id: "grok.compact", invocation: "/compact", argumentMode: "text" }] },
+    });
+    await expect(
+      session.commands.execute({
+        turnId,
+        commandId: "grok.compact",
+        arguments: { text: "Keep implementation details" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    transport.compactEvent({
+      type: "compaction.started",
+      tokensUsed: 401965,
+      contextWindowTokens: 500000,
+    });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Manual Grok compact did not start a Context Compaction Item");
+    }
+    transport.compactEvent({
+      type: "compaction.completed",
+      outcome: "succeeded",
+      tokensBefore: 401965,
+      tokensAfter: 10820,
+      contextWindowTokens: 500000,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: turnId,
+      usage: { contextUsedTokens: 10820, contextWindowTokens: 500000 },
+    });
+    transport.finishCompact();
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.compactCalls).toEqual(["Keep implementation details"]);
+    expect(transport.replay).toEqual([]);
+    await adapter.close();
+  });
+
+  it("validates Grok compact arguments and rejects it while busy", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const commands = session.commands;
+    if (!commands) throw new Error("Grok Session did not expose commands");
+
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("invalid-compact"),
+        commandId: "grok.compact",
+        arguments: { text: 1 },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("unknown-command"),
+        commandId: "grok.unknown",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("busy-compact");
+    await session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "busy" }] });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("rejected-compact"),
+        commandId: "grok.compact",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("cancels a running Grok compact temporary Turn", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("cancel-grok-compact");
+    if (!session.commands) throw new Error("Grok Session did not expose commands");
+
+    await session.commands.execute({ turnId, commandId: "grok.compact" });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect(await session.execute({ type: "turn.cancel", turnId })).toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(transport.cancel).toHaveBeenCalledOnce();
+    transport.finishCompact({ outcome: "cancelled" });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction" },
+        outcome: { status: "cancelled" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "cancelled" },
+    });
+    await adapter.close();
+  });
   it("projects native auto-compaction before continuing the Assistant reply", async () => {
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);

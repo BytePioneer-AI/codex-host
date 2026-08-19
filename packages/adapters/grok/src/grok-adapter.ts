@@ -10,6 +10,9 @@ import {
   HarnessOutputChannel,
   validateHostApprovalResponse,
   type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
@@ -47,6 +50,7 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  harnessCommandCatalogSchema,
   harnessIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
@@ -70,6 +74,7 @@ import {
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
+import type { GrokCompactResult } from "./grok-manual-compaction.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
@@ -127,6 +132,10 @@ export interface GrokAcpTransportLike {
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
   ): Promise<PromptResponse>;
+  compact(
+    userContext: string | undefined,
+    onEvent: (event: GrokTransportEvent) => void,
+  ): Promise<GrokCompactResult>;
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
@@ -163,6 +172,17 @@ interface ActiveTurn {
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const grokHarnessId = harnessIdSchema.parse("grok");
+const grokCommandCatalog = harnessCommandCatalogSchema.parse({
+  commands: [
+    {
+      id: "grok.compact",
+      invocation: "/compact",
+      label: "Compact context",
+      description: "Compact the current conversation context",
+      argumentMode: "text",
+    },
+  ],
+});
 function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabilities {
   return {
     configuration: {
@@ -230,6 +250,7 @@ function terminalOutcome(response: PromptResponse, cancelled: boolean): TurnOutc
 class GrokHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = grokHarnessId;
   readonly capabilities: HarnessSessionCapabilities;
+  readonly commands: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -277,6 +298,10 @@ class GrokHarnessSession implements HarnessSession {
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.capabilities = capabilitiesForModels(modelState);
+    this.commands = {
+      list: async () => ({ ok: true, value: grokCommandCatalog }),
+      execute: (command) => this.#executeHarnessCommand(command),
+    };
     this.#state = stateForGrokModel(modelState, { nativeRef: nativeRef(opened.sessionId) });
     this.initialState = this.#state;
     this.#snapshot = {
@@ -327,6 +352,7 @@ class GrokHarnessSession implements HarnessSession {
     }
   }
 
+  execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
@@ -336,7 +362,7 @@ class GrokHarnessSession implements HarnessSession {
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(
-    command: HostCommand,
+    command: HostCommand | HarnessCommandInvocation,
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
@@ -345,10 +371,12 @@ class GrokHarnessSession implements HarnessSession {
       | ModelSelectCompleted
       | ThinkingSelectCompleted
       | PermissionModeSelectCompleted
+      | HarnessCommandAccepted
     >
   > {
     if (this.#phase !== "open")
       return { ok: false, error: invalidState("Grok Session is not open") };
+    if ("commandId" in command) return this.#executeHarnessCommand(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -433,6 +461,120 @@ class GrokHarnessSession implements HarnessSession {
           }),
       );
     return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (command.commandId !== "grok.compact") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `Grok does not expose Harness command '${command.commandId}'`,
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Grok Session already has an active operation",
+          retryable: true,
+        },
+      };
+    }
+    const arguments_ = command.arguments;
+    const userContext = arguments_?.text;
+    if (userContext !== undefined && typeof userContext !== "string") {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Grok compact command argument 'text' must be a string",
+          retryable: false,
+        },
+      };
+    }
+    if (arguments_ && Object.keys(arguments_).some((key) => key !== "text")) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Grok compact command has an unknown argument",
+          retryable: false,
+        },
+      };
+    }
+
+    let resolveCompletion = (): void => undefined;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const active: ActiveTurn = {
+      command: { type: "turn.start", turnId: command.turnId, input: [] },
+      agent: null,
+      agentMessageId: null,
+      reasoning: null,
+      reasoningMessageId: null,
+      compactionItem: null,
+      compactionContextWindow: undefined,
+      tools: new Map(),
+      completedItems: [],
+      approvals: new Map(),
+      cancellationRequested: false,
+      beforeNativeTurnKeys: new Set(),
+      completion,
+      resolveCompletion,
+    };
+    this.#active = active;
+    this.#event({ type: "turn.started", turnId: command.turnId });
+    void this.#transport
+      .compact(userContext, (event) => this.#handleEvent(active, event))
+      .then(
+        (result) => this.#settleManualCompact(active, result),
+        (error) =>
+          this.#finish(active, {
+            status: "failed",
+            error: normalizeError(error, "nativeFailure"),
+          }),
+      );
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  #settleManualCompact(active: ActiveTurn, result: GrokCompactResult): void {
+    if (this.#active !== active) return;
+    const hasCompletedCompaction = active.completedItems.some(
+      ({ item }) => item.type === "contextCompaction",
+    );
+    if (!hasCompletedCompaction) {
+      this.#completeCompaction(active, {
+        type: "compaction.completed",
+        outcome: result.outcome,
+        ...(result.tokensBefore !== undefined ? { tokensBefore: result.tokensBefore } : {}),
+        ...(result.tokensAfter !== undefined ? { tokensAfter: result.tokensAfter } : {}),
+        ...(result.contextWindowTokens !== undefined
+          ? { contextWindowTokens: result.contextWindowTokens }
+          : {}),
+        ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      });
+    }
+    const outcome: TurnOutcome =
+      result.outcome === "succeeded"
+        ? { status: "succeeded" }
+        : result.outcome === "cancelled"
+          ? { status: "cancelled", reason: "Context compaction was cancelled" }
+          : {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: result.errorMessage ?? "Grok context compaction failed",
+                retryable: true,
+              },
+            };
+    this.#finish(active, outcome);
   }
 
   close(): Promise<void> {

@@ -71,21 +71,22 @@ git diff --check
 
 For native RPC changes, also verify the request and event sequence against the real Harness when available.
 
-## Current example: Pi `/compact`
+## Current examples: Pi and Grok `/compact`
 
 ```text
 Renderer command catalog
   -> Composer Harness Commands button
   -> independent command popover
   -> Host command/execute
-  -> Pi Adapter
-  -> Pi native { type: "compact" }
-  -> compaction_start / compaction_end
+  -> owning Adapter
+       Pi:   native { type: "compact" }
+       Grok: x.ai/compact_conversation { sessionId, userContext? }
   -> standard contextCompaction projection
   -> temporary Turn cleanup
 ```
 
-`/compact` is a command because it invokes Pi's native operation. It must not be sent as a normal Pi Prompt.
+Grok maps optional trailing text to native `userContext`. Both commands invoke
+Harness-native operations and must not be sent as normal Prompts.
 
 ## Boundaries
 

@@ -319,7 +319,13 @@ function firstMaterialChild(parent: Element): HTMLElement | null {
   for (const child of parent.children) {
     if (typeof (child as HTMLElement).hasAttribute !== "function") continue;
     const element = child as HTMLElement;
-    if (element.hasAttribute("data-codexhost-credits-control")) continue;
+    // Harness Commands sit with Usage; skip them so the walk reaches the + button.
+    if (
+      element.hasAttribute("data-codexhost-credits-control") ||
+      element.hasAttribute("data-codexhost-harness-command-control")
+    ) {
+      continue;
+    }
     return element;
   }
   return null;

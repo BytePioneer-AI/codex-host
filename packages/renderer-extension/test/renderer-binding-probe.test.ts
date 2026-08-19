@@ -265,6 +265,33 @@ describe("Renderer Composer DOM behavior", () => {
     expect(creditsPlacementAnchor({} as Element, usageRoot as HTMLElement)).toBe(plus);
   });
 
+  it("walks past harness commands when anchoring credits to the leading footer control", () => {
+    const plus = {
+      hasAttribute: () => false,
+      contains: () => false,
+    };
+    const commands = {
+      hasAttribute: (name: string) => name === "data-codexhost-harness-command-control",
+      contains: () => false,
+    };
+    const usageRoot = { hasAttribute: () => false };
+    const cluster = {
+      hasAttribute: () => false,
+      contains: (node: unknown) => node === usageRoot || node === commands,
+      children: [commands, usageRoot],
+    };
+    const footer = {
+      children: [plus, cluster],
+    };
+    Object.assign(plus, { parentElement: footer });
+    Object.assign(commands, { parentElement: cluster });
+    Object.assign(usageRoot, { parentElement: cluster });
+    Object.assign(cluster, { parentElement: footer });
+    Object.assign(footer, { parentElement: {} });
+
+    expect(creditsPlacementAnchor({} as Element, usageRoot as HTMLElement)).toBe(plus);
+  });
+
   it("does not treat codexhost Usage controls as native anchors", () => {
     const usage = {
       hasAttribute: (name: string) => name === "data-codexhost-usage-control",

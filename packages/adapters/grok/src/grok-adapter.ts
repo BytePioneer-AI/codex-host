@@ -113,6 +113,7 @@ export interface GrokAdapterDependencies {
 
 export interface GrokAcpTransportLike {
   readonly sessionId: string;
+  readonly stderrTail?: string;
   inspect(): Promise<GrokOpenResult["initialize"]>;
   open(input: GrokOpenInput): Promise<GrokOpenResult>;
   getHistory(): Promise<GrokTransportEvent[]>;
@@ -180,6 +181,7 @@ function normalizeError(error: unknown, fallback: HarnessError["code"]): Harness
       code: error.kind,
       message: error.message,
       retryable: !["notInstalled", "protocolError"].includes(error.kind),
+      ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
     };
   }
   return {
@@ -982,9 +984,13 @@ export class GrokAdapter implements HarnessAdapter {
       if (cached) return cached;
     }
     let transport: GrokAcpTransportLike | null = null;
+    const startedAt = Date.now();
+    let stage = "spawn";
     try {
       transport = this.#createTransport(cwd, () => undefined);
+      stage = "startup";
       const initialize = await transport.inspect();
+      stage = "model-catalog";
       const modelState = modelStateFromInitialize(initialize);
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
@@ -1002,7 +1008,14 @@ export class GrokAdapter implements HarnessAdapter {
       const normalized = normalizeError(error, "unavailable");
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
-        error: normalized,
+        error: {
+          ...normalized,
+          stage,
+          durationMs: Date.now() - startedAt,
+          ...(normalized.diagnostic || !transport?.stderrTail
+            ? {}
+            : { stderrTail: transport.stderrTail }),
+        },
       };
     }
   }

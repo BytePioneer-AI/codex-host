@@ -1282,10 +1282,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   async #inspectModels(cwd: string): Promise<HarnessInspection> {
     let inspector: ClaudeModelInspector | null = null;
+    const startedAt = Date.now();
+    let stage = "resolve-executable";
     try {
       this.#dependencies.inspectInstallation();
+      stage = "startup";
       inspector = this.#dependencies.createInspector({ cwd });
       this.#inspectors.add(inspector);
+      stage = "model-catalog";
       const snapshot = await inspector.inspect();
       const permissionModes = snapshot.canSelectPermissionMode
         ? claudePermissionModeCatalogForModels(snapshot.models)
@@ -1331,7 +1335,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           : startupFailure(error);
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
-        error: normalized,
+        error: {
+          ...normalized,
+          stage,
+          durationMs: Date.now() - startedAt,
+          ...(inspector?.stderrTail ? { stderrTail: inspector.stderrTail } : {}),
+        },
       };
     } finally {
       if (inspector) {

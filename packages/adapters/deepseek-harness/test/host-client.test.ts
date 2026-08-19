@@ -117,7 +117,7 @@ describe("DeepSeek local Host connection", () => {
     );
     expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
       env: process.env,
-      stdio: "ignore",
+      stdio: "pipe",
       windowsVerbatimArguments: expectedInvocation.windowsVerbatimArguments,
     });
     await connection.close();
@@ -166,7 +166,7 @@ describe("DeepSeek local Host connection", () => {
     );
     expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
       env: environment,
-      stdio: "ignore",
+      stdio: "pipe",
       windowsVerbatimArguments: expectedInvocation.windowsVerbatimArguments,
     });
   });

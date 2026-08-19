@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 
+import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import {
   ClientSideConnection,
   PROTOCOL_VERSION,
@@ -38,12 +39,15 @@ export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
 
 export class GrokTransportError extends Error {
+  readonly diagnostic: string | undefined;
+
   constructor(
     readonly kind: GrokTransportFaultKind,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { diagnostic?: string },
   ) {
     super(message, options);
+    this.diagnostic = options?.diagnostic;
     this.name = "GrokTransportError";
   }
 }
@@ -440,6 +444,7 @@ export class GrokAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #stderrTail = "";
 
   constructor(options: GrokAcpTransportOptions) {
     this.#options = {
@@ -452,6 +457,10 @@ export class GrokAcpTransport {
   get sessionId(): string {
     if (!this.#sessionId) throw new Error("Grok ACP Session is not open");
     return this.#sessionId;
+  }
+
+  get stderrTail(): string {
+    return this.#stderrTail;
   }
 
   async inspect(): Promise<InitializeResponse> {
@@ -672,7 +681,9 @@ export class GrokAcpTransport {
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     this.#child = child;
-    child.stderr.resume();
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+    });
     await withTimeout(
       new Promise<void>((resolve, reject) => {
         child.once("spawn", resolve);

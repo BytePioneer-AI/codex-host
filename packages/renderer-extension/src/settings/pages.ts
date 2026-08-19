@@ -1,3 +1,7 @@
+import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
+import { RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
+import type { CodexhostError } from "@codexhost/shared-contracts";
+import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type {
   UpdateCheckResult,
   UpdateInstallation,
@@ -44,6 +48,23 @@ export interface RendererUpdateClient {
   readUpdateStatus(): Promise<UpdateStatusResult>;
 }
 
+export interface RendererConnectionAgentSnapshot {
+  readonly agent: ExternalRendererAgent;
+  readonly availability: RendererAgentAvailability;
+  readonly error: CodexhostError | null;
+}
+
+export interface RendererConnectionSnapshot {
+  readonly adapter: RendererAdapterStatus;
+  readonly agents: readonly RendererConnectionAgentSnapshot[];
+}
+
+export interface RendererConnectionDiagnostics {
+  snapshot(): RendererConnectionSnapshot;
+  refresh(): Promise<void>;
+  subscribe(listener: () => void): () => void;
+}
+
 function appendUnavailableStatus(content: HTMLElement, messages: RendererSettingsMessages): void {
   const status = content.ownerDocument.createElement("div");
   status.className = "settings-empty";
@@ -67,6 +88,317 @@ function unavailablePage(
     mount(context: RendererSettingsPageMountContext) {
       appendUnavailableStatus(context.content, messages);
       return undefined;
+    },
+  });
+}
+
+function connectionStatusLabel(
+  availability: RendererAgentAvailability | RendererAdapterStatus["state"],
+  messages: RendererSettingsMessages,
+): string {
+  if (availability === "ready") return messages.connectionStatusReady;
+  if (availability === "checking") return messages.connectionStatusChecking;
+  if (availability === "notInstalled") return messages.connectionStatusNotInstalled;
+  if (availability === "unavailable" || availability === "error") {
+    return availability === "error"
+      ? messages.connectionStatusError
+      : messages.connectionStatusUnavailable;
+  }
+  return availability === "installing"
+    ? messages.connectionStatusInstalling
+    : messages.connectionStatusUnsupported;
+}
+
+function connectionStatusTone(
+  availability: RendererAgentAvailability | RendererAdapterStatus["state"],
+): "ready" | "checking" | "failed" {
+  if (availability === "ready") return "ready";
+  if (availability === "checking" || availability === "installing") return "checking";
+  return "failed";
+}
+
+function diagnosticText(name: string, snapshot: RendererConnectionAgentSnapshot): string {
+  const error = snapshot.error;
+  const lines = [
+    "codexhost connection diagnostics",
+    `agent: ${name}`,
+    `status: ${snapshot.availability}`,
+    ...(error
+      ? [
+          `error.code: ${error.code}`,
+          `error.message: ${error.message}`,
+          `retryable: ${error.retryable}`,
+          ...(error.stage ? [`stage: ${error.stage}`] : []),
+          ...(error.durationMs !== undefined ? [`durationMs: ${error.durationMs}`] : []),
+          ...(error.diagnostic ? [`diagnostic: ${error.diagnostic}`] : []),
+          ...(error.stderrTail ? [`stderr:\n${error.stderrTail}`] : []),
+        ]
+      : []),
+  ];
+  return lines.join("\n");
+}
+
+function detailLine(document: Document, label: string, value: string): HTMLElement {
+  const line = document.createElement("div");
+  line.className = "settings-connection-detail-line";
+  const name = document.createElement("span");
+  name.textContent = label;
+  const content = document.createElement("code");
+  content.textContent = value;
+  line.append(name, content);
+  return line;
+}
+
+function setCopyButtonLabel(button: HTMLButtonElement, label: string): void {
+  button.replaceChildren(createRendererSettingsIcon("copy", 16), label);
+}
+
+function showCopyButtonFeedback(
+  button: HTMLButtonElement,
+  label: string,
+  restoreLabel: string,
+): void {
+  setCopyButtonLabel(button, label);
+  button.ownerDocument.defaultView?.setTimeout(() => {
+    setCopyButtonLabel(button, restoreLabel);
+  }, 2_000);
+}
+
+function copyDiagnosticsToClipboard(
+  document: Document,
+  button: HTMLButtonElement,
+  report: string,
+  messages: RendererSettingsMessages,
+  restoreLabel: string,
+): void {
+  const clipboard = document.defaultView?.navigator.clipboard;
+  if (!clipboard) {
+    showCopyButtonFeedback(button, messages.connectionCopyFailed, restoreLabel);
+    return;
+  }
+  void clipboard.writeText(report).then(
+    () => showCopyButtonFeedback(button, messages.connectionCopied, restoreLabel),
+    () => showCopyButtonFeedback(button, messages.connectionCopyFailed, restoreLabel),
+  );
+}
+
+function appendConnectionRow(
+  document: Document,
+  parent: HTMLElement,
+  name: string,
+  availability: RendererAgentAvailability | RendererAdapterStatus["state"],
+  detail: string | null,
+  error: CodexhostError | null,
+  messages: RendererSettingsMessages,
+  rowAttribute?: string,
+  diagnosticSnapshot?: RendererConnectionAgentSnapshot,
+): void {
+  const row = document.createElement("div");
+  row.className = "settings-connection-row";
+  if (rowAttribute) row.dataset.connectionAgent = rowAttribute;
+  const identity = document.createElement("div");
+  identity.className = "settings-connection-row__identity";
+  const dot = document.createElement("span");
+  dot.className = "settings-connection-row__dot";
+  dot.dataset.connectionTone = connectionStatusTone(availability);
+  dot.setAttribute("aria-hidden", "true");
+  const label = document.createElement("strong");
+  label.textContent = name;
+  identity.append(dot, label);
+  const status = document.createElement("span");
+  status.className = "settings-status-badge";
+  status.dataset.connectionTone = connectionStatusTone(availability);
+  status.textContent = connectionStatusLabel(availability, messages);
+  const detailElement = document.createElement("div");
+  detailElement.className = "settings-connection-row__detail";
+  const summary = document.createElement("span");
+  summary.className = "settings-connection-row__reason";
+  summary.textContent = error
+    ? `${messages.connectionReason}: ${error.code}: ${error.message}`
+    : detail
+      ? `${messages.connectionReason}: ${detail}`
+      : "";
+  detailElement.append(summary);
+  let toggle: HTMLButtonElement | null = null;
+  if (error) {
+    toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "settings-connection-details-toggle";
+    toggle.textContent = messages.connectionViewDetails;
+    toggle.setAttribute("aria-expanded", "true");
+    detailElement.append(toggle);
+  }
+  const details = document.createElement("div");
+  details.className = "settings-connection-details";
+  details.hidden = !error;
+  if (error) {
+    details.append(
+      detailLine(document, messages.connectionErrorCode, error.code),
+      detailLine(document, messages.connectionErrorMessage, error.message),
+      detailLine(document, messages.connectionRetryable, String(error.retryable)),
+    );
+    if (error.stage)
+      details.append(detailLine(document, messages.connectionFailureStage, error.stage));
+    if (error.durationMs !== undefined) {
+      details.append(detailLine(document, messages.connectionDuration, `${error.durationMs} ms`));
+    }
+    if (error.diagnostic)
+      details.append(detailLine(document, messages.connectionDiagnostic, error.diagnostic));
+    if (error.stderrTail) {
+      const stderr = document.createElement("pre");
+      stderr.className = "settings-connection-stderr";
+      stderr.textContent = error.stderrTail;
+      details.append(stderr);
+    }
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "settings-command-button settings-command-button--secondary";
+    setCopyButtonLabel(copy, messages.connectionCopyDetails);
+    copy.addEventListener("click", () => {
+      if (!diagnosticSnapshot) return;
+      copyDiagnosticsToClipboard(
+        document,
+        copy,
+        diagnosticText(name, diagnosticSnapshot),
+        messages,
+        messages.connectionCopyDetails,
+      );
+    });
+    details.append(copy);
+  }
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      details.hidden = !details.hidden;
+      toggle?.setAttribute("aria-expanded", String(!details.hidden));
+    });
+  }
+  row.append(identity, status, detailElement, details);
+  parent.append(row);
+}
+
+function connectionsPage(
+  messages: RendererSettingsMessages,
+  getDiagnostics: () => RendererConnectionDiagnostics | null,
+): RendererSettingsPageDefinition {
+  return Object.freeze({
+    id: "connections",
+    label: messages.pageLabels.connections,
+    icon: "connections",
+    mount(context: RendererSettingsPageMountContext) {
+      const document = context.content.ownerDocument;
+      const heading = document.createElement("div");
+      heading.className = "settings-section-label";
+      heading.textContent = messages.pageLabels.connections;
+      const description = document.createElement("p");
+      description.className = "settings-page-description";
+      description.textContent = messages.connectionsDescription;
+      const actions = document.createElement("div");
+      actions.className = "settings-connection-actions";
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "settings-command-button settings-command-button--secondary";
+      refresh.dataset.connectionAction = "refresh";
+      refresh.append(createRendererSettingsIcon("diagnose", 16), messages.connectionRefresh);
+      const copyAll = document.createElement("button");
+      copyAll.type = "button";
+      copyAll.className = "settings-command-button settings-command-button--secondary";
+      copyAll.dataset.connectionAction = "copy-all";
+      copyAll.append(createRendererSettingsIcon("copy", 16), messages.connectionCopyAll);
+      actions.append(refresh, copyAll);
+      const content = document.createElement("div");
+      content.className = "settings-connection-list";
+      context.content.append(heading, description, actions, content);
+
+      let pending = false;
+      const render = (snapshot: RendererConnectionSnapshot | null): void => {
+        content.replaceChildren();
+        if (!snapshot) {
+          const empty = document.createElement("div");
+          empty.className = "settings-empty";
+          empty.textContent = messages.connectionNoRuntime;
+          content.append(empty);
+          return;
+        }
+        appendConnectionRow(
+          document,
+          content,
+          messages.connectionAdapter,
+          snapshot.adapter.state,
+          `reason=${snapshot.adapter.reason}, hook=${snapshot.adapter.hook ?? "none"}`,
+          null,
+          messages,
+          "renderer-adapter",
+        );
+        for (const agent of snapshot.agents) {
+          appendConnectionRow(
+            document,
+            content,
+            RENDERER_AGENT_LABELS[agent.agent],
+            agent.availability,
+            null,
+            agent.error,
+            messages,
+            agent.agent,
+            agent,
+          );
+        }
+      };
+      const diagnostics = getDiagnostics();
+      render(diagnostics?.snapshot() ?? null);
+      if (!diagnostics) {
+        copyAll.disabled = true;
+        return undefined;
+      }
+      copyAll.addEventListener("click", () => {
+        const snapshot = diagnostics.snapshot();
+        const report = snapshot.agents
+          .map((agent) => diagnosticText(RENDERER_AGENT_LABELS[agent.agent], agent))
+          .join("\n\n");
+        copyDiagnosticsToClipboard(document, copyAll, report, messages, messages.connectionCopyAll);
+      });
+      const unsubscribe = diagnostics.subscribe(() => render(diagnostics.snapshot()));
+      refresh.addEventListener("click", () => {
+        if (pending) return;
+        pending = true;
+        refresh.disabled = true;
+        refresh.replaceChildren(
+          createRendererSettingsIcon("diagnose", 16),
+          messages.connectionRefreshing,
+        );
+        void context.runLatest(() => diagnostics.refresh(), {
+          success() {
+            pending = false;
+            refresh.disabled = false;
+            refresh.replaceChildren(
+              createRendererSettingsIcon("diagnose", 16),
+              messages.connectionRefresh,
+            );
+            render(diagnostics.snapshot());
+          },
+          failure(error) {
+            pending = false;
+            refresh.disabled = false;
+            refresh.replaceChildren(
+              createRendererSettingsIcon("diagnose", 16),
+              messages.connectionRefresh,
+            );
+            render({
+              ...diagnostics.snapshot(),
+              agents: diagnostics.snapshot().agents.map((agent) => ({
+                ...agent,
+                availability: "error",
+                error: {
+                  code: "internalError",
+                  message: error instanceof Error ? error.message : String(error),
+                  retryable: true,
+                  stage: "request",
+                },
+              })),
+            });
+          },
+        });
+      });
+      return unsubscribe;
     },
   });
 }
@@ -397,11 +729,13 @@ function updatesPage(
 export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
+  getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   const unavailableIds = DEFAULT_RENDERER_SETTINGS_PAGE_IDS.filter(
-    (id): id is UnavailableRendererSettingsPageId => id !== "updates",
+    (id): id is UnavailableRendererSettingsPageId => id !== "updates" && id !== "connections",
   );
   return Object.freeze([
+    connectionsPage(messages, getDiagnostics),
     ...unavailableIds.map((id) => unavailablePage(id, messages)),
     updatesPage(messages, getUpdateClient),
   ]);
@@ -410,8 +744,9 @@ export function createDefaultRendererSettingsPages(
 export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
+  getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(messages, getUpdateClient),
+    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
   );
 }

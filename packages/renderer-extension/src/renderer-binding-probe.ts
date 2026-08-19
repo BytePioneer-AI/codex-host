@@ -10,6 +10,7 @@ import {
   type ThreadInspection,
   type ThreadUsageInspection,
   type ThreadUsageSnapshot,
+  type CodexhostError,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -65,6 +66,10 @@ import {
 } from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import type {
+  RendererConnectionAgentSnapshot,
+  RendererConnectionDiagnostics,
+} from "./settings/pages.js";
 import {
   startCompatibilityUpdate,
   type CompatibilityUpdateOutcome,
@@ -401,8 +406,10 @@ export function installRendererBindingProbe(
     getClient: () => modelControl,
     getLocalAgent: localAgentForSidebarThread,
   });
+  let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
+    getConnectionDiagnostics: () => connectionDiagnostics,
   });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
@@ -413,6 +420,16 @@ export function installRendererBindingProbe(
   let harnessAvailability: HarnessAvailability = Object.fromEntries(
     externalAgents.map((agent) => [agent, "checking"]),
   ) as HarnessAvailability;
+  const harnessAvailabilityErrors: Record<ExternalRendererAgent, CodexhostError | undefined> = {
+    pi: undefined,
+    "claude-code": undefined,
+    "deepseek-harness": undefined,
+    grok: undefined,
+  };
+  const connectionListeners = new Set<() => void>();
+  const publishConnectionStatus = (): void => {
+    for (const listener of connectionListeners) listener();
+  };
   let availabilityRequestGeneration = 0;
   let availabilityRequest: { client: RendererModelClient; promise: Promise<void> } | null = null;
   let availabilityRetryTimer: number | null = null;
@@ -1375,6 +1392,7 @@ export function installRendererBindingProbe(
         harnessAvailability[agent] === "ready" ? "ready" : "checking",
       ]),
     ) as HarnessAvailability;
+    publishConnectionStatus();
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     const generation = ++availabilityRequestGeneration;
     const promise = (async () => {
@@ -1387,8 +1405,28 @@ export function installRendererBindingProbe(
               refresh,
             });
             status = inspection.status === "ready" ? "ready" : inspection.status;
-          } catch {
+            if (inspection.status === "ready") {
+              harnessAvailabilityErrors[agent] = undefined;
+            } else {
+              const error = inspection.error;
+              harnessAvailabilityErrors[agent] = {
+                code: error.code,
+                message: error.message,
+                retryable: error.retryable,
+                ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+                ...(error.stage ? { stage: error.stage } : {}),
+                ...(error.durationMs !== undefined ? { durationMs: error.durationMs } : {}),
+                ...(error.stderrTail ? { stderrTail: error.stderrTail } : {}),
+              };
+            }
+          } catch (error) {
             status = "error";
+            harnessAvailabilityErrors[agent] = {
+              code: "internalError",
+              message: error instanceof Error ? error.message : String(error),
+              retryable: true,
+              stage: "request",
+            };
           }
           if (generation !== availabilityRequestGeneration || disposed) return;
           harnessAvailability = { ...harnessAvailability, [agent]: status };
@@ -1410,6 +1448,7 @@ export function installRendererBindingProbe(
             }
             renderMounted(mounted);
           }
+          publishConnectionStatus();
         }),
       );
       if (externalAgents.every((agent) => harnessAvailability[agent] === "ready")) {
@@ -1429,6 +1468,29 @@ export function installRendererBindingProbe(
       },
     );
     return promise;
+  };
+
+  connectionDiagnostics = {
+    snapshot(): {
+      adapter: RendererAdapterStatus;
+      agents: readonly RendererConnectionAgentSnapshot[];
+    } {
+      return {
+        adapter: { ...adapterStatus },
+        agents: externalAgents.map((agent) => ({
+          agent,
+          availability: harnessAvailability[agent] ?? "checking",
+          error: harnessAvailabilityErrors[agent] ?? null,
+        })),
+      };
+    },
+    refresh(): Promise<void> {
+      return refreshHarnessAvailability(true);
+    },
+    subscribe(listener: () => void): () => void {
+      connectionListeners.add(listener);
+      return () => connectionListeners.delete(listener);
+    },
   };
 
   const mount = (composer: Element): void => {
@@ -1734,6 +1796,7 @@ export function installRendererBindingProbe(
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onAdapterStatus = () => {
+    publishConnectionStatus();
     if (adapterStatus.state === "ready") {
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailability();
@@ -1831,6 +1894,7 @@ export function installRendererBindingProbe(
         usageNotificationDispose = null;
       }
       adapterStatus = status;
+      publishConnectionStatus();
       const installedModelControl = modelControl;
       queueMicrotask(() => {
         if (disposed || modelControl !== installedModelControl) return;
@@ -1889,6 +1953,8 @@ export function installRendererBindingProbe(
       }
       mountedByComposer.clear();
       pendingReplacements.clear();
+      connectionListeners.clear();
+      connectionDiagnostics = null;
       delete window.__codexhostRendererBindingProbeV1;
     },
   };

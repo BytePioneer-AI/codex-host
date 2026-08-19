@@ -4,7 +4,11 @@ import {
   resolveRendererSettingsLocale,
   type RendererSettingsLocale,
 } from "./settings/localization.js";
-import { createDefaultRendererSettingsPages, type RendererUpdateClient } from "./settings/pages.js";
+import {
+  createDefaultRendererSettingsPages,
+  type RendererConnectionDiagnostics,
+  type RendererUpdateClient,
+} from "./settings/pages.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
   installRendererSettingsHeaderTrigger,
@@ -16,6 +20,7 @@ const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
+  getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
 }
 
 export interface RendererSettingsLifecycleControl {
@@ -50,6 +55,7 @@ export function installRendererSettingsLifecycle(
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
+      options.getConnectionDiagnostics ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({

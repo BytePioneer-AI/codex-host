@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
 
+import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import type { HostFrame, MuxFrame, RpcRequest } from "@deepseek-ai/dsh-host-apiproxy/api";
 import { hostFrameSchema, muxFrameSchema } from "@deepseek-ai/dsh-host-apiproxy/api/events.schema";
 import { serverRequestSchema } from "@deepseek-ai/dsh-host-apiproxy/api/rpc.schema";
@@ -148,7 +149,7 @@ export interface DeepSeekHostConnectionDependencies {
     args: string[],
     options: {
       env: NodeJS.ProcessEnv;
-      stdio: "ignore";
+      stdio: "pipe";
       windowsVerbatimArguments?: boolean;
     },
   ): ChildProcess;
@@ -308,6 +309,7 @@ export class DeepSeekHostConnection {
   #closePromise: Promise<void> | null = null;
   #connectPromise: Promise<void> | null = null;
   #managedProcess: ChildProcess | null = null;
+  #stderrTail = "";
   #pumpPromise: Promise<void> | null = null;
 
   constructor(
@@ -338,6 +340,10 @@ export class DeepSeekHostConnection {
 
   get client(): DeepSeekHostClient {
     return this.#client;
+  }
+
+  get stderrTail(): string {
+    return this.#stderrTail;
   }
 
   connect(): Promise<void> {
@@ -399,11 +405,14 @@ export class DeepSeekHostConnection {
         processInvocation.arguments,
         {
           env: this.#environment,
-          stdio: "ignore",
+          stdio: "pipe",
           windowsVerbatimArguments: processInvocation.windowsVerbatimArguments,
         },
       );
       this.#managedProcess = child;
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+      });
       let processError: Error | null = null;
       child.once("error", (error) => {
         processError = error;

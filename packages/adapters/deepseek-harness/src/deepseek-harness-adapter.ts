@@ -99,6 +99,7 @@ export interface DeepSeekHarnessAdapterOptions extends DeepSeekHostConnectionOpt
 
 export interface DeepSeekHostConnectionLike {
   readonly client: DeepSeekHostClient;
+  readonly stderrTail?: string;
   connect(): Promise<void>;
   subscribe(sessionId: string, subscriber: DeepSeekHostSubscriber): () => void;
   close(): Promise<void>;
@@ -1033,13 +1034,17 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     if (this.#closePromise) {
       return { status: "unavailable", error: invalidState("DeepSeek Harness Adapter is closing") };
     }
+    const startedAt = Date.now();
+    let stage = "startup";
     try {
       await this.#connection.connect();
+      stage = "host-describe";
       const [description, directory] = await Promise.all([
         this.#connection.client.host.describe({}),
         this.#connection.client.llm.models({}),
       ]);
       const host = unwrapRpc(description, "host.describe");
+      stage = "model-catalog";
       const models = unwrapRpc(directory, "llm.models");
       if (!nonBlankString(host.provider) || !nonBlankString(host.model)) {
         throw new DeepSeekHarnessTransportError(
@@ -1066,7 +1071,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       const normalized = normalizedError(error, "unavailable");
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "unavailable",
-        error: normalized,
+        error: {
+          ...normalized,
+          stage,
+          durationMs: Date.now() - startedAt,
+          ...(normalized.stderrTail || !this.#connection.stderrTail
+            ? {}
+            : { stderrTail: this.#connection.stderrTail }),
+        },
       };
     }
   }

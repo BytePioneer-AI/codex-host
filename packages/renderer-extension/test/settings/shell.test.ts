@@ -50,11 +50,15 @@ describe("Renderer settings foundation", () => {
     ).toBe(false);
   });
 
-  it("keeps the foundation free of executable configuration controls", () => {
-    const serializedMounts = createDefaultRendererSettingsPages()
-      .filter(({ id }) => id !== "updates")
+  it("keeps product placeholders unavailable while Connections provides diagnostics", () => {
+    const pages = createDefaultRendererSettingsPages();
+    const serializedPlaceholders = pages
+      .filter(({ id }) => !["connections", "updates"].includes(id))
       .map(({ mount }) => mount.toString())
       .join("\n");
-    expect(serializedMounts).not.toMatch(/save|connect|start|test|api.?key|oauth|fetch/iu);
+    expect(serializedPlaceholders).not.toMatch(/save|connect|start|test|api.?key|oauth|fetch/iu);
+    expect(pages.find(({ id }) => id === "connections")?.mount.toString()).toContain(
+      "connectionRefresh",
+    );
   });
 });

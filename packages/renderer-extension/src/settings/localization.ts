@@ -27,6 +27,30 @@ export interface RendererSettingsMessages {
   readonly inDevelopment: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
+  readonly connectionsDescription: string;
+  readonly connectionAdapter: string;
+  readonly connectionReason: string;
+  readonly connectionRefresh: string;
+  readonly connectionRefreshing: string;
+  readonly connectionViewDetails: string;
+  readonly connectionCopyDetails: string;
+  readonly connectionCopyAll: string;
+  readonly connectionCopied: string;
+  readonly connectionCopyFailed: string;
+  readonly connectionErrorCode: string;
+  readonly connectionErrorMessage: string;
+  readonly connectionRetryable: string;
+  readonly connectionFailureStage: string;
+  readonly connectionDuration: string;
+  readonly connectionDiagnostic: string;
+  readonly connectionNoRuntime: string;
+  readonly connectionStatusReady: string;
+  readonly connectionStatusChecking: string;
+  readonly connectionStatusNotInstalled: string;
+  readonly connectionStatusUnavailable: string;
+  readonly connectionStatusError: string;
+  readonly connectionStatusInstalling: string;
+  readonly connectionStatusUnsupported: string;
   readonly openSettings: string;
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
@@ -66,6 +90,31 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "In development",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
+  connectionsDescription:
+    "Inspect the adapter and each Agent runtime used by the picker. Failed checks keep their error details here.",
+  connectionAdapter: "Renderer adapter",
+  connectionReason: "Reason",
+  connectionRefresh: "Run connection diagnostics",
+  connectionRefreshing: "Running diagnostics...",
+  connectionViewDetails: "View details",
+  connectionCopyDetails: "Copy diagnostics",
+  connectionCopyAll: "Copy all diagnostics",
+  connectionCopied: "Copied",
+  connectionCopyFailed: "Copy failed",
+  connectionErrorCode: "Error code",
+  connectionErrorMessage: "Error message",
+  connectionRetryable: "Retryable",
+  connectionFailureStage: "Failure stage",
+  connectionDuration: "Duration",
+  connectionDiagnostic: "Diagnostic",
+  connectionNoRuntime: "The renderer request bridge is not available yet.",
+  connectionStatusReady: "Ready",
+  connectionStatusChecking: "Checking",
+  connectionStatusNotInstalled: "Not installed",
+  connectionStatusUnavailable: "Unavailable",
+  connectionStatusError: "Error",
+  connectionStatusInstalling: "Installing",
+  connectionStatusUnsupported: "Unsupported",
   openSettings: "Open codexhost settings",
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
@@ -111,6 +160,31 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
+  connectionsDescription:
+    "查看适配器和 Agent 运行时的真实检查结果。失败检查会保留错误详情，方便排查无法选择的问题。",
+  connectionAdapter: "Renderer 适配器",
+  connectionReason: "原因",
+  connectionRefresh: "重新诊断连接",
+  connectionRefreshing: "正在诊断...",
+  connectionViewDetails: "查看详情",
+  connectionCopyDetails: "复制诊断信息",
+  connectionCopyAll: "复制全部诊断信息",
+  connectionCopied: "已复制",
+  connectionCopyFailed: "复制失败",
+  connectionErrorCode: "错误码",
+  connectionErrorMessage: "错误信息",
+  connectionRetryable: "可重试",
+  connectionFailureStage: "失败阶段",
+  connectionDuration: "检查耗时",
+  connectionDiagnostic: "诊断信息",
+  connectionNoRuntime: "Renderer 请求桥尚未可用。",
+  connectionStatusReady: "正常",
+  connectionStatusChecking: "检查中",
+  connectionStatusNotInstalled: "未安装",
+  connectionStatusUnavailable: "不可用",
+  connectionStatusError: "错误",
+  connectionStatusInstalling: "安装中",
+  connectionStatusUnsupported: "不支持",
   openSettings: "打开 codexhost 设置",
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",

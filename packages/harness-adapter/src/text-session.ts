@@ -50,6 +50,9 @@ export interface HarnessError {
   message: string;
   retryable: boolean;
   diagnostic?: string;
+  stage?: string;
+  durationMs?: number;
+  stderrTail?: string;
 }
 
 export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: HarnessError };

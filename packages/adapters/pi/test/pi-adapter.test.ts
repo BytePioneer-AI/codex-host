@@ -32,6 +32,7 @@ import {
 } from "../src/pi-rpc-session.js";
 
 class FakePiTransport implements PiTurnTransport {
+  readonly stderrTail = "Pi could not read ~/.pi/agent/settings.json";
   state: PiSessionState = {
     sessionId: "pi-session-1",
     sessionFile: "/synthetic/pi-session.jsonl",
@@ -420,7 +421,12 @@ describe("Pi HarnessAdapter Session", () => {
 
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "error",
-      error: { code: "unavailable", message: "synthetic catalog failure" },
+      error: {
+        code: "unavailable",
+        message: "synthetic catalog failure",
+        stage: "model-catalog",
+        stderrTail: "Pi could not read ~/.pi/agent/settings.json",
+      },
     });
     expect(transports[0]?.close).toHaveBeenCalledOnce();
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({

@@ -151,7 +151,13 @@ export {
   createDefaultRendererSettingsPages,
   createDefaultRendererSettingsRegistry,
 } from "./settings/pages.js";
-export type { DefaultRendererSettingsPageId, RendererUpdateClient } from "./settings/pages.js";
+export type {
+  DefaultRendererSettingsPageId,
+  RendererConnectionAgentSnapshot,
+  RendererConnectionDiagnostics,
+  RendererConnectionSnapshot,
+  RendererUpdateClient,
+} from "./settings/pages.js";
 export {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   RENDERER_SETTINGS_LANGUAGE_SELECTIONS,

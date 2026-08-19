@@ -111,6 +111,7 @@ export interface ClaudeTransportFactoryInput {
 }
 
 export interface ClaudeModelInspector {
+  readonly stderrTail?: string;
   inspect(): Promise<ClaudeModelInspectionSnapshot>;
   close(): Promise<void>;
 }

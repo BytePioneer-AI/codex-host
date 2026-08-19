@@ -9,6 +9,7 @@ import {
   type SDKUserMessage,
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
+import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
@@ -323,6 +324,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
+  #stderrTail = "";
   #interactionOrdinal = 0;
   #query: Query | null = null;
   #started = false;
@@ -689,7 +691,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    child.stderr.resume();
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+    });
     this.#children.push(child);
     return child;
   }
@@ -705,6 +709,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
 export class ClaudeSdkModelInspector implements ClaudeModelInspector {
   readonly #children: ChildProcessWithoutNullStreams[] = [];
+  #stderrTail = "";
   readonly #closeTimeoutMs: number;
   readonly #command: string | undefined;
   readonly #cwd: string;
@@ -713,6 +718,10 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
   readonly #queryFactory: typeof query;
   #closePromise: Promise<void> | null = null;
   #query: Query | null = null;
+
+  get stderrTail(): string {
+    return this.#stderrTail;
+  }
 
   constructor(options: ClaudeSdkModelInspectorOptions) {
     this.#closeTimeoutMs = options.closeTimeoutMs;
@@ -791,7 +800,9 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    child.stderr.resume();
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+    });
     this.#children.push(child);
     return child;
   }

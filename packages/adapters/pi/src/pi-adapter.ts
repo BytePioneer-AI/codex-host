@@ -95,6 +95,7 @@ export interface PiAdapterOptions {
 
 export interface PiTurnTransport {
   readonly state: PiSessionState;
+  readonly stderrTail?: string;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
@@ -176,6 +177,7 @@ function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): Ha
       code: error.kind,
       message: error.message,
       retryable: error.kind !== "notInstalled",
+      ...(error.diagnostic ? { stderrTail: error.diagnostic } : {}),
     };
   }
   return {
@@ -1435,11 +1437,16 @@ export class PiAdapter implements HarnessAdapter {
   }
 
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
+    const startedAt = Date.now();
+    let stage = "spawn";
     const transport = this.#createTransport({ cwd, onFault: () => undefined });
     this.#inspections.add(transport);
     try {
+      stage = "startup";
       await transport.start();
+      stage = "model-catalog";
       const models = await transport.getAvailableModels();
+      stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = thinkingLevels !== null;
       const catalog = normalizePiModelCatalog(
@@ -1466,7 +1473,14 @@ export class PiAdapter implements HarnessAdapter {
       const normalized = normalizedError(error, "unavailable");
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
-        error: normalized,
+        error: {
+          ...normalized,
+          stage,
+          durationMs: Date.now() - startedAt,
+          ...(normalized.stderrTail || !transport.stderrTail
+            ? {}
+            : { stderrTail: transport.stderrTail }),
+        },
       };
     } finally {
       this.#inspections.delete(transport);

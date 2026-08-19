@@ -2,6 +2,7 @@ import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
+import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
@@ -10,6 +11,7 @@ import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
+import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import codexLogoUrl from "../assets/codex-logo-bright.png";
@@ -27,6 +29,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "external-link",
   "refresh",
   "unavailable",
+  "diagnose",
+  "copy",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -44,6 +48,8 @@ const iconNodes = {
   "external-link": ExternalLink,
   refresh: RefreshCw,
   unavailable: CircleOff,
+  diagnose: Stethoscope,
+  copy: Copy,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

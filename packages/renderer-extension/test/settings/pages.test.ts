@@ -12,6 +12,10 @@ import {
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
 } from "../../src/settings/pages.js";
+import type {
+  RendererConnectionDiagnostics,
+  RendererConnectionSnapshot,
+} from "../../src/settings/pages.js";
 
 class FakeElement {
   readonly children: unknown[] = [];
@@ -19,6 +23,7 @@ class FakeElement {
   readonly attributes = new Map<string, string>();
   readonly #listeners = new Map<string, () => void>();
   className = "";
+  hidden = false;
   href = "";
   rel = "";
   target = "";
@@ -52,7 +57,12 @@ class FakeElement {
 }
 
 class FakeDocument {
-  readonly defaultView = null;
+  readonly clipboardWriteText = vi.fn(async () => undefined);
+  readonly defaultView = {
+    navigator: { clipboard: { writeText: this.clipboardWriteText } },
+    setTimeout: vi.fn(() => 0),
+    clearTimeout: vi.fn(),
+  } as unknown as Window;
 
   createElement(tagName: string): FakeElement {
     return new FakeElement(tagName, this);
@@ -125,6 +135,83 @@ function visibleText(root: FakeElement): string {
     .filter(Boolean)
     .join(" ");
 }
+
+describe("Renderer Connections page", () => {
+  it("renders failed Agent checks with their diagnostic reason and refreshes", async () => {
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: vi.fn((): RendererConnectionSnapshot => ({
+        adapter: {
+          state: "ready",
+          reason: "ready",
+          modelUpdates: 1,
+          hook: "request-bridge",
+        },
+        agents: [
+          {
+            agent: "pi",
+            availability: "error",
+            error: {
+              code: "processExited",
+              message: "pi exited with code 1",
+              retryable: true,
+              stage: "startup",
+              durationMs: 120,
+              stderrTail: "check ~/.pi/agent/settings.json",
+            },
+          },
+        ],
+      })),
+      refresh: vi.fn(async () => undefined),
+      subscribe: vi.fn(() => () => undefined),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Connections page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("pi exited with code 1");
+    expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
+    expect(visibleText(content)).toContain("startup");
+    const toggle = elementWithClass(content, "settings-connection-details-toggle");
+    const details = descendants(content).find(
+      (candidate) =>
+        candidate.className.split(" ").includes("settings-connection-details") &&
+        candidate.hidden === false,
+    );
+    if (!details) throw new Error("Expanded connection details are not rendered");
+    expect(details.hidden).toBe(false);
+    toggle.dispatch("click");
+    expect(details.hidden).toBe(true);
+    toggle.dispatch("click");
+    expect(details.hidden).toBe(false);
+    const refresh = descendants(content).find(
+      ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
+    );
+    if (!refresh) throw new Error("Connection refresh button is not rendered");
+    refresh.dispatch("click");
+    await vi.waitFor(() => expect(diagnostics.refresh).toHaveBeenCalledWith());
+    const copyAll = descendants(content).find(
+      ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "copy-all",
+    );
+    if (!copyAll) throw new Error("Copy-all diagnostics button is not rendered");
+    copyAll.dispatch("click");
+    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
+
+    cleanup?.();
+  });
+});
 
 describe("Renderer Updates page", () => {
   it.each([

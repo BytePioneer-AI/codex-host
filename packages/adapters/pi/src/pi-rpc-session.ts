@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import { parseHostUsage, sanitizeDiagnosticTail, type HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
   jsonValueSchema,
@@ -99,12 +99,14 @@ export interface PiTurnResult {
   cancelled: boolean;
 }
 
+
 export type PiRpcFaultKind = "notInstalled" | "unavailable" | "protocolError" | "processExited";
 
 export class PiRpcFaultError extends Error {
   constructor(
     readonly kind: PiRpcFaultKind,
     message: string,
+    readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "PiRpcFaultError";
@@ -437,6 +439,7 @@ export class PiRpcSession {
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
+  #stderrTail = "";
 
   constructor(
     options: PiRpcSessionOptions,
@@ -462,6 +465,10 @@ export class PiRpcSession {
     return this.#state;
   }
 
+  get stderrTail(): string {
+    return this.#stderrTail;
+  }
+
   async start(): Promise<this> {
     if (this.#child || this.#closed) throw new Error("Pi RPC Session cannot be started twice");
     const child = this.#processAdapter.spawn({
@@ -484,15 +491,23 @@ export class PiRpcSession {
         this.#fail(new PiRpcFaultError("protocolError", "Pi RPC stdout ended mid-frame"));
       }
     });
-    child.stderr.resume();
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+    });
     child.once("error", (error) => {
       const kind = isRecord(error) && error.code === "ENOENT" ? "notInstalled" : "unavailable";
-      this.#fail(new PiRpcFaultError(kind, `Pi RPC failed to start: ${error.message}`));
+      this.#fail(
+        new PiRpcFaultError(kind, `Pi RPC failed to start: ${error.message}`, this.stderrTail),
+      );
     });
     child.once("exit", (code, signal) => {
       if (!this.#closed) {
         this.#fail(
-          new PiRpcFaultError("processExited", `Pi RPC exited (code=${code}, signal=${signal})`),
+          new PiRpcFaultError(
+            "processExited",
+            `Pi RPC exited (code=${code}, signal=${signal})`,
+            this.stderrTail,
+          ),
         );
       }
     });

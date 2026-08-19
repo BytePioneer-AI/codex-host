@@ -20,6 +20,7 @@ const MAIN_MENU_MAX_WIDTH = 210;
 const MODEL_MENU_PREFERRED_WIDTH = 320;
 const MODEL_MENU_MAX_WIDTH = 380;
 const MODEL_MENU_MAX_HEIGHT = 360;
+const MODEL_TRIGGER_MAX_WIDTH = "min(200px, 26vw)";
 const MAIN_MENU_LEFT_OFFSET = 96;
 const MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
@@ -133,6 +134,10 @@ export function shouldCloseRendererModelPicker(view: RendererModelControlView): 
   return isRendererModelPickerDisabled(view) && view.status !== "selecting";
 }
 
+function isTransientPickerState(view: RendererModelControlView): boolean {
+  return view.status === "idle" || view.status === "loading";
+}
+
 export function rendererModelPickerPresentation(
   view: RendererModelControlView,
 ): RendererModelPickerPresentation {
@@ -215,7 +220,7 @@ export function syncRendererModelTriggerClass(
 ): void {
   control.trigger.className = nativeClassName?.trim() || RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES;
   control.trigger.style.width = "fit-content";
-  control.trigger.style.maxWidth = "min(320px, 38vw)";
+  control.trigger.style.maxWidth = MODEL_TRIGGER_MAX_WIDTH;
 }
 
 function createCheck(): HTMLElement {
@@ -496,12 +501,18 @@ export function renderRendererModelPicker(
     showThinkingSection: presentation.showThinkingSection,
     modelLabel: presentation.modelLabel,
   });
-  if (control.root.dataset.catalogSignature !== catalogSignature) {
+  // While the popover is open and the picker passes through a transient state
+  // (conversation target rebind or catalog reload during turn renders), keep the
+  // already-rendered menu stable: do not rebuild it to an empty list or
+  // force-close it under the pointer. It refreshes once a real catalog returns.
+  const keepOpenMenu = popoverOpen(control.menu) && isTransientPickerState(view);
+  if (control.root.dataset.catalogSignature !== catalogSignature && !keepOpenMenu) {
     rebuildOptions(control, view);
     control.root.dataset.catalogSignature = catalogSignature;
   }
 
   syncRendererLabelText(control.label, presentation.modelLabel);
+  control.label.title = presentation.modelLabel;
   const secondaryLabel = presentation.thinkingLabel ?? presentation.resolvedModelLabel;
   syncRendererLabelText(control.thinkingLabel, secondaryLabel ?? "");
   control.thinkingLabel.hidden = secondaryLabel === undefined;
@@ -515,7 +526,7 @@ export function renderRendererModelPicker(
     String(view.status === "loading" || view.status === "selecting"),
   );
   control.trigger.disabled = isRendererModelPickerDisabled(view);
-  if (shouldCloseRendererModelPicker(view)) control.close();
+  if (shouldCloseRendererModelPicker(view) && !keepOpenMenu) control.close();
   control.modelButton.disabled = control.trigger.disabled;
 
   for (const [modelId, option] of control.options) {

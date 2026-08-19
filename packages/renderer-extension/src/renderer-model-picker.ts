@@ -11,14 +11,17 @@ export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
 const MENU_CLASSES =
   "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
 
+const SEARCH_INPUT_CLASSES =
+  "mb-1 w-full shrink-0 rounded-lg border border-token-border bg-token-dropdown-background/95 px-2 py-1.5 text-sm text-token-foreground outline-none placeholder:text-token-text-tertiary disabled:cursor-not-allowed disabled:opacity-40";
+
 const OPTION_CLASSES =
   "flex w-full cursor-interaction items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-foreground outline-none enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 disabled:cursor-not-allowed disabled:opacity-40";
 
 const HEADING_CLASSES = "px-2 pb-1 pt-1.5 text-sm text-token-text-tertiary";
-const MAIN_MENU_MIN_WIDTH = 180;
-const MAIN_MENU_MAX_WIDTH = 210;
-const MODEL_MENU_PREFERRED_WIDTH = 320;
-const MODEL_MENU_MAX_WIDTH = 380;
+const MAIN_MENU_MIN_WIDTH = 160;
+const MAIN_MENU_MAX_WIDTH = 180;
+const MODEL_MENU_PREFERRED_WIDTH = 360;
+const MODEL_MENU_MAX_WIDTH = 420;
 const MODEL_MENU_MAX_HEIGHT = 360;
 const MODEL_TRIGGER_MAX_WIDTH = "min(200px, 26vw)";
 const MAIN_MENU_LEFT_OFFSET = 96;
@@ -48,6 +51,7 @@ export interface RendererModelPickerPresentation {
 interface ModelOptionControl {
   button: HTMLButtonElement;
   check: HTMLElement;
+  searchText: string;
 }
 
 interface ThinkingOptionControl {
@@ -63,6 +67,9 @@ export interface RendererModelPickerControl {
   menu: HTMLElement;
   modelMenu: HTMLElement;
   modelButton: HTMLButtonElement;
+  searchInput: HTMLInputElement;
+  searchHeader: HTMLElement;
+  searchEmpty: HTMLElement;
   options: Map<string, ModelOptionControl>;
   thinkingOptions: Map<string, ThinkingOptionControl>;
   close(): void;
@@ -250,6 +257,17 @@ export function syncRendererLabelText(
   return true;
 }
 
+function applyModelSearchFilter(control: RendererModelPickerControl): void {
+  const query = control.searchInput.value.trim().toLowerCase();
+  let visibleCount = 0;
+  for (const option of control.options.values()) {
+    const matches = query.length === 0 || option.searchText.includes(query);
+    option.button.hidden = !matches;
+    if (matches) visibleCount += 1;
+  }
+  control.searchEmpty.hidden = query.length === 0 || visibleCount > 0;
+}
+
 export function mountRendererModelPicker(
   composerId: string,
   nativeClassName: string | undefined,
@@ -289,7 +307,11 @@ export function mountRendererModelPicker(
   menu.id = `${composerId}-model-menu`;
   menu.setAttribute("role", "menu");
   menu.setAttribute("aria-label", "Model and Thinking");
-  menu.setAttribute("popover", "auto");
+  // The Model submenu is a separate top-layer popover appended to the document,
+  // so an `auto` popover here would light-dismiss whenever the search input or
+  // a model option inside that submenu receives a pointer. Dismissal is handled
+  // manually (onDocumentPointerDown / onDocumentKeyDown) instead.
+  menu.setAttribute("popover", "manual");
   menu.className = MENU_CLASSES;
   menu.style.position = "fixed";
   menu.style.inset = "auto";
@@ -325,9 +347,72 @@ export function mountRendererModelPicker(
 
   const options = new Map<string, ModelOptionControl>();
   const thinkingOptions = new Map<string, ThinkingOptionControl>();
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.placeholder = "Search models";
+  searchInput.setAttribute("aria-label", "Search models");
+  searchInput.autocomplete = "off";
+  searchInput.spellcheck = false;
+  searchInput.className = SEARCH_INPUT_CLASSES;
+  const searchHeader = document.createElement("div");
+  searchHeader.style.position = "sticky";
+  searchHeader.style.top = "0";
+  searchHeader.style.zIndex = "2";
+  searchHeader.style.margin = "-4px";
+  searchHeader.style.padding = "4px";
+  searchHeader.style.backgroundColor = "Canvas";
+  const searchEmpty = document.createElement("div");
+  searchEmpty.dataset.codexhostModelSearchEmpty = "true";
+  searchEmpty.textContent = "No matching models";
+  searchEmpty.className = "block px-2 py-2 text-sm text-token-text-tertiary";
+  searchEmpty.hidden = true;
+  const onSearchInput = (): void => applyModelSearchFilter(control);
+  searchInput.addEventListener("input", onSearchInput);
+  // The search box lives in an injected popover. The harness's global keydown
+  // and focus handling must never see keystrokes typed here, or it refocuses
+  // the composer and yanks the cursor out of the box. Silence these events at
+  // the input so they do not bubble to the harness (React event delegation).
+  const silencedEventTypes = [
+    "keydown",
+    "keypress",
+    "keyup",
+    "beforeinput",
+    "input",
+    "compositionstart",
+    "compositionupdate",
+    "compositionend",
+    "change",
+  ] as const;
+  const silenceForHarness = (event: Event): void => {
+    event.stopPropagation();
+  };
+  for (const type of silencedEventTypes) {
+    searchInput.addEventListener(type, silenceForHarness);
+  }
+  // Safety net: if the harness still manages to steal focus to the composer
+  // (e.g. via an earlier capture-phase listener), pull the cursor back into the
+  // search box as long as the submenu remains open.
+  const onSearchBlur = (): void => {
+    if (!popoverOpen(modelMenu)) return;
+    const active = document.activeElement;
+    const movedToComposer =
+      active === document.body ||
+      (active instanceof Element &&
+        (active.matches('textarea, [contenteditable="true"], [role="textbox"]') ||
+          active.closest('textarea, [contenteditable="true"], [role="textbox"]') !== null));
+    if (!movedToComposer) return;
+    requestAnimationFrame(() => {
+      if (popoverOpen(modelMenu) && searchInput.isConnected) searchInput.focus();
+    });
+  };
+  searchInput.addEventListener("blur", onSearchBlur);
   const closeModelMenu = (): void => {
     if (popoverOpen(modelMenu)) modelMenu.hidePopover();
     modelButton.setAttribute("aria-expanded", "false");
+    if (searchInput.value !== "") {
+      searchInput.value = "";
+      applyModelSearchFilter(control);
+    }
   };
   const close = (): void => {
     closeModelMenu();
@@ -362,6 +447,7 @@ export function mountRendererModelPicker(
       event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
     if (target?.dataset.openModelMenu) {
       openModelMenu();
+      control.searchInput.focus();
       return;
     }
     if (target?.dataset.thinkingOptionId) {
@@ -376,11 +462,26 @@ export function mountRendererModelPicker(
         ? event.target.closest<HTMLButtonElement>("button[data-model-id]")
         : null;
     if (!target?.dataset.modelId) return;
-    closeModelMenu();
-    modelButton.focus();
+    close();
+    trigger.focus();
     onSelectModel(target.dataset.modelId);
   };
   const onModelHover = (): void => openModelMenu();
+  const onDocumentPointerDown = (event: PointerEvent): void => {
+    if (!popoverOpen(menu) && !popoverOpen(modelMenu)) return;
+    const target = event.target instanceof Node ? event.target : null;
+    if (target && (root.contains(target) || menu.contains(target) || modelMenu.contains(target))) {
+      return;
+    }
+    close();
+  };
+  const onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    if (!popoverOpen(menu) && !popoverOpen(modelMenu)) return;
+    event.preventDefault();
+    close();
+    trigger.focus();
+  };
   const onViewportChange = (): void => {
     if (popoverOpen(menu)) positionMainMenu(control);
     if (popoverOpen(modelMenu)) positionModelMenu(control);
@@ -391,10 +492,14 @@ export function mountRendererModelPicker(
   modelButton.addEventListener("mouseenter", onModelHover);
   root.addEventListener("click", onRootClick);
   modelMenu.addEventListener("click", onModelMenuClick);
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
+  document.addEventListener("keydown", onDocumentKeyDown, true);
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("scroll", onViewportChange, true);
   root.append(trigger, menu);
   document.body.append(modelMenu);
+  searchHeader.append(searchInput);
+  modelMenu.append(searchHeader, searchEmpty);
 
   const control: RendererModelPickerControl = {
     root,
@@ -404,6 +509,9 @@ export function mountRendererModelPicker(
     menu,
     modelMenu,
     modelButton,
+    searchInput,
+    searchHeader,
+    searchEmpty,
     options,
     thinkingOptions,
     close,
@@ -415,6 +523,13 @@ export function mountRendererModelPicker(
       modelButton.removeEventListener("mouseenter", onModelHover);
       root.removeEventListener("click", onRootClick);
       modelMenu.removeEventListener("click", onModelMenuClick);
+      searchInput.removeEventListener("input", onSearchInput);
+      for (const type of silencedEventTypes) {
+        searchInput.removeEventListener(type, silenceForHarness);
+      }
+      searchInput.removeEventListener("blur", onSearchBlur);
+      document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      document.removeEventListener("keydown", onDocumentKeyDown, true);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
       modelMenu.remove();
@@ -430,7 +545,11 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   control.options.clear();
   control.thinkingOptions.clear();
   control.menu.replaceChildren();
-  control.modelMenu.replaceChildren(createHeading("Model"));
+  control.modelMenu.replaceChildren(
+    createHeading("Model"),
+    control.searchHeader,
+    control.searchEmpty,
+  );
 
   if (presentation.showThinkingSection) {
     control.menu.append(createHeading("Thinking"));
@@ -479,9 +598,18 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
     text.title = model.label;
     const check = createCheck();
     button.append(text, check);
-    control.options.set(model.ref.id, { button, check });
+    control.options.set(model.ref.id, {
+      button,
+      check,
+      searchText: `${model.label} ${model.ref.id}`.toLowerCase(),
+    });
     control.modelMenu.append(button);
   }
+  applyModelSearchFilter(control);
+  // rebuildOptions replaced the submenu children above, which moves the focused
+  // search input out and back in and therefore drops focus; restore it while
+  // the submenu stays open.
+  if (popoverOpen(control.modelMenu)) control.searchInput.focus();
 }
 
 export function renderRendererModelPicker(
@@ -528,6 +656,9 @@ export function renderRendererModelPicker(
   control.trigger.disabled = isRendererModelPickerDisabled(view);
   if (shouldCloseRendererModelPicker(view) && !keepOpenMenu) control.close();
   control.modelButton.disabled = control.trigger.disabled;
+  // The search input must not mirror the trigger's disabled state: disabling a
+  // focused element blurs it, which would drop the cursor out of the box during
+  // transient states (e.g. "selecting"). Filtering is client-side and safe.
 
   for (const [modelId, option] of control.options) {
     const selected = modelId === view.selected?.id;

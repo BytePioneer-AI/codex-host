@@ -1,0 +1,1180 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>codexhost Commands Style Options</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #f4f4f5;
+        --ink: #18181b;
+        --muted: #71717a;
+        --quiet: #a1a1aa;
+        --line: #e4e4e7;
+        --card: #ffffff;
+        --blue: #3b6cff;
+        --blue-soft: #e8eeff;
+        --green: #16a34a;
+        --orange: #c2410c;
+        --composer: #ffffff;
+        --composer-line: rgba(24, 24, 27, 0.08);
+        --composer-shadow: 0 10px 32px rgba(24, 24, 27, 0.08);
+        --placeholder: #b4b4bb;
+        --toolbar: #3f3f46;
+        --toolbar-muted: #8b8b93;
+        --send: #52525b;
+        --send-ink: #ffffff;
+        --hover: rgba(24, 24, 27, 0.06);
+        --chip-border: rgba(24, 24, 27, 0.16);
+        --chip-fill: rgba(24, 24, 27, 0.03);
+        --menu: #ffffff;
+        --menu-shadow: 0 16px 40px rgba(24, 24, 27, 0.16);
+        --kbd: #f4f4f5;
+      }
+
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --page: #111214;
+        --ink: #f4f4f5;
+        --muted: #a1a1aa;
+        --quiet: #71717a;
+        --line: #2a2b30;
+        --card: #18191c;
+        --blue: #7b96ff;
+        --blue-soft: #243152;
+        --green: #4ade80;
+        --orange: #fb923c;
+        --composer: #1a1b1e;
+        --composer-line: #2c2d32;
+        --composer-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+        --placeholder: #8b8e95;
+        --toolbar: #d4d4d8;
+        --toolbar-muted: #9a9aa2;
+        --send: #8d8e91;
+        --send-ink: #17181a;
+        --hover: rgba(255, 255, 255, 0.08);
+        --chip-border: rgba(255, 255, 255, 0.16);
+        --chip-fill: rgba(255, 255, 255, 0.04);
+        --menu: #17181b;
+        --menu-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+        --kbd: #222328;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        min-height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--ink);
+        font:
+          14px/1.45 Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+      }
+      .page {
+        width: min(1280px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 36px 0 72px;
+      }
+
+      .intro {
+        display: flex;
+        justify-content: space-between;
+        gap: 28px;
+        align-items: end;
+        margin-bottom: 22px;
+      }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--blue);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(26px, 4vw, 36px);
+        line-height: 1.08;
+      }
+      .intro p {
+        max-width: 640px;
+        margin: 8px 0 0;
+        color: var(--muted);
+      }
+      .intro-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: end;
+        gap: 8px;
+      }
+      .theme-btn,
+      .copy-btn {
+        height: 34px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        cursor: pointer;
+      }
+      .theme-btn:hover,
+      .copy-btn:hover {
+        background: var(--hover);
+      }
+
+      .diagnosis {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+      .diagnosis article {
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .diagnosis strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 12px;
+      }
+      .diagnosis p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .live {
+        position: sticky;
+        top: 12px;
+        z-index: 5;
+        margin-bottom: 22px;
+        padding: 16px 18px 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--card) 92%, transparent);
+        backdrop-filter: blur(16px);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.04);
+      }
+      .live-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: baseline;
+        margin-bottom: 12px;
+      }
+      .live-head h2 {
+        margin: 0;
+        font-size: 13px;
+      }
+      .live-meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .live-meta code {
+        font:
+          500 11px/1 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+
+      .options,
+      .menus {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .option {
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        cursor: pointer;
+        text-align: left;
+        padding: 0;
+      }
+      .option:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+        outline-offset: 2px;
+      }
+      .option.selected {
+        border-color: color-mix(in srgb, var(--blue) 55%, var(--line));
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+      }
+      .option-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .option-number {
+        color: var(--blue);
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .option-head h2,
+      .option-head h3 {
+        margin: 3px 0 0;
+        font-size: 16px;
+        line-height: 1.2;
+      }
+      .option-head p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .tag {
+        align-self: start;
+        padding: 3px 7px;
+        border-radius: 5px;
+        background: var(--blue-soft);
+        color: var(--blue);
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .tag.now {
+        background: color-mix(in srgb, var(--orange) 16%, var(--card));
+        color: var(--orange);
+      }
+      .demo {
+        display: grid;
+        place-items: center;
+        min-height: 168px;
+        padding: 22px 18px;
+        background:
+          radial-gradient(circle at top, color-mix(in srgb, var(--blue) 7%, transparent), transparent 48%),
+          color-mix(in srgb, var(--page) 65%, var(--card));
+      }
+      .caption {
+        padding: 11px 18px 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .caption strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .section-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 16px;
+        margin: 28px 0 12px;
+      }
+      .section-title h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+      .section-title p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .composer {
+        width: min(100%, 720px);
+        padding: 14px 16px 12px;
+        border: 1px solid var(--composer-line);
+        border-radius: 22px;
+        background: var(--composer);
+        box-shadow: var(--composer-shadow);
+      }
+      .composer.compact {
+        width: min(100%, 640px);
+      }
+      .prompt {
+        min-height: 28px;
+        margin-bottom: 14px;
+        color: var(--placeholder);
+        font-size: 15px;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .toolbar-left,
+      .toolbar-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .toolbar-left {
+        flex: 1 1 auto;
+      }
+      .toolbar-right {
+        flex: 0 1 auto;
+        justify-content: end;
+      }
+      .icon-btn,
+      .send {
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 28px;
+        border: 0;
+        background: transparent;
+        color: var(--toolbar);
+        border-radius: 8px;
+      }
+      .send {
+        border-radius: 50%;
+        background: var(--send);
+        color: var(--send-ink);
+      }
+      .usage,
+      .model {
+        color: var(--toolbar-muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .model {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 220px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border: 1.5px solid var(--quiet);
+        border-radius: 50%;
+        flex: 0 0 8px;
+      }
+
+      .cmd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .cmd svg {
+        flex: 0 0 auto;
+      }
+      .cmd[aria-expanded="true"] {
+        background: var(--hover);
+      }
+
+      .cmd.current {
+        height: 36px;
+        padding: 0 11px 0 8px;
+        border: 1px solid rgba(127, 127, 127, 0.23);
+        border-radius: 10px;
+        background: rgba(127, 127, 127, 0.04);
+        font: 600 12px/16px system-ui, sans-serif;
+      }
+      .cmd.ghost {
+        height: 24px;
+        padding: 0 6px;
+        border-radius: 999px;
+        color: var(--toolbar-muted);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .cmd.ghost:hover,
+      .cmd.slash:hover,
+      .cmd.kbd:hover,
+      .cmd.chevron:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .cmd.slash {
+        height: 24px;
+        padding: 0 7px 0 5px;
+        border-radius: 7px;
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .slash-mark {
+        color: var(--quiet);
+        font: 500 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .cmd.pill {
+        height: 24px;
+        padding: 0 9px;
+        border-radius: 999px;
+        background: rgba(127, 127, 127, 0.1);
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .cmd.icon-label {
+        height: 24px;
+        padding: 0 8px 0 6px;
+        border-radius: 8px;
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .cmd.icon-label:hover,
+      .cmd.pill:hover,
+      .cmd.compact:hover {
+        background: rgba(127, 127, 127, 0.16);
+      }
+      .cmd.icon-slash,
+      .cmd.icon-square {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--toolbar);
+      }
+      .cmd.icon-slash:hover,
+      .cmd.icon-square:hover,
+      .cmd.icon-slash[aria-expanded="true"],
+      .cmd.icon-square[aria-expanded="true"] {
+        background: rgba(127, 127, 127, 0.16);
+      }
+      .cmd.compact {
+        height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--chip-border);
+        border-radius: 8px;
+        background: var(--chip-fill);
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .cmd.kbd {
+        height: 24px;
+        padding: 0 4px 0 7px;
+        border-radius: 7px;
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .kbd {
+        display: inline-grid;
+        place-items: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: var(--kbd);
+        color: var(--muted);
+        font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .cmd.chevron {
+        height: 24px;
+        padding: 0 5px 0 7px;
+        border-radius: 7px;
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+      .chev {
+        color: var(--quiet);
+        font-size: 10px;
+      }
+      .plus-group {
+        display: inline-flex;
+        align-items: center;
+        height: 28px;
+        padding: 0 2px 0 2px;
+        border: 1px solid var(--chip-border);
+        border-radius: 9px;
+        background: var(--chip-fill);
+      }
+      .plus-group .icon-btn {
+        width: 26px;
+        height: 24px;
+      }
+      .plus-group .cmd {
+        height: 24px;
+        padding: 0 8px 0 6px;
+        border-left: 1px solid var(--chip-border);
+        border-radius: 0 7px 7px 0;
+        color: var(--toolbar);
+        font: 500 12px/16px system-ui, sans-serif;
+      }
+
+      .stack {
+        display: grid;
+        justify-items: start;
+        gap: 10px;
+        width: min(100%, 640px);
+      }
+      .menu {
+        width: min(100%, 320px);
+        max-height: 280px;
+        overflow: auto;
+        padding: 6px;
+        border: 1px solid var(--chip-border);
+        border-radius: 12px;
+        background: var(--menu);
+        color: var(--ink);
+        box-shadow: var(--menu-shadow);
+      }
+      .menu.compact-menu {
+        border-radius: 10px;
+      }
+      .menu.palette {
+        padding: 8px;
+      }
+      .menu-head {
+        padding: 7px 9px 6px;
+        color: var(--muted);
+        font: 700 10px/14px system-ui, sans-serif;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .menu-head.plain {
+        letter-spacing: 0;
+        text-transform: none;
+        font: 600 12px/16px system-ui, sans-serif;
+      }
+      .item {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-height: 48px;
+        gap: 10px;
+        padding: 7px 9px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+      }
+      .item:hover,
+      .item.active {
+        background: rgba(127, 127, 127, 0.12);
+      }
+      .item-copy {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .item-title {
+        font: 600 13px/18px system-ui, sans-serif;
+        white-space: nowrap;
+      }
+      .item-desc {
+        overflow: hidden;
+        color: rgba(127, 127, 127, 0.9);
+        font: 400 11px/16px system-ui, sans-serif;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .item-hint {
+        flex: 0 0 auto;
+        color: rgba(127, 127, 127, 0.75);
+        font: 400 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .compact-menu .item {
+        min-height: 38px;
+        padding: 6px 8px;
+      }
+      .search {
+        width: 100%;
+        height: 32px;
+        margin-bottom: 6px;
+        padding: 0 10px;
+        border: 1px solid var(--chip-border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--ink);
+        font: 400 12px/16px system-ui, sans-serif;
+      }
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 22px;
+      }
+      .note {
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .note strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--ink);
+      }
+      .note.best {
+        border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+      }
+
+      @media (max-width: 900px) {
+        .diagnosis,
+        .options,
+        .menus,
+        .notes {
+          grid-template-columns: 1fr;
+        }
+        .intro,
+        .live-head,
+        .section-title {
+          display: grid;
+          justify-items: start;
+        }
+        .model {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="intro">
+        <div>
+          <p class="eyebrow">Composer · Harness commands</p>
+          <h1>Commands 样式选项</h1>
+          <p>
+            当前按钮用了描边、浅底和 600 字重，高度还比旁边的 Usage / Model 高出 12px，所以会像主按钮。下面这些方案都放在同一条工具栏里，点选后可看实时预览。
+          </p>
+        </div>
+        <div class="intro-actions">
+          <button class="theme-btn" id="theme-toggle" type="button">切换深色</button>
+          <button class="copy-btn" id="copy-spec" type="button">复制当前规格</button>
+        </div>
+      </header>
+
+      <section class="diagnosis" aria-label="Current style diagnosis">
+        <article>
+          <strong>高度失衡</strong>
+          <p>Commands 36px，Usage / Model 24px，+ / 麦克风 / 发送 28px。</p>
+        </article>
+        <article>
+          <strong>三重强调</strong>
+          <p>描边 + 填充 + 粗体同时出现，比发送键还抢眼。</p>
+        </article>
+        <article>
+          <strong>语义不清</strong>
+          <p>只有单词 Commands，看不出这是 slash / Harness 命令入口。</p>
+        </article>
+        <article>
+          <strong>圆角不合群</strong>
+          <p>10px 既不像输入框 22px，也不像 Usage 的胶囊。</p>
+        </article>
+      </section>
+
+      <section class="live" aria-label="Live preview">
+        <div class="live-head">
+          <h2>实时预览</h2>
+          <div class="live-meta">
+            触发器 <code id="live-trigger-name">01 / 现状描边</code>
+            · 菜单 <code id="live-menu-name">A / 现状菜单</code>
+          </div>
+        </div>
+        <div class="stack" style="width: 100%">
+          <div class="composer" id="live-composer"></div>
+          <div id="live-menu"></div>
+        </div>
+      </section>
+
+      <div class="section-title">
+        <h2>触发器</h2>
+        <p>点卡片即可选中。推荐先看 02 和 03。</p>
+      </div>
+      <section class="options" id="trigger-options"></section>
+
+      <div class="section-title">
+        <h2>弹出菜单</h2>
+        <p>菜单可以和触发器分开选。现状行高 48px，信息密度偏低。</p>
+      </div>
+      <section class="menus" id="menu-options"></section>
+
+      <section class="notes">
+        <div class="note best">
+          <strong>建议默认：02 工具栏幽灵按钮 + B 紧凑列表</strong>
+          和 Model / Usage 同一视觉层级，Commands 不再像主操作。菜单去掉全大写标题，行高收到 38px。
+        </div>
+        <div class="note">
+          <strong>如果要强调这是 slash 命令：03</strong>
+          保留文字，用 `/` 前缀说明入口，不增加描边。比纯图标更好认。
+        </div>
+        <div class="note">
+          <strong>如果工具栏已经很挤：06 / 07 纯图标</strong>
+          和 +、麦克风对齐。斜杠图标更直白，命令方块更通用；都必须保留 `aria-label` 和 tooltip。
+        </div>
+        <div class="note">
+          <strong>不建议继续用 01</strong>
+          只修圆角或字重不够。只要还是 36px 描边块，它就会压过右边的模型和发送键。
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const plusSvg = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+      const micSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="2.5" width="5" height="8" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M3.5 8.5a4.5 4.5 0 0 0 9 0M8 13v1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+      const forkSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.4" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="3.5" r="1.4" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="12.5" r="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 4.9v1.2c0 1.3 1 2.1 3.5 2.1s3.5-.8 3.5-2.1V4.9M8 8.2v2.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
+      const sendSvg = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 12.5V3.8M4.2 7.2 8 3.5l3.8 3.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      const cmdSvg = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.2 3.4h5.6A1.8 1.8 0 0 1 12.6 5.2v5.6a1.8 1.8 0 0 1-1.8 1.8H5.2A1.8 1.8 0 0 1 3.4 10.8V5.2A1.8 1.8 0 0 1 5.2 3.4Z" stroke="currentColor" stroke-width="1.4"/><path d="M6 8h4M8 6v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+      const slashIconSvg = `<svg width="15" height="15" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true"><path d="M128 128h85.333333v170.666667H128V128z m289.621333 768H326.826667l279.509333-768h90.837333L417.621333 896zM896 128h-85.333333v170.666667h85.333333V128z"/></svg>`;
+      const commandSquareSvg = `<svg width="15" height="15" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true"><path d="M409.6 377.6h204.8a32 32 0 0 1 32 32v204.8a32 32 0 0 1-32 32H409.6a32 32 0 0 1-32-32V409.6a32 32 0 0 1 32-32z m172.8 64h-140.8v140.8h140.8z"/><path d="M332.8 800a108.8 108.8 0 0 1 0-217.6h76.8a32 32 0 0 1 32 32v76.8a108.928 108.928 0 0 1-108.8 108.8z m0-153.6a44.8 44.8 0 1 0 44.8 44.8v-44.8zM409.6 441.6H332.8a108.8 108.8 0 1 1 108.8-108.8v76.8a32 32 0 0 1-32 32z m-76.8-153.6a44.8 44.8 0 0 0 0 89.6h44.8V332.8A44.842667 44.842667 0 0 0 332.8 288zM691.2 441.6h-76.8a32 32 0 0 1-32-32V332.8a108.8 108.8 0 1 1 108.8 108.8z m-44.8-64h44.8a44.8 44.8 0 1 0-44.8-44.8zM691.2 800a108.928 108.928 0 0 1-108.8-108.8v-76.8a32 32 0 0 1 32-32h76.8a108.8 108.8 0 0 1 0 217.6z m-44.8-153.6v44.8a44.8 44.8 0 1 0 44.8-44.8z"/><path d="M640 970.666667H384c-118.186667 0-198.272-25.002667-251.946667-78.72S53.333333 758.186667 53.333333 640V384c0-118.186667 25.002667-198.272 78.72-251.946667S265.813333 53.333333 384 53.333333h256c118.186667 0 198.272 25.002667 251.946667 78.72S970.666667 265.813333 970.666667 384v256c0 118.186667-25.002667 198.272-78.72 251.946667S758.186667 970.666667 640 970.666667z m-256-853.333334c-100.096 0-165.802667 19.2-206.72 59.946667S117.333333 283.904 117.333333 384v256c0 100.096 19.072 165.802667 59.946667 206.72S283.904 906.666667 384 906.666667h256c100.096 0 165.802667-19.072 206.72-59.946667S906.666667 740.096 906.666667 640V384c0-100.096-19.072-165.802667-59.946667-206.72S740.096 117.333333 640 117.333333z"/></svg>`;
+
+      const commands = [
+        {
+          invocation: "/compact",
+          label: "Compact context",
+          description: "Compact the current conversation context",
+          hint: "Text",
+        },
+        {
+          invocation: "/resume",
+          label: "Resume session",
+          description: "Continue the last Harness session",
+          hint: "↵",
+        },
+        {
+          invocation: "/status",
+          label: "Show status",
+          description: "Inspect the active Harness session",
+          hint: "↵",
+        },
+      ];
+
+      const triggers = [
+        {
+          id: "current",
+          number: "01",
+          name: "现状描边",
+          tag: "现在",
+          tagClass: "now",
+          summary: "36px 描边块，字重 600。",
+          caption: "和截图一致：<strong>边框 + 浅底 + 粗体</strong>，在工具栏里最重。",
+          spec: {
+            height: "36px",
+            padding: "0 11px 0 8px",
+            border: "1px solid rgba(127,127,127,0.23)",
+            radius: "10px",
+            background: "rgba(127,127,127,0.04)",
+            font: "600 12px/16px system-ui",
+            contents: "Commands",
+          },
+        },
+        {
+          id: "ghost",
+          number: "02",
+          name: "工具栏幽灵按钮",
+          tag: "推荐",
+          summary: "高度、颜色、字重对齐 Model / Usage。",
+          caption: "去掉描边和填充，只留 24px 弱文字。hover 才出现浅底。",
+          spec: {
+            height: "24px",
+            padding: "0 6px",
+            border: "0",
+            radius: "999px",
+            background: "transparent",
+            font: "500 12px/16px system-ui",
+            color: "text-tertiary",
+            contents: "Commands",
+          },
+        },
+        {
+          id: "slash",
+          number: "03",
+          name: "斜杠前缀",
+          tag: "好认",
+          summary: "用 / 说明这是 slash 命令入口。",
+          caption: "保留文字，不增加描边。比纯图标更容易第一次看懂。",
+          spec: {
+            height: "24px",
+            padding: "0 7px 0 5px",
+            border: "0",
+            radius: "7px",
+            background: "transparent",
+            font: "500 12px/16px system-ui",
+            contents: "/ + Commands",
+          },
+        },
+        {
+          id: "pill",
+          number: "04",
+          name: "轻胶囊",
+          tag: null,
+          summary: "保留一点块面，但高度收到 24px。",
+          caption: "只有浅底、没有描边，圆角改成胶囊，和 Usage 更接近。",
+          spec: {
+            height: "24px",
+            padding: "0 9px",
+            border: "0",
+            radius: "999px",
+            background: "rgba(127,127,127,0.10)",
+            font: "500 12px/16px system-ui",
+            contents: "Commands",
+          },
+        },
+        {
+          id: "icon-label",
+          number: "05",
+          name: "图标 + 文字",
+          tag: null,
+          summary: "命令面板图标降低“主按钮”感。",
+          caption: "图标帮助扫视，文字保证可发现性。适合以后命令变多。",
+          spec: {
+            height: "24px",
+            padding: "0 8px 0 6px",
+            border: "0",
+            radius: "8px",
+            background: "transparent",
+            font: "500 12px/16px system-ui",
+            contents: "cmd-icon + Commands",
+          },
+        },
+        {
+          id: "icon-slash",
+          number: "06",
+          name: "纯图标 · 斜杠",
+          tag: "最省",
+          summary: "slash-commands 图标，和 +、麦克风同一尺寸。",
+          caption: "斜杠图形直接表达 slash 命令入口，首次发现成本低。",
+          spec: {
+            height: "28px",
+            padding: "0",
+            border: "0",
+            radius: "8px",
+            background: "transparent",
+            contents: "slash icon only, aria-label=Harness commands",
+          },
+        },
+        {
+          id: "icon-square",
+          number: "07",
+          name: "纯图标 · 命令方块",
+          tag: "最省",
+          summary: "vuesax command-square 图标，和 +、麦克风同一尺寸。",
+          caption: "⌘ 方块图形，无底色，hover 才出浅底。通用命令面板语感。",
+          spec: {
+            height: "28px",
+            padding: "0",
+            border: "0",
+            radius: "8px",
+            background: "transparent",
+            contents: "command-square icon only, aria-label=Harness commands",
+          },
+        },
+        {
+          id: "compact",
+          number: "08",
+          name: "紧凑描边",
+          tag: null,
+          summary: "保留芯片语言，只修正比例。",
+          caption: "如果还想要边界，至少把高度、字重和左右 padding 改正常。",
+          spec: {
+            height: "24px",
+            padding: "0 8px",
+            border: "1px solid rgba(24,24,27,0.16)",
+            radius: "8px",
+            background: "rgba(24,24,27,0.03)",
+            font: "500 12px/16px system-ui",
+            contents: "Commands",
+          },
+        },
+        {
+          id: "kbd",
+          number: "09",
+          name: "键盘提示",
+          tag: null,
+          summary: "用 / 暗示可以继续键入命令。",
+          caption: "适合已经有 slash 习惯的用户；对新手略吵。",
+          spec: {
+            height: "24px",
+            padding: "0 4px 0 7px",
+            border: "0",
+            radius: "7px",
+            background: "transparent",
+            font: "500 12px/16px system-ui",
+            contents: "Commands + kbd /",
+          },
+        },
+        {
+          id: "grouped",
+          number: "10",
+          name: "和 + 编组",
+          tag: null,
+          summary: "把附件和命令收成一组左侧操作。",
+          caption: "层级清楚，但会改变 + 的现有形状，改动面更大。",
+          spec: {
+            height: "28px",
+            padding: "grouped 26px + 24px",
+            border: "1px shared chip",
+            radius: "9px",
+            contents: "+ | Commands",
+          },
+        },
+        {
+          id: "chevron",
+          number: "11",
+          name: "下拉选择",
+          tag: null,
+          summary: "用 ▾ 表明这是菜单，不是提交动作。",
+          caption: "能消除“这是不是主按钮”的误会，视觉仍然很轻。",
+          spec: {
+            height: "24px",
+            padding: "0 5px 0 7px",
+            border: "0",
+            radius: "7px",
+            background: "transparent",
+            font: "500 12px/16px system-ui",
+            contents: "Commands ▾",
+          },
+        },
+      ];
+
+      const menus = [
+        {
+          id: "current-menu",
+          number: "A",
+          name: "现状菜单",
+          tag: "现在",
+          tagClass: "now",
+          summary: "全大写标题，行高 48px。",
+          caption: "标题 <strong>HARNESS COMMANDS</strong> 太响，三行命令却要占很高。",
+          kind: "current",
+        },
+        {
+          id: "compact-menu",
+          number: "B",
+          name: "紧凑列表",
+          tag: "推荐",
+          summary: "普通标题，行高 38px。",
+          caption: "保留 invocation + 说明 + 参数提示，只把密度调回正常菜单。",
+          kind: "compact",
+        },
+        {
+          id: "palette-menu",
+          number: "C",
+          name: "命令面板",
+          tag: null,
+          summary: "顶部加过滤框。",
+          caption: "命令变多时更好用；现在 Pi 只有少量命令，可能偏重。",
+          kind: "palette",
+        },
+        {
+          id: "plain-menu",
+          number: "D",
+          name: "无标题列表",
+          tag: null,
+          summary: "去掉菜单头，直接列命令。",
+          caption: "最短路径。触发器文案已经说明这是 Commands，标题可以省。",
+          kind: "plain",
+        },
+      ];
+
+      const state = {
+        trigger: localStorage.getItem("codexhost-commands-trigger-v2") || "icon-square",
+        menu: localStorage.getItem("codexhost-commands-menu") || "compact-menu",
+      };
+
+      function triggerButton(id, expanded = false) {
+        const common = `class="cmd ${id === "current" ? "current" : id}" aria-haspopup="menu" aria-expanded="${expanded}" aria-label="Harness commands"`;
+        if (id === "slash") {
+          return `<button type="button" ${common}><span class="slash-mark">/</span><span>Commands</span></button>`;
+        }
+        if (id === "icon-label") {
+          return `<button type="button" ${common}>${cmdSvg}<span>Commands</span></button>`;
+        }
+        if (id === "icon-slash") {
+          return `<button type="button" ${common} title="Harness commands">${slashIconSvg}</button>`;
+        }
+        if (id === "icon-square") {
+          return `<button type="button" ${common} title="Harness commands">${commandSquareSvg}</button>`;
+        }
+        if (id === "kbd") {
+          return `<button type="button" ${common}><span>Commands</span><span class="kbd">/</span></button>`;
+        }
+        if (id === "chevron") {
+          return `<button type="button" ${common}><span>Commands</span><span class="chev">▾</span></button>`;
+        }
+        if (id === "grouped") {
+          return `<span class="plus-group"><span class="icon-btn">${plusSvg}</span><button type="button" ${common}><span>Commands</span></button></span>`;
+        }
+        return `<button type="button" ${common}><span>Commands</span></button>`;
+      }
+
+      function composerMarkup(triggerId, compact = false, id = "") {
+        const hidePlus = triggerId === "grouped";
+        return `
+          <div class="composer ${compact ? "compact" : ""}"${id ? ` id="${id}"` : ""}>
+            <div class="prompt">随心输入</div>
+            <div class="toolbar">
+              <div class="toolbar-left">
+                ${hidePlus ? "" : `<span class="icon-btn">${plusSvg}</span>`}
+                ${triggerButton(triggerId, true)}
+                <span class="usage">CH 99% · $0.003</span>
+                <span class="dot"></span>
+                <span class="icon-btn">${micSvg}</span>
+              </div>
+              <div class="toolbar-right">
+                <span class="model">deepseek / deepseek-v4-flash High</span>
+                <span class="icon-btn">${forkSvg}</span>
+                <span class="send">${sendSvg}</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function menuItems() {
+        return commands
+          .map(
+            (command, index) => `
+              <button class="item ${index === 0 ? "active" : ""}" type="button">
+                <span class="item-copy">
+                  <span class="item-title">${command.invocation}</span>
+                  <span class="item-desc">${command.description}</span>
+                </span>
+                <span class="item-hint">${command.hint}</span>
+              </button>
+            `,
+          )
+          .join("");
+      }
+
+      function menuMarkup(kind) {
+        if (kind === "palette") {
+          return `<div class="menu palette"><input class="search" value="" placeholder="Filter commands" readonly />${menuItems()}</div>`;
+        }
+        if (kind === "compact") {
+          return `<div class="menu compact-menu"><div class="menu-head plain">Commands</div>${menuItems()}</div>`;
+        }
+        if (kind === "plain") {
+          return `<div class="menu compact-menu">${menuItems()}</div>`;
+        }
+        return `<div class="menu"><div class="menu-head">Harness commands</div>${menuItems()}</div>`;
+      }
+
+      function optionCard(item, group) {
+        const preview =
+          group === "trigger"
+            ? composerMarkup(item.id, true)
+            : `<div class="stack">${composerMarkup(state.trigger, true)}${menuMarkup(item.kind)}</div>`;
+        return `
+          <article class="option ${state[group === "trigger" ? "trigger" : "menu"] === item.id ? "selected" : ""}" role="button" tabindex="0" data-group="${group}" data-id="${item.id}">
+            <div class="option-head">
+              <div>
+                <div class="option-number">${item.number}</div>
+                <h2>${item.name}</h2>
+                <p>${item.summary}</p>
+              </div>
+              ${item.tag ? `<span class="tag ${item.tagClass || ""}">${item.tag}</span>` : ""}
+            </div>
+            <div class="demo">${preview}</div>
+            <div class="caption">${item.caption}</div>
+          </article>
+        `;
+      }
+
+      function renderLive() {
+        const trigger = triggers.find((item) => item.id === state.trigger) ?? triggers[1];
+        const menu = menus.find((item) => item.id === state.menu) ?? menus[1];
+        document.getElementById("live-trigger-name").textContent = `${trigger.number} / ${trigger.name}`;
+        document.getElementById("live-menu-name").textContent = `${menu.number} / ${menu.name}`;
+        document.getElementById("live-composer").outerHTML = composerMarkup(
+          trigger.id,
+          false,
+          "live-composer",
+        );
+        document.getElementById("live-menu").innerHTML = menuMarkup(menu.kind);
+      }
+
+      function renderLists() {
+        document.getElementById("trigger-options").innerHTML = triggers
+          .map((item) => optionCard(item, "trigger"))
+          .join("");
+        document.getElementById("menu-options").innerHTML = menus
+          .map((item) => optionCard(item, "menu"))
+          .join("");
+      }
+
+      function selectedSpec() {
+        const trigger = triggers.find((item) => item.id === state.trigger);
+        const menu = menus.find((item) => item.id === state.menu);
+        return [
+          `trigger: ${trigger.number} ${trigger.name} (${trigger.id})`,
+          ...Object.entries(trigger.spec).map(([key, value]) => `  ${key}: ${value}`),
+          `menu: ${menu.number} ${menu.name} (${menu.id})`,
+        ].join("\n");
+      }
+
+      function selectOption(option) {
+        const group = option.dataset.group;
+        const id = option.dataset.id;
+        state[group === "trigger" ? "trigger" : "menu"] = id;
+        localStorage.setItem(
+          group === "trigger" ? "codexhost-commands-trigger-v2" : "codexhost-commands-menu",
+          id,
+        );
+        renderLists();
+        renderLive();
+      }
+
+      function bind() {
+        document.addEventListener("click", (event) => {
+          const option = event.target.closest(".option");
+          if (!option) return;
+          selectOption(option);
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          const option = event.target.closest?.(".option");
+          if (!option) return;
+          event.preventDefault();
+          selectOption(option);
+        });
+
+        const root = document.documentElement;
+        const themeButton = document.getElementById("theme-toggle");
+        const storedTheme = localStorage.getItem("codexhost-commands-theme") || "light";
+        root.dataset.theme = storedTheme;
+        themeButton.textContent = storedTheme === "dark" ? "切换浅色" : "切换深色";
+        themeButton.addEventListener("click", () => {
+          const next = root.dataset.theme === "dark" ? "light" : "dark";
+          root.dataset.theme = next;
+          localStorage.setItem("codexhost-commands-theme", next);
+          themeButton.textContent = next === "dark" ? "切换浅色" : "切换深色";
+        });
+
+        const copyButton = document.getElementById("copy-spec");
+        copyButton.addEventListener("click", async () => {
+          const text = selectedSpec();
+          try {
+            await navigator.clipboard.writeText(text);
+            copyButton.textContent = "已复制";
+          } catch {
+            copyButton.textContent = "复制失败";
+          }
+          window.setTimeout(() => {
+            copyButton.textContent = "复制当前规格";
+          }, 1200);
+        });
+      }
+
+      renderLists();
+      renderLive();
+      bind();
+    </script>
+  </body>
+</html>

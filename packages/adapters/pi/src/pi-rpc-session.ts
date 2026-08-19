@@ -1299,8 +1299,7 @@ export class PiRpcSession {
     if (
       pending.timeout ||
       this.#pending.get(id) !== pending ||
-      ((pending.command === "prompt" || pending.command === "compact") &&
-        this.#compactionActive)
+      ((pending.command === "prompt" || pending.command === "compact") && this.#compactionActive)
     ) {
       return;
     }

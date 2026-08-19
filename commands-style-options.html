@@ -261,7 +261,11 @@
         min-height: 168px;
         padding: 22px 18px;
         background:
-          radial-gradient(circle at top, color-mix(in srgb, var(--blue) 7%, transparent), transparent 48%),
+          radial-gradient(
+            circle at top,
+            color-mix(in srgb, var(--blue) 7%, transparent),
+            transparent 48%
+          ),
           color-mix(in srgb, var(--page) 65%, var(--card));
       }
       .caption {
@@ -389,14 +393,18 @@
         border: 1px solid rgba(127, 127, 127, 0.23);
         border-radius: 10px;
         background: rgba(127, 127, 127, 0.04);
-        font: 600 12px/16px system-ui, sans-serif;
+        font:
+          600 12px/16px system-ui,
+          sans-serif;
       }
       .cmd.ghost {
         height: 24px;
         padding: 0 6px;
         border-radius: 999px;
         color: var(--toolbar-muted);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .cmd.ghost:hover,
       .cmd.slash:hover,
@@ -410,11 +418,17 @@
         padding: 0 7px 0 5px;
         border-radius: 7px;
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .slash-mark {
         color: var(--quiet);
-        font: 500 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font:
+          500 13px/1 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
       }
       .cmd.pill {
         height: 24px;
@@ -422,14 +436,18 @@
         border-radius: 999px;
         background: rgba(127, 127, 127, 0.1);
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .cmd.icon-label {
         height: 24px;
         padding: 0 8px 0 6px;
         border-radius: 8px;
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .cmd.icon-label:hover,
       .cmd.pill:hover,
@@ -459,14 +477,18 @@
         border-radius: 8px;
         background: var(--chip-fill);
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .cmd.kbd {
         height: 24px;
         padding: 0 4px 0 7px;
         border-radius: 7px;
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .kbd {
         display: inline-grid;
@@ -478,14 +500,20 @@
         border-radius: 5px;
         background: var(--kbd);
         color: var(--muted);
-        font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font:
+          500 10px/1 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
       }
       .cmd.chevron {
         height: 24px;
         padding: 0 5px 0 7px;
         border-radius: 7px;
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
       .chev {
         color: var(--quiet);
@@ -510,7 +538,9 @@
         border-left: 1px solid var(--chip-border);
         border-radius: 0 7px 7px 0;
         color: var(--toolbar);
-        font: 500 12px/16px system-ui, sans-serif;
+        font:
+          500 12px/16px system-ui,
+          sans-serif;
       }
 
       .stack {
@@ -539,14 +569,18 @@
       .menu-head {
         padding: 7px 9px 6px;
         color: var(--muted);
-        font: 700 10px/14px system-ui, sans-serif;
+        font:
+          700 10px/14px system-ui,
+          sans-serif;
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
       .menu-head.plain {
         letter-spacing: 0;
         text-transform: none;
-        font: 600 12px/16px system-ui, sans-serif;
+        font:
+          600 12px/16px system-ui,
+          sans-serif;
       }
       .item {
         display: flex;
@@ -572,20 +606,28 @@
         flex: 1 1 auto;
       }
       .item-title {
-        font: 600 13px/18px system-ui, sans-serif;
+        font:
+          600 13px/18px system-ui,
+          sans-serif;
         white-space: nowrap;
       }
       .item-desc {
         overflow: hidden;
         color: rgba(127, 127, 127, 0.9);
-        font: 400 11px/16px system-ui, sans-serif;
+        font:
+          400 11px/16px system-ui,
+          sans-serif;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .item-hint {
         flex: 0 0 auto;
         color: rgba(127, 127, 127, 0.75);
-        font: 400 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+        font:
+          400 11px/16px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
       }
       .compact-menu .item {
         min-height: 38px;
@@ -600,7 +642,9 @@
         border-radius: 8px;
         background: transparent;
         color: var(--ink);
-        font: 400 12px/16px system-ui, sans-serif;
+        font:
+          400 12px/16px system-ui,
+          sans-serif;
       }
       .notes {
         display: grid;
@@ -651,7 +695,8 @@
           <p class="eyebrow">Composer · Harness commands</p>
           <h1>Commands 样式选项</h1>
           <p>
-            当前按钮用了描边、浅底和 600 字重，高度还比旁边的 Usage / Model 高出 12px，所以会像主按钮。下面这些方案都放在同一条工具栏里，点选后可看实时预览。
+            当前按钮用了描边、浅底和 600 字重，高度还比旁边的 Usage / Model 高出
+            12px，所以会像主按钮。下面这些方案都放在同一条工具栏里，点选后可看实时预览。
           </p>
         </div>
         <div class="intro-actions">
@@ -683,8 +728,8 @@
         <div class="live-head">
           <h2>实时预览</h2>
           <div class="live-meta">
-            触发器 <code id="live-trigger-name">01 / 现状描边</code>
-            · 菜单 <code id="live-menu-name">A / 现状菜单</code>
+            触发器 <code id="live-trigger-name">01 / 现状描边</code> · 菜单
+            <code id="live-menu-name">A / 现状菜单</code>
           </div>
         </div>
         <div class="stack" style="width: 100%">
@@ -1090,7 +1135,8 @@
       function renderLive() {
         const trigger = triggers.find((item) => item.id === state.trigger) ?? triggers[1];
         const menu = menus.find((item) => item.id === state.menu) ?? menus[1];
-        document.getElementById("live-trigger-name").textContent = `${trigger.number} / ${trigger.name}`;
+        document.getElementById("live-trigger-name").textContent =
+          `${trigger.number} / ${trigger.name}`;
         document.getElementById("live-menu-name").textContent = `${menu.number} / ${menu.name}`;
         document.getElementById("live-composer").outerHTML = composerMarkup(
           trigger.id,

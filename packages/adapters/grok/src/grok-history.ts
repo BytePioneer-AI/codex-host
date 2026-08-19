@@ -252,6 +252,32 @@ export function mapGrokReplay(
     if (event.type === "turn.completed") {
       if (isSyntheticGrokTurnKey(event.nativeTurnKey)) continue;
       completeTurn(terminalOutcome(event.stopReason), event.nativeTurnKey);
+    } else if (event.type === "compaction.started") {
+      completeReasoning();
+      completeAgent();
+    } else if (event.type === "compaction.completed") {
+      completeReasoning();
+      completeAgent();
+      const outcome: HostItemSnapshot["outcome"] =
+        event.outcome === "succeeded"
+          ? { status: "succeeded" }
+          : event.outcome === "cancelled"
+            ? { status: "cancelled", reason: "Context compaction was cancelled" }
+            : {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: event.errorMessage ?? "Grok context compaction failed",
+                  retryable: true,
+                },
+              };
+      items.push({
+        item: {
+          type: "contextCompaction",
+          itemId: stableId("compaction", turnIndex, ++messageIndex),
+        },
+        outcome,
+      });
     } else if (event.type === "agent.text") {
       if (!agent) {
         completeReasoning();

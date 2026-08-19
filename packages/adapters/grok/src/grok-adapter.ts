@@ -21,6 +21,7 @@ import {
   type HostAgentMessageItem,
   type HostApprovalInteraction,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChangeItem,
   type HostItem,
@@ -92,6 +93,7 @@ import { fetchGrokCredits, type GrokCreditsSnapshot } from "./grok-credits.js";
 import {
   combineUsage,
   sessionUsageFromHistory,
+  usageFromCompact,
   usageFromPrompt,
   usageFromSignals,
   usageFromUpdate,
@@ -147,6 +149,8 @@ interface ActiveTurn {
   agentMessageId: string | null;
   reasoning: HostReasoningItem | null;
   reasoningMessageId: string | null;
+  compactionItem: HostContextCompactionItem | null;
+  compactionContextWindow: number | undefined;
   tools: Map<string, ActiveTool>;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
@@ -395,6 +399,8 @@ class GrokHarnessSession implements HarnessSession {
       agentMessageId: null,
       reasoning: null,
       reasoningMessageId: null,
+      compactionItem: null,
+      compactionContextWindow: undefined,
       tools: new Map(),
       completedItems: [],
       approvals: new Map(),
@@ -622,7 +628,68 @@ class GrokHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.text, event.messageId);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
+    else if (event.type === "compaction.started") this.#startCompaction(active, event);
+    else if (event.type === "compaction.completed") this.#completeCompaction(active, event);
     else if (event.type === "usage" || event.type === "turn.completed") return;
+  }
+
+  #startCompaction(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "compaction.started" }>,
+  ): void {
+    if (active.compactionItem) return;
+    this.#completeReasoning(active, { status: "succeeded" });
+    this.#completeAgent(active, { status: "succeeded" });
+    if (event.contextWindowTokens !== undefined) {
+      active.compactionContextWindow = event.contextWindowTokens;
+    }
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: hostItemIdSchema.parse(this.#randomUUID()),
+    };
+    active.compactionItem = item;
+    this.#event({ type: "item.started", turnId: active.command.turnId, item });
+  }
+
+  #completeCompaction(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "compaction.completed" }>,
+  ): void {
+    if (!active.compactionItem) {
+      this.#startCompaction(active, {
+        type: "compaction.started",
+        ...(event.contextWindowTokens !== undefined
+          ? { contextWindowTokens: event.contextWindowTokens }
+          : {}),
+      });
+    }
+    const item = active.compactionItem;
+    if (!item) return;
+    active.compactionItem = null;
+    const contextWindowTokens =
+      event.contextWindowTokens ??
+      active.compactionContextWindow ??
+      (this.#state.effectiveModel
+        ? this.#modelState.contextWindowTokensByModel.get(this.#state.effectiveModel.id)
+        : undefined);
+    active.compactionContextWindow = undefined;
+    const outcome: HostItemOutcome =
+      event.outcome === "succeeded"
+        ? { status: "succeeded" }
+        : event.outcome === "cancelled"
+          ? { status: "cancelled", reason: "Context compaction was cancelled" }
+          : {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: event.errorMessage ?? "Grok context compaction failed",
+                retryable: true,
+              },
+            };
+    this.#completeItem(active, item, outcome);
+    if (event.outcome !== "succeeded") return;
+    const usage = usageFromCompact(event.tokensAfter, contextWindowTokens);
+    if (usage) this.#publishUsage(usage, active.command.turnId);
   }
 
   #appendAgent(active: ActiveTurn, text: string, messageId?: string): void {
@@ -836,6 +903,10 @@ class GrokHarnessSession implements HarnessSession {
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
     this.#completeAgent(active, itemOutcome);
+    if (active.compactionItem) {
+      this.#completeItem(active, active.compactionItem, itemOutcome);
+      active.compactionItem = null;
+    }
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
     for (const [interactionId, pending] of active.approvals) {

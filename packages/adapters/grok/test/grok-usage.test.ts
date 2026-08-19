@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sessionUsageFromHistory } from "../src/grok-usage.js";
+import { sessionUsageFromHistory, usageFromCompact } from "../src/grok-usage.js";
 
 describe("sessionUsageFromHistory", () => {
   it("returns null when no persisted Turn Usage exists", () => {
@@ -59,6 +59,15 @@ describe("sessionUsageFromHistory", () => {
       totalCostUsd: 0.25154905,
       cacheHitRatePercent: 90,
     });
+  });
+
+  it("builds context usage from succeeded compact token counts", () => {
+    expect(usageFromCompact(10820, 500000)).toEqual({
+      contextUsedTokens: 10820,
+      contextWindowTokens: 500000,
+    });
+    expect(usageFromCompact(undefined, 500000)).toBeNull();
+    expect(usageFromCompact(10820, undefined)).toBeNull();
   });
 
   it("omits cost when no Turn stamped ticks", () => {

@@ -1648,6 +1648,127 @@ describe("Grok Adapter ACP projection", () => {
     await opened.value.close();
   });
 
+  it("projects native auto-compaction before continuing the Assistant reply", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-auto-compact");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "continue" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.event({
+      type: "agent.thought",
+      text: "before compact",
+      messageId: "thought-1",
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect((await nextEvent(iterator)).type).toBe("item.updated");
+
+    transport.event({
+      type: "compaction.started",
+      tokensUsed: 401965,
+      contextWindowTokens: 500000,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "reasoning" }, outcome: { status: "succeeded" } },
+    });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Grok auto-compact did not start a Context Compaction Item");
+    }
+
+    transport.event({
+      type: "compaction.completed",
+      outcome: "succeeded",
+      tokensBefore: 401965,
+      tokensAfter: 10820,
+      contextWindowTokens: 500000,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: turnId,
+      usage: { contextUsedTokens: 10820, contextWindowTokens: 500000 },
+    });
+
+    transport.event({ type: "agent.text", text: "after compact", messageId: "agent-1" });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect((await nextEvent(iterator)).type).toBe("item.updated");
+    transport.finish();
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            items: [
+              { item: { type: "reasoning" }, outcome: { status: "succeeded" } },
+              { item: { type: "contextCompaction" }, outcome: { status: "succeeded" } },
+              { item: { type: "agentMessage" }, outcome: { status: "succeeded" } },
+            ],
+          },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("completes a failed auto-compact Item without closing the Turn", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-auto-compact-failed");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "continue" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    transport.event({ type: "compaction.started" });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Grok auto-compact did not start a Context Compaction Item");
+    }
+    transport.event({
+      type: "compaction.completed",
+      outcome: "failed",
+      errorMessage: "quota exceeded",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction" },
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "quota exceeded" },
+        },
+      },
+    });
+    transport.event({ type: "agent.text", text: "still going", messageId: "agent-1" });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect((await nextEvent(iterator)).type).toBe("item.updated");
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
   it("rejects last-Turn Rewind when Grok ACP is missing or history is unchanged", async () => {
     const transport = new FakeGrokTransport();
     const sourceHistory: GrokTransportEvent[] = [

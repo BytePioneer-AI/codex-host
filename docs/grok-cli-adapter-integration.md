@@ -188,7 +188,7 @@ xAI Model API、OpenAI-compatible API 或 `@ai-sdk/xai` 属于 Model/Provider �
 | 完整历史读取 | 原生 | 支持 | 支持 | 可回放但稳定身份不足 | `updates.jsonl`、`summary.json` |
 | Thread / Session 管理 | 原生 | 支持 | 部分支持 | 基础能力可协商 | Grok Session 扩展 |
 | Fork | 原生 | 任意 Turn | 任意 Turn | ACP v1 不统一保证 | `_x.ai/session/fork` 支持按 Prompt Index Fork |
-| 上下文压缩 | 原生 | 支持 | 支持 | 不统一保证 | Grok Compaction 通知/扩展 |
+| 上下文压缩 | 原生 | 支持 | 支持 | 不统一保证 | 自动压缩投影为 Context Compaction Item；手动 `/compact` 暂未接入 |
 | 斜杠命令 | 原生 | 开发中 | 开发中 | 可发现，执行语义不统一 | Grok Commands 扩展 |
 | 修订/回滚上一条 | 原生 | 支持 | 部分支持 | 标准能力不足 | Grok Rewind 语义需验证 |
 
@@ -419,12 +419,14 @@ GrokAdapter 只接受成功终态 `status: "completed"` 携带的 Diff Content�
 - Token、Cache、Reasoning、Context 和 Cost Usage
 - 从 `updates.jsonl` 读取历史快照
 - 成功终态 ACP Diff Content 的实时与历史 File Change 投影
+- 原生自动压缩的实时与历史 Context Compaction 投影
 - Session Fault 和进程退出映射
 
 ### 暂不支持
 
 - 任意历史 Turn Fork
 - codexhost 语义的 Rollback Last Turn
+- 手动 `/compact` / `x.ai/compact_conversation`
 - ACP 无法无歧义表达的删除文件 Diff
 - 依赖未文档化 RPC 的功能
 - 直接修改 Grok Session 文件

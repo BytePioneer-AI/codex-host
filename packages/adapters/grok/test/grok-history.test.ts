@@ -75,6 +75,56 @@ describe("Grok history Fork mapping", () => {
     expect(resolveGrokLastTurnPromptIndex(snapshot)).toBe(1);
   });
 
+  it("reconstructs mid-Turn auto-compaction Items and ignores compact outside a Turn", () => {
+    const snapshot = mapGrokReplay(
+      [
+        {
+          type: "compaction.completed",
+          outcome: "succeeded",
+          tokensAfter: 12,
+        },
+        { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+        { type: "agent.thought", text: "thinking-before" },
+        {
+          type: "compaction.started",
+          tokensUsed: 80,
+          contextWindowTokens: 100,
+        },
+        {
+          type: "compaction.completed",
+          outcome: "succeeded",
+          tokensBefore: 80,
+          tokensAfter: 12,
+        },
+        { type: "agent.text", text: "answer" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        {
+          type: "compaction.completed",
+          outcome: "failed",
+          errorMessage: "after turn",
+        },
+      ],
+      grokHarnessId,
+      "session-1",
+      "/workspace",
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      {
+        item: { type: "reasoning", text: "thinking-before" },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: { type: "contextCompaction" },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: { type: "agentMessage", text: "answer" },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
+
   it("prefers an explicit promptIndex on the user event", () => {
     const snapshot = mapGrokReplay(
       [

@@ -141,6 +141,30 @@ export function sessionUsageFromHistory(
   }
 }
 
+export function usageFromCompact(
+  tokensAfter: number | undefined,
+  contextWindowTokens: number | undefined,
+): HostUsage | null {
+  if (
+    tokensAfter === undefined ||
+    contextWindowTokens === undefined ||
+    !Number.isSafeInteger(tokensAfter) ||
+    tokensAfter < 0 ||
+    !Number.isSafeInteger(contextWindowTokens) ||
+    contextWindowTokens <= 0
+  ) {
+    return null;
+  }
+  try {
+    return parseHostUsage({
+      contextUsedTokens: tokensAfter,
+      contextWindowTokens,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export function usageFromUpdate(
   update: SessionUpdate | undefined,
   metadata: Record<string, unknown> | undefined,

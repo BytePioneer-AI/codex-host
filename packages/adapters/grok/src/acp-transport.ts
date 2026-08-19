@@ -30,6 +30,10 @@ import {
   type GrokForkParams,
 } from "./grok-fork.js";
 import {
+  grokCompactionEventFromUpdate,
+  isGrokExtensionSessionUpdateMethod,
+} from "./grok-compaction.js";
+import {
   GROK_REWIND_EXECUTE_METHOD,
   parseGrokRewindResponse,
   type GrokRewindParams,
@@ -88,7 +92,22 @@ export type GrokTransportEvent =
       usage?: unknown;
       metadata?: Record<string, unknown>;
     }
-  | { type: "rewind.marker"; targetPromptIndex: number; metadata?: Record<string, unknown> };
+  | { type: "rewind.marker"; targetPromptIndex: number; metadata?: Record<string, unknown> }
+  | {
+      type: "compaction.started";
+      tokensUsed?: number;
+      contextWindowTokens?: number;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "compaction.completed";
+      outcome: "succeeded" | "cancelled" | "failed";
+      tokensBefore?: number;
+      tokensAfter?: number;
+      contextWindowTokens?: number;
+      errorMessage?: string;
+      metadata?: Record<string, unknown>;
+    };
 
 export interface GrokPermissionRequest {
   request: RequestPermissionRequest;
@@ -244,6 +263,8 @@ function transportEvent(
     }
     return { type: "rewind.marker", targetPromptIndex, ...(metadata ? { metadata } : {}) };
   }
+  const compaction = grokCompactionEventFromUpdate(extension);
+  if (compaction) return compaction;
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -701,6 +722,7 @@ export class GrokAcpTransport {
         ({
           sessionUpdate: (params) => this.#handleUpdate(params),
           requestPermission: (params) => this.#handlePermission(params),
+          extNotification: (method, params) => this.#handleExtensionNotification(method, params),
         }) satisfies Client,
       stream,
     );
@@ -820,6 +842,12 @@ export class GrokAcpTransport {
     const enriched = metadata ? { ...event, metadata } : event;
     if (this.#replay) this.#replay.push(enriched);
     else this.#activePrompt?.onEvent(enriched);
+  }
+
+  #handleExtensionNotification(method: string, params: Record<string, unknown>): void {
+    if (!isGrokExtensionSessionUpdateMethod(method)) return;
+    if (typeof params.sessionId !== "string" || !isRecord(params.update)) return;
+    this.#handleUpdate(params as SessionNotification);
   }
 
   #handlePermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {

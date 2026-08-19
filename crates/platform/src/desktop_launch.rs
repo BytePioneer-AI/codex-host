@@ -170,7 +170,11 @@ fn desktop_launch_command(
                 "LaunchServices is available on macOS only",
             ));
         }
-        let mut command = Command::new(&installation.desktop_launcher);
+        #[cfg(target_os = "linux")]
+        let program = &installation.desktop_executable;
+        #[cfg(target_os = "windows")]
+        let program = &installation.desktop_launcher;
+        let mut command = Command::new(program);
         command.args(additional_arguments).envs(environment);
         #[cfg(target_os = "linux")]
         command.process_group(0);
@@ -489,22 +493,19 @@ pub fn launch_desktop_session(
             )));
         }
 
-        let official_launcher = installation.desktop_launcher.canonicalize()?;
         let spawner_executable = process_snapshot(std::process::id())?.executable;
-        let shell_interpreter = Path::new("/bin/sh").canonicalize()?;
-        // The child may still expose this Launcher before exec, may be running
-        // under the official wrapper's interpreter, or may already be Desktop.
-        if launcher_instance.executable != official_launcher
-            && launcher_instance.executable != installation.desktop_executable
+        // The child may still expose this process before exec, or may already
+        // be the Desktop executable. Managed Linux launch no longer goes
+        // through the official wrapper or its interpreter.
+        if launcher_instance.executable != installation.desktop_executable
             && launcher_instance.executable != spawner_executable
-            && launcher_instance.executable != shell_interpreter
         {
             let _ = cleanup_failed_desktop_launch(
                 &mut launch_process,
                 std::slice::from_ref(&launcher_instance),
             );
             return Err(PlatformError::Invalid(format!(
-                "Desktop launcher PID {} did not retain an official launcher or Desktop executable identity",
+                "Desktop launcher PID {} did not retain a Desktop executable identity",
                 launcher_instance.id
             )));
         }
@@ -751,7 +752,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_launches_through_the_official_launcher_but_tracks_the_desktop_executable() {
+    fn linux_managed_launches_the_desktop_executable_without_the_official_launcher() {
         let installation = linux_installation();
         let stock = stock_desktop_command(&installation).expect("stock Desktop command");
         assert_eq!(stock.get_program(), installation.desktop_launcher);
@@ -763,7 +764,7 @@ mod tests {
             &[],
         )
         .expect("managed Desktop command");
-        assert_eq!(managed.get_program(), installation.desktop_launcher);
+        assert_eq!(managed.get_program(), installation.desktop_executable);
         assert_ne!(
             installation.desktop_launcher,
             installation.desktop_executable
@@ -772,21 +773,17 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_launch_accepts_the_official_shell_wrapper_interpreter() {
-        let directory = temporary_directory("codexhost-shell-launcher");
+    fn managed_launch_supervises_the_desktop_executable_directly() {
+        let directory = temporary_directory("codexhost-direct-desktop");
         let desktop = directory.join("ChatGPT");
         fs::copy("/bin/sleep", &desktop).expect("copy fake Desktop");
         fs::set_permissions(&desktop, fs::Permissions::from_mode(0o755))
             .expect("make fake Desktop executable");
         let desktop = desktop.canonicalize().expect("canonical fake Desktop");
         let launcher = directory.join("codex-launcher");
-        fs::write(
-            &launcher,
-            format!("#!/bin/sh\nsleep 0.1\nexec \"{}\" 30\n", desktop.display()),
-        )
-        .expect("write shell launcher");
+        fs::write(&launcher, b"#!/bin/sh\nexit 1\n").expect("write unused official launcher");
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
-            .expect("make shell launcher executable");
+            .expect("make unused launcher executable");
         let mut installation = linux_installation();
         installation.install_root = directory.clone();
         installation.desktop_launcher = launcher;
@@ -798,16 +795,16 @@ mod tests {
             &installation,
             Path::new("/bin/true"),
             DesktopLaunchMode::DirectExecutable,
-            &[],
+            &[OsString::from("30")],
             &[],
             Duration::from_secs(2),
         )
-        .expect("launch Desktop through shell wrapper");
+        .expect("launch Desktop executable directly");
         assert_eq!(session.root_snapshot().executable, desktop);
         session
             .shutdown(Duration::from_secs(2))
             .expect("stop fake Desktop");
-        fs::remove_dir_all(directory).expect("remove shell launcher fixture");
+        fs::remove_dir_all(directory).expect("remove direct Desktop fixture");
     }
 
     #[cfg(target_os = "linux")]

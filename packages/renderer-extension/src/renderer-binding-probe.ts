@@ -52,10 +52,6 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
-import {
-  mountRendererCommandPicker,
-  type RendererCommandPickerControl,
-} from "./renderer-command-picker.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
@@ -265,7 +261,6 @@ interface MountedComposer {
   composer: Element;
   composerId: string;
   control: ComposerAgentControl;
-  commandPicker: RendererCommandPickerControl;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -502,7 +497,7 @@ export function installRendererBindingProbe(
     const state = controller.get(mounted.composer);
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (state.agent === "codex" || !threadId || !modelControl) {
-      mounted.commandPicker.setCommands([]);
+      mounted.control.harnessCommands.setCommands([]);
       return;
     }
     try {
@@ -515,10 +510,10 @@ export function installRendererBindingProbe(
       ) {
         return;
       }
-      mounted.commandPicker.setCommands(catalog.commands);
+      mounted.control.harnessCommands.setCommands(catalog.commands);
     } catch {
       if (mountedByComposer.get(mounted.composer) === mounted) {
-        mounted.commandPicker.setCommands([]);
+        mounted.control.harnessCommands.setCommands([]);
       }
     }
   };
@@ -529,6 +524,7 @@ export function installRendererBindingProbe(
   ): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") return;
+    mounted.control.harnessCommands.setExecuting(command.id);
     try {
       await modelControl.executeThreadCommand({ threadId, commandId: command.id });
     } catch (error) {
@@ -536,6 +532,8 @@ export function installRendererBindingProbe(
         "codexhost Harness command failed",
         error instanceof Error ? error.message : String(error),
       );
+    } finally {
+      mounted.control.harnessCommands.setExecuting(null);
     }
   };
 
@@ -1555,10 +1553,6 @@ export function installRendererBindingProbe(
     const modelTarget = findComposerModelTarget(composer);
     const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
     if (!editor) return;
-    const commandPicker = mountRendererCommandPicker(composer, editor, (command) => {
-      const mounted = mountedByComposer.get(composer);
-      if (mounted) void executeCommand(mounted, command);
-    });
     const state = controller.mount(
       composer,
       modelTarget,
@@ -1591,12 +1585,15 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         void selectPermissionMode(mounted, permissionModeId);
       },
+      (command) => {
+        const mounted = mountedByComposer.get(composer);
+        if (mounted) void executeCommand(mounted, command);
+      },
     );
     const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
       control,
-      commandPicker,
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -1674,7 +1671,6 @@ export function installRendererBindingProbe(
           usageRefreshTimers.delete(composer);
         }
         disposeComposerAgentControl(mounted.control);
-        mounted.commandPicker.dispose();
         mountedByComposer.delete(composer);
         continue;
       }
@@ -2007,7 +2003,6 @@ export function installRendererBindingProbe(
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
         disposeComposerAgentControl(mounted.control);
-        mounted.commandPicker.dispose();
       }
       mountedByComposer.clear();
       pendingReplacements.clear();

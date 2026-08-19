@@ -4,7 +4,11 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import type { AccountCreditsSnapshot, ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import type {
+  AccountCreditsSnapshot,
+  HarnessCommandDescriptor,
+  ThreadUsageSnapshot,
+} from "@codexhost/shared-contracts";
 import {
   CONTROL_ATTRIBUTE,
   mountRendererAgentPicker,
@@ -38,6 +42,10 @@ import {
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
+import {
+  mountRendererHarnessCommandControl,
+  type RendererHarnessCommandControl,
+} from "./renderer-harness-command-control.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -66,6 +74,7 @@ export interface ComposerAgentControl {
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
   usage: RendererUsageControl;
+  harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -341,7 +350,13 @@ function refreshUsagePlacement(control: ComposerAgentControl): void {
     control.credits.anchor = null;
     return;
   }
+  const previousUsageParent = control.usage.root.parentElement;
+  const previousUsageNextSibling = control.usage.root.nextElementSibling;
   control.usage.place(anchor);
+  const usagePositionChanged =
+    previousUsageParent !== control.usage.root.parentElement ||
+    previousUsageNextSibling !== control.usage.root.nextElementSibling;
+  if (usagePositionChanged) control.harnessCommands?.placeBefore(control.usage.root);
   const leading = creditsPlacementAnchor(control.composer, control.usage.root);
   if (!leading) {
     if (control.credits.anchor) control.credits.root.remove();
@@ -408,6 +423,7 @@ export function mountComposerAgentControl(
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
+  onSelectCommand: (command: HarnessCommandDescriptor) => void,
 ): ComposerAgentControl {
   const nativeModelControl = captureNativeControl(nativeModelControlForComposer(composer));
   const semanticNativePermissionModeControl =
@@ -431,6 +447,13 @@ export function mountComposerAgentControl(
   const usage = mountRendererUsageControl(composerId, nativeModelControl?.element.className);
   const credits = mountRendererCreditsControl(composerId, nativeModelControl?.element.className);
 
+  const toolbar = sendButton.parentElement;
+  const harnessCommands = mountRendererHarnessCommandControl(
+    toolbar ?? composer,
+    sendButton,
+    onSelectCommand,
+  );
+
   const permissionParent = nativePermissionModeControl?.element.parentElement;
   if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
     permissionParent.insertBefore(permissionModePicker.root, nativePermissionModeControl.element);
@@ -438,7 +461,6 @@ export function mountComposerAgentControl(
     composer.append(permissionModePicker.root);
   }
 
-  const toolbar = sendButton.parentElement;
   if (toolbar) {
     toolbar.insertBefore(modelPicker.root, sendButton);
     toolbar.insertBefore(picker.root, sendButton);
@@ -456,6 +478,7 @@ export function mountComposerAgentControl(
     nativePermissionModeControlVerified,
     credits,
     usage,
+    harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
@@ -537,6 +560,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   restoreNativeControl(control.nativePermissionModeControl);
   control.credits.dispose();
   control.usage.dispose();
+  control.harnessCommands.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();
   control.picker.dispose();

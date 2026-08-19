@@ -38,7 +38,7 @@ The Adapter MUST translate a registered command into the Harness-native operatio
 
 ### Requirement: Command UI and lifecycle follow Host contracts
 
-A command MAY be discovered by the Renderer through the Host command catalog. If execution produces visible lifecycle events, those events MUST use existing Host projection contracts. Temporary command projection Turns MUST NOT be persisted as ordinary conversation history unless the command explicitly requires persistence.
+A command MAY be discovered by the Renderer through the Host command catalog. The Renderer SHALL present discovered commands through an independent Composer Harness Commands control rather than mutating the Codex-native Slash command list. Its popover SHALL own its layout, scrolling, focus, and keyboard navigation. If execution produces visible lifecycle events, those events MUST use existing Host projection contracts. Temporary command projection Turns MUST NOT be persisted as ordinary conversation history unless the command explicitly requires persistence.
 
 #### Scenario: Manual compaction is projected without a user Turn
 

@@ -41,7 +41,9 @@ For commands with visible progress, decide explicitly whether they need:
 
 ## 4. Reuse Host and Renderer routing
 
-The shared command catalog and Host command RPC should not need command-specific branches. The Renderer should consume the catalog and execute by command ID.
+The shared command catalog and Host command RPC should not need command-specific branches. The Renderer should consume the catalog and execute by command ID through the Composer's independent Harness Commands button and popover.
+
+The command button belongs to the active external Harness controls, near the Composer's left-side actions. It MUST remain outside the Codex React-managed Slash command list; the independent popover owns its own focus, keyboard navigation, positioning, and scrolling.
 
 Only add Renderer-specific code when the command needs a new presentation or interaction.
 
@@ -73,6 +75,8 @@ For native RPC changes, also verify the request and event sequence against the r
 
 ```text
 Renderer command catalog
+  -> Composer Harness Commands button
+  -> independent command popover
   -> Host command/execute
   -> Pi Adapter
   -> Pi native { type: "compact" }

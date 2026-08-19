@@ -17,6 +17,7 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  harnessCommandDescriptorSchema,
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
@@ -1442,12 +1443,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
         ok: true,
         value: {
           commands: [
-            {
+            harnessCommandDescriptorSchema.parse({
               id: "fake.compact",
               invocation: "/compact",
               label: "Compact",
               argumentMode: "text" as const,
-            },
+            }),
           ],
         },
       }),

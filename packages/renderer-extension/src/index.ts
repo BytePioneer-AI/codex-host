@@ -47,8 +47,8 @@ export {
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
-export { mountRendererCommandPicker } from "./renderer-command-picker.js";
-export type { RendererCommandPickerControl } from "./renderer-command-picker.js";
+export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
+export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
   creditsPeriodLabel,
   formatRendererCreditsReset,

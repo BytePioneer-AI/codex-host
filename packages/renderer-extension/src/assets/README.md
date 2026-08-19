@@ -2,9 +2,7 @@
 
 `codexhost-logo.png` is the 3:4 codexhost product logo used by the installer and
 application branding. `codexhost-icon.png` is its square crop used for the
-in-product brand mark. `codexhost-command-icon.png` is the 64-pixel derivative
-used in the native Slash Command menu so the browser bundle does not inline the
-full-resolution source for a 20-pixel surface.
+in-product brand mark.
 
 `codexhost-logo-transparent.png` is the white-background-free square logo
 extracted from `codexhost-logo.png`. `codex-logo.png` is the Codex X mark

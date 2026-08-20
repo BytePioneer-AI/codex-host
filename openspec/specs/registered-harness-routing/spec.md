@@ -229,3 +229,46 @@ After a successful current-Thread Permission Mode selection, Host Runtime SHALL 
 
 - **WHEN** a persisted Claude carrier contains Model and Permission Mode components
 - **THEN** Thread inspection SHALL return that carrier and the next native operation SHALL reapply the stored mode through the owning Session
+
+### Requirement: Production Host SHALL register and route Grok
+
+Protocol Core SHALL include `grok` in the finite external Harness registry and SHALL decode `codexhost/grok-native` plus its bounded selected configuration only as Grok-owned traffic. The production composition root SHALL construct GrokAdapter and inject it through the same `HarnessAdapter` registry used by Pi and Claude Code.
+
+#### Scenario: Grok Thread is created
+- **WHEN** `thread/start.model` contains a valid Grok transport carrier
+- **THEN** Host SHALL open GrokAdapter with only that request's decoded Model and Thinking selection
+- **AND** subsequent operations SHALL remain bound to the resulting Grok HarnessSession
+
+#### Scenario: Grok carrier is malformed or unavailable
+- **WHEN** a Grok-prefixed carrier is malformed or GrokAdapter cannot open it
+- **THEN** Host SHALL reject the external request explicitly
+- **AND** it SHALL NOT route the request to official Codex, Pi, or Claude Code
+
+### Requirement: Generic external routing SHALL consume Grok capabilities without ACP branches
+
+Host Runtime SHALL route Grok Turn, interrupt, read, inspection, configuration, Usage, ownership, delete, and close operations through existing generic external Thread behavior. Host Runtime MUST NOT import ACP SDK types, parse Grok events, or read Grok Session files.
+
+#### Scenario: Grok and existing Harnesses coexist
+- **WHEN** Grok, Pi, and Claude Code Threads are loaded in one Host
+- **THEN** each operation SHALL invoke only its owning HarnessSession
+- **AND** Grok output SHALL use the same Host projectors and response-ordering gates as other external Harnesses
+
+### Requirement: DeepSeek Harness is a finite registered external Harness
+Protocol Core and Host Runtime SHALL recognize `deepseek-harness` and its `codexhost/deepseek-harness-native` transport Model as a registered external Harness without changing official Codex, Pi, or Claude Code routing.
+
+#### Scenario: DeepSeek transport Model is decoded
+- **WHEN** `thread/start.model` carries the DeepSeek Harness transport Model
+- **THEN** Protocol Core SHALL route creation to external Harness `deepseek-harness`
+
+#### Scenario: DeepSeek Adapter is unavailable
+- **WHEN** a DeepSeek create reaches a Host whose runtime inspection reports unavailable
+- **THEN** Host SHALL return the existing explicit external Harness error
+- **AND** SHALL NOT forward the request to official Codex
+
+### Requirement: Host composition registers the DeepSeek Adapter
+The Host composition root SHALL construct the DeepSeek Adapter with its explicit runtime command environment and manage it through the same Adapter registry used by Pi and Claude Code.
+
+#### Scenario: Host closes mixed external Adapters
+- **WHEN** Host shuts down with DeepSeek and other external Sessions
+- **THEN** it SHALL close them through the shared HarnessAdapter lifecycle without a DSH-specific Thread path
+

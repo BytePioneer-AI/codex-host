@@ -78,7 +78,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 ### Requirement: Claude Native history maps deterministically
 
-`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages SHALL remain within their owning Turn and SHALL NOT become synthetic human inputs. codexhost SHALL NOT persist a second Transcript.
+`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, and native Model-selection command envelopes SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
 
 #### Scenario: Completed Claude history is read repeatedly
 - **WHEN** a Claude Session containing completed text Turns and visible Assistant thinking is read more than once
@@ -89,6 +89,16 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **WHEN** Assistant Tool use and User Tool-result messages occur between a human User message and the terminal Assistant message
 - **THEN** those messages SHALL remain within the same historical Turn
 - **AND** only currently supported Assistant text and explicit visible thinking SHALL be projected as historical Items
+
+#### Scenario: Native history contains model-selection records
+- **WHEN** Claude history contains a `/model` command envelope, `<local-command-stdout>` result, or `<local-command-caveat>` adjacent to human conversation
+- **THEN** those native control records SHALL NOT create Host Turns
+- **AND** the surrounding human Turns SHALL retain their Native Turn identities and order
+
+#### Scenario: Native history contains another human slash command
+- **WHEN** a human User record contains a supported slash-command envelope other than the native Model-selection control record
+- **THEN** the command prompt SHALL remain eligible to create a Host Turn
+- **AND** transcript tags SHALL NOT cause unrelated human text to be discarded
 
 #### Scenario: Native history contains redacted or unsupported blocks
 
@@ -359,3 +369,4 @@ A valid `permissionMode.select` SHALL call the current Query's official setter a
 
 - **WHEN** Claude invokes `canUseTool` under the selected mode
 - **THEN** the existing ordinary Tool Approval path SHALL remain authoritative for that callback
+

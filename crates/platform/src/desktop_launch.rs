@@ -170,7 +170,11 @@ fn desktop_launch_command(
                 "LaunchServices is available on macOS only",
             ));
         }
-        let mut command = Command::new(&installation.desktop_executable);
+        #[cfg(target_os = "linux")]
+        let program = &installation.desktop_executable;
+        #[cfg(target_os = "windows")]
+        let program = &installation.desktop_launcher;
+        let mut command = Command::new(program);
         command.args(additional_arguments).envs(environment);
         #[cfg(target_os = "linux")]
         command.process_group(0);

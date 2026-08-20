@@ -23,7 +23,7 @@ When the Desktop Controller reports a warning or degraded capability, codexhost 
 
 ## Process ownership
 
-codexhost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching codexhost. A managed launch uses the official launcher but identifies and supervises the real Desktop executable through `/proc`; shutdown signals are sent only after PID, start time, and executable identity are revalidated.
+codexhost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching codexhost. A managed launch starts the verified Desktop executable directly and supervises it through `/proc`; stock ChatGPT launches still use the official launcher. Shutdown signals are sent only after PID, start time, and executable identity are revalidated.
 
 ## Diagnosis
 

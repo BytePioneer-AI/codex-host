@@ -23,7 +23,7 @@ Desktop Controller 报告警告或能力降级时，codexhost 会在启动受管
 
 ## 进程所有权
 
-codexhost 不会接管独立运行的 ChatGPT App。启动 codexhost 前，请完全退出 ChatGPT。受管启动会使用官方启动器，但通过 `/proc` 识别和监督真实 Desktop 可执行文件；只有重新校验 PID、启动时间和可执行文件身份后才会发送关闭信号。
+codexhost 不会接管独立运行的 ChatGPT App。启动 codexhost 前，请完全退出 ChatGPT。受管启动会直接启动已校验的 Desktop 可执行文件，并通过 `/proc` 监督它；普通 ChatGPT 启动仍使用官方启动器。只有重新校验 PID、启动时间和可执行文件身份后才会发送关闭信号。
 
 ## 诊断
 

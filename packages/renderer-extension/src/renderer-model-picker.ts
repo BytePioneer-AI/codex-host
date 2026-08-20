@@ -13,12 +13,6 @@ import {
   RENDERER_MODEL_PICKER_MODEL_MENU_MAX_HEIGHT,
 } from "./renderer-model-picker-positioning.js";
 
-export {
-  rendererModelPickerMainMenuPlacement,
-  rendererModelPickerModelMenuPlacement,
-  rendererModelPickerStandaloneModelMenuPlacement,
-} from "./renderer-model-picker-positioning.js";
-
 export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
   "border-token-border no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-sm leading-[18px] min-w-0";
 

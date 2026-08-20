@@ -6,10 +6,13 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
-  isRendererModelPickerDisabled,
   rendererModelPickerMainMenuPlacement,
   rendererModelPickerModelMenuPlacement,
   rendererModelPickerStandaloneModelMenuPlacement,
+} from "../src/renderer-model-picker-positioning.js";
+
+import {
+  isRendererModelPickerDisabled,
   rendererModelPickerPresentation,
   shouldCloseRendererModelPicker,
   syncRendererLabelText,

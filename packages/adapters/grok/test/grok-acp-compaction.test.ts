@@ -24,7 +24,12 @@ describe("Grok ACP auto-compact without a real compact", () => {
     await withTempDir("codexhost-grok-compact-history-", async (grokHome) => {
       const cwd = "/workspace";
       const sessionId = "01a013ca-b13e-7742-8495-ab64229d629a";
-      const sessionDir = path.join(grokHome, "sessions", encodeURIComponent(cwd), sessionId);
+      const sessionDir = path.join(
+        grokHome,
+        "sessions",
+        encodeURIComponent(path.resolve(cwd)),
+        sessionId,
+      );
       await mkdir(sessionDir, { recursive: true });
       await writeFile(
         path.join(sessionDir, "updates.jsonl"),

@@ -7,6 +7,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   isRendererModelPickerDisabled,
+  rendererModelPickerMainMenuPlacement,
+  rendererModelPickerModelMenuPlacement,
+  rendererModelPickerStandaloneModelMenuPlacement,
   rendererModelPickerPresentation,
   shouldCloseRendererModelPicker,
   syncRendererLabelText,
@@ -34,6 +37,53 @@ function catalog(levels: readonly string[]) {
 }
 
 describe("Renderer combined Model and Thinking picker presentation", () => {
+  it("anchors the main menu's right edge to the model trigger", () => {
+    expect(
+      rendererModelPickerMainMenuPlacement(
+        { left: 700, right: 900, top: 820 },
+        { width: 1200, height: 900 },
+        180,
+      ),
+    ).toEqual({ left: 720, width: 180, bottom: 88 });
+  });
+
+  it("keeps the main menu inside the viewport when the trigger is near an edge", () => {
+    expect(
+      rendererModelPickerMainMenuPlacement(
+        { left: 0, right: 50, top: 820 },
+        { width: 240, height: 900 },
+        180,
+      ).left,
+    ).toBe(8);
+  });
+
+  it("opens the model-only picker directly above the model trigger", () => {
+    expect(
+      rendererModelPickerStandaloneModelMenuPlacement(
+        { left: 700, right: 900, top: 820 },
+        { width: 1200, height: 900 },
+      ),
+    ).toEqual({ left: 620, width: 280, maxHeight: 360, bottom: 88 });
+  });
+
+  it("keeps the model submenu top-aligned with the main menu while flipping left", () => {
+    expect(
+      rendererModelPickerModelMenuPlacement(
+        { left: 700, right: 1120, top: 100 },
+        { width: 1200, height: 900 },
+      ),
+    ).toEqual({ left: 416, top: 100, width: 280, maxHeight: 360 });
+  });
+
+  it("keeps the model submenu on the right when there is enough space", () => {
+    expect(
+      rendererModelPickerModelMenuPlacement(
+        { left: 100, right: 280, top: 100 },
+        { width: 1200, height: 900 },
+      ),
+    ).toEqual({ left: 284, top: 100, width: 280, maxHeight: 360 });
+  });
+
   it("does not rewrite an unchanged Thinking label", () => {
     let value: string | null = "High";
     let writes = 0;

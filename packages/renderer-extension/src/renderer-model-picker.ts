@@ -5,6 +5,20 @@ import type {
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
+import {
+  rendererModelPickerMainMenuPlacement,
+  rendererModelPickerModelMenuPlacement,
+  rendererModelPickerStandaloneModelMenuPlacement,
+  RENDERER_MODEL_PICKER_MAIN_MENU_WIDTH,
+  RENDERER_MODEL_PICKER_MODEL_MENU_MAX_HEIGHT,
+} from "./renderer-model-picker-positioning.js";
+
+export {
+  rendererModelPickerMainMenuPlacement,
+  rendererModelPickerModelMenuPlacement,
+  rendererModelPickerStandaloneModelMenuPlacement,
+} from "./renderer-model-picker-positioning.js";
+
 export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
   "border-token-border no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-sm leading-[18px] min-w-0";
 
@@ -18,15 +32,7 @@ const OPTION_CLASSES =
   "flex w-full cursor-interaction items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-foreground outline-none enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 disabled:cursor-not-allowed disabled:opacity-40";
 
 const HEADING_CLASSES = "px-2 pb-1 pt-1.5 text-sm text-token-text-tertiary";
-const MAIN_MENU_MIN_WIDTH = 160;
-const MAIN_MENU_MAX_WIDTH = 180;
-const MODEL_MENU_PREFERRED_WIDTH = 360;
-const MODEL_MENU_MAX_WIDTH = 420;
-const MODEL_MENU_MAX_HEIGHT = 360;
 const MODEL_TRIGGER_MAX_WIDTH = "min(200px, 26vw)";
-const MAIN_MENU_LEFT_OFFSET = 96;
-const MENU_GAP = 4;
-const VIEWPORT_MARGIN = 8;
 const MODEL_SCROLLBAR_STYLE_ATTRIBUTE = "data-codexhost-model-picker-scrollbar";
 
 export interface RendererModelControlView {
@@ -177,48 +183,45 @@ export function rendererModelPickerPresentation(
 
 function positionMainMenu(control: RendererModelPickerControl): void {
   const triggerRect = control.trigger.getBoundingClientRect();
-  const width = Math.min(MAIN_MENU_MAX_WIDTH, Math.max(MAIN_MENU_MIN_WIDTH, triggerRect.width));
-  const modelMenuWidth = Math.min(
-    MODEL_MENU_MAX_WIDTH,
-    Math.min(MODEL_MENU_PREFERRED_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2),
+  const placement = rendererModelPickerMainMenuPlacement(
+    triggerRect,
+    { width: window.innerWidth, height: window.innerHeight },
+    RENDERER_MODEL_PICKER_MAIN_MENU_WIDTH,
   );
-  const preferredLeft = triggerRect.right - width - MAIN_MENU_LEFT_OFFSET;
-  const rightReservedLeft = window.innerWidth - VIEWPORT_MARGIN - modelMenuWidth - MENU_GAP - width;
-  const maxLeft = window.innerWidth - VIEWPORT_MARGIN - width;
-  const left = Math.max(
-    VIEWPORT_MARGIN,
-    Math.min(preferredLeft, Math.max(rightReservedLeft, VIEWPORT_MARGIN), maxLeft),
-  );
-  control.menu.style.setProperty("width", `${width}px`, "important");
-  control.menu.style.left = `${left}px`;
-  control.menu.style.maxWidth = `${width}px`;
+  control.menu.style.setProperty("width", `${placement.width}px`, "important");
+  control.menu.style.left = `${placement.left}px`;
+  control.menu.style.maxWidth = `${placement.width}px`;
   control.menu.style.right = "auto";
   control.menu.style.top = "auto";
-  control.menu.style.bottom = `${Math.max(
-    VIEWPORT_MARGIN,
-    window.innerHeight - triggerRect.top + 6,
-  )}px`;
+  control.menu.style.bottom = `${placement.bottom}px`;
 }
 
-function positionModelMenu(control: RendererModelPickerControl): void {
-  const mainRect = control.menu.getBoundingClientRect();
-  const availableRight = window.innerWidth - mainRect.right - VIEWPORT_MARGIN;
-  const width = Math.min(MODEL_MENU_MAX_WIDTH, Math.max(VIEWPORT_MARGIN, availableRight));
-  const left = mainRect.right + MENU_GAP;
-  control.modelMenu.style.setProperty("width", `${width}px`, "important");
-  control.modelMenu.style.left = `${left}px`;
-  control.modelMenu.style.maxWidth = `${width}px`;
-  const maxHeight = Math.max(
-    VIEWPORT_MARGIN,
-    Math.min(MODEL_MENU_MAX_HEIGHT, window.innerHeight * 0.6, mainRect.bottom - VIEWPORT_MARGIN),
-  );
-  control.modelMenu.style.maxHeight = `${maxHeight}px`;
+function positionAdvancedMenus(control: RendererModelPickerControl): void {
+  positionMainMenu(control);
+  positionModelMenu(control);
+}
+
+function positionModelMenu(control: RendererModelPickerControl, standalone = false): void {
+  const anchorRect = standalone
+    ? control.trigger.getBoundingClientRect()
+    : control.menu.getBoundingClientRect();
+  const placement = standalone
+    ? rendererModelPickerStandaloneModelMenuPlacement(anchorRect, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      })
+    : rendererModelPickerModelMenuPlacement(anchorRect, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+  control.modelMenu.style.setProperty("width", `${placement.width}px`, "important");
+  control.modelMenu.style.left = `${placement.left}px`;
+  control.modelMenu.style.maxWidth = `${placement.width}px`;
+  control.modelMenu.style.maxHeight = `${placement.maxHeight}px`;
   control.modelMenu.style.right = "auto";
-  control.modelMenu.style.top = "auto";
-  control.modelMenu.style.bottom = `${Math.max(
-    VIEWPORT_MARGIN,
-    window.innerHeight - mainRect.bottom,
-  )}px`;
+  control.modelMenu.style.top = placement.top === undefined ? "auto" : `${placement.top}px`;
+  control.modelMenu.style.bottom =
+    placement.bottom === undefined ? "auto" : `${placement.bottom}px`;
 }
 
 export function syncRendererModelTriggerClass(
@@ -341,7 +344,7 @@ export function mountRendererModelPicker(
   modelMenu.style.margin = "0";
   modelMenu.style.padding = "4px";
   modelMenu.style.border = "0";
-  modelMenu.style.maxHeight = "min(360px, 60vh)";
+  modelMenu.style.maxHeight = `min(${RENDERER_MODEL_PICKER_MODEL_MENU_MAX_HEIGHT}px, 60vh)`;
   modelMenu.style.overflowY = "auto";
   modelButton.setAttribute("aria-controls", modelMenu.id);
 
@@ -414,33 +417,41 @@ export function mountRendererModelPicker(
       applyModelSearchFilter(control);
     }
   };
+  const pickerOpen = (): boolean => popoverOpen(menu) || popoverOpen(modelMenu);
   const close = (): void => {
     closeModelMenu();
     if (popoverOpen(menu)) menu.hidePopover();
   };
-  const openModelMenu = (): void => {
-    if (!popoverOpen(menu) || popoverOpen(modelMenu)) return;
+  const openModelMenu = (standalone = false): void => {
+    if ((!standalone && !popoverOpen(menu)) || popoverOpen(modelMenu)) return;
     modelMenu.showPopover();
-    positionModelMenu(control);
+    positionModelMenu(control, standalone);
     modelButton.setAttribute("aria-expanded", "true");
   };
   const open = (): void => {
-    if (trigger.disabled || popoverOpen(menu)) return;
+    if (trigger.disabled || pickerOpen()) return;
+    if (control.thinkingOptions.size === 0) {
+      openModelMenu(true);
+      return;
+    }
     menu.showPopover();
-    positionMainMenu(control);
+    positionAdvancedMenus(control);
   };
   const onTriggerClick = (): void => {
-    if (popoverOpen(menu)) close();
+    if (pickerOpen()) close();
     else open();
   };
   const onToggle = (): void => {
     const openState = popoverOpen(menu);
-    trigger.setAttribute("aria-expanded", String(openState));
+    trigger.setAttribute("aria-expanded", String(openState || popoverOpen(modelMenu)));
     trigger.setAttribute("data-state", openState ? "open" : "closed");
     if (!openState) closeModelMenu();
   };
   const onModelToggle = (): void => {
-    modelButton.setAttribute("aria-expanded", String(popoverOpen(modelMenu)));
+    const openState = popoverOpen(modelMenu);
+    modelButton.setAttribute("aria-expanded", String(openState));
+    trigger.setAttribute("aria-expanded", String(openState || popoverOpen(menu)));
+    trigger.setAttribute("data-state", openState || popoverOpen(menu) ? "open" : "closed");
   };
   const onRootClick = (event: MouseEvent): void => {
     const target =
@@ -483,21 +494,25 @@ export function mountRendererModelPicker(
     trigger.focus();
   };
   const onViewportChange = (): void => {
-    if (popoverOpen(menu)) positionMainMenu(control);
-    if (popoverOpen(modelMenu)) positionModelMenu(control);
+    if (popoverOpen(menu)) positionAdvancedMenus(control);
+    else if (popoverOpen(modelMenu)) positionModelMenu(control, true);
   };
   trigger.addEventListener("click", onTriggerClick);
   menu.addEventListener("toggle", onToggle);
   modelMenu.addEventListener("toggle", onModelToggle);
   modelButton.addEventListener("mouseenter", onModelHover);
-  root.addEventListener("click", onRootClick);
+  menu.addEventListener("click", onRootClick);
   modelMenu.addEventListener("click", onModelMenuClick);
   document.addEventListener("pointerdown", onDocumentPointerDown, true);
   document.addEventListener("keydown", onDocumentKeyDown, true);
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("scroll", onViewportChange, true);
-  root.append(trigger, menu);
-  document.body.append(modelMenu);
+  // Keep both popovers in the document viewport's coordinate space. The native
+  // composer toolbar can be affected by browser zoom or a transformed ancestor;
+  // portaling the menus prevents fixed-position coordinates from being resolved
+  // in that local coordinate space.
+  root.append(trigger);
+  document.body.append(menu, modelMenu);
   searchHeader.append(searchInput);
   modelMenu.append(searchHeader, searchEmpty);
 
@@ -521,7 +536,7 @@ export function mountRendererModelPicker(
       menu.removeEventListener("toggle", onToggle);
       modelMenu.removeEventListener("toggle", onModelToggle);
       modelButton.removeEventListener("mouseenter", onModelHover);
-      root.removeEventListener("click", onRootClick);
+      menu.removeEventListener("click", onRootClick);
       modelMenu.removeEventListener("click", onModelMenuClick);
       searchInput.removeEventListener("input", onSearchInput);
       for (const type of silencedEventTypes) {
@@ -532,6 +547,7 @@ export function mountRendererModelPicker(
       document.removeEventListener("keydown", onDocumentKeyDown, true);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
+      menu.remove();
       modelMenu.remove();
       root.remove();
     },

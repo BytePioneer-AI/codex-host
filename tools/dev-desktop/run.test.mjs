@@ -235,7 +235,66 @@ describe("development Desktop start", () => {
           environment: {},
           spawnImplementation: vi.fn(),
         }),
-      ).rejects.toThrow("npm start requires Node.js 22; current version is 20.19.0");
+      ).rejects.toThrow("npm start requires Node.js 22 or 24; current version is 20.19.0");
+    } finally {
+      Object.defineProperty(process.versions, "node", {
+        value: originalNode,
+        configurable: true,
+      });
+    }
+  });
+
+  it("accepts Node.js 22 and 24", async () => {
+    const root = temporaryDirectory();
+    const nodePath = path.join(root, "node.exe");
+    materializeArtifacts(root, "win32", nodePath);
+    const originalNode = process.versions.node;
+    const spawnImplementation = vi.fn(() => exitingChild());
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      for (const version of ["22.19.0", "24.0.0"]) {
+        Object.defineProperty(process.versions, "node", {
+          value: version,
+          configurable: true,
+        });
+        await expect(
+          runDevelopmentDesktop({
+            arguments_: ["--no-build"],
+            root,
+            platform: "win32",
+            nodePath,
+            environment: { PATH: path.join(root, "missing") },
+            spawnImplementation,
+          }),
+        ).resolves.toBe(0);
+      }
+    } finally {
+      Object.defineProperty(process.versions, "node", {
+        value: originalNode,
+        configurable: true,
+      });
+    }
+  });
+
+  it("rejects Node.js 23", async () => {
+    const root = temporaryDirectory();
+    const originalNode = process.versions.node;
+    Object.defineProperty(process.versions, "node", {
+      value: "23.0.0",
+      configurable: true,
+    });
+    try {
+      await expect(
+        runDevelopmentDesktop({
+          root,
+          platform: "win32",
+          nodePath: path.join(root, "node.exe"),
+          environment: {},
+          spawnImplementation: vi.fn(),
+        }),
+      ).rejects.toThrow("npm start requires Node.js 22 or 24; current version is 23.0.0");
     } finally {
       Object.defineProperty(process.versions, "node", {
         value: originalNode,

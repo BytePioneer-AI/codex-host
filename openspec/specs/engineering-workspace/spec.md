@@ -6,23 +6,23 @@
 ## Requirements
 ### Requirement: 工具链兼容且依赖可复现
 
-仓库 MUST 使用 Node.js 22（不低于 22.19）、可用的 npm、Rust 工具链和已提交的依赖锁文件。开发和真实 Gate MUST只校验 Node.js major version 为 22，MUST NOT因 Node.js patch version 或 npm version 与仓库记录不同而阻止运行。CI 和发布流程 MAY记录或固定已验证的精确工具链版本用于复现，但该记录不得成为本地事实探索的版本门禁。
+仓库 MUST 使用 Node.js 22.19+ 或 24、可用的 npm、Rust 工具链和已提交的依赖锁文件。开发和真实 Gate MUST 只校验 Node.js major version 为 22 或 24，MUST NOT 因 Node.js patch version 或 npm version 与仓库记录不同而阻止运行。CI 和发布流程 MAY 记录或固定已验证的精确工具链版本用于复现，但该记录不得成为本地事实探索的版本门禁。
 
 #### Scenario: 全新检出安装依赖
 
-- **WHEN** 开发者使用任意 Node.js 22 和可用 npm 在全新检出中安装依赖
+- **WHEN** 开发者使用 Node.js 22.19+ 或 24 和可用 npm 在全新检出中安装依赖
 - **THEN** npm 和 Cargo MUST 使用已提交的锁文件解析确定的依赖版本
 - **AND** 安装过程 MUST NOT 依赖用户全局安装的 TypeScript、构建器或测试框架
 
 #### Scenario: 本地工具版本与记录版本不同
 
-- **WHEN** 当前 Node.js major version 为 22，但 Node.js patch version 或 npm version与 CI/发布记录不同
+- **WHEN** 当前 Node.js major version 为 22 或 24，但 Node.js patch version 或 npm version与 CI/发布记录不同
 - **THEN** 本地开发和真实 Gate MUST允许继续运行
 - **AND** 诊断 MAY记录实际版本但 MUST NOT把差异判定为失败或阻塞
 
 #### Scenario: Node.js major version不兼容
 
-- **WHEN** 当前 Node.js major version不是 22
+- **WHEN** 当前 Node.js major version 不是 22 或 24
 - **THEN** 需要 Node.js 的开发命令 MUST明确报告兼容性错误
 
 ### Requirement: 架构一致的 Workspace 结构

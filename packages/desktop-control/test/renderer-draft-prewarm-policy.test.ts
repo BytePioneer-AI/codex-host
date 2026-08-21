@@ -167,9 +167,29 @@ describe("Renderer draft prewarm policy", () => {
     );
   });
 
+  it("installs the fixed policy on a uniquely owned remote Host request bridge", async () => {
+    const fixture = rendererFixture({ hostId: "remote-ssh-discovered:mac" });
+
+    await expect(
+      installDraftPrewarmPolicyInRenderer(
+        fixture.contents,
+        "synthetic-manager-expression",
+        "function syntheticPolicy() {}",
+      ),
+    ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
+
+    expect(fixture.sendCommand).toHaveBeenCalledWith(
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "host-bridge-0",
+        arguments: [{ value: "remote-ssh-discovered:mac" }, { objectId: "prewarm-manager" }],
+      }),
+    );
+  });
+
   it.each([
     [{ candidateCount: 2 }, "request manager is ambiguous"],
-    [{ hostId: "remote" }, "request manager is ambiguous"],
+    [{ hostId: "" }, "request manager is ambiguous"],
     [{ hostBridgeCandidates: 0 }, "Host request bridge is ambiguous"],
     [{ hostBridgeCandidates: 2 }, "Host request bridge is ambiguous"],
   ] as const)("fails closed for an unsupported request bridge", async (options, error) => {
@@ -226,6 +246,27 @@ describe("Renderer draft prewarm policy", () => {
 
     expect(discardAllPrewarmedThreads).toHaveBeenCalledOnce();
     expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected route when the same Host bridge is reconciled", () => {
+    const sendRequest = vi.fn();
+    const bridge = { sendRequest };
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(bridge, "remote-ssh-discovered:mac", target);
+    const first = target.__codexhostDraftPrewarmPolicyV1 as {
+      hostId: string;
+      select(model: string | null): boolean;
+    };
+    first.select("codexhost/claude-code-native");
+
+    installDraftPrewarmPolicyBridge(bridge, "remote-ssh-discovered:mac", target);
+
+    expect(target.__codexhostDraftPrewarmPolicyV1).toBe(first);
+    expect(first.hostId).toBe("remote-ssh-discovered:mac");
+    void bridge.sendRequest("thread/start", { model: "gpt-5" });
+    expect(sendRequest).toHaveBeenCalledWith("thread/start", {
+      model: "codexhost/claude-code-native",
+    });
   });
 
   it("routes direct and prewarmed creates through the selected transport Model", async () => {

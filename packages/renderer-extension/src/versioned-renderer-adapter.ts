@@ -93,6 +93,7 @@ interface PrewarmTarget {
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
   requestClient?: PrewarmTarget;
   hostId?: unknown;
+  getHostId?: () => unknown;
 }
 
 export interface ModelPowerSelection {
@@ -103,6 +104,7 @@ export interface ModelPowerSelection {
 
 export interface RendererDraftPrewarmPolicy {
   state: "ready";
+  hostId: string;
   select(model: string | null): boolean;
   clear(): Promise<void>;
 }
@@ -327,7 +329,8 @@ function isActiveRequestManager(value: unknown): value is PrewarmTarget {
 function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
   const bridge = target.requestClient ?? target;
   const stableApiShape =
-    bridge.hostId === "local" &&
+    typeof bridge.hostId === "string" &&
+    bridge.hostId.length > 0 &&
     typeof bridge.sendRequest === "function" &&
     typeof bridge.prewarmThreadStart === "function" &&
     typeof bridge.enqueueRequest === "function";
@@ -506,9 +509,23 @@ export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraf
   return (
     isRecord(value) &&
     value.state === "ready" &&
+    typeof value.hostId === "string" &&
+    value.hostId.length > 0 &&
     typeof value.select === "function" &&
     typeof value.clear === "function"
   );
+}
+
+export function activeRendererDraftPrewarmPolicy(
+  policy: unknown,
+  targets: readonly PrewarmTarget[],
+): RendererDraftPrewarmPolicy | null {
+  if (!isDraftPrewarmPolicyReady(policy) || targets.length !== 1) return null;
+  const target = targets[0];
+  if (!target) return null;
+  const bridge = target.requestClient ?? target;
+  const hostId = target.getHostId?.() ?? bridge.hostId;
+  return hostId === policy.hostId ? policy : null;
 }
 
 export async function waitForRendererDraftPrewarmPolicy(
@@ -631,10 +648,15 @@ export function installCurrentRendererAdapter(): {
 
   let routingPolicy: RendererDraftPrewarmPolicy | null = null;
   let policyTimer: number | null = null;
+  let desiredCarrier: string | null = null;
   const captureRoutingPolicy = (): boolean => {
-    const discovered = window.__codexhostDraftPrewarmPolicyV1;
-    if (!isDraftPrewarmPolicyReady(discovered)) return false;
+    const discovered = activeRendererDraftPrewarmPolicy(
+      window.__codexhostDraftPrewarmPolicyV1,
+      findActivePrewarmTargets(document),
+    );
+    if (!discovered) return false;
     routingPolicy = discovered;
+    routingPolicy.select(desiredCarrier);
     if (policyTimer !== null) {
       window.clearInterval(policyTimer);
       policyTimer = null;
@@ -646,6 +668,10 @@ export function installCurrentRendererAdapter(): {
     updateStatus("installing", "draft-routing-policy-unavailable", null);
     policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
   }
+  const handleRoutingPolicyChange = (): void => {
+    captureRoutingPolicy();
+  };
+  window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
 
   const applyAgent = (
     agent: RendererAgent,
@@ -653,7 +679,7 @@ export function installCurrentRendererAdapter(): {
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
   ): boolean => {
-    if (disposed || routingPolicy === null) return false;
+    if (disposed) return false;
     const selection = modelSelectionForAgent(
       null,
       null,
@@ -664,7 +690,14 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
-    if (routingPolicy.select(carrier ?? null)) {
+    desiredCarrier = carrier ?? null;
+    const activePolicy = activeRendererDraftPrewarmPolicy(
+      window.__codexhostDraftPrewarmPolicyV1,
+      findActivePrewarmTargets(document),
+    );
+    if (!activePolicy) return false;
+    routingPolicy = activePolicy;
+    if (activePolicy.select(desiredCarrier)) {
       modelUpdates += 1;
       liveStatus.modelUpdates = modelUpdates;
     }
@@ -678,6 +711,10 @@ export function installCurrentRendererAdapter(): {
       if (disposed) return;
       disposed = true;
       if (policyTimer !== null) window.clearInterval(policyTimer);
+      window.removeEventListener(
+        "codexhost:draft-prewarm-policy-changed",
+        handleRoutingPolicyChange,
+      );
       routingPolicy?.select(null);
       routingPolicy = null;
       forkControl.dispose();

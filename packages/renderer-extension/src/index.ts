@@ -89,6 +89,7 @@ export {
   GROK_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_PREFIX,
   claudeTransportModelId,
+  activeRendererDraftPrewarmPolicy,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   deepSeekHarnessTransportModelId,

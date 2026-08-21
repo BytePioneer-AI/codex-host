@@ -10,6 +10,7 @@ import {
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
+  activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   decodePiTransportModelId,
@@ -87,7 +88,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const root = { querySelector: () => editor } as unknown as ParentNode;
     const addNotificationCallback = vi.fn(() => () => undefined);
     const requestClient = {
-      hostId: "local",
+      hostId: "remote-ssh-discovered:mac",
       sendRequest: vi.fn<(method: string, params: unknown) => void>(),
       prewarmThreadStart: () => undefined,
       enqueueRequest: () => undefined,
@@ -169,10 +170,42 @@ describe("current Codex Renderer Agent adapter", () => {
   it("requires both current-version policy readiness markers", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
     expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);
+    expect(
+      isDraftPrewarmPolicyReady({
+        state: "ready",
+        hostId: "remote-ssh-discovered:mac",
+        select: vi.fn(),
+        clear: vi.fn(),
+      }),
+    ).toBe(true);
     expect(isDraftPrewarmPolicyReady({ state: "ready", select: vi.fn(), clear: vi.fn() })).toBe(
-      true,
+      false,
     );
     expect(isDraftPrewarmPolicyReady({ state: "ready", clear: vi.fn() })).toBe(false);
+  });
+
+  it("uses a draft routing policy only for the active remote Host", () => {
+    const policy = {
+      state: "ready" as const,
+      hostId: "remote-ssh-discovered:mac",
+      select: vi.fn(),
+      clear: vi.fn(),
+    };
+    const active = {
+      requestClient: {
+        hostId: "remote-ssh-discovered:mac",
+        sendRequest: vi.fn(),
+        prewarmThreadStart: vi.fn(),
+        enqueueRequest: vi.fn(),
+      },
+    };
+
+    expect(activeRendererDraftPrewarmPolicy(policy, [active])).toBe(policy);
+    expect(
+      activeRendererDraftPrewarmPolicy(policy, [
+        { requestClient: { ...active.requestClient, hostId: "local" } },
+      ]),
+    ).toBeNull();
   });
 
   it("creates base transport selections and clears routing for Codex", () => {

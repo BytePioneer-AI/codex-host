@@ -124,6 +124,8 @@ export interface AppServerHostOptions {
   diagnosticOutput?: Writable;
   externalAdapters: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
   mappingStore?: ExternalThreadStore;
+  /** Defaults to true. A listener that shares one store across sessions owns closing it. */
+  closeMappingStoreOnExit?: boolean;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
@@ -454,7 +456,9 @@ export class AppServerHost {
       this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
       this.#externalRuntime.clear();
       this.#routeObservationTracker.clear();
-      await this.#repository.close().catch((error) => this.#diagnose(error));
+      if (this.#options.closeMappingStoreOnExit !== false) {
+        await this.#repository.close().catch((error) => this.#diagnose(error));
+      }
     }
   }
 

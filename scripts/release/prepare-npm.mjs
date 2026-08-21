@@ -63,6 +63,7 @@ const runtimeLicenses = [
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
+  { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
 
@@ -194,6 +195,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
+    "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
   ].sort();
@@ -399,12 +401,16 @@ const updateEnvironment = {
 };
 
 let launchArguments;
+let remoteArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "remote") {
+  launchArguments = null;
+  remoteArguments = userArguments.slice(1);
 } else if (userArguments[0] === "--help" || userArguments[0] === "-h") {
   console.log(
     [
@@ -413,6 +419,7 @@ if (userArguments.length === 0) {
       "  codexhost --version",
       "  codexhost inspect",
       "  codexhost launch [launcher options]",
+      "  codexhost remote install|status|uninstall",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
       "Rust launcher/shim. Codex Desktop must already be installed.",
@@ -425,7 +432,7 @@ if (userArguments.length === 0) {
   );
 }
 
-if (launchArguments[0] === "launch") {
+if (launchArguments?.[0] === "launch") {
   const injected = new Set();
   for (let index = 1; index < launchArguments.length; index += 1) {
     const argument = launchArguments[index];
@@ -451,7 +458,35 @@ if (launchArguments[0] === "launch") {
   launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
 }
 
-if (launchArguments[0] === "launch") {
+if (remoteArguments !== null) {
+  const child = spawn(
+    process.execPath,
+    [
+      hostRuntime,
+      "--codexhost-remote",
+      ...remoteArguments,
+      "--node",
+      process.execPath,
+      "--shim",
+      shim,
+      "--host-runtime",
+      hostRuntime,
+    ],
+    {
+      env: updateEnvironment,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
+} else if (launchArguments?.[0] === "launch") {
   // The Launcher prints "ready" once the Desktop, Controller, and Host chain
   // are up, then detaches from the terminal to keep supervising. Return
   // success immediately so the terminal is not held open by this command.
@@ -532,6 +567,9 @@ codexhost
 codexhost --version
 codexhost inspect
 codexhost launch
+codexhost remote install
+codexhost remote status
+codexhost remote uninstall
 \`\`\`
 
 The \`codexhost\` command launches the packaged Rust launcher with:

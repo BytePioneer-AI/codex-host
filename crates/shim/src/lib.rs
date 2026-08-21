@@ -247,6 +247,55 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
     None
 }
 
+/// Returns whether this invocation starts an app-server instance owned by the Host Runtime.
+///
+/// App-server management commands such as `proxy` and `daemon` must stay on the stock Codex CLI.
+/// In particular, Codex Desktop's SSH transport runs `app-server proxy` as a byte-transparent
+/// bridge to the already-running Unix listener; replacing that bridge with the JSONL Host Runtime
+/// would corrupt the WebSocket transport.
+#[must_use]
+pub fn should_start_host_runtime(arguments: &[OsString]) -> bool {
+    const VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--listen",
+        "--ws-auth",
+        "--ws-token-file",
+        "--ws-token-sha256",
+        "--ws-shared-secret-file",
+        "--ws-issuer",
+        "--ws-audience",
+        "--ws-max-clock-skew-seconds",
+    ];
+    const FLAG_OPTIONS: &[&str] = &["--strict-config", "--stdio", "--analytics-default-enabled"];
+
+    let Some(mut index) = app_server_subcommand_index(arguments).map(|index| index + 1) else {
+        return false;
+    };
+    while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
+        if VALUE_OPTIONS.contains(&argument) {
+            if arguments.get(index + 1).is_none() {
+                return false;
+            }
+            index += 2;
+            continue;
+        }
+        if VALUE_OPTIONS.iter().any(|option| {
+            argument
+                .strip_prefix(option)
+                .is_some_and(|remainder| remainder.starts_with('='))
+        }) || FLAG_OPTIONS.contains(&argument)
+        {
+            index += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
@@ -256,7 +305,7 @@ fn child_command(
         env::var_os(HOST_NODE_PATH_ENV),
         env::var_os(HOST_RUNTIME_PATH_ENV),
     );
-    if app_server_subcommand_index(arguments).is_some() {
+    if should_start_host_runtime(arguments) {
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
                 let node_path =
@@ -367,7 +416,7 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::ShutdownSignals;
-    use super::app_server_subcommand_index;
+    use super::{app_server_subcommand_index, should_start_host_runtime};
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
@@ -397,6 +446,34 @@ mod tests {
             None
         );
         assert_eq!(app_server_subcommand_index(&arguments(&["-c"])), None);
+    }
+
+    #[test]
+    fn starts_host_runtime_for_servers_but_not_app_server_management_commands() {
+        assert!(should_start_host_runtime(&arguments(&[
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])));
+        assert!(should_start_host_runtime(&arguments(&[
+            "app-server",
+            "--analytics-default-enabled",
+        ])));
+        assert!(!should_start_host_runtime(&arguments(&[
+            "app-server",
+            "proxy"
+        ])));
+        assert!(!should_start_host_runtime(&arguments(&[
+            "app-server",
+            "daemon",
+            "start",
+        ])));
+        assert!(!should_start_host_runtime(&arguments(&[
+            "app-server",
+            "generate-json-schema",
+        ])));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

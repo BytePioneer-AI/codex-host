@@ -1,8 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
   chmod,
+  copyFile,
+  lstat,
   mkdir,
   readFile,
   rename,
@@ -14,6 +16,7 @@ import {
 import path from "node:path";
 
 const MANIFEST_FORMAT = 1;
+// Kept only so status/install can identify and migrate preview installs.
 const WRAPPER_MARKER = "# codexhost remote SSH wrapper v1";
 const PROFILE_START = "# >>> codexhost remote SSH >>>";
 const PROFILE_END = "# <<< codexhost remote SSH <<<";
@@ -27,6 +30,7 @@ interface RemoteHostManifestV1 {
   shimPath: string;
   hostRuntimePath: string;
   dataDirectory: string;
+  entrypointSha256?: string;
   claudeCommand?: string;
   profileBackupPath?: string;
 }
@@ -105,6 +109,12 @@ async function existingText(filePath: string): Promise<string | null> {
   }
 }
 
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256")
+    .update(await readFile(filePath))
+    .digest("hex");
+}
+
 async function executable(filePath: string, label: string): Promise<string> {
   const absolute = path.resolve(filePath);
   try {
@@ -165,6 +175,27 @@ async function writeAtomic(filePath: string, contents: string, mode: number): Pr
   }
 }
 
+async function writeAtomicExecutable(filePath: string, sourcePath: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporary = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await copyFile(sourcePath, temporary);
+    await chmod(temporary, 0o700);
+    try {
+      await rename(temporary, filePath);
+    } catch (error) {
+      if (process.platform !== "win32") throw error;
+      await rm(filePath, { force: true });
+      await rename(temporary, filePath);
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
 function managedBlockRange(contents: string): { start: number; end: number } | null {
   const start = contents.indexOf(PROFILE_START);
   const endMarker = contents.indexOf(PROFILE_END);
@@ -188,22 +219,56 @@ function removeManagedProfileBlock(contents: string): string {
   return range ? `${contents.slice(0, range.start)}${contents.slice(range.end)}` : contents;
 }
 
-function installManagedProfileBlock(contents: string, binDirectory: string): string {
+function installManagedProfileBlock(contents: string, manifest: RemoteHostManifestV1): string {
   const base = removeManagedProfileBlock(contents);
   const separator = base.length > 0 && !base.endsWith("\n") ? "\n" : "";
-  return `${base}${separator}${PROFILE_START}\nexport CODEX_INSTALL_DIR=${shellQuote(binDirectory)}\n${PROFILE_END}\n`;
+  const environment = [
+    `export CODEX_INSTALL_DIR=${shellQuote(path.dirname(manifest.wrapperPath))}`,
+    `export CODEXHOST_STOCK_CODEX_PATH=${shellQuote(manifest.stockCodexPath)}`,
+    `export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}`,
+    `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,
+    `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
+    "export CODEXHOST_DEFAULT_AGENT='codex'",
+    "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+    ...(manifest.claudeCommand
+      ? [`export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}`]
+      : []),
+  ];
+  return `${base}${separator}${PROFILE_START}\n${environment.join("\n")}\n${PROFILE_END}\n`;
 }
 
-function wrapperSource(manifest: RemoteHostManifestV1): string {
-  return `#!/usr/bin/env sh
-${WRAPPER_MARKER}
-export CODEXHOST_STOCK_CODEX_PATH=${shellQuote(manifest.stockCodexPath)}
-export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}
-export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}
-export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}
-export CODEXHOST_DEFAULT_AGENT='codex'
-${manifest.claudeCommand ? `export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}\n` : ""}exec ${shellQuote(manifest.shimPath)} "$@"
-`;
+type ManagedEntrypointState =
+  "missing" | "native" | "legacy-wrapper" | "source-missing" | "modified";
+
+async function managedEntrypointState(
+  manifest: RemoteHostManifestV1,
+): Promise<ManagedEntrypointState> {
+  const metadata = await lstat(manifest.wrapperPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (metadata === null) return "missing";
+  if (!metadata.isFile()) return "modified";
+  const entrypoint = await readFile(manifest.wrapperPath);
+  if (
+    entrypoint
+      .subarray(0, 256)
+      .toString("utf8")
+      .startsWith(`#!/usr/bin/env sh\n${WRAPPER_MARKER}\n`)
+  ) {
+    return "legacy-wrapper";
+  }
+  if (manifest.entrypointSha256 !== undefined) {
+    return createHash("sha256").update(entrypoint).digest("hex") === manifest.entrypointSha256
+      ? "native"
+      : "modified";
+  }
+  const shim = await readFile(manifest.shimPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (shim === null) return "source-missing";
+  return entrypoint.equals(shim) ? "native" : "modified";
 }
 
 async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | null> {
@@ -228,6 +293,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "shimPath",
     "hostRuntimePath",
     "dataDirectory",
+    "entrypointSha256",
     "claudeCommand",
     "profileBackupPath",
   ]);
@@ -251,7 +317,10 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
       (key) =>
         manifest[key] !== undefined &&
         (typeof manifest[key] !== "string" || !path.isAbsolute(manifest[key])),
-    )
+    ) ||
+    (manifest.entrypointSha256 !== undefined &&
+      (typeof manifest.entrypointSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(manifest.entrypointSha256)))
   ) {
     throw new Error("Remote Host manifest has an unsupported format");
   }
@@ -280,8 +349,13 @@ export async function installRemoteHost(
   const environment = options.environment ?? process.env;
   const paths = resolvePaths(options);
   const previousManifest = await readManifest(paths.manifestPath);
-  const existingWrapper = await existingText(paths.wrapperPath);
-  if (existingWrapper !== null && previousManifest === null) {
+  const existingEntrypoint = await lstat(paths.wrapperPath).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    },
+  );
+  if (existingEntrypoint !== null && previousManifest === null) {
     throw new Error(`Refusing to overwrite unmanaged Codex entrypoint: ${paths.wrapperPath}`);
   }
   if (previousManifest && previousManifest.wrapperPath !== paths.wrapperPath) {
@@ -305,7 +379,7 @@ export async function installRemoteHost(
   if (!discoveredStock) throw new Error("Could not locate the existing Codex entrypoint");
   const stockCodexPath = await executable(discoveredStock, "Existing Codex entrypoint");
   if (stockCodexPath === paths.wrapperPath) {
-    throw new Error("Existing Codex entrypoint resolves to the managed remote wrapper");
+    throw new Error("Existing Codex entrypoint resolves to the managed remote entrypoint");
   }
   if (!options.nodePath || !options.shimPath || !options.hostRuntimePath) {
     throw new Error(
@@ -323,15 +397,7 @@ export async function installRemoteHost(
     ? await executable(discoveredClaude, "Claude Code command")
     : undefined;
 
-  const existingProfile = (await existingText(profilePath)) ?? "";
-  const nextProfile = installManagedProfileBlock(existingProfile, paths.binDirectory);
-  let profileBackupPath = previousManifest?.profileBackupPath;
-  if (nextProfile !== existingProfile) {
-    profileBackupPath = await backupProfile(profilePath, existingProfile, "install");
-    const metadata = await stat(profilePath).catch(() => null);
-    await writeAtomic(profilePath, nextProfile, metadata?.mode ?? 0o600);
-  }
-  const manifest: RemoteHostManifestV1 = {
+  let manifest: RemoteHostManifestV1 = {
     format: MANIFEST_FORMAT,
     wrapperPath: paths.wrapperPath,
     profilePath,
@@ -341,11 +407,22 @@ export async function installRemoteHost(
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
     ...(claudeCommand ? { claudeCommand } : {}),
-    ...(profileBackupPath ? { profileBackupPath } : {}),
+    ...(previousManifest?.profileBackupPath
+      ? { profileBackupPath: previousManifest.profileBackupPath }
+      : {}),
   };
+  const existingProfile = (await existingText(profilePath)) ?? "";
+  const nextProfile = installManagedProfileBlock(existingProfile, manifest);
+  if (nextProfile !== existingProfile) {
+    const profileBackupPath = await backupProfile(profilePath, existingProfile, "install");
+    manifest = { ...manifest, profileBackupPath };
+    const metadata = await stat(profilePath).catch(() => null);
+    await writeAtomic(profilePath, nextProfile, metadata?.mode ?? 0o600);
+  }
   await mkdir(paths.dataDirectory, { recursive: true, mode: 0o700 });
   await chmod(paths.dataDirectory, 0o700);
-  await writeAtomic(paths.wrapperPath, wrapperSource(manifest), 0o700);
+  await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
+  manifest = { ...manifest, entrypointSha256: await fileSha256(paths.wrapperPath) };
   await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
   return manifest;
 }
@@ -363,16 +440,21 @@ export async function inspectRemoteHostInstallation(
     };
   }
   const issues: string[] = [];
-  const wrapper = await existingText(manifest.wrapperPath);
-  if (!wrapper?.startsWith("#!/usr/bin/env sh\n# codexhost remote SSH wrapper v1\n")) {
-    issues.push("managed wrapper is missing or modified");
+  const entrypointState = await managedEntrypointState(manifest);
+  if (entrypointState === "legacy-wrapper") {
+    issues.push("managed entrypoint uses the legacy blocking shell wrapper; reinstall to migrate");
+  } else if (entrypointState === "source-missing") {
+    issues.push(
+      "managed native entrypoint cannot be verified because the source Shim is unavailable",
+    );
+  } else if (entrypointState !== "native") {
+    issues.push("managed native entrypoint is missing or modified");
   }
   const profile = (await existingText(manifest.profilePath)) ?? "";
-  const expectedProfile = installManagedProfileBlock(
-    removeManagedProfileBlock(profile),
-    path.dirname(manifest.wrapperPath),
-  );
-  if (profile !== expectedProfile) issues.push("shell profile does not select the managed wrapper");
+  const expectedProfile = installManagedProfileBlock(removeManagedProfileBlock(profile), manifest);
+  if (profile !== expectedProfile) {
+    issues.push("shell profile does not configure the managed native entrypoint");
+  }
   const dataDirectory = await stat(manifest.dataDirectory).catch(() => null);
   if (!dataDirectory?.isDirectory()) issues.push("remote Host data directory is unavailable");
   for (const [label, filePath, requiresExecutable] of [
@@ -405,8 +487,11 @@ export async function uninstallRemoteHost(options: RemoteHostInstallOptions): Pr
   ) {
     throw new Error("Remote Host manifest does not match the requested installation");
   }
-  const wrapper = await existingText(manifest.wrapperPath);
-  if (wrapper !== null && !wrapper.startsWith(`#!/usr/bin/env sh\n${WRAPPER_MARKER}\n`)) {
+  const entrypointState = await managedEntrypointState(manifest);
+  if (entrypointState === "source-missing") {
+    throw new Error("Refusing to remove an unverifiable remote Codex entrypoint");
+  }
+  if (entrypointState === "modified") {
     throw new Error("Refusing to remove a modified remote Codex entrypoint");
   }
   const profile = (await existingText(manifest.profilePath)) ?? "";

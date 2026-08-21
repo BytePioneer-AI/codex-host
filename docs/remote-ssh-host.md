@@ -31,17 +31,22 @@ codexhost remote install \
 
 The command:
 
-- creates `~/.codexhost/remote/bin/codex`;
+- installs the packaged native Shim as `~/.codexhost/remote/bin/codex`. In the managed remote environment, the exact default `app-server --listen unix://` invocation starts a detached listener, waits until a freshly created control socket accepts connections, and then lets Codex Desktop's background SSH bootstrap return;
 - stores remote Mapping Store data separately under `~/.codexhost/remote/data`;
-- adds one marked `CODEX_INSTALL_DIR` block to `.zshenv`, `.bashrc`, or the explicitly selected profile;
+- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. The block selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
 - writes a timestamped profile backup before changing it;
+- records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.
 
-Reconnect the remote workspace after installation. A currently running remote app-server is not replaced in place.
+Running `remote install` over an earlier preview that used a shell wrapper migrates that entrypoint in place. Reconnect the remote workspace after installation. A currently running remote app-server is not replaced in place.
+
+Detachment is deliberately narrow. The command must contain exactly one default `--listen unix://` and no `--stdio`; duplicate listeners, `app-server proxy`, stdio, explicit custom socket paths, and ordinary Codex commands retain their normal foreground lifecycle. If the default listener exits or does not make its socket ready within ten seconds, the bootstrap fails instead of reporting a false success.
 
 ## Use from Codex Desktop
 
 Start the client-side Codex Desktop through codexhost, open the SSH workspace, and use the Agent/Model selector in that remote composer. Harness discovery, model selection, Threads, Turns, tools, approvals, and history then use the codexhost process on the SSH host.
+
+A newly opened task in a remote project remains a draft and should allow Agent selection. Current Desktop builds are classified from the active Composer's own marker, so a background/prewarmed conversation elsewhere on the project page cannot incorrectly lock the new task. Once the first Turn binds the draft, the resulting Thread identity becomes authoritative.
 
 The remote Claude Code process sees the remote cwd and account. Prompts, streamed output, tool status, approvals, and diffs are projected through the existing SSH channel so Codex Desktop can render them; credential files are not forwarded.
 
@@ -52,6 +57,6 @@ codexhost remote status
 codexhost remote uninstall
 ```
 
-`status` reports a missing or modified wrapper, startup block, runtime, or data directory. `uninstall` removes only the managed wrapper, manifest, and startup block. It preserves profile backups and `~/.codexhost/remote/data` so Thread mappings remain recoverable. Reconnect the remote workspace after uninstalling.
+`status` reports a missing or modified native entrypoint, startup block, runtime, or data directory. It also identifies the legacy blocking shell entrypoint and asks for a reinstall migration. `uninstall` verifies the recorded entrypoint digest before removing only the managed entrypoint, manifest, and startup block. It preserves profile backups and `~/.codexhost/remote/data` so Thread mappings remain recoverable. Reconnect the remote workspace after uninstalling.
 
 Remote Host processes do not own the local codexhost Launcher or self-update controller. Update codexhost with the same package manager on both machines, then reconnect.

@@ -471,11 +471,32 @@ function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
   }
 }
 
-export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
-  const conversationThreadId = findComposerConversationThreadId(composer);
-  if (conversationThreadId === null) return null;
-  if (conversationThreadId !== undefined) return ["conversation", conversationThreadId];
+type ComposerDomIdentity =
+  | { kind: "unsupported" }
+  | { kind: "draft" }
+  | { kind: "conversation"; threadId: HostThreadId }
+  | { kind: "ambiguous" };
 
+function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
+  // Codex 26.818 renders one direct portal marker inside the Composer root. The
+  // conversation attribute is omitted for an unsubmitted client-new-thread and
+  // populated once that draft is bound to a real Thread. Prefer this scoped DOM
+  // contract over arbitrary ancestor props: remote project pages can carry a
+  // background/prewarm conversationId above an otherwise-new Composer.
+  const children = Array.from(composer.children ?? []);
+  const portals = children.filter((child) => child.hasAttribute("data-above-composer-portal"));
+  if (portals.length === 0) return { kind: "unsupported" };
+  if (portals.length !== 1) return { kind: "ambiguous" };
+
+  const value = portals[0]?.getAttribute("data-above-composer-conversation-id");
+  if (value === null) return { kind: "draft" };
+  const candidate = hostThreadIdSchema.safeParse(value);
+  return candidate.success
+    ? { kind: "conversation", threadId: candidate.data }
+    : { kind: "ambiguous" };
+}
+
+function findComposerDraftIds(composer: Element): Set<string> {
   const draftIds = new Set<string>();
   let fiber = findComposerFiber(composer);
   for (let depth = 0; fiber && depth < 120; depth += 1) {
@@ -497,6 +518,26 @@ export function findComposerModelTarget(composer: Element): readonly unknown[] |
         ? (parent as typeof fiber)
         : null;
   }
+  return draftIds;
+}
+
+export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  const draftIds = findComposerDraftIds(composer);
+  const domIdentity = findComposerDomIdentity(composer);
+  if (domIdentity.kind === "ambiguous") return null;
+  if (domIdentity.kind === "conversation") {
+    return ["conversation", domIdentity.threadId];
+  }
+  if (domIdentity.kind === "draft") {
+    return draftIds.size === 1 ? ["default", draftIds.values().next().value] : null;
+  }
+
+  // Older supported Desktop builds do not expose the scoped portal marker.
+  // Retain their reviewed Fiber fallback, including fail-closed ambiguity.
+  const conversationThreadId = findComposerConversationThreadId(composer);
+  if (conversationThreadId === null) return null;
+  if (conversationThreadId !== undefined) return ["conversation", conversationThreadId];
+
   if (draftIds.size !== 1) return null;
   return ["default", draftIds.values().next().value];
 }

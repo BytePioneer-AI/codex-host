@@ -35,6 +35,18 @@ function composerWithFiber(fiber: object): Element {
   return composer;
 }
 
+function addComposerPortal(composer: Element, conversationId?: string): void {
+  const portal = {
+    hasAttribute: (name: string) => name === "data-above-composer-portal",
+    getAttribute: (name: string) =>
+      name === "data-above-composer-conversation-id" ? (conversationId ?? null) : null,
+  } as unknown as Element;
+  Object.defineProperty(composer, "children", {
+    configurable: true,
+    value: [portal],
+  });
+}
+
 describe("current Codex Renderer Agent adapter", () => {
   it("publishes only semantic Adapter status transitions", () => {
     const status = {
@@ -142,6 +154,61 @@ describe("current Codex Renderer Agent adapter", () => {
     });
 
     expect(findComposerModelTarget(composer)).toEqual(["conversation", "thread-1"]);
+  });
+
+  it("keeps a remote client Thread mutable when an ancestor exposes a prewarm identity", () => {
+    const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
+    const draftAtom = { get: vi.fn(() => wrapper) };
+    const composer = composerWithFiber({
+      updateQueue: {
+        memoCache: {
+          data: [
+            [
+              {},
+              { resolve: vi.fn(), scope: {}, kind: "value", read: vi.fn() },
+              "client-new-thread:remote-draft",
+              draftAtom,
+              undefined,
+              draftAtom,
+              draftAtom,
+            ],
+          ],
+        },
+      },
+      return: { memoizedProps: { conversationId: "prewarm-thread" }, return: null },
+    });
+    addComposerPortal(composer);
+
+    expect(findComposerModelTarget(composer)).toEqual([
+      "default",
+      "client-new-thread:remote-draft",
+    ]);
+  });
+
+  it("uses the scoped Composer Thread after a client draft is bound", () => {
+    const wrapper = { isManuallyChanged: true, modelSettings: null, serviceTier: null };
+    const draftAtom = { get: vi.fn(() => wrapper) };
+    const composer = composerWithFiber({
+      updateQueue: {
+        memoCache: {
+          data: [
+            [
+              {},
+              { resolve: vi.fn(), scope: {}, kind: "value", read: vi.fn() },
+              "client-new-thread:bound-draft",
+              draftAtom,
+              undefined,
+              draftAtom,
+              draftAtom,
+            ],
+          ],
+        },
+      },
+      return: { memoizedProps: { conversationId: "unrelated-thread" }, return: null },
+    });
+    addComposerPortal(composer, "bound-thread");
+
+    expect(findComposerModelTarget(composer)).toEqual(["conversation", "bound-thread"]);
   });
 
   it("fails closed for ambiguous current identities", () => {

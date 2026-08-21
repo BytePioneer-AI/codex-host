@@ -8,12 +8,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::Instant;
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use codexhost_platform::process_exists;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
+use codexhost_shim::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV, REMOTE_SSH_MANAGED_ENV};
 
 fn shim_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost-shim"))
@@ -64,6 +65,10 @@ fn run_shim(
     let mut command = Command::new(shim_path());
     command
         .args(arguments)
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .stdin(Stdio::piped())
@@ -232,6 +237,98 @@ fn rejects_missing_official_cli_without_falling_back_to_path() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not exist"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn managed_remote_listener_detaches_after_the_socket_is_ready() {
+    static NEXT_REMOTE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    let directory = PathBuf::from("/tmp").join(format!(
+        "codexhost-remote-test-{}-{}",
+        process::id(),
+        NEXT_REMOTE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).expect("create short remote listener fixture directory");
+    let codex_home = directory.join("home");
+    let socket = codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock");
+    let ready = directory.join("ready");
+    let log_path = directory.join("listener.log");
+    let log = fs::File::create(&log_path).expect("create listener log");
+    let started = Instant::now();
+    let status = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().expect("clone listener log"))
+        .stderr(log)
+        .status()
+        .expect("start managed remote listener");
+    if !status.success() {
+        let diagnostics = fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| format!("<listener log unavailable: {error}>"));
+        fs::remove_dir_all(&directory).expect("remove failed remote listener fixture");
+        panic!("remote listener bootstrap failed: {status}; log:\n{diagnostics}");
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "remote listener bootstrap did not detach promptly"
+    );
+
+    let ready = fs::read_to_string(&ready).expect("read detached listener identity");
+    let value = |label: &str| {
+        ready
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .expect("listener identity field")
+            .parse::<u32>()
+            .expect("listener identity PID")
+    };
+    let root_id = value("root=");
+    let shim_id = value("shim=");
+    assert!(socket.exists(), "detached listener socket is unavailable");
+    assert!(process_exists(root_id), "detached listener root exited");
+    assert!(process_exists(shim_id), "detached listener Shim exited");
+
+    let termination = Command::new("/bin/kill")
+        .args(["-TERM", &shim_id.to_string()])
+        .status()
+        .expect("stop detached listener Shim");
+    assert!(termination.success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while (process_exists(root_id) || process_exists(shim_id)) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if process_exists(root_id) || process_exists(shim_id) {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &shim_id.to_string(), &root_id.to_string()])
+            .status();
+    }
+    assert!(
+        !process_exists(root_id),
+        "detached listener root survived shutdown"
+    );
+    assert!(
+        !process_exists(shim_id),
+        "detached listener Shim survived shutdown"
+    );
+    fs::remove_dir_all(directory).expect("remove remote listener fixture");
 }
 
 #[cfg(target_os = "macos")]

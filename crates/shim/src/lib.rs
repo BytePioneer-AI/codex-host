@@ -18,6 +18,8 @@ pub type ShimResult<T> = Result<T, Box<dyn Error>>;
 
 pub const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 pub const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
+pub const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
+const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
@@ -296,6 +298,176 @@ pub fn should_start_host_runtime(arguments: &[OsString]) -> bool {
     true
 }
 
+#[must_use]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn is_default_remote_unix_listener(arguments: &[OsString]) -> bool {
+    const VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--ws-auth",
+        "--ws-token-file",
+        "--ws-token-sha256",
+        "--ws-shared-secret-file",
+        "--ws-issuer",
+        "--ws-audience",
+        "--ws-max-clock-skew-seconds",
+    ];
+    const FLAG_OPTIONS: &[&str] = &["--strict-config", "--analytics-default-enabled"];
+
+    let Some(mut index) = app_server_subcommand_index(arguments).map(|index| index + 1) else {
+        return false;
+    };
+    let mut saw_default_listener = false;
+    while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
+        if argument == "--stdio" {
+            return false;
+        }
+        if argument == "--listen" {
+            let Some(value) = arguments.get(index + 1).and_then(|value| value.to_str()) else {
+                return false;
+            };
+            if saw_default_listener || value != "unix://" {
+                return false;
+            }
+            saw_default_listener = true;
+            index += 2;
+            continue;
+        }
+        if let Some(value) = argument.strip_prefix("--listen=") {
+            if saw_default_listener || value != "unix://" {
+                return false;
+            }
+            saw_default_listener = true;
+            index += 1;
+            continue;
+        }
+        if VALUE_OPTIONS.contains(&argument) {
+            if arguments.get(index + 1).is_none() {
+                return false;
+            }
+            index += 2;
+            continue;
+        }
+        if VALUE_OPTIONS.iter().any(|option| {
+            argument
+                .strip_prefix(option)
+                .is_some_and(|remainder| remainder.starts_with('='))
+        }) || FLAG_OPTIONS.contains(&argument)
+        {
+            index += 1;
+            continue;
+        }
+        return false;
+    }
+    saw_default_listener
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn default_remote_socket_path() -> ShimResult<PathBuf> {
+    let codex_home = env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .ok_or("CODEX_HOME or HOME is required for the remote listener")?;
+    Ok(codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn socket_identity(socket_path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::metadata(socket_path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn detach_remote_listener_session() -> ShimResult<()> {
+    use nix::unistd::setsid;
+
+    setsid().map(|_| ()).map_err(|error| {
+        io::Error::other(format!(
+            "could not detach the managed remote listener session: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn stop_detached_listener(child: &mut std::process::Child) {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let Ok(raw_process_id) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let process_id = Pid::from_raw(raw_process_id);
+    let _ = kill(process_id, Signal::SIGTERM);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
+    use std::os::unix::net::UnixStream;
+
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+    let current_executable = env::current_exe()?;
+    let socket_path = default_remote_socket_path()?;
+    let previous_socket = socket_identity(&socket_path);
+    let mut command = Command::new(&current_executable);
+    command
+        .args(arguments)
+        .env(REMOTE_LISTENER_CHILD_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    configure_background_command(&mut command);
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Err(
+                format!("managed remote listener exited before readiness: {status}").into(),
+            );
+        }
+        let current_socket = socket_identity(&socket_path);
+        let socket_replaced = current_socket.is_some() && current_socket != previous_socket;
+        if socket_replaced && UnixStream::connect(&socket_path).is_ok() {
+            thread::sleep(POLL_INTERVAL);
+            if let Some(status) = child.try_wait()? {
+                return Err(
+                    format!("managed remote listener exited after readiness: {status}").into(),
+                );
+            }
+            return Ok(0);
+        }
+        if Instant::now() >= deadline {
+            stop_detached_listener(&mut child);
+            return Err(format!(
+                "managed remote listener did not become ready at {} within {} seconds",
+                socket_path.display(),
+                STARTUP_TIMEOUT.as_secs()
+            )
+            .into());
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
@@ -318,7 +490,9 @@ fn child_command(
                     .env(STOCK_CODEX_PATH_ENV, stock_codex_path)
                     .env_remove(CODEX_CLI_PATH_ENV)
                     .env_remove(HOST_NODE_PATH_ENV)
-                    .env_remove(HOST_RUNTIME_PATH_ENV);
+                    .env_remove(HOST_RUNTIME_PATH_ENV)
+                    .env_remove(REMOTE_SSH_MANAGED_ENV)
+                    .env_remove(REMOTE_LISTENER_CHILD_ENV);
                 configure_background_command(&mut command);
                 return Ok(command);
             }
@@ -337,7 +511,9 @@ fn child_command(
         .args(arguments)
         .env_remove(CODEX_CLI_PATH_ENV)
         .env_remove(HOST_NODE_PATH_ENV)
-        .env_remove(HOST_RUNTIME_PATH_ENV);
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env_remove(REMOTE_LISTENER_CHILD_ENV);
     configure_background_command(&mut command);
     Ok(command)
 }
@@ -407,7 +583,18 @@ pub fn run_proxy(arguments: &[OsString]) -> ShimResult<i32> {
 }
 
 pub fn run_from_environment() -> ShimResult<i32> {
-    run_proxy(&env::args_os().skip(1).collect::<Vec<_>>())
+    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+        && is_default_remote_unix_listener(&arguments)
+    {
+        if env::var_os(REMOTE_LISTENER_CHILD_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
+            detach_remote_listener_session()?;
+        } else {
+            return launch_detached_remote_listener(&arguments);
+        }
+    }
+    run_proxy(&arguments)
 }
 
 #[cfg(test)]
@@ -416,7 +603,9 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::ShutdownSignals;
-    use super::{app_server_subcommand_index, should_start_host_runtime};
+    use super::{
+        app_server_subcommand_index, is_default_remote_unix_listener, should_start_host_runtime,
+    };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
@@ -473,6 +662,58 @@ mod tests {
         assert!(!should_start_host_runtime(&arguments(&[
             "app-server",
             "generate-json-schema",
+        ])));
+    }
+
+    #[test]
+    fn classifies_only_the_default_remote_unix_listener_for_detachment() {
+        assert!(is_default_remote_unix_listener(&arguments(&[
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])));
+        assert!(is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen=unix://",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen=unix:///tmp/custom.sock",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "proxy",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--stdio",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--stdio",
+            "--listen",
+            "unix://",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen",
+            "unix:///tmp/custom.sock",
+            "--listen",
+            "unix://",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen",
+            "unix://",
+            "--listen=unix://",
+        ])));
+        assert!(!is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen",
+            "unix://",
+            "--listen=unix:///tmp/custom.sock",
         ])));
     }
 

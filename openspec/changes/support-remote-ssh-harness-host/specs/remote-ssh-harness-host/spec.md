@@ -32,24 +32,50 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 
 ### Requirement: Remote installation SHALL be isolated and reversible
 
-`codexhost remote install` SHALL create a managed wrapper in a dedicated `CODEX_INSTALL_DIR`, add one bounded export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged wrapper conflicts. `status` SHALL report missing or modified managed resources. `uninstall` SHALL remove only the managed wrapper, manifest, and profile block while preserving backups and remote Host data.
+`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, or legacy managed resources. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
 
 #### Scenario: OpenCodex already owns the normal Codex command
 
 - **GIVEN** the remote user's normal `codex` entrypoint is an OpenCodex or another managed wrapper
 - **WHEN** remote installation is supplied the absolute official stock Codex executable
-- **THEN** Codex Desktop's future SSH commands use the independent codexhost wrapper through `CODEX_INSTALL_DIR`
+- **THEN** Codex Desktop's future SSH commands use the independent native codexhost entrypoint through `CODEX_INSTALL_DIR`
 - **AND** the normal Codex/OpenCodex entrypoint and configuration remain unchanged
+
+#### Scenario: Desktop backgrounds the remote listener
+
+- **WHEN** Codex Desktop starts the managed `app-server --listen unix://` entrypoint with `nohup ... &`
+- **THEN** the managed entrypoint starts the listener in a new Unix session and waits for a newly created expected control socket to accept a connection
+- **AND** the SSH bootstrap command returns successfully without waiting for the listener lifetime
+- **AND** the native listener process remains alive and owns the expected Unix control socket
+
+#### Scenario: Non-listener commands retain foreground ownership
+
+- **WHEN** the managed entrypoint receives `app-server proxy`, `app-server --stdio`, an explicit custom listener path, or an ordinary Codex command
+- **THEN** it does not apply the remote listener detachment path
+- **AND** command exit, byte streaming, and signal supervision retain their normal lifecycle
+
+#### Scenario: Listener arguments are mixed or duplicated
+
+- **WHEN** the managed entrypoint receives `--stdio` together with a listener, more than one listener argument, or any custom listener value
+- **THEN** it does not apply the remote listener detachment path
+- **AND** the invocation retains foreground ownership instead of detaching an ambiguous command
+
+#### Scenario: Packaged source runtime is rotated after installation
+
+- **GIVEN** the installed native entrypoint still matches the SHA-256 digest recorded at installation
+- **WHEN** the older packaged source Shim no longer exists and the user runs uninstall
+- **THEN** uninstall verifies and removes the managed entrypoint without requiring the missing source file
+- **AND** a digest mismatch is reported as modification and is never removed automatically
 
 #### Scenario: zsh receives non-interactive SSH commands
 
 - **WHEN** the remote login shell is zsh and no profile override is provided
-- **THEN** installation writes its bounded `CODEX_INSTALL_DIR` block to `.zshenv`
-- **AND** reconnecting the remote workspace resolves the managed wrapper
+- **THEN** installation writes its bounded `CODEX_INSTALL_DIR` and runtime environment block to `.zshenv`
+- **AND** reconnecting the remote workspace resolves the managed native entrypoint
 
 ### Requirement: Concurrent local and remote Hosts SHALL not share mutable ownership
 
-The remote wrapper SHALL use a dedicated Mapping Store data directory and SHALL not initialize Launcher-owned update state without a Launcher runtime contract.
+The remote native entrypoint SHALL use a dedicated Mapping Store data directory and SHALL not initialize Launcher-owned update state without a Launcher runtime contract.
 
 #### Scenario: A local codexhost instance is already running on the development host
 
@@ -66,7 +92,7 @@ The remote wrapper SHALL use a dedicated Mapping Store data directory and SHALL 
 
 ### Requirement: Renderer Harness routing SHALL follow the active Codex host
 
-Renderer draft routing SHALL accept any active non-empty Codex host ID, bind the selected carrier to that host's request manager, and reconcile the policy whenever the active composer changes hosts. It MUST NOT reuse a policy owned by another host.
+Renderer draft routing SHALL accept any active non-empty Codex host ID, bind the selected carrier to that host's request manager, and reconcile the policy whenever the active composer changes hosts. On a supported current Desktop build, it SHALL classify draft versus bound Thread identity from the current Composer's scoped marker rather than unrelated page ancestors. It MUST NOT reuse a policy owned by another host.
 
 #### Scenario: User switches from local to remote workspace
 
@@ -74,3 +100,10 @@ Renderer draft routing SHALL accept any active non-empty Codex host ID, bind the
 - **THEN** codexhost installs the draft policy on the SSH host's active request manager
 - **AND** the selected Harness carrier is applied to the remote `thread/start`
 - **AND** the former local policy is not treated as ownership of the remote composer
+
+#### Scenario: New remote task shares a page with a prewarmed conversation
+
+- **GIVEN** a remote project page contains a background or prewarmed conversation ID outside the active Composer
+- **WHEN** the user opens a new unsubmitted task whose scoped Composer marker has no conversation ID
+- **THEN** the Adapter keeps the task in draft routing and allows Harness selection
+- **AND** after submission, the scoped bound Thread ID takes precedence even if draft settings remain cached

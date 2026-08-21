@@ -9,12 +9,15 @@
 - [x] 2.1 Add idempotent `remote install`, `status`, and `uninstall` commands with managed profile blocks and backups.
 - [x] 2.2 Preserve the existing Codex/OpenCodex entrypoint and provide absolute stock Codex and Claude Code overrides.
 - [x] 2.3 Isolate remote Mapping Store data and disable Launcher-owned updates for direct remote Host invocations.
+- [x] 2.4 Detach only the managed default Unix listener after socket readiness while preserving foreground proxy and command semantics.
+- [x] 2.5 Record installed entrypoint integrity so uninstall remains verifiable across packaged-runtime rotation.
 
 ## 3. Renderer Routing
 
 - [x] 3.1 Bind draft-prewarm routing policy to any active non-empty Host ID.
 - [x] 3.2 Reconcile and re-apply the selected carrier when Codex Desktop switches between local and remote composers.
 - [x] 3.3 Add focused remote-host policy and adapter tests.
+- [x] 3.4 Scope current-build Composer identity to its direct portal marker so a new remote task is not locked by ancestor prewarm state.
 
 ## 4. Documentation and Validation
 

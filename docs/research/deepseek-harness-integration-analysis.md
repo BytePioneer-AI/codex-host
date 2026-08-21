@@ -281,7 +281,7 @@ Session 直接进入本地 DSH官方 Session Store；codexhost只通过 Mapping 
 
 必须 pin 同一个 DeepSeek Harness prerelease family，不能混用 npm `latest` 与 `next` 的不同 RC。调研时 `@deepseek-ai/dsh` 为 `0.1.0-rc.6`，而部分 SDK package 的 `latest` 仍指向较旧 RC；应固定 exact version 并在升级 PR 中统一验证。[npm: dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) [npm: sdk client](https://www.npmjs.com/package/@deepseek-ai/dsh-sdk-client)
 
-codexhost 使用 Node 24.13.1，满足 DeepSeek Harness `^22.19.0 || >=24.0.0` 的要求。真正风险是 native/runtime closure 与平台工具：
+codexhost 开发使用 Node 22.19+（固定 22.22.0），满足 DeepSeek Harness `^22.19.0 || >=24.0.0` 的要求；发布安装包内嵌的私有 runtime 固定 24.13.1。真正风险是 native/runtime closure 与平台工具：
 
 - 官方 Python bundled runtime 当前只列 Linux x64/arm64 和 macOS arm64，没有 Windows artifact。[platforms.json](https://github.com/deepseek-ai/deepseek-harness/blob/47f943859bef60e4160492346772ded9b24f765a/python/sdk-runtime/platforms.json)
 - 官方 JSON-RPC coding-agent 示例使用 local bash；Windows deployment 需要单独组合/验证 PowerShell、filesystem 和 Windows sandbox，不能照搬 POSIX config。[示例配置](https://github.com/deepseek-ai/deepseek-harness/blob/47f943859bef60e4160492346772ded9b24f765a/examples/jsonrpc-agent/cordis.yml)

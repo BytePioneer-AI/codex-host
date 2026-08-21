@@ -369,6 +369,10 @@ function runLauncher(invocation, root, spawnImplementation = spawn) {
   });
 }
 
+// Node 22 is the development baseline. The published npm package also
+// accepts Node 24 as a host runtime, but the repository builds on 22.
+const supportedNodeMajors = [22];
+
 function nodeMajorVersion(version = process.versions.node) {
   return Number.parseInt(version.split(".")[0] ?? "", 10);
 }
@@ -386,8 +390,10 @@ export async function runDevelopmentDesktop({
     console.log(usage());
     return 0;
   }
-  if (nodeMajorVersion() !== 24) {
-    throw new Error(`npm start requires Node.js 24; current version is ${process.versions.node}`);
+  if (!supportedNodeMajors.includes(nodeMajorVersion())) {
+    throw new Error(
+      `npm start requires Node.js ${supportedNodeMajors.join(" or ")}; current version is ${process.versions.node}`,
+    );
   }
 
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);

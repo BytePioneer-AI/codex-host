@@ -6,8 +6,7 @@
   "type": "module",
   "packageManager": "npm@11.8.0",
   "engines": {
-    "node": "24.13.1",
-    "npm": "11.8.0"
+    "node": "^22.19.0"
   },
   "workspaces": [
     "packages/*",

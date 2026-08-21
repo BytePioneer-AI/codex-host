@@ -219,6 +219,31 @@ describe("development Desktop start", () => {
     });
   });
 
+  it("rejects unsupported Node.js major versions before any cleanup", async () => {
+    const root = temporaryDirectory();
+    const originalNode = process.versions.node;
+    Object.defineProperty(process.versions, "node", {
+      value: "20.19.0",
+      configurable: true,
+    });
+    try {
+      await expect(
+        runDevelopmentDesktop({
+          root,
+          platform: "win32",
+          nodePath: path.join(root, "node.exe"),
+          environment: {},
+          spawnImplementation: vi.fn(),
+        }),
+      ).rejects.toThrow("npm start requires Node.js 22; current version is 20.19.0");
+    } finally {
+      Object.defineProperty(process.versions, "node", {
+        value: originalNode,
+        configurable: true,
+      });
+    }
+  });
+
   it("does not build or launch when Desktop cleanup fails", async () => {
     const root = temporaryDirectory();
     const spawnImplementation = vi.fn(() => exitingChild(7));

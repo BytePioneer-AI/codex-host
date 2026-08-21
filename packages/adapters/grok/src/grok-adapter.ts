@@ -187,7 +187,7 @@ const grokCommandCatalog = harnessCommandCatalogSchema.parse({
 function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabilities {
   return {
     configuration: {
-      selectModel: modelState.catalog.models.length > 1,
+      selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: false,
     },

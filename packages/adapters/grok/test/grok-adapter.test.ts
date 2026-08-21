@@ -279,6 +279,26 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("reports a single available Grok Model as selectable", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      catalog: { models: [{ ref: { id: "grok-4.6" } }] },
+      capabilities: { configuration: { selectModel: true } },
+    });
+
+    await adapter.close();
+  });
+
   it("keeps Native Turn identity stable across live completion and resume", async () => {
     const liveTransport = new FakeGrokTransport();
     const live = await openedSession(liveTransport);

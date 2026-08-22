@@ -240,6 +240,7 @@ export function createNpmBinLauncherSource({ version }) {
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -399,6 +400,24 @@ const updateEnvironment = {
   CODEXHOST_NPM_LAUNCHER_PATH: fileURLToPath(import.meta.url),
   CODEXHOST_NPM_PACKAGE_ROOT: packageRoot,
 };
+// A managed SSH installation deliberately exports these variables from the
+// remote login profile so stock Codex can enter the remote Host. When this npm
+// command starts the local Desktop on that same machine, replace the remote
+// bootstrap with a local data root. CODEXHOST_CLAUDE_COMMAND is intentionally
+// shared and therefore preserved.
+const remoteSshBootstrapEnvironment = [
+  "CODEX_INSTALL_DIR",
+  "CODEXHOST_DATA_DIR",
+  "CODEXHOST_DEFAULT_AGENT",
+  "CODEXHOST_HOST_NODE_PATH",
+  "CODEXHOST_HOST_RUNTIME_PATH",
+  "CODEXHOST_REMOTE_SSH_MANAGED",
+  "CODEXHOST_STOCK_CODEX_PATH",
+];
+if (updateEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1") {
+  for (const name of remoteSshBootstrapEnvironment) delete updateEnvironment[name];
+  updateEnvironment.CODEXHOST_DATA_DIR = path.join(homedir(), ".codexhost");
+}
 
 let launchArguments;
 let remoteArguments = null;

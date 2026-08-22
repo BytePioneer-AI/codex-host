@@ -19,6 +19,10 @@ pub type ShimResult<T> = Result<T, Box<dyn Error>>;
 pub const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 pub const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 pub const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
+const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
+const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
+const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
+const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
 const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
@@ -468,14 +472,41 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
     }
 }
 
+fn select_host_paths(
+    configured_node: Option<OsString>,
+    configured_runtime: Option<OsString>,
+    launcher_managed: bool,
+    npm_node: Option<OsString>,
+    npm_package_root: Option<OsString>,
+) -> (Option<OsString>, Option<OsString>) {
+    if launcher_managed && let (Some(node), Some(package_root)) = (npm_node, npm_package_root) {
+        return (
+            Some(node),
+            Some(
+                PathBuf::from(package_root)
+                    .join("app")
+                    .join("host-runtime.mjs")
+                    .into_os_string(),
+            ),
+        );
+    }
+    (configured_node, configured_runtime)
+}
+
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
     stock_codex_path: &Path,
 ) -> ShimResult<Command> {
-    let host_paths = (
+    let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+    let inherited_remote_profile = launcher_managed
+        && env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"));
+    let host_paths = select_host_paths(
         env::var_os(HOST_NODE_PATH_ENV),
         env::var_os(HOST_RUNTIME_PATH_ENV),
+        launcher_managed,
+        env::var_os(NPM_NODE_PATH_ENV),
+        env::var_os(NPM_PACKAGE_ROOT_ENV),
     );
     if should_start_host_runtime(arguments) {
         match host_paths {
@@ -493,6 +524,9 @@ fn child_command(
                     .env_remove(HOST_RUNTIME_PATH_ENV)
                     .env_remove(REMOTE_SSH_MANAGED_ENV)
                     .env_remove(REMOTE_LISTENER_CHILD_ENV);
+                if inherited_remote_profile {
+                    command.env_remove(DATA_DIRECTORY_ENV);
+                }
                 configure_background_command(&mut command);
                 return Ok(command);
             }
@@ -604,7 +638,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::ShutdownSignals;
     use super::{
-        app_server_subcommand_index, is_default_remote_unix_listener, should_start_host_runtime,
+        app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,
+        should_start_host_runtime,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -663,6 +698,28 @@ mod tests {
             "app-server",
             "generate-json-schema",
         ])));
+    }
+
+    #[test]
+    fn local_launcher_paths_win_over_remote_profile_bootstrap_paths() {
+        let selected = select_host_paths(
+            Some(OsString::from("/remote/node")),
+            Some(OsString::from("/remote/runtime/host-runtime.mjs")),
+            true,
+            Some(OsString::from("/local/node")),
+            Some(OsString::from("/local/npm-package")),
+        );
+
+        assert_eq!(selected.0, Some(OsString::from("/local/node")));
+        assert_eq!(
+            selected.1,
+            Some(
+                std::path::PathBuf::from("/local/npm-package")
+                    .join("app")
+                    .join("host-runtime.mjs")
+                    .into_os_string()
+            )
+        );
     }
 
     #[test]

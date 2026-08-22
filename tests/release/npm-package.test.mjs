@@ -287,6 +287,33 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
+  it("does not forward remote SSH bootstrap variables into a local Desktop launch", () => {
+    const source = createNpmBinLauncherSource({ version: "0.1.0" });
+    expect(source).toContain('import { homedir } from "node:os"');
+    expect(source).toContain('if (updateEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1")');
+    expect(source).toContain("delete updateEnvironment[name]");
+    expect(source).toContain(
+      'updateEnvironment.CODEXHOST_DATA_DIR = path.join(homedir(), ".codexhost")',
+    );
+    const listStart = source.indexOf("const remoteSshBootstrapEnvironment = [");
+    const listEnd = source.indexOf("];", listStart);
+    expect(listStart).toBeGreaterThanOrEqual(0);
+    expect(listEnd).toBeGreaterThan(listStart);
+    const sanitizationSource = source.slice(listStart, listEnd);
+    for (const name of [
+      "CODEX_INSTALL_DIR",
+      "CODEXHOST_DATA_DIR",
+      "CODEXHOST_DEFAULT_AGENT",
+      "CODEXHOST_HOST_NODE_PATH",
+      "CODEXHOST_HOST_RUNTIME_PATH",
+      "CODEXHOST_REMOTE_SSH_MANAGED",
+      "CODEXHOST_STOCK_CODEX_PATH",
+    ]) {
+      expect(sanitizationSource).toContain(JSON.stringify(name));
+    }
+    expect(sanitizationSource).not.toContain("CODEXHOST_CLAUDE_COMMAND");
+  });
+
   it.runIf(process.platform === "darwin")(
     "locates Homebrew npm when Node and npm do not share an official prefix",
     async () => {

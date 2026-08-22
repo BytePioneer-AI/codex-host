@@ -1,3 +1,4 @@
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
@@ -20,8 +21,16 @@ import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./updat
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 
-export function hasLauncherManagedUpdateRuntime(environment: NodeJS.ProcessEnv): boolean {
-  return Boolean(environment[UPDATE_RUNTIME_ENV.launcherPid]);
+export function hasLauncherManagedUpdateRuntime(
+  environment: NodeJS.ProcessEnv,
+  hostRuntimePath?: string,
+): boolean {
+  if (!environment[UPDATE_RUNTIME_ENV.launcherPid]) return false;
+  const npmPackageRoot = environment[UPDATE_RUNTIME_ENV.npmPackageRoot];
+  if (!npmPackageRoot || !hostRuntimePath) return true;
+  if (!path.isAbsolute(npmPackageRoot) || !path.isAbsolute(hostRuntimePath)) return false;
+  const runtimePackageRoot = path.dirname(path.dirname(path.normalize(hostRuntimePath)));
+  return path.relative(path.normalize(npmPackageRoot), runtimePackageRoot) === "";
 }
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
@@ -44,11 +53,12 @@ export async function runHostRuntime(input: {
   updateCoordinator?: HostUpdateCoordinator;
 }): Promise<number> {
   const { stockCodexPath, defaultAgent } = requiredRuntimeConfiguration(input.environment);
+  const hostRuntimePath = input.hostRuntimeUrl ? fileURLToPath(input.hostRuntimeUrl) : undefined;
   const updateCoordinator =
     input.updateCoordinator ??
-    (input.hostRuntimeUrl && hasLauncherManagedUpdateRuntime(input.environment)
+    (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
       ? createHostUpdateCoordinator({
-          hostRuntimePath: fileURLToPath(input.hostRuntimeUrl),
+          hostRuntimePath,
           environment: input.environment,
         })
       : undefined);

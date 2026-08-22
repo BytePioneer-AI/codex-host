@@ -24,12 +24,37 @@ use super::{
 
 const CODEXHOST_RELEASES_LATEST_URL: &str =
     "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
+const REMOTE_PROFILE_ONLY_ENVIRONMENT: [&str; 3] = [
+    "CODEX_INSTALL_DIR",
+    "CODEXHOST_DATA_DIR",
+    REMOTE_SSH_MANAGED_ENV,
+];
 
 fn remove_codexhost_environment(command: &mut Command, names: impl IntoIterator<Item = OsString>) {
     for name in names {
         if name == CODEX_CLI_PATH_ENV || name.to_string_lossy().starts_with("CODEXHOST_") {
             command.env_remove(name);
         }
+    }
+}
+
+fn configure_managed_desktop_environment(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    managed: &[(OsString, OsString)],
+) {
+    let inherited = inherited.into_iter().collect::<Vec<_>>();
+    let inherited_remote_profile = inherited
+        .iter()
+        .any(|(name, value)| name == REMOTE_SSH_MANAGED_ENV && value == std::ffi::OsStr::new("1"));
+    if inherited_remote_profile {
+        for name in REMOTE_PROFILE_ONLY_ENVIRONMENT {
+            command.env_remove(name);
+        }
+    }
+    for (name, value) in managed {
+        command.env(name, value);
     }
 }
 
@@ -155,10 +180,7 @@ fn desktop_launch_command(
         }
         DesktopLaunchMode::DirectExecutable => {
             let mut command = Command::new(&installation.desktop_executable);
-            command
-                .args(additional_arguments)
-                .envs(environment)
-                .process_group(0);
+            command.args(additional_arguments).process_group(0);
             command
         }
     };
@@ -175,7 +197,7 @@ fn desktop_launch_command(
         #[cfg(target_os = "windows")]
         let program = &installation.desktop_launcher;
         let mut command = Command::new(program);
-        command.args(additional_arguments).envs(environment);
+        command.args(additional_arguments);
         #[cfg(target_os = "linux")]
         command.process_group(0);
         command
@@ -185,6 +207,8 @@ fn desktop_launch_command(
     return Err(PlatformError::Unsupported(
         "managed Desktop launch currently supports Windows, macOS, and Linux only",
     ));
+
+    configure_managed_desktop_environment(&mut command, std::env::vars_os(), &environment);
 
     command
         .stdin(Stdio::null())
@@ -682,8 +706,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::desktop_launch_command;
     use super::{
-        CODEXHOST_RELEASES_LATEST_URL, DesktopSession, latest_release_command,
-        remove_codexhost_environment,
+        CODEXHOST_RELEASES_LATEST_URL, DesktopSession, configure_managed_desktop_environment,
+        latest_release_command, remove_codexhost_environment,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -1027,6 +1051,115 @@ mod tests {
             environment.contains(&(std::ffi::OsStr::new("CODEXHOST_HOST_RUNTIME_PATH"), None,))
         );
         assert!(!environment.iter().any(|(name, _)| *name == "UNRELATED"));
+    }
+
+    #[test]
+    fn managed_launch_replaces_remote_profile_bootstrap_environment() {
+        let mut command = Command::new("/usr/bin/true");
+        configure_managed_desktop_environment(
+            &mut command,
+            [
+                (
+                    OsString::from("CODEX_INSTALL_DIR"),
+                    OsString::from("/remote/bin"),
+                ),
+                (
+                    OsString::from("CODEXHOST_DATA_DIR"),
+                    OsString::from("/remote/data"),
+                ),
+                (
+                    OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                    OsString::from("/remote/runtime/app/host-runtime.mjs"),
+                ),
+                (
+                    OsString::from("CODEXHOST_REMOTE_SSH_MANAGED"),
+                    OsString::from("1"),
+                ),
+                (
+                    OsString::from("CODEXHOST_NPM_PACKAGE_ROOT"),
+                    OsString::from("/global/npm"),
+                ),
+            ],
+            &[
+                (
+                    OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                    OsString::from("/global/npm/app/host-runtime.mjs"),
+                ),
+                (
+                    OsString::from("CODEXHOST_DATA_DIR"),
+                    OsString::from("/home/codex/.codexhost"),
+                ),
+            ],
+        );
+
+        let environment = command.get_envs().collect::<Vec<_>>();
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("CODEXHOST_HOST_RUNTIME_PATH"),
+            Some(std::ffi::OsStr::new("/global/npm/app/host-runtime.mjs")),
+        )));
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("CODEXHOST_DATA_DIR"),
+            Some(std::ffi::OsStr::new("/home/codex/.codexhost")),
+        )));
+        for name in ["CODEX_INSTALL_DIR", "CODEXHOST_REMOTE_SSH_MANAGED"] {
+            assert!(environment.contains(&(std::ffi::OsStr::new(name), None)));
+        }
+        assert!(
+            !environment
+                .iter()
+                .any(|(name, _)| *name == "CODEXHOST_NPM_PACKAGE_ROOT")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn managed_launch_child_observes_local_environment_under_a_remote_profile() {
+        let inherited = [
+            (
+                OsString::from("CODEX_INSTALL_DIR"),
+                OsString::from("/remote/bin"),
+            ),
+            (
+                OsString::from("CODEXHOST_DATA_DIR"),
+                OsString::from("/remote/data"),
+            ),
+            (
+                OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                OsString::from("/remote/runtime/app/host-runtime.mjs"),
+            ),
+            (
+                OsString::from("CODEXHOST_REMOTE_SSH_MANAGED"),
+                OsString::from("1"),
+            ),
+        ];
+        let mut command = Command::new("/usr/bin/env");
+        command.envs(inherited.clone());
+        configure_managed_desktop_environment(
+            &mut command,
+            inherited,
+            &[
+                (
+                    OsString::from("CODEXHOST_DATA_DIR"),
+                    OsString::from("/home/codex/.codexhost"),
+                ),
+                (
+                    OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                    OsString::from("/local/npm/app/host-runtime.mjs"),
+                ),
+            ],
+        );
+
+        let output = command.output().expect("read managed child environment");
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).expect("UTF-8 environment");
+        assert!(environment.contains("CODEXHOST_DATA_DIR=/home/codex/.codexhost\n"));
+        assert!(
+            environment.contains("CODEXHOST_HOST_RUNTIME_PATH=/local/npm/app/host-runtime.mjs\n")
+        );
+        assert!(!environment.contains("CODEXHOST_REMOTE_SSH_MANAGED="));
+        assert!(!environment.contains("CODEX_INSTALL_DIR="));
+        assert!(!environment.contains("/remote/data"));
+        assert!(!environment.contains("/remote/runtime"));
     }
 
     #[test]

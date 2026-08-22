@@ -13,6 +13,7 @@ export interface RendererWebContents {
 
 export interface DraftPrewarmPolicyTarget {
   [key: string]: unknown;
+  dispatchEvent?: (event: Event) => boolean;
 }
 
 export interface RendererHostRequestBridge {
@@ -30,7 +31,15 @@ export function installDraftPrewarmPolicyBridge(
   target: DraftPrewarmPolicyTarget,
   prewarmedThreadManager?: RendererPrewarmedThreadManager,
 ): { state: "ready"; reason: "owned-request-bridge" } {
-  const existing = target.__codexhostDraftPrewarmPolicyV1 as { dispose?: () => void } | undefined;
+  const existing = target.__codexhostDraftPrewarmPolicyV1 as
+    | {
+        owns?: (candidate: RendererHostRequestBridge, candidateHostId: string) => boolean;
+        dispose?: () => void;
+      }
+    | undefined;
+  if (existing?.owns?.(bridge, hostId) === true) {
+    return { state: "ready", reason: "owned-request-bridge" };
+  }
   existing?.dispose?.();
 
   const originalSend = bridge.sendRequest;
@@ -85,6 +94,10 @@ export function installDraftPrewarmPolicyBridge(
 
   const policy = Object.freeze({
     state: "ready" as const,
+    hostId,
+    owns(candidate: RendererHostRequestBridge, candidateHostId: string): boolean {
+      return candidate === bridge && candidateHostId === hostId;
+    },
     select(model: string | null): boolean {
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");
@@ -122,6 +135,9 @@ export function installDraftPrewarmPolicyBridge(
     configurable: true,
     value: policy,
   });
+  if (typeof target.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    target.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
+  }
   return { state: "ready", reason: "owned-request-bridge" };
 }
 
@@ -168,7 +184,12 @@ export async function installDraftPrewarmPolicyInRenderer(
     const prewarmedThreadManager = managerProperties.result?.find(
       (property) => property.name === "prewarmedThreadManager",
     )?.value;
-    if (candidateCount !== 1 || hostId !== "local" || typeof manager?.objectId !== "string") {
+    if (
+      candidateCount !== 1 ||
+      typeof hostId !== "string" ||
+      hostId.length === 0 ||
+      typeof manager?.objectId !== "string"
+    ) {
       throw new Error("Renderer request manager is ambiguous");
     }
 

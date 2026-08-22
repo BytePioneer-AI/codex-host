@@ -1,27 +1,8 @@
-import {
-  createExternalHarnessAdapters,
-  prefetchClaudeCodeModelCatalog,
-} from "./adapter-composition.js";
-import { AppServerHost } from "./app-server-host.js";
+import { runHostRuntime } from "./run-host-runtime.js";
+import { runRemoteHostCli } from "./remote-host-cli.js";
 
-const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
-const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
-
-const stockCodexPath = process.env[STOCK_CODEX_PATH_ENV];
-if (!stockCodexPath) throw new Error(`${STOCK_CODEX_PATH_ENV} is required`);
-const defaultAgent = process.env[DEFAULT_AGENT_ENV];
-if (defaultAgent !== "codex" && defaultAgent !== "pi") {
-  throw new Error(`${DEFAULT_AGENT_ENV} must be 'codex' or 'pi'`);
-}
-
-const externalAdapters = createExternalHarnessAdapters(process.env);
-const host = new AppServerHost({
-  stockCodexPath,
-  arguments: process.argv.slice(2),
-  defaultAgent,
-  environment: process.env,
-  externalAdapters,
-});
-
-void prefetchClaudeCodeModelCatalog(externalAdapters);
-process.exitCode = await host.run();
+const arguments_ = process.argv.slice(2);
+process.exitCode =
+  arguments_[0] === "--codexhost-remote"
+    ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
+    : await runHostRuntime({ arguments: arguments_, environment: process.env });

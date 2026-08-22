@@ -52,7 +52,7 @@ Pi、Claude Code、DeepSeek Harness 和 Grok 在同一个 Codex Desktop 中作�
 | 提问 / 取消 | 原生 | ✅ | ✅ | 🚧 | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
 | 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | — | — |
+| 权限模式 | 原生 | — | ✅ | ✅ | — |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ |
 | 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ |
 | Thread 管理 | 原生 | ✅ | 🚧 | 🚧 | 🚧 |
@@ -91,6 +91,11 @@ Windows 上如果使用绿色解压版 Codex Desktop，请在启动 codexhost �
 ```
 
 然后重新打开终端并启动 codexhost。NPM 命令和 Windows 安装版都适用。
+
+### SSH 远程 Host
+
+如果要在 Codex Desktop 中使用只安装、只登录在远程开发机上的 Harness，请在两端安装 codexhost，并在 SSH 开发机运行 `codexhost remote install`。安装步骤、安全边界、OpenCodex 共存、诊断和回滚请见 [SSH 远程 Harness Host](remote-ssh-host.zh-CN.md)。
+
 <details>
 <summary><h3>怎么做的</h3></summary>
 

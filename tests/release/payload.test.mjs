@@ -72,8 +72,8 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(17);
-      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(18);
+      expect(paths).toHaveLength(18);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(19);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );
@@ -129,6 +129,7 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const notice = await readFile(path.join(root, "THIRD_PARTY_NOTICES.txt"), "utf8");
       expect(expectedPayloadPaths(target)).toContain("licenses/lucide-LICENSE.txt");
+      expect(expectedPayloadPaths(target)).toContain("licenses/ws-LICENSE.txt");
       expect(notice).not.toContain(process.cwd());
     } finally {
       await rm(root, { recursive: true, force: true });

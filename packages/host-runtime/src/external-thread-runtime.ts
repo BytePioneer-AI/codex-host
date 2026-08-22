@@ -8,6 +8,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
+  decodeExternalTransportSelection,
   mapExternalThreadHarnessError,
   type CodexTurnProjector,
   type ExternalHarnessId,
@@ -330,6 +331,27 @@ export class ExternalThreadRuntime {
     }
     const session = opened.value;
     try {
+      const restoredSelection = decodeExternalTransportSelection(
+        harnessId,
+        record.transportModelId,
+      );
+      if (restoredSelection?.permissionModeId) {
+        if (!session.capabilities.configuration.selectPermissionMode) {
+          throw new ExternalThreadOpenError({
+            code: -32076,
+            message: "External Harness does not support restored Permission Mode selection",
+          });
+        }
+        const selected = await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: restoredSelection.permissionModeId,
+        });
+        if (!selected.ok) {
+          throw new ExternalThreadOpenError(
+            mapExternalThreadHarnessError(selected.error, "resume"),
+          );
+        }
+      }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
@@ -346,6 +368,13 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns: aligned.turns,
+        ...(restoredSelection?.model ? { requestedModel: restoredSelection.model } : {}),
+        ...(restoredSelection?.thinkingOptionId
+          ? { requestedThinkingOptionId: restoredSelection.thinkingOptionId }
+          : {}),
+        ...(restoredSelection?.permissionModeId
+          ? { requestedPermissionModeId: restoredSelection.permissionModeId }
+          : {}),
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     } catch (error) {

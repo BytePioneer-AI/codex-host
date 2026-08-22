@@ -2,6 +2,7 @@ import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type {
   HarnessModelCatalog,
   HarnessModelRef,
+  HarnessPermissionModeId,
   HarnessSessionState,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -106,6 +107,7 @@ export function stateForGrokModel(
   nativeState: Pick<HarnessSessionState, "nativeRef">,
   model = modelState.currentModel,
   thinkingOptionId = modelState.currentThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): HarnessSessionState {
   const selectedModel = model;
   const catalogModel = modelState.catalog.models.find(({ ref }) => ref.id === selectedModel.id);
@@ -117,6 +119,7 @@ export function stateForGrokModel(
     ...nativeState,
     effectiveModel: selectedModel,
     ...(thinkingOptionId ? { effectiveThinkingOptionId: thinkingOptionId } : {}),
+    ...(permissionModeId ? { effectivePermissionModeId: permissionModeId } : {}),
     ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
   };
 }

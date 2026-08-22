@@ -94,6 +94,36 @@ describe("External Thread history pagination", () => {
     ]);
   });
 
+  it("keeps Item cursor scope global when filtering by Turn", () => {
+    const turns = [turn(1), turn(2)];
+    const globalHead = listExternalItems(turns, {
+      limit: 1,
+      sortDirection: "desc",
+    }).backwardsCursor;
+    expect(globalHead).not.toBeNull();
+
+    // thread/resume returns the global Item head. Desktop may reuse that cursor
+    // while loading each Turn individually, so turnId must not narrow cursor scope.
+    expect(
+      listExternalItems(turns, {
+        turnId: "turn-1",
+        cursor: globalHead,
+      }),
+    ).toMatchObject({ data: [], nextCursor: null, backwardsCursor: null });
+
+    expect(
+      listExternalItems(turns, {
+        turnId: "turn-1",
+        cursor: globalHead,
+        sortDirection: "desc",
+      }).data,
+    ).toMatchObject([
+      { turnId: "turn-1", item: { id: "agent-1" } },
+      { turnId: "turn-1", item: { id: "tool-1" } },
+      { turnId: "turn-1", item: { id: "user-1" } },
+    ]);
+  });
+
   it("caps page sizes at the official limit", () => {
     const turns = Array.from({ length: 120 }, (_, index) => turn(index + 1));
     expect(listExternalTurns(turns, { limit: 500 }).data).toHaveLength(100);
@@ -106,6 +136,12 @@ describe("External Thread history pagination", () => {
     expect(() =>
       listExternalTurns([turn(1)], {
         cursor: JSON.stringify({ anchor: "missing", includeAnchor: false }),
+      }),
+    ).toThrow("cursor anchor is no longer present");
+    expect(() =>
+      listExternalItems([turn(1)], {
+        cursor: JSON.stringify({ anchor: "missing", includeAnchor: false }),
+        turnId: "turn-1",
       }),
     ).toThrow("cursor anchor is no longer present");
   });

@@ -100,6 +100,7 @@ function pageEntries<T>(
     sortDirection: JsonValue | undefined;
   },
   fallbackDirection: SortDirection,
+  filter: (value: T) => boolean = () => true,
 ): { data: T[]; nextCursor: string | null; backwardsCursor: string | null } {
   const direction = sortDirection(input.sortDirection, fallbackDirection);
   const cursor = parseCursor(input.cursor);
@@ -113,8 +114,12 @@ function pageEntries<T>(
     start = anchorIndex + (cursor.includeAnchor ? 0 : 1);
   }
   const limit = pageSize(input.limit);
-  const data = ordered.slice(start, start + limit);
-  const hasMore = start + data.length < ordered.length;
+  // Cursors describe positions in the full Thread history. Filters such as
+  // turnId narrow the rows returned after applying that global boundary; they
+  // must not redefine the cursor's scope.
+  const eligible = ordered.slice(start).filter(filter);
+  const data = eligible.slice(0, limit);
+  const hasMore = data.length < eligible.length;
   return {
     data,
     nextCursor:
@@ -160,10 +165,9 @@ export function listExternalTurns(turns: JsonObject[], params: JsonObject): Exte
   };
 }
 
-function itemEntries(turns: JsonObject[], turnId: string | null): ItemEntry[] {
+function itemEntries(turns: JsonObject[]): ItemEntry[] {
   return turns.flatMap((turn) => {
     const currentTurnId = id(turn, "Turn");
-    if (turnId !== null && currentTurnId !== turnId) return [];
     if (!Array.isArray(turn.items)) return [];
     return turn.items.flatMap((item) => {
       if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
@@ -176,7 +180,7 @@ function itemEntries(turns: JsonObject[], turnId: string | null): ItemEntry[] {
 export function listExternalItems(turns: JsonObject[], params: JsonObject): ExternalHistoryPage {
   const turnId = optionalText(params.turnId, "turnId");
   const page = pageEntries(
-    itemEntries(turns, turnId),
+    itemEntries(turns),
     (entry) => entry.key,
     {
       cursor: params.cursor,
@@ -184,6 +188,7 @@ export function listExternalItems(turns: JsonObject[], params: JsonObject): Exte
       sortDirection: params.sortDirection,
     },
     "asc",
+    (entry) => turnId === null || entry.turnId === turnId,
   );
   return {
     ...page,

@@ -124,6 +124,8 @@ export interface AppServerHostOptions {
   diagnosticOutput?: Writable;
   externalAdapters: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
   mappingStore?: ExternalThreadStore;
+  /** Defaults to true. A listener that shares one store across sessions owns closing it. */
+  closeMappingStoreOnExit?: boolean;
   spawnOfficial?: typeof spawn;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
@@ -368,6 +370,7 @@ export class AppServerHost {
   #officialRequestBroker: OfficialRequestBroker;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
+  #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
     this.#options = {
@@ -402,6 +405,13 @@ export class AppServerHost {
     });
   }
 
+  close(): void {
+    if (this.#closeRequested) return;
+    this.#closeRequested = true;
+    this.#options.desktopInput.destroy();
+    this.#terminateOfficial();
+  }
+
   async run(): Promise<number> {
     try {
       await this.#repository.initialize();
@@ -423,17 +433,20 @@ export class AppServerHost {
         official.once("exit", (code, signal) => resolve({ code, signal }));
       },
     );
+    if (this.#closeRequested) this.#terminateOfficial();
     try {
       await Promise.all([this.#forwardDesktop(), this.#forwardOfficial()]);
       const result = await exited;
-      if (result.signal) throw new Error(`official app-server exited by signal ${result.signal}`);
+      if (result.signal) {
+        if (this.#closeRequested) return 0;
+        throw new Error(`official app-server exited by signal ${result.signal}`);
+      }
       return result.code ?? 1;
     } catch (error) {
-      this.#diagnose(error);
-      official.stdin.destroy();
-      official.kill("SIGTERM");
+      if (!this.#closeRequested) this.#diagnose(error);
+      this.#terminateOfficial();
       await exited.catch(() => undefined);
-      return 1;
+      return this.#closeRequested ? 0 : 1;
     } finally {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
@@ -454,8 +467,17 @@ export class AppServerHost {
       this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
       this.#externalRuntime.clear();
       this.#routeObservationTracker.clear();
-      await this.#repository.close().catch((error) => this.#diagnose(error));
+      if (this.#options.closeMappingStoreOnExit !== false) {
+        await this.#repository.close().catch((error) => this.#diagnose(error));
+      }
     }
+  }
+
+  #terminateOfficial(): void {
+    const official = this.#official;
+    if (!official) return;
+    official.stdin.destroy();
+    official.kill("SIGTERM");
   }
 
   async #forwardDesktop(): Promise<void> {

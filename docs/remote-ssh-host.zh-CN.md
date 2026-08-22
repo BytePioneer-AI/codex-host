@@ -42,6 +42,8 @@ codexhost remote install \
 
 脱离规则有意保持严格：命令必须只包含一个默认 `--listen unix://`，并且不能同时启用 `--stdio`；重复 listener、`app-server proxy`、stdio、显式自定义 socket 路径和普通 Codex 命令仍保持原来的前台生命周期。如果默认 listener 提前退出，或十秒内没有把 socket 准备好，bootstrap 会失败，不会误报成功。
 
+原地升级期间，socket 初始化仍会跨版本串行。当前 listener 使用每个 owner 独立的寄存器，并在解绑或绑定 control socket 前额外发布一份已加载旧版托管 Shim 也能识别的活跃兼容标记。已失效的旧版共享标记会保留为被动栅栏，不会再通过共享路径删除。
+
 ## 从 Codex Desktop 使用
 
 在客户端通过 codexhost 启动 Codex Desktop，打开 SSH 工作区，然后在该远程输入框的 Agent/Model 选择器中选择目标 Harness。模型发现、Thread、Turn、工具、审批和历史都会由 SSH 开发机上的 codexhost 处理。

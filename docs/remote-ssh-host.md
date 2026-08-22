@@ -42,6 +42,8 @@ Running `remote install` over an earlier preview that used a shell wrapper migra
 
 Detachment is deliberately narrow. The command must contain exactly one default `--listen unix://` and no `--stdio`; duplicate listeners, `app-server proxy`, stdio, explicit custom socket paths, and ordinary Codex commands retain their normal foreground lifecycle. If the default listener exits or does not make its socket ready within ten seconds, the bootstrap fails instead of reporting a false success.
 
+Socket initialization remains serialized across an in-place upgrade. The current listener uses per-owner registers and also publishes a live compatibility marker understood by an already-loaded earlier managed Shim before it unlinks or binds the control socket. An abandoned legacy marker is retained as a passive fence instead of being deleted through its shared pathname.
+
 ## Use from Codex Desktop
 
 Start the client-side Codex Desktop through codexhost, open the SSH workspace, and use the Agent/Model selector in that remote composer. Harness discovery, model selection, Threads, Turns, tools, approvals, and history then use the codexhost process on the SSH host.

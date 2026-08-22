@@ -20,6 +20,11 @@ interface LegacyRemoteSocketLockRecord {
   bootTimeSeconds: number;
 }
 
+interface LegacyCompatibilityGuard {
+  handle: Awaited<ReturnType<typeof open>>;
+  identity: UnixFileIdentity;
+}
+
 interface UnixFileIdentity {
   dev: number;
   ino: number;
@@ -230,7 +235,7 @@ async function removeOwnedLockEntry(entryPath: string, ownerToken: string): Prom
   await rm(entryPath, { force: true });
 }
 
-async function legacyLockBlocks(legacyPath: string): Promise<boolean> {
+async function legacyLockState(legacyPath: string): Promise<"absent" | "abandoned" | "blocking"> {
   // Version 1 used one replaceable path, so deleting an abandoned marker could
   // race another version 1 owner. Treat a validated abandoned marker as inert
   // and leave it in place; version 2 ownership lives only in unique registers.
@@ -238,17 +243,61 @@ async function legacyLockBlocks(legacyPath: string): Promise<boolean> {
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  if (metadata === null) return false;
-  if (!metadata.isFile()) return true;
+  if (metadata === null) return "absent";
+  if (!metadata.isFile()) return "blocking";
   const source = await readFile(legacyPath, "utf8").catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  if (source === null) return false;
+  if (source === null) return "absent";
   const ageMs = Math.max(0, Date.now() - metadata.mtimeMs);
   const record = parseLegacyLockRecord(source);
-  if (record === null) return ageMs < LOCK_MALFORMED_GRACE_MS;
-  return !ownerIsAbandoned(record, metadata.mtimeMs);
+  if (record === null) return ageMs < LOCK_MALFORMED_GRACE_MS ? "blocking" : "abandoned";
+  return ownerIsAbandoned(record, metadata.mtimeMs) ? "abandoned" : "blocking";
+}
+
+async function tryAcquireLegacyCompatibilityGuard(
+  legacyPath: string,
+  record: LegacyRemoteSocketLockRecord,
+): Promise<LegacyCompatibilityGuard | null> {
+  const handle = await open(legacyPath, "wx", 0o600).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "EEXIST") return null;
+    throw error;
+  });
+  if (handle === null) return null;
+  const metadata = await handle.stat();
+  const guard = { handle, identity: { dev: metadata.dev, ino: metadata.ino } };
+  try {
+    // Publish the schema understood by an already-loaded version 1 shim. A
+    // late legacy contender then observes a live owner at the shared path and
+    // cannot enter while the version 2 Bakery winner runs the action.
+    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    await handle.sync();
+    return guard;
+  } catch (error) {
+    await releaseLegacyCompatibilityGuard(legacyPath, guard);
+    throw error;
+  }
+}
+
+async function releaseLegacyCompatibilityGuard(
+  legacyPath: string,
+  guard: LegacyCompatibilityGuard,
+): Promise<void> {
+  try {
+    await guard.handle.close();
+  } finally {
+    const metadata = await lstat(legacyPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (
+      metadata?.isFile() &&
+      sameUnixFileIdentity({ dev: metadata.dev, ino: metadata.ino }, guard.identity)
+    ) {
+      await rm(legacyPath, { force: true });
+    }
+  }
 }
 
 function recordHasPriority(left: RemoteSocketLockRecord, right: RemoteSocketLockRecord): boolean {
@@ -320,8 +369,28 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
           (record.choosing || recordHasPriority(record, ownRecord))
         );
       });
-      if (!catalog.unsettled && !blockedByBakery && !(await legacyLockBlocks(legacyPath))) {
-        return await action();
+      if (!catalog.unsettled && !blockedByBakery) {
+        const legacyGuard = await tryAcquireLegacyCompatibilityGuard(legacyPath, {
+          version: 1,
+          ownerToken,
+          pid: baseRecord.pid,
+          bootTimeSeconds: baseRecord.bootTimeSeconds,
+        });
+        if (legacyGuard !== null) {
+          try {
+            return await action();
+          } finally {
+            await releaseLegacyCompatibilityGuard(legacyPath, legacyGuard);
+          }
+        }
+        const legacyState = await legacyLockState(legacyPath);
+        if (legacyState === "abandoned") {
+          // Keep a validated abandoned version 1 marker as a passive fence.
+          // Deleting its shared pathname would recreate the version 1
+          // reclaimer TOCTOU; an old contender still sees EEXIST, while version
+          // 2 ownership remains serialized through unique Bakery registers.
+          return await action();
+        }
       }
       await delay(LOCK_RETRY_DELAY_MS);
     }

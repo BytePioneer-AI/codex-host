@@ -16,7 +16,7 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **WHEN** the remote Host creates its control socket
 - **THEN** the parent directory is private and the socket mode is `0600`
 - **AND** binary WebSocket messages are rejected
-- **AND** concurrent startup and shutdown operations serialize socket ownership, including recovery from an abandoned initializer
+- **AND** concurrent startup and shutdown operations serialize socket ownership, including recovery from an abandoned initializer and a late initializer from an already-loaded previous managed Shim during an in-place upgrade
 - **AND** an active socket or non-socket path is not overwritten
 
 ### Requirement: Remote Harness execution SHALL remain local to the SSH host

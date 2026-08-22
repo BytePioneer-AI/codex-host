@@ -1,7 +1,8 @@
 import { once } from "node:events";
 import type * as FileSystemPromises from "node:fs/promises";
-import { chmod, lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
+import { uptime } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -74,6 +75,40 @@ function testSocketPath(): string {
   return process.platform === "win32"
     ? `\\\\.\\pipe\\codexhost-remote-${process.pid}-${Date.now()}`
     : path.join("/tmp", `ch-${process.pid}-${Date.now()}`, "control.sock");
+}
+
+async function withLegacyRemoteSocketInitializationLock<T>(
+  socketPath: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${socketPath}.initializing`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      handle = await open(lockPath, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  if (handle === null) throw new Error("Legacy fixture did not acquire its initialization lock");
+  try {
+    await handle.writeFile(
+      `${JSON.stringify({
+        version: 1,
+        ownerToken: "legacy-fixture",
+        pid: process.pid,
+        bootTimeSeconds: Math.round(Date.now() / 1_000 - uptime()),
+      })}\n`,
+      "utf8",
+    );
+    await handle.sync();
+    return await action();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true });
+  }
 }
 
 async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
@@ -315,6 +350,51 @@ describe("remote SSH app-server transport", () => {
         await expect(lstat(`${socketPath}.initializing`)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         releaseFirst();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "serializes a legacy initializer that arrives after version 2 enters",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-cross-version-lock-"));
+      const socketPath = path.join(root, "control.sock");
+      const releaseVersion2 = Promise.withResolvers<undefined>();
+      const version2Entered = Promise.withResolvers<undefined>();
+      let legacyEntered = false;
+      let activeInitializers = 0;
+      let maximumActiveInitializers = 0;
+      let attempts: Promise<unknown>[] = [];
+
+      try {
+        const version2 = withRemoteAppServerSocketInitializationLock(socketPath, async () => {
+          activeInitializers += 1;
+          maximumActiveInitializers = Math.max(maximumActiveInitializers, activeInitializers);
+          version2Entered.resolve(undefined);
+          await releaseVersion2.promise;
+          activeInitializers -= 1;
+        });
+        attempts = [version2];
+        await version2Entered.promise;
+
+        const legacy = withLegacyRemoteSocketInitializationLock(socketPath, async () => {
+          legacyEntered = true;
+          activeInitializers += 1;
+          maximumActiveInitializers = Math.max(maximumActiveInitializers, activeInitializers);
+          activeInitializers -= 1;
+        });
+        attempts.push(legacy);
+
+        await new Promise<void>((resolve) => setTimeout(resolve, 75));
+        expect(legacyEntered).toBe(false);
+        releaseVersion2.resolve(undefined);
+        await Promise.all(attempts);
+        expect(legacyEntered).toBe(true);
+        expect(maximumActiveInitializers).toBe(1);
+      } finally {
+        releaseVersion2.resolve(undefined);
+        await Promise.allSettled(attempts);
         await rm(root, { recursive: true, force: true });
       }
     },

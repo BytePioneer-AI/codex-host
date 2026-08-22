@@ -154,6 +154,14 @@ describe("current Codex Renderer Agent adapter", () => {
     const transientGap = resolveRendererRequestRoute(policy, [], discovered);
     expect(transientGap).toBe(discovered);
 
+    const switchedHostManager = {
+      hostId: "remote-ssh-discovered:replacement",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    expect(resolveRendererRequestRoute(policy, [switchedHostManager], discovered)).toBeNull();
+
     const replacementPolicy = { ...policy };
     expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
   });

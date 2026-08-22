@@ -8,7 +8,10 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-const filesystemFault = vi.hoisted(() => ({ renameDestination: null as string | null }));
+const filesystemFault = vi.hoisted(() => ({
+  renameDestination: null as string | null,
+  renameFailuresRemaining: 0,
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof FileSystemPromises>();
@@ -18,7 +21,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       oldPath: Parameters<typeof original.rename>[0],
       newPath: Parameters<typeof original.rename>[1],
     ) {
-      if (filesystemFault.renameDestination === path.resolve(newPath.toString())) {
+      if (
+        filesystemFault.renameDestination === path.resolve(newPath.toString()) &&
+        filesystemFault.renameFailuresRemaining > 0
+      ) {
+        filesystemFault.renameFailuresRemaining -= 1;
         const error = new Error("fixture manifest write failed") as NodeJS.ErrnoException;
         error.code = "ENOSPC";
         throw error;
@@ -144,8 +151,10 @@ describe("remote SSH Host installation", () => {
 
     try {
       filesystemFault.renameDestination = path.resolve(manifestPath);
+      filesystemFault.renameFailuresRemaining = process.platform === "win32" ? 2 : 1;
       await expect(installRemoteHost(options)).rejects.toMatchObject({ code: "ENOSPC" });
       filesystemFault.renameDestination = null;
+      filesystemFault.renameFailuresRemaining = 0;
 
       await expect(lstat(wrapperPath)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(readFile(manifestPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -153,6 +162,63 @@ describe("remote SSH Host installation", () => {
       await expect(installRemoteHost(options)).resolves.toMatchObject({ wrapperPath, profilePath });
     } finally {
       filesystemFault.renameDestination = null;
+      filesystemFault.renameFailuresRemaining = 0;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the previous managed installation when upgrade publication fails", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-upgrade-rollback-"));
+    const installRoot = path.join(home, ".codexhost", "remote");
+    const profilePath = path.join(home, ".zshenv");
+    await writeFile(profilePath, "export EXISTING_SETTING=1\n", "utf8");
+    const initialOptions = {
+      home,
+      installRoot,
+      profilePath,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node-v1")),
+      shimPath: await executable(path.join(home, "codexhost-shim-v1")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime-v1.mjs")),
+      platform: "darwin" as const,
+    };
+    const wrapperPath = path.join(installRoot, "bin", "codex");
+    const manifestPath = path.join(installRoot, "manifest.json");
+
+    try {
+      await installRemoteHost(initialOptions);
+      const previousWrapper = await readFile(wrapperPath);
+      const previousProfile = await readFile(profilePath);
+      const previousManifest = await readFile(manifestPath);
+      const nextShimPath = await executable(path.join(home, "codexhost-shim-v2"));
+      await writeFile(nextShimPath, "replacement shim\n", "utf8");
+      await chmod(nextShimPath, 0o755);
+      const upgradeOptions = {
+        ...initialOptions,
+        nodePath: await executable(path.join(home, "node-v2")),
+        shimPath: nextShimPath,
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime-v2.mjs")),
+      };
+
+      filesystemFault.renameDestination = path.resolve(manifestPath);
+      filesystemFault.renameFailuresRemaining = process.platform === "win32" ? 2 : 1;
+      await expect(installRemoteHost(upgradeOptions)).rejects.toMatchObject({ code: "ENOSPC" });
+      filesystemFault.renameDestination = null;
+      filesystemFault.renameFailuresRemaining = 0;
+
+      expect(await readFile(wrapperPath)).toEqual(previousWrapper);
+      expect(await readFile(profilePath)).toEqual(previousProfile);
+      expect(await readFile(manifestPath)).toEqual(previousManifest);
+      await expect(inspectRemoteHostInstallation(initialOptions)).resolves.toMatchObject({
+        state: "ready",
+      });
+      await expect(installRemoteHost(upgradeOptions)).resolves.toMatchObject({
+        shimPath: nextShimPath,
+      });
+      expect(await readFile(wrapperPath)).toEqual(await readFile(nextShimPath));
+    } finally {
+      filesystemFault.renameDestination = null;
+      filesystemFault.renameFailuresRemaining = 0;
       await rm(home, { recursive: true, force: true });
     }
   });

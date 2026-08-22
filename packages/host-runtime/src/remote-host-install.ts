@@ -154,14 +154,22 @@ async function discoverExecutable(
   return null;
 }
 
-async function writeAtomic(filePath: string, contents: string, mode: number): Promise<void> {
+async function writeAtomic(
+  filePath: string,
+  contents: string | Uint8Array,
+  mode: number,
+): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
   try {
-    await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode });
+    if (typeof contents === "string") {
+      await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode });
+    } else {
+      await writeFile(temporary, contents, { flag: "wx", mode });
+    }
     await chmod(temporary, mode);
     try {
       await rename(temporary, filePath);
@@ -349,6 +357,12 @@ export async function installRemoteHost(
   const environment = options.environment ?? process.env;
   const paths = resolvePaths(options);
   const previousManifest = await readManifest(paths.manifestPath);
+  const previousManifestFile = previousManifest
+    ? {
+        contents: await readFile(paths.manifestPath),
+        mode: (await stat(paths.manifestPath)).mode & 0o777,
+      }
+    : null;
   const existingEntrypoint = await lstat(paths.wrapperPath).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
@@ -361,6 +375,9 @@ export async function installRemoteHost(
   if (previousManifest && previousManifest.wrapperPath !== paths.wrapperPath) {
     throw new Error("Remote Host manifest points at a different Codex entrypoint");
   }
+  if (previousManifest && existingEntrypoint !== null && !existingEntrypoint.isFile()) {
+    throw new Error("Remote Host managed Codex entrypoint is not a regular file");
+  }
   if (
     previousManifest &&
     options.profilePath !== undefined &&
@@ -371,6 +388,12 @@ export async function installRemoteHost(
     );
   }
   const profilePath = previousManifest?.profilePath ?? paths.profilePath;
+  const previousEntrypoint = existingEntrypoint?.isFile()
+    ? {
+        contents: await readFile(paths.wrapperPath),
+        mode: existingEntrypoint.mode & 0o777,
+      }
+    : null;
 
   const discoveredStock =
     options.stockCodexPath ??
@@ -429,11 +452,13 @@ export async function installRemoteHost(
     await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
     return manifest;
   } catch (error) {
-    if (previousManifest !== null) throw error;
-
     const rollbackErrors: unknown[] = [];
     try {
-      await rm(paths.wrapperPath, { force: true });
+      if (previousEntrypoint) {
+        await writeAtomic(paths.wrapperPath, previousEntrypoint.contents, previousEntrypoint.mode);
+      } else {
+        await rm(paths.wrapperPath, { force: true });
+      }
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
     }
@@ -447,6 +472,19 @@ export async function installRemoteHost(
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
+    }
+    try {
+      if (previousManifestFile) {
+        await writeAtomic(
+          paths.manifestPath,
+          previousManifestFile.contents,
+          previousManifestFile.mode,
+        );
+      } else {
+        await rm(paths.manifestPath, { force: true });
+      }
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
     }
     if (rollbackErrors.length > 0) {
       throw new AggregateError(

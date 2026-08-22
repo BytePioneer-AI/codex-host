@@ -1399,6 +1399,12 @@ export class GrokAdapter implements HarnessAdapter {
           return rewound;
         }
       } else if (input.kind === "fork") {
+        const sourceSession = [...this.#sessions].find(
+          (entry) =>
+            input.sourceRef.harnessId === this.harnessId &&
+            entry.initialState.nativeRef?.nativeSessionId === input.sourceRef.nativeSessionId,
+        );
+        sourceConfiguration = sourceSession?.currentConfiguration();
         const forked = await forkGrokSession({
           checkpoint: input.checkpoint,
           cwd,
@@ -1452,21 +1458,26 @@ export class GrokAdapter implements HarnessAdapter {
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
       const retainedConfiguration = sourceConfiguration;
-      if (input.kind === "rollbackLastTurn" && retainedConfiguration) {
+      if ((input.kind === "rollbackLastTurn" || input.kind === "fork") && retainedConfiguration) {
+        const operation = input.kind === "rollbackLastTurn" ? "Rewind" : "Fork";
         initialPermissionModeId =
           retainedConfiguration.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID;
         const catalogModel = modelState.catalog.models.find(
           ({ ref }) => ref.id === retainedConfiguration.model.id,
         );
-        if (!catalogModel)
-          throw new GrokTransportError("protocolError", "Grok Model is unavailable after Rewind");
+        if (!catalogModel) {
+          throw new GrokTransportError(
+            "protocolError",
+            `Grok Model is unavailable after ${operation}`,
+          );
+        }
         if (
           retainedConfiguration.thinkingOptionId &&
           !catalogModel.supportedThinkingOptionIds?.includes(retainedConfiguration.thinkingOptionId)
         ) {
           throw new GrokTransportError(
             "protocolError",
-            "Grok Thinking option is unavailable after Rewind",
+            `Grok Thinking option is unavailable after ${operation}`,
           );
         }
         if (

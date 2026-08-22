@@ -1351,6 +1351,56 @@ describe("Grok Adapter ACP projection", () => {
     await opened.value.close();
   });
 
+  it("preserves the active source Permission Mode when forking", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const source = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: alwaysApprove,
+    });
+    if (!source.ok) throw new Error(source.error.message);
+    const sourceRef = source.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ];
+    transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", sourceHistory);
+      return { sessionId: "child-session" };
+    };
+    transport.setPermissionMode.mockClear();
+
+    const forked = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: sourceRef.nativeSessionId,
+        checkpointId: "0",
+        formatVersion: 1,
+      }),
+    });
+    if (!forked.ok) throw new Error(forked.error.message);
+
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
+    expect(forked.value.initialState.effectivePermissionModeId).toBe(alwaysApprove);
+    await source.value.close();
+    await forked.value.close();
+  });
+
   it("forks into a caller-selected cwd as a Worktree Session", async () => {
     const transport = new FakeGrokTransport();
     const sourceHistory: GrokTransportEvent[] = [

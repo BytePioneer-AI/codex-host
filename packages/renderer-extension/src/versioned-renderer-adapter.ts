@@ -609,11 +609,15 @@ export function resolveRendererRequestRoute(
   }
 
   // Composer replacement and settings overlays can briefly remove the only
-  // Fiber path that exposes the request manager. The installed routing policy
-  // still owns that bridge, so retain its confirmed route until the policy
-  // object itself changes. Object identity prevents reuse across reconnects or
-  // Host switches, including switches between two Hosts with the same id.
-  return isDraftPrewarmPolicyReady(policy) && previous?.policy === policy ? previous : null;
+  // Fiber path that exposes the request manager. Retain the confirmed route
+  // only while discovery is empty and the installed policy object is unchanged.
+  // Positive discovery for another Host invalidates the cache immediately;
+  // policy identity also prevents reuse across reconnects or same-id switches.
+  return discoveredTargets.length === 0 &&
+    isDraftPrewarmPolicyReady(policy) &&
+    previous?.policy === policy
+    ? previous
+    : null;
 }
 
 export async function waitForRendererDraftPrewarmPolicy(

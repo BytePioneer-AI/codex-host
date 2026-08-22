@@ -16,6 +16,7 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **WHEN** the remote Host creates its control socket
 - **THEN** the parent directory is private and the socket mode is `0600`
 - **AND** binary WebSocket messages are rejected
+- **AND** concurrent startup and shutdown operations serialize socket ownership, including recovery from an abandoned initializer
 - **AND** an active socket or non-socket path is not overwritten
 
 ### Requirement: Remote Harness execution SHALL remain local to the SSH host
@@ -32,7 +33,7 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 
 ### Requirement: Remote installation SHALL be isolated and reversible
 
-`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, or legacy managed resources. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
+`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, malformed, or legacy managed resources as degraded. Install and uninstall SHALL remain fail-closed for a malformed managed profile block. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
 
 #### Scenario: OpenCodex already owns the normal Codex command
 

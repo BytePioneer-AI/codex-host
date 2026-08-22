@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import type * as FileSystemPromises from "node:fs/promises";
-import { chmod, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,12 +8,46 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
-const filesystemFault = vi.hoisted(() => ({ chmodPath: null as string | null }));
+const filesystemFault = vi.hoisted(() => ({
+  chmodPath: null as string | null,
+  staleLockRacePath: null as string | null,
+  staleLockRemovalCount: 0,
+  staleLockBothRemovers: Promise.withResolvers<undefined>(),
+  staleLockReplacementOpened: Promise.withResolvers<undefined>(),
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof FileSystemPromises>();
   return {
     ...original,
+    async open(...arguments_: Parameters<typeof original.open>) {
+      const handle = await original.open(...arguments_);
+      if (
+        filesystemFault.staleLockRacePath !== null &&
+        path.resolve(arguments_[0].toString()) === filesystemFault.staleLockRacePath &&
+        arguments_[1] === "wx" &&
+        filesystemFault.staleLockRemovalCount >= 2
+      ) {
+        filesystemFault.staleLockReplacementOpened.resolve(undefined);
+      }
+      return handle;
+    },
+    async rm(...arguments_: Parameters<typeof original.rm>) {
+      if (
+        filesystemFault.staleLockRacePath !== null &&
+        path.resolve(arguments_[0].toString()) === filesystemFault.staleLockRacePath &&
+        filesystemFault.staleLockRemovalCount < 2
+      ) {
+        // Force two legacy reclaimers past their identity checks, then let the
+        // second remove the first reclaimer's replacement lock.
+        filesystemFault.staleLockRemovalCount += 1;
+        const removal = filesystemFault.staleLockRemovalCount;
+        if (removal === 2) filesystemFault.staleLockBothRemovers.resolve(undefined);
+        await filesystemFault.staleLockBothRemovers.promise;
+        if (removal === 2) await filesystemFault.staleLockReplacementOpened.promise;
+      }
+      return original.rm(...arguments_);
+    },
     async chmod(
       filePath: Parameters<typeof original.chmod>[0],
       mode: Parameters<typeof original.chmod>[1],
@@ -310,8 +344,64 @@ describe("remote SSH app-server transport", () => {
         });
 
         expect(entered).toBe(true);
-        await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+        // Version 2 does not unlink the shared legacy path; once validated as
+        // abandoned it is inert and cannot participate in ownership.
+        expect((await lstat(lockPath)).isFile()).toBe(true);
+        expect(await readdir(`${socketPath}.initializers`)).toEqual([]);
       } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "serializes concurrent recovery of the same abandoned initialization lock",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-abandoned-lock-race-"));
+      const socketPath = path.join(root, "control.sock");
+      const lockPath = `${socketPath}.initializing`;
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          version: 1,
+          ownerToken: "abandoned-race-fixture",
+          pid: 2_147_483_647,
+          bootTimeSeconds: 0,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      const release = Promise.withResolvers<undefined>();
+      let activeInitializers = 0;
+      let maximumActiveInitializers = 0;
+      let attempts: Promise<undefined>[] = [];
+
+      filesystemFault.staleLockRacePath = path.resolve(lockPath);
+      filesystemFault.staleLockRemovalCount = 0;
+      filesystemFault.staleLockBothRemovers = Promise.withResolvers<undefined>();
+      filesystemFault.staleLockReplacementOpened = Promise.withResolvers<undefined>();
+      const action = async (): Promise<undefined> => {
+        activeInitializers += 1;
+        maximumActiveInitializers = Math.max(maximumActiveInitializers, activeInitializers);
+        await release.promise;
+        activeInitializers -= 1;
+        return undefined;
+      };
+
+      try {
+        const first = withRemoteAppServerSocketInitializationLock(socketPath, action);
+        const second = withRemoteAppServerSocketInitializationLock(socketPath, action);
+        attempts = [first, second];
+        await vi.waitFor(() => expect(activeInitializers).toBeGreaterThan(0));
+        await new Promise<void>((resolve) => setTimeout(resolve, 75));
+
+        expect(maximumActiveInitializers).toBe(1);
+        release.resolve(undefined);
+        await Promise.all([first, second]);
+        expect(maximumActiveInitializers).toBe(1);
+      } finally {
+        release.resolve(undefined);
+        await Promise.allSettled(attempts);
+        filesystemFault.staleLockRacePath = null;
         await rm(root, { recursive: true, force: true });
       }
     },

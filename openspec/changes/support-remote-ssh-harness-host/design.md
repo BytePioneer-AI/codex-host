@@ -38,7 +38,7 @@ A remote solution must preserve the native SSH transport, execute Claude Code be
 
 7. **Do not initialize launcher-owned updates remotely.** A directly invoked remote Host has no Launcher identity, controller nonce, or updater ownership. Host composition creates an update coordinator only when the Launcher PID contract is present; remote update requests return the existing unavailable response instead of creating an unhandled rejected promise.
 
-8. **Bound and protect the socket lifecycle.** The parent directory is mode `0700`, the socket is mode `0600`, binary WebSocket frames are rejected, and stale sockets are removed only after type and liveness checks. An active socket or a non-socket path is never overwritten.
+8. **Bound and protect the socket lifecycle.** The parent directory is mode `0700`, the socket is mode `0600`, binary WebSocket frames are rejected, and stale sockets are removed only after type and liveness checks. Concurrent bind and unlink operations use per-owner Bakery registers in an adjacent private directory; abandoned entries are removed only through their unique owner paths, so one recovery process cannot unlink a successor's lock. An active socket or a non-socket path is never overwritten.
 
 ## Risks / Trade-offs
 

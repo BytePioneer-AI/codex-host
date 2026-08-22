@@ -157,6 +157,39 @@ describe("remote SSH Host installation", () => {
     },
   );
 
+  it("reports a malformed managed profile block as degraded", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-profile-status-"));
+    const profilePath = path.join(home, ".zshenv");
+    const options = {
+      home,
+      profilePath,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "darwin" as const,
+    };
+
+    try {
+      await installRemoteHost(options);
+      const profile = await readFile(profilePath, "utf8");
+      await writeFile(profilePath, profile.replace("# <<< codexhost remote SSH <<<", ""), "utf8");
+
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "degraded",
+        issues: expect.arrayContaining(["shell profile contains a malformed managed block"]),
+      });
+      await expect(installRemoteHost(options)).rejects.toThrow(
+        "Shell profile contains a malformed codexhost remote SSH block",
+      );
+      await expect(uninstallRemoteHost(options)).rejects.toThrow(
+        "Shell profile contains a malformed codexhost remote SSH block",
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back a first installation when manifest publication fails", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-rollback-"));
     const installRoot = path.join(home, ".codexhost", "remote");

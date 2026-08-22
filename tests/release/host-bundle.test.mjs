@@ -44,6 +44,7 @@ function validMetafile(extraInputs = {}) {
       "packages/host-runtime/src/app-server-host.ts": {},
       "packages/host-runtime/src/adapter-composition.ts": {},
       "packages/host-runtime/src/remote-app-server.ts": {},
+      "packages/host-runtime/src/remote-socket-lock.ts": {},
       "packages/adapters/pi/dist/index.js": {},
       "packages/adapters/claude-code/dist/index.js": {},
       "packages/adapters/deepseek-harness/dist/index.js": {},
@@ -89,7 +90,13 @@ describe("release Host Bundle", () => {
     );
   });
 
-  it("rejects a closure missing any production Adapter", () => {
+  it("rejects a closure missing any required production component", () => {
+    const withoutSocketLock = { ...validMetafile().inputs };
+    delete withoutSocketLock["packages/host-runtime/src/remote-socket-lock.ts"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutSocketLock })).toThrow(
+      "missing required input: /packages/host-runtime/src/remote-socket-lock.ts/",
+    );
+
     const withoutPi = { ...validMetafile().inputs };
     delete withoutPi["packages/adapters/pi/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutPi })).toThrow(

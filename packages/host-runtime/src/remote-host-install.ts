@@ -214,12 +214,19 @@ function managedBlockRange(contents: string): { start: number; end: number } | n
     contents.indexOf(PROFILE_START, start + PROFILE_START.length) >= 0 ||
     contents.indexOf(PROFILE_END, endMarker + PROFILE_END.length) >= 0
   ) {
-    throw new Error("Shell profile contains a malformed codexhost remote SSH block");
+    throw new MalformedManagedProfileBlockError();
   }
   let end = endMarker + PROFILE_END.length;
   if (contents.slice(end, end + 2) === "\r\n") end += 2;
   else if (contents[end] === "\n") end += 1;
   return { start, end };
+}
+
+class MalformedManagedProfileBlockError extends Error {
+  constructor() {
+    super("Shell profile contains a malformed codexhost remote SSH block");
+    this.name = "MalformedManagedProfileBlockError";
+  }
 }
 
 function removeManagedProfileBlock(contents: string): string {
@@ -521,10 +528,18 @@ export async function inspectRemoteHostInstallation(
     issues.push("managed native entrypoint is missing or modified");
   }
   const profile = (await existingText(manifest.profilePath)) ?? "";
-  const expectedProfile = installManagedProfileBlock(removeManagedProfileBlock(profile), manifest);
-  if (profile !== expectedProfile) {
-    issues.push("shell profile does not configure the managed native entrypoint");
+  let profileMatches = false;
+  let profileIssue: string | null = null;
+  try {
+    profileMatches =
+      profile === installManagedProfileBlock(removeManagedProfileBlock(profile), manifest);
+  } catch (error) {
+    if (!(error instanceof MalformedManagedProfileBlockError)) throw error;
+    profileIssue = "shell profile contains a malformed managed block";
   }
+  if (!profileMatches && profileIssue === null)
+    profileIssue = "shell profile does not configure the managed native entrypoint";
+  if (profileIssue !== null) issues.push(profileIssue);
   const dataDirectory = await stat(manifest.dataDirectory).catch(() => null);
   if (!dataDirectory?.isDirectory()) issues.push("remote Host data directory is unavailable");
   for (const [label, filePath, requiresExecutable] of [

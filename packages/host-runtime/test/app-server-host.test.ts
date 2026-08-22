@@ -200,6 +200,7 @@ function createFixture(
     desktopInput,
     desktopOutput,
     diagnosticOutput,
+    host,
     official,
     running,
     mappingStore,
@@ -276,6 +277,25 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("terminates the official app-server when its Host session closes", async () => {
+    const fixture = createFixture();
+    fixture.official.kill.mockImplementationOnce(() => {
+      fixture.official.stdout.end();
+      fixture.official.emit("exit", null, "SIGTERM");
+      return true;
+    });
+
+    try {
+      expect(() => fixture.host.close()).not.toThrow();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("can share one initialized Mapping Store across concurrent remote sessions", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-shared-"));
     const mappingStore = new MappingStore({ directory });

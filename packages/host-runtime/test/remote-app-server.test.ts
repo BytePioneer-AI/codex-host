@@ -113,6 +113,7 @@ describe("remote SSH app-server transport", () => {
           output.end();
           return 0;
         },
+        close: () => undefined,
       }),
     });
 
@@ -138,6 +139,91 @@ describe("remote SSH app-server transport", () => {
     await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("closes the Host session when its WebSocket disconnects", async () => {
+    const socketPath = testSocketPath();
+    let finishSession = (): void => undefined;
+    const closeSession = vi.fn(() => finishSession());
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath,
+      diagnosticOutput: new PassThrough(),
+      createSession: () => ({
+        run: () =>
+          new Promise<number>((resolve) => {
+            finishSession = () => resolve(0);
+          }),
+        close: closeSession,
+      }),
+    });
+
+    try {
+      await listener.listen();
+      const client = new WebSocket("ws://localhost/", {
+        createConnection: () => net.createConnection(socketPath),
+      });
+      await once(client, "open");
+      client.close();
+      await once(client, "close");
+
+      await vi.waitFor(() => expect(closeSession).toHaveBeenCalledOnce());
+      await expect(listener.close()).resolves.toBeUndefined();
+    } finally {
+      finishSession();
+      await listener.close();
+      if (process.platform !== "win32") {
+        await rm(path.dirname(socketPath), { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("does not leak a rejected input cleanup promise when a frame write fails", async () => {
+    const socketPath = testSocketPath();
+    const unhandledRejection = vi.fn();
+    process.on("unhandledRejection", unhandledRejection);
+    let finishSession = (): void => undefined;
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath,
+      diagnosticOutput: new PassThrough(),
+      createSession: ({ input }) => {
+        const desktopInput = input as PassThrough;
+        desktopInput.write = ((...arguments_: unknown[]) => {
+          const callback = arguments_.find(
+            (argument): argument is (error?: Error | null) => void =>
+              typeof argument === "function",
+          );
+          queueMicrotask(() => callback?.(new Error("fixture input write failed")));
+          return false;
+        }) as typeof desktopInput.write;
+        return {
+          run: () =>
+            new Promise<number>((resolve) => {
+              finishSession = () => resolve(0);
+            }),
+          close: () => finishSession(),
+        };
+      },
+    });
+
+    try {
+      await listener.listen();
+      const client = new WebSocket("ws://localhost/", {
+        createConnection: () => net.createConnection(socketPath),
+      });
+      await once(client, "open");
+      client.send('{"id":1,"method":"initialize"}');
+      await once(client, "close");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandledRejection);
+      finishSession();
+      await listener.close();
+      if (process.platform !== "win32") {
+        await rm(path.dirname(socketPath), { recursive: true, force: true });
+      }
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",
     async () => {
@@ -147,7 +233,7 @@ describe("remote SSH app-server transport", () => {
       const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: new PassThrough(),
-        createSession: () => ({ run: async () => 0 }),
+        createSession: () => ({ run: async () => 0, close: () => undefined }),
       });
 
       try {
@@ -169,7 +255,7 @@ describe("remote SSH app-server transport", () => {
       const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: new PassThrough(),
-        createSession: () => ({ run: async () => 0 }),
+        createSession: () => ({ run: async () => 0, close: () => undefined }),
       });
 
       try {
@@ -194,7 +280,7 @@ describe("remote SSH app-server transport", () => {
       const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: new PassThrough(),
-        createSession: () => ({ run: async () => 0 }),
+        createSession: () => ({ run: async () => 0, close: () => undefined }),
       });
 
       await expect(listener.listen()).rejects.toThrow("requires a private directory");

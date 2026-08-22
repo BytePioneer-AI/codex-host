@@ -28,6 +28,8 @@ const APP_SERVER_FLAG_OPTIONS = new Set([
 
 export interface RemoteAppServerSession {
   run(): Promise<number>;
+  /** Requests cancellation synchronously; run settles after owned resources are released. */
+  close(): void;
 }
 
 export interface RemoteAppServerSessionStreams {
@@ -267,6 +269,20 @@ export function createRemoteAppServerWebSocketListener(input: {
     });
     sendOutputFrames(socket, desktopOutput);
     let inputTail = Promise.resolve();
+    let sessionClosing = false;
+    let sessionFinished = false;
+    const closeSession = (): void => {
+      desktopInput.destroy();
+      if (sessionClosing || sessionFinished) return;
+      sessionClosing = true;
+      try {
+        session.close();
+      } catch (error) {
+        input.diagnosticOutput.write(
+          `codexhost remote app-server close: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    };
     socket.on("message", (data, isBinary) => {
       if (isBinary) {
         socket.close(1003, "Codex app-server messages must be text");
@@ -283,10 +299,8 @@ export function createRemoteAppServerWebSocketListener(input: {
       );
       void inputTail.catch(() => socket.close(1011, "Host Runtime input failed"));
     });
-    socket.once("close", () => {
-      void inputTail.finally(() => desktopInput.end());
-    });
-    socket.once("error", () => desktopInput.destroy());
+    socket.once("close", closeSession);
+    socket.once("error", closeSession);
     const running = session
       .run()
       .then((code) => {
@@ -301,6 +315,7 @@ export function createRemoteAppServerWebSocketListener(input: {
         if (socket.readyState === socket.OPEN) socket.close(1011, "Host Runtime failed");
       })
       .finally(() => {
+        sessionFinished = true;
         desktopOutput.end();
         sessions.delete(running);
       });

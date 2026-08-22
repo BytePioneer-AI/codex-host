@@ -620,6 +620,27 @@ export function resolveRendererRequestRoute(
     : null;
 }
 
+export function createRendererRequestRouteResolver(
+  readPolicy: () => unknown,
+  discoverTargets: () => readonly PrewarmTarget[],
+): {
+  resolve(): RendererRequestRoute | null;
+  clear(): void;
+} {
+  let route: RendererRequestRoute | null = null;
+  return {
+    resolve() {
+      // Persist null invalidations too, otherwise a later empty discovery gap
+      // could revive a request manager that belonged to the previous Host.
+      route = resolveRendererRequestRoute(readPolicy(), discoverTargets(), route);
+      return route;
+    },
+    clear() {
+      route = null;
+    },
+  };
+}
+
 export async function waitForRendererDraftPrewarmPolicy(
   target: RendererDraftPrewarmPolicyTarget,
 ): Promise<RendererDraftPrewarmPolicy> {
@@ -694,16 +715,11 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const usageSubscription = createThreadUsageSubscriptionRelay();
-  let requestRoute: RendererRequestRoute | null = null;
-  const currentRequestRoute = (): RendererRequestRoute | null => {
-    const route = resolveRendererRequestRoute(
-      window.__codexhostDraftPrewarmPolicyV1,
-      findActivePrewarmTargets(document),
-      requestRoute,
-    );
-    if (route) requestRoute = route;
-    return route;
-  };
+  const requestRouteResolver = createRendererRequestRouteResolver(
+    () => window.__codexhostDraftPrewarmPolicyV1,
+    () => findActivePrewarmTargets(document),
+  );
+  const currentRequestRoute = () => requestRouteResolver.resolve();
   const currentModelClient = (): RendererModelClient => {
     const client = createRendererModelClient(currentRequestRoute()?.targets ?? []);
     if (!client) throw new Error("Renderer Model request manager is unavailable");
@@ -813,7 +829,7 @@ export function installCurrentRendererAdapter(): {
       );
       routingPolicy?.select(null);
       routingPolicy = null;
-      requestRoute = null;
+      requestRouteResolver.clear();
       forkControl.dispose();
       usageSubscription.dispose();
     },

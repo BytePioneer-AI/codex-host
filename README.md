@@ -52,7 +52,7 @@ Pi, Claude Code, DeepSeek Harness, and Grok run as independent sessions in the s
 | Ask / cancel | Native | ✅ | ✅ | 🚧 | ✅ |
 | Model / thinking selection | Native | ✅ | ✅ | ✅ | 🚧 |
 | Tool approvals | Native | ✅ | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | ✅ | — | — |
+| Permission modes | Native | — | ✅ | ✅ | — |
 | Usage | Native | ✅ | ✅ | ✅ | ✅ |
 | Session resume | Native | ✅ | ✅ | ✅ | ✅ |
 | Thread management | Native | ✅ | 🚧 | 🚧 | 🚧 |

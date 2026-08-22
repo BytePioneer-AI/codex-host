@@ -28,6 +28,7 @@ import {
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
+  createRendererRequestRouteResolver,
   resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
 } from "../src/versioned-renderer-adapter.js";
@@ -164,6 +165,38 @@ describe("current Codex Renderer Agent adapter", () => {
 
     const replacementPolicy = { ...policy };
     expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
+  });
+
+  it("does not revive an invalidated request manager after a later discovery gap", () => {
+    const policy = {
+      state: "ready" as const,
+      hostId: "remote-ssh-discovered:mac",
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+    const manager = {
+      hostId: policy.hostId,
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const switchedHostManager = {
+      hostId: "remote-ssh-discovered:replacement",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    let discoveredTargets = [manager];
+    const routeResolver = createRendererRequestRouteResolver(
+      () => policy,
+      () => discoveredTargets,
+    );
+
+    expect(routeResolver.resolve()?.targets).toEqual([manager]);
+    discoveredTargets = [switchedHostManager];
+    expect(routeResolver.resolve()).toBeNull();
+    discoveredTargets = [];
+    expect(routeResolver.resolve()).toBeNull();
   });
 
   it("finds the current seven-slot new Thread draft identity", () => {

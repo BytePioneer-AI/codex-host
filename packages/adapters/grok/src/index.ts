@@ -31,6 +31,14 @@ export {
 } from "./grok-fork.js";
 export type { GrokForkParams, GrokForkResponse } from "./grok-fork.js";
 export {
+  GROK_DEFAULT_PERMISSION_MODE_ID,
+  GROK_PERMISSION_MODE_CATALOG,
+  decodeGrokPermissionModeId,
+  grokPermissionModeNotification,
+  grokPermissionModeSessionMeta,
+} from "./permission-modes.js";
+export type { GrokPermissionMode } from "./permission-modes.js";
+export {
   GROK_REWIND_EXECUTE_METHOD,
   GROK_REWIND_POINTS_METHOD,
   buildGrokRewindParams,

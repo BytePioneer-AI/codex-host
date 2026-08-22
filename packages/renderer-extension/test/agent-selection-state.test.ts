@@ -163,6 +163,33 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("keeps a locally rejected submission mutable and locks only after a Thread binds", async () => {
+    const rejectedComposer = {};
+    const acceptedComposer = {};
+    const agents = controller();
+    const operations = {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    };
+
+    await agents.switchAgent(rejectedComposer, "grok", operations);
+    agents.markSubmissionPending(rejectedComposer);
+    expect(agents.isSubmissionPending(rejectedComposer)).toBe(true);
+    expect(agents.get(rejectedComposer).phase).toBe("draft");
+
+    agents.clearPendingSubmission(rejectedComposer);
+    expect(agents.isSubmissionPending(rejectedComposer)).toBe(false);
+    await expect(agents.switchAgent(rejectedComposer, "codex", operations)).resolves.toBe(true);
+
+    await agents.switchAgent(acceptedComposer, "grok", operations);
+    agents.markSubmissionPending(acceptedComposer);
+    expect(
+      agents.transfer(acceptedComposer, acceptedComposer, ["conversation", "grok-thread"]),
+    ).toBe(true);
+    expect(agents.isSubmissionPending(acceptedComposer)).toBe(false);
+    expect(agents.get(acceptedComposer)).toMatchObject({ agent: "grok", phase: "locked" });
+  });
+
   it("transfers identity, selection, and switching state to one replacement Composer", async () => {
     const originalComposer = {};
     const replacementComposer = {};

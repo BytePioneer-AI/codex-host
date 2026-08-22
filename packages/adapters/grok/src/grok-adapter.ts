@@ -52,6 +52,7 @@ import {
 import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
+  type HarnessPermissionModeId,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -79,6 +80,11 @@ import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
 import { rewindGrokLastTurn } from "./grok-rewind.js";
+import {
+  GROK_DEFAULT_PERMISSION_MODE_ID,
+  GROK_PERMISSION_MODE_CATALOG,
+  decodeGrokPermissionModeId,
+} from "./permission-modes.js";
 import {
   applyGrokToolProjection,
   DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
@@ -137,6 +143,7 @@ export interface GrokAcpTransportLike {
     onEvent: (event: GrokTransportEvent) => void,
   ): Promise<GrokCompactResult>;
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
+  setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
 }
@@ -189,7 +196,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
     configuration: {
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
-      selectPermissionMode: false,
+      selectPermissionMode: true,
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
   };
@@ -282,6 +289,7 @@ class GrokHarnessSession implements HarnessSession {
       closeTimeoutMs: number;
       history: GrokTransportEvent[];
       initialUsage?: HostUsage | null;
+      initialPermissionModeId: HarnessPermissionModeId;
       knownTurnRefs?: NativeTurnRef[];
       randomUUID: () => string;
       refreshCredits: () => Promise<unknown>;
@@ -303,7 +311,13 @@ class GrokHarnessSession implements HarnessSession {
       list: async () => ({ ok: true, value: grokCommandCatalog }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
-    this.#state = stateForGrokModel(modelState, { nativeRef: nativeRef(opened.sessionId) });
+    this.#state = stateForGrokModel(
+      modelState,
+      { nativeRef: nativeRef(opened.sessionId) },
+      modelState.currentModel,
+      modelState.currentThinkingOptionId,
+      options.initialPermissionModeId,
+    );
     this.initialState = this.#state;
     this.#snapshot = {
       ...mapGrokReplay(
@@ -322,11 +336,15 @@ class GrokHarnessSession implements HarnessSession {
   currentConfiguration(): {
     model: HarnessModelRef;
     thinkingOptionId?: HarnessThinkingOptionId;
+    permissionModeId?: HarnessPermissionModeId;
   } {
     return {
       model: this.#state.effectiveModel ?? this.#modelState.currentModel,
       ...(this.#state.effectiveThinkingOptionId
         ? { thinkingOptionId: this.#state.effectiveThinkingOptionId }
+        : {}),
+      ...(this.#state.effectivePermissionModeId
+        ? { permissionModeId: this.#state.effectivePermissionModeId }
         : {}),
     };
   }
@@ -382,16 +400,7 @@ class GrokHarnessSession implements HarnessSession {
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
-    if (command.type === "permissionMode.select") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Grok Permission Mode selection is unavailable",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (this.#active || this.#configuring) {
       return {
         ok: false,
@@ -685,7 +694,49 @@ class GrokHarnessSession implements HarnessSession {
         { nativeRef: nativeRef(this.#transport.sessionId) },
         model,
         thinkingOptionId,
+        this.#state.effectivePermissionModeId,
       );
+      this.#event({ type: "session.state.changed", state: this.#state });
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    try {
+      decodeGrokPermissionModeId(command.permissionModeId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Grok Permission Mode is unavailable",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Grok Session cannot configure during another operation",
+          retryable: true,
+        },
+      };
+    }
+    this.#configuring = true;
+    try {
+      await this.#transport.setPermissionMode(command.permissionModeId);
+      this.#state = {
+        ...this.#state,
+        effectivePermissionModeId: command.permissionModeId,
+      };
       this.#event({ type: "session.state.changed", state: this.#state });
       return { ok: true, value: { completed: true } };
     } catch (error) {
@@ -1239,6 +1290,7 @@ export class GrokAdapter implements HarnessAdapter {
       const ready: Extract<HarnessInspection, { status: "ready" }> = {
         status: "ready",
         catalog: modelState.catalog,
+        permissionModes: GROK_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
       this.#inspectionCache.set(cwd, ready);
@@ -1268,12 +1320,18 @@ export class GrokAdapter implements HarnessAdapter {
         ok: false,
         error: { code: "invalidRequest", message: "Grok Adapter requires cwd", retryable: false },
       };
-    if (input.kind === "create" && input.permissionModeId) {
+    const requestedPermissionModeId =
+      input.kind === "create"
+        ? (input.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID)
+        : GROK_DEFAULT_PERMISSION_MODE_ID;
+    try {
+      decodeGrokPermissionModeId(requestedPermissionModeId);
+    } catch {
       return {
         ok: false,
         error: {
-          code: "unsupported",
-          message: "Grok Permission Mode selection is unavailable",
+          code: "invalidRequest",
+          message: "Grok create Permission Mode is invalid",
           retryable: false,
         },
       };
@@ -1294,7 +1352,13 @@ export class GrokAdapter implements HarnessAdapter {
     let session: GrokHarnessSession | null = null;
     const transport = this.#createTransport(cwd, (error) => session?.handleTransportFault(error));
     let sourceConfiguration:
-      { model: HarnessModelRef; thinkingOptionId?: HarnessThinkingOptionId } | undefined;
+      | {
+          model: HarnessModelRef;
+          thinkingOptionId?: HarnessThinkingOptionId;
+          permissionModeId?: HarnessPermissionModeId;
+        }
+      | undefined;
+    let initialPermissionModeId = requestedPermissionModeId;
     try {
       let opened: GrokOpenResult | undefined;
       if (input.kind === "rollbackLastTurn") {
@@ -1365,7 +1429,7 @@ export class GrokAdapter implements HarnessAdapter {
         opened = await transport.open(
           parsedRef?.success
             ? { kind: "resume", sessionId: parsedRef.data.nativeSessionId }
-            : { kind: "create" },
+            : { kind: "create", permissionModeId: requestedPermissionModeId },
         );
       }
       if (!opened) {
@@ -1389,6 +1453,8 @@ export class GrokAdapter implements HarnessAdapter {
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
       const retainedConfiguration = sourceConfiguration;
       if (input.kind === "rollbackLastTurn" && retainedConfiguration) {
+        initialPermissionModeId =
+          retainedConfiguration.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID;
         const catalogModel = modelState.catalog.models.find(
           ({ ref }) => ref.id === retainedConfiguration.model.id,
         );
@@ -1418,6 +1484,7 @@ export class GrokAdapter implements HarnessAdapter {
             delete modelState.currentThinkingOptionId;
           }
         }
+        await transport.setPermissionMode(initialPermissionModeId);
       }
       if (input.kind === "create") {
         const selectedModel = input.model ?? modelState.currentModel;
@@ -1445,6 +1512,11 @@ export class GrokAdapter implements HarnessAdapter {
           if (selectedThinking) modelState.currentThinkingOptionId = selectedThinking;
           else delete modelState.currentThinkingOptionId;
         }
+        // Grok's session/new metadata seeds the launch state, but the native
+        // permission notification is the authoritative live-session path. Send
+        // it after model setup so Default, Ask, Auto, and Always approve all
+        // reach the resident Session before its first prompt.
+        await transport.setPermissionMode(initialPermissionModeId);
       }
       const history = await transport.getHistory();
       const initialUsage =
@@ -1461,6 +1533,7 @@ export class GrokAdapter implements HarnessAdapter {
           closeTimeoutMs: this.#closeTimeoutMs,
           history,
           initialUsage,
+          initialPermissionModeId,
           ...(input.kind === "resume" && input.knownTurnRefs
             ? { knownTurnRefs: input.knownTurnRefs }
             : {}),

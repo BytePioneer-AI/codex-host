@@ -75,6 +75,7 @@ export class DraftAgentController<Composer extends object> {
   readonly #ownershipRequestGenerations = new WeakMap<MutableComposerState, number>();
   readonly #states = new WeakMap<Composer, MutableComposerState>();
   readonly #switching = new Set<MutableComposerState>();
+  readonly #pendingSubmissions = new Set<MutableComposerState>();
   #composerSequence = 0;
   #modelRequestSequence = 0;
   #ownershipRequestSequence = 0;
@@ -154,6 +155,7 @@ export class DraftAgentController<Composer extends object> {
   ): Readonly<DraftComposerState> | null {
     if (!isConversationTarget(target)) return null;
     const previous = this.#state(composer);
+    this.#pendingSubmissions.delete(previous);
     this.#modelRequestGenerations.set(previous, ++this.#modelRequestSequence);
     this.#ownershipRequestGenerations.set(previous, ++this.#ownershipRequestSequence);
 
@@ -181,6 +183,7 @@ export class DraftAgentController<Composer extends object> {
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
+    this.#pendingSubmissions.delete(state);
     state.agent = agent;
     state.phase = "locked";
     if (agent === "pi" && model) state.piModel = model;
@@ -306,8 +309,23 @@ export class DraftAgentController<Composer extends object> {
 
   lock(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
+    this.#pendingSubmissions.delete(state);
     state.phase = "locked";
     return state;
+  }
+
+  markSubmissionPending(composer: Composer): Readonly<DraftComposerState> {
+    const state = this.#state(composer);
+    if (state.phase === "draft") this.#pendingSubmissions.add(state);
+    return state;
+  }
+
+  isSubmissionPending(composer: Composer): boolean {
+    return this.#pendingSubmissions.has(this.#state(composer));
+  }
+
+  clearPendingSubmission(composer: Composer): void {
+    this.#pendingSubmissions.delete(this.#state(composer));
   }
 
   recordSubmission(composer: Composer): Readonly<DraftComposerState> {
@@ -332,6 +350,9 @@ export class DraftAgentController<Composer extends object> {
     if (isConversationTarget(target) && !bound) {
       this.#conversationStates.push({ target, state });
     }
+    if (isConversationTarget(target) && this.#pendingSubmissions.delete(state)) {
+      state.phase = "locked";
+    }
     return true;
   }
 
@@ -344,6 +365,8 @@ export class DraftAgentController<Composer extends object> {
     if (!this.#enabledAgents.has(nextAgent)) return false;
     if (state.phase !== "draft" || this.#switching.has(state)) return false;
     if (state.agent === nextAgent) return true;
+
+    this.#pendingSubmissions.delete(state);
 
     this.#switching.add(state);
     try {

@@ -1,8 +1,11 @@
 import {
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   type HarnessModelCatalog,
   type HarnessModelRef,
+  type HarnessPermissionModeCatalog,
+  type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
@@ -17,6 +20,7 @@ export const RENDERER_NEW_THREAD_PREFERENCE_KEY = "codexhost.new-thread-preferen
 interface ExternalConfigurationPreference {
   model: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 interface NewThreadPreference {
@@ -47,9 +51,11 @@ function parseExternalConfiguration(value: unknown): ExternalConfigurationPrefer
   const model = harnessModelRefSchema.safeParse(value.model);
   if (!model.success) return undefined;
   const thinkingOptionId = harnessThinkingOptionIdSchema.safeParse(value.thinkingOptionId);
+  const permissionModeId = harnessPermissionModeIdSchema.safeParse(value.permissionModeId);
   return {
     model: model.data,
     ...(thinkingOptionId.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
+    ...(permissionModeId.success ? { permissionModeId: permissionModeId.data } : {}),
   };
 }
 
@@ -100,6 +106,7 @@ export function readNewThreadAgentPreference(
 export function readNewThreadExternalConfigurationPreference(
   agent: ExternalRendererAgent,
   catalog: HarnessModelCatalog,
+  permissionModes?: HarnessPermissionModeCatalog,
   storage: PreferenceStorage | null = rendererStorage(),
 ): ExternalConfigurationPreference | undefined {
   const preference = readPreference(storage)?.externalByAgent[agent];
@@ -111,9 +118,15 @@ export function readNewThreadExternalConfigurationPreference(
     catalogModel.supportedThinkingOptionIds?.includes(preference.thinkingOptionId)
       ? preference.thinkingOptionId
       : undefined;
+  const permissionModeId =
+    preference.permissionModeId &&
+    permissionModes?.modes.some(({ id }) => id === preference.permissionModeId)
+      ? preference.permissionModeId
+      : undefined;
   return {
     model: catalogModel.ref,
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    ...(permissionModeId ? { permissionModeId } : {}),
   };
 }
 
@@ -136,6 +149,7 @@ export function writeNewThreadExternalConfigurationPreference(
   agent: ExternalRendererAgent,
   model: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
   storage: PreferenceStorage | null = rendererStorage(),
 ): void {
   const current = readPreference(storage);
@@ -149,6 +163,9 @@ export function writeNewThreadExternalConfigurationPreference(
           model: harnessModelRefSchema.parse(model),
           ...(thinkingOptionId
             ? { thinkingOptionId: harnessThinkingOptionIdSchema.parse(thinkingOptionId) }
+            : {}),
+          ...(permissionModeId
+            ? { permissionModeId: harnessPermissionModeIdSchema.parse(permissionModeId) }
             : {}),
         },
       },

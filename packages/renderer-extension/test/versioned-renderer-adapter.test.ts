@@ -13,14 +13,17 @@ import {
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
+  decodeGrokTransportModelId,
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   isClaudeTransportModelId,
+  isGrokTransportModelId,
   isPiTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
+  grokTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
@@ -359,6 +362,26 @@ describe("current Codex Renderer Agent adapter", () => {
       modelSelectionForAgent(null, null, "claude-code", model, thinkingOptionId, permissionModeId)
         ?.model,
     ).toBe(carrier);
+  });
+
+  it("encodes Grok Model, Permission Mode, and Thinking in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "grok-4.6" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
+    const carrier = grokTransportModelId(model, permissionModeId, thinkingOptionId);
+
+    expect(isGrokTransportModelId(carrier)).toBe(true);
+    expect(decodeGrokTransportModelId(carrier)).toEqual({
+      model,
+      thinkingOptionId,
+      permissionModeId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "grok", model, thinkingOptionId, permissionModeId)?.model,
+    ).toBe(carrier);
+    expect(
+      decodeGrokTransportModelId(`${GROK_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`),
+    ).toEqual({ model, thinkingOptionId });
   });
 
   it("extracts only a validated conversation Thread identity", () => {

@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import net from "node:net";
-import { chmod, lstat, mkdir, open, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rm } from "node:fs/promises";
+import { uptime } from "node:os";
 import path from "node:path";
 import { PassThrough, type Readable, type Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -177,19 +179,152 @@ function rawDataBuffer(data: RawData): Buffer {
   throw new Error("Unsupported WebSocket frame payload");
 }
 
+interface RemoteAppServerSocketLockRecord {
+  version: 1;
+  ownerToken: string;
+  pid: number;
+  bootTimeSeconds: number;
+}
+
+interface UnixFileIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface SocketLockSnapshot {
+  source: string;
+  identity: UnixFileIdentity;
+  mtimeMs: number;
+}
+
+const SOCKET_LOCK_RETRY_COUNT = 200;
+const SOCKET_LOCK_RETRY_DELAY_MS = 25;
+const SOCKET_LOCK_MALFORMED_GRACE_MS = 1_000;
+// This lock covers only the short bind/unlink critical section, never a live
+// session. Bounding its lifetime lets a later process recover after an
+// ungraceful exit even when the recorded PID was reused.
+const SOCKET_LOCK_MAX_AGE_MS = 30_000;
+
+function currentBootTimeSeconds(): number {
+  return Math.round(Date.now() / 1_000 - uptime());
+}
+
+function parseSocketLockRecord(source: string): RemoteAppServerSocketLockRecord | null {
+  try {
+    const value: unknown = JSON.parse(source);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const ownerToken = record.ownerToken;
+    const pid = record.pid;
+    const bootTimeSeconds = record.bootTimeSeconds;
+    if (
+      record.version !== 1 ||
+      typeof ownerToken !== "string" ||
+      ownerToken.length === 0 ||
+      typeof pid !== "number" ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      typeof bootTimeSeconds !== "number" ||
+      !Number.isSafeInteger(bootTimeSeconds)
+    ) {
+      return null;
+    }
+    return { version: 1, ownerToken, pid, bootTimeSeconds };
+  } catch {
+    return null;
+  }
+}
+
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function readSocketLockSnapshot(lockPath: string): Promise<SocketLockSnapshot | null> {
+  const metadata = await lstat(lockPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (metadata === null) return null;
+  const source = await readFile(lockPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return source === null
+    ? null
+    : { source, identity: { dev: metadata.dev, ino: metadata.ino }, mtimeMs: metadata.mtimeMs };
+}
+
+function socketLockSnapshotIsAbandoned(snapshot: SocketLockSnapshot): boolean {
+  const ageMs = Math.max(0, Date.now() - snapshot.mtimeMs);
+  const record = parseSocketLockRecord(snapshot.source);
+  if (record === null) return ageMs >= SOCKET_LOCK_MALFORMED_GRACE_MS;
+  if (Math.abs(record.bootTimeSeconds - currentBootTimeSeconds()) > 5) return true;
+  if (ageMs >= SOCKET_LOCK_MAX_AGE_MS) return true;
+  return !processIsRunning(record.pid);
+}
+
+async function removeAbandonedSocketInitializationLock(lockPath: string): Promise<boolean> {
+  const observed = await readSocketLockSnapshot(lockPath);
+  if (observed === null || !socketLockSnapshotIsAbandoned(observed)) return false;
+  // Re-read both the contents and inode immediately before deletion so an
+  // owner that replaced the stale lock is never removed based on old state.
+  const current = await readSocketLockSnapshot(lockPath);
+  if (
+    current === null ||
+    current.source !== observed.source ||
+    !sameUnixFileIdentity(current.identity, observed.identity) ||
+    !socketLockSnapshotIsAbandoned(current)
+  ) {
+    return false;
+  }
+  await rm(lockPath, { force: true });
+  return true;
+}
+
+async function removeOwnedSocketInitializationLock(
+  lockPath: string,
+  ownerToken: string,
+): Promise<void> {
+  const source = await readFile(lockPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (source === null || parseSocketLockRecord(source)?.ownerToken !== ownerToken) return;
+  await rm(lockPath, { force: true });
+}
+
+async function unixSocketIdentity(socketPath: string): Promise<UnixFileIdentity | null> {
+  const metadata = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return metadata?.isSocket() ? { dev: metadata.dev, ino: metadata.ino } : null;
+}
+
+function sameUnixFileIdentity(left: UnixFileIdentity, right: UnixFileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 export async function withRemoteAppServerSocketInitializationLock<T>(
   socketPath: string,
   action: () => Promise<T>,
 ): Promise<T> {
   const lockPath = `${socketPath}.initializing`;
+  const ownerToken = randomUUID();
   let handle: Awaited<ReturnType<typeof open>> | null = null;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < SOCKET_LOCK_RETRY_COUNT; attempt += 1) {
     try {
       handle = await open(lockPath, "wx", 0o600);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await delay(25);
+      if (await removeAbandonedSocketInitializationLock(lockPath)) continue;
+      await delay(SOCKET_LOCK_RETRY_DELAY_MS);
     }
   }
   if (handle === null) {
@@ -197,13 +332,21 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
       `Remote app-server socket initialization is already in progress at ${socketPath}`,
     );
   }
+  const record: RemoteAppServerSocketLockRecord = {
+    version: 1,
+    ownerToken,
+    pid: process.pid,
+    bootTimeSeconds: currentBootTimeSeconds(),
+  };
   try {
+    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    await handle.sync();
     return await action();
   } finally {
     try {
       await handle.close();
     } finally {
-      await rm(lockPath, { force: true });
+      await removeOwnedSocketInitializationLock(lockPath, ownerToken);
     }
   }
 }
@@ -288,6 +431,7 @@ export function createRemoteAppServerWebSocketListener(input: {
   });
   const sessions = new Set<Promise<unknown>>();
   let listening = false;
+  let ownedSocketIdentity: UnixFileIdentity | null = null;
   let closing: Promise<void> | null = null;
   const closed = Promise.withResolvers<undefined>();
 
@@ -368,7 +512,15 @@ export function createRemoteAppServerWebSocketListener(input: {
           });
         });
         listening = true;
-        if (process.platform !== "win32") await chmod(input.socketPath, 0o600);
+        if (process.platform !== "win32") {
+          await chmod(input.socketPath, 0o600);
+          ownedSocketIdentity = await unixSocketIdentity(input.socketPath);
+          if (ownedSocketIdentity === null) {
+            throw new Error(
+              `Remote app-server listener did not create a socket: ${input.socketPath}`,
+            );
+          }
+        }
       };
       if (process.platform !== "win32") {
         const socketDirectory = path.dirname(input.socketPath);
@@ -392,7 +544,16 @@ export function createRemoteAppServerWebSocketListener(input: {
           );
         }
         await Promise.allSettled(sessions);
-        if (process.platform !== "win32") await rm(input.socketPath, { force: true });
+        if (process.platform !== "win32" && ownedSocketIdentity) {
+          const identity = ownedSocketIdentity;
+          await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
+            const current = await unixSocketIdentity(input.socketPath);
+            if (current && sameUnixFileIdentity(current, identity)) {
+              await rm(input.socketPath, { force: true });
+            }
+          });
+          ownedSocketIdentity = null;
+        }
         closed.resolve(undefined);
       })();
       return closing;

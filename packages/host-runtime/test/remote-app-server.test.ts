@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import type * as FileSystemPromises from "node:fs/promises";
-import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -40,6 +40,20 @@ function testSocketPath(): string {
   return process.platform === "win32"
     ? `\\\\.\\pipe\\codexhost-remote-${process.pid}-${Date.now()}`
     : path.join("/tmp", `ch-${process.pid}-${Date.now()}`, "control.sock");
+}
+
+async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const connection = net.createConnection(socketPath);
+    connection.once("connect", () => {
+      connection.destroy();
+      resolve(true);
+    });
+    connection.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") resolve(false);
+      else reject(error);
+    });
+  });
 }
 
 describe("remote SSH app-server transport", () => {
@@ -267,6 +281,104 @@ describe("remote SSH app-server transport", () => {
         await expect(lstat(`${socketPath}.initializing`)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         releaseFirst();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "recovers an abandoned control-socket initialization lock",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-abandoned-lock-"));
+      const socketPath = path.join(root, "control.sock");
+      const lockPath = `${socketPath}.initializing`;
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          version: 1,
+          ownerToken: "abandoned-fixture",
+          pid: 2_147_483_647,
+          bootTimeSeconds: 0,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      let entered = false;
+
+      try {
+        await withRemoteAppServerSocketInitializationLock(socketPath, async () => {
+          entered = true;
+        });
+
+        expect(entered).toBe(true);
+        await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not unlink a replacement socket while prior sessions settle",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-replacement-"));
+      const socketPath = path.join(root, "control.sock");
+      let finishFirstSession = (): void => undefined;
+      const first = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: () =>
+            new Promise<number>((resolve) => {
+              finishFirstSession = () => resolve(0);
+            }),
+          close: () => undefined,
+        }),
+      });
+      const replacement = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: ({ output }) => ({
+          run: async () => {
+            output.end();
+            return 0;
+          },
+          close: () => undefined,
+        }),
+      });
+      let firstClosing: Promise<void> | null = null;
+
+      try {
+        await first.listen();
+        const firstClient = new WebSocket("ws://localhost/", {
+          createConnection: () => net.createConnection(socketPath),
+        });
+        await once(firstClient, "open");
+        const firstClientClosed = once(firstClient, "close");
+        firstClosing = first.close();
+        await firstClientClosed;
+
+        let inactive = false;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (!(await socketAcceptsConnections(socketPath))) {
+            inactive = true;
+            break;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        expect(inactive).toBe(true);
+        await replacement.listen();
+
+        finishFirstSession();
+        await firstClosing;
+        const replacementClient = new WebSocket("ws://localhost/", {
+          createConnection: () => net.createConnection(socketPath),
+        });
+        await once(replacementClient, "open");
+        replacementClient.close();
+        await once(replacementClient, "close");
+      } finally {
+        finishFirstSession();
+        await Promise.allSettled([firstClosing ?? first.close(), replacement.close()]);
         await rm(root, { recursive: true, force: true });
       }
     },

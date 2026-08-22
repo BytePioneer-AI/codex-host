@@ -38,6 +38,25 @@ describe("remote SSH app-server transport", () => {
     expect(isRemoteUnixListenerInvocation(["app-server", "proxy"])).toBe(false);
   });
 
+  it("rejects ambiguous app-server invocations with duplicate listeners", () => {
+    expect(
+      isRemoteUnixListenerInvocation([
+        "app-server",
+        "--listen",
+        "tcp://127.0.0.1:9000",
+        "--listen=unix:///tmp/codex.sock",
+      ]),
+    ).toBe(false);
+    expect(
+      isRemoteUnixListenerInvocation([
+        "app-server",
+        "--listen=unix:///tmp/codex.sock",
+        "--listen",
+        "unix:///tmp/other.sock",
+      ]),
+    ).toBe(false);
+  });
+
   it("converts the remote listener invocation into a per-connection stdio app-server", () => {
     expect(
       stdioArgumentsForRemoteListener([

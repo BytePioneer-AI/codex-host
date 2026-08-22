@@ -90,17 +90,22 @@ export function remoteUnixListenerUrl(arguments_: readonly string[]): string | n
   const appServerIndex = appServerSubcommandIndex(arguments_);
   if (appServerIndex === null) return null;
   let listener: string | null = null;
+  let listenerSeen = false;
   for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (!argument) return null;
     if (argument === "--listen") {
+      if (listenerSeen) return null;
       const value = arguments_[index + 1];
       if (!value) return null;
+      listenerSeen = true;
       listener = value;
       index += 1;
       continue;
     }
     if (argument.startsWith("--listen=")) {
+      if (listenerSeen) return null;
+      listenerSeen = true;
       listener = argument.slice("--listen=".length);
       continue;
     }

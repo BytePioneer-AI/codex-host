@@ -1,11 +1,32 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import type * as FileSystemPromises from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const filesystemFault = vi.hoisted(() => ({ renameDestination: null as string | null }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof FileSystemPromises>();
+  return {
+    ...original,
+    async rename(
+      oldPath: Parameters<typeof original.rename>[0],
+      newPath: Parameters<typeof original.rename>[1],
+    ) {
+      if (filesystemFault.renameDestination === path.resolve(newPath.toString())) {
+        const error = new Error("fixture manifest write failed") as NodeJS.ErrnoException;
+        error.code = "ENOSPC";
+        throw error;
+      }
+      return original.rename(oldPath, newPath);
+    },
+  };
+});
 
 import {
   inspectRemoteHostInstallation,
@@ -98,6 +119,40 @@ describe("remote SSH Host installation", () => {
         dataDirectory: path.join(home, ".codexhost", "remote", "data"),
       });
     } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back a first installation when manifest publication fails", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-rollback-"));
+    const installRoot = path.join(home, ".codexhost", "remote");
+    const profilePath = path.join(home, ".zshenv");
+    const originalProfile = "export EXISTING_SETTING=1\n";
+    await writeFile(profilePath, originalProfile, "utf8");
+    const options = {
+      home,
+      installRoot,
+      profilePath,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "darwin" as const,
+    };
+    const wrapperPath = path.join(installRoot, "bin", "codex");
+    const manifestPath = path.join(installRoot, "manifest.json");
+
+    try {
+      filesystemFault.renameDestination = path.resolve(manifestPath);
+      await expect(installRemoteHost(options)).rejects.toMatchObject({ code: "ENOSPC" });
+      filesystemFault.renameDestination = null;
+
+      await expect(lstat(wrapperPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(manifestPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(profilePath, "utf8")).toBe(originalProfile);
+      await expect(installRemoteHost(options)).resolves.toMatchObject({ wrapperPath, profilePath });
+    } finally {
+      filesystemFault.renameDestination = null;
       await rm(home, { recursive: true, force: true });
     }
   });

@@ -411,20 +411,51 @@ export async function installRemoteHost(
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),
   };
-  const existingProfile = (await existingText(profilePath)) ?? "";
+  const existingProfileSource = await existingText(profilePath);
+  const existingProfile = existingProfileSource ?? "";
   const nextProfile = installManagedProfileBlock(existingProfile, manifest);
-  if (nextProfile !== existingProfile) {
-    const profileBackupPath = await backupProfile(profilePath, existingProfile, "install");
-    manifest = { ...manifest, profileBackupPath };
-    const metadata = await stat(profilePath).catch(() => null);
-    await writeAtomic(profilePath, nextProfile, metadata?.mode ?? 0o600);
+  const profileChanged = nextProfile !== existingProfile;
+  const profileMetadata = await stat(profilePath).catch(() => null);
+  try {
+    if (profileChanged) {
+      const profileBackupPath = await backupProfile(profilePath, existingProfile, "install");
+      manifest = { ...manifest, profileBackupPath };
+      await writeAtomic(profilePath, nextProfile, profileMetadata?.mode ?? 0o600);
+    }
+    await mkdir(paths.dataDirectory, { recursive: true, mode: 0o700 });
+    await chmod(paths.dataDirectory, 0o700);
+    await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
+    manifest = { ...manifest, entrypointSha256: await fileSha256(paths.wrapperPath) };
+    await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
+    return manifest;
+  } catch (error) {
+    if (previousManifest !== null) throw error;
+
+    const rollbackErrors: unknown[] = [];
+    try {
+      await rm(paths.wrapperPath, { force: true });
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (profileChanged) {
+      try {
+        if (existingProfileSource === null) {
+          await rm(profilePath, { force: true });
+        } else {
+          await writeAtomic(profilePath, existingProfile, profileMetadata?.mode ?? 0o600);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        "Remote Host installation failed and rollback was incomplete",
+      );
+    }
+    throw error;
   }
-  await mkdir(paths.dataDirectory, { recursive: true, mode: 0o700 });
-  await chmod(paths.dataDirectory, 0o700);
-  await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
-  manifest = { ...manifest, entrypointSha256: await fileSha256(paths.wrapperPath) };
-  await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
-  return manifest;
 }
 
 export async function inspectRemoteHostInstallation(

@@ -138,8 +138,14 @@ describe("current Codex Renderer Agent adapter", () => {
       select: vi.fn(() => true),
       clear: vi.fn(async () => undefined),
     };
+    const localManager = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
 
-    const discovered = resolveRendererRequestRoute(policy, [manager], null);
+    const discovered = resolveRendererRequestRoute(policy, [localManager, manager], null);
     expect(discovered?.targets).toEqual([manager]);
 
     const transientGap = resolveRendererRequestRoute(policy, [], discovered);
@@ -293,13 +299,18 @@ describe("current Codex Renderer Agent adapter", () => {
         enqueueRequest: vi.fn(),
       },
     };
+    const local = { requestClient: { ...active.requestClient, hostId: "local" } };
+    const duplicateActive = {
+      requestClient: {
+        ...active.requestClient,
+        sendRequest: vi.fn(),
+      },
+    };
 
     expect(activeRendererDraftPrewarmPolicy(policy, [active])).toBe(policy);
-    expect(
-      activeRendererDraftPrewarmPolicy(policy, [
-        { requestClient: { ...active.requestClient, hostId: "local" } },
-      ]),
-    ).toBeNull();
+    expect(activeRendererDraftPrewarmPolicy(policy, [local, active])).toBe(policy);
+    expect(activeRendererDraftPrewarmPolicy(policy, [local])).toBeNull();
+    expect(activeRendererDraftPrewarmPolicy(policy, [active, duplicateActive])).toBeNull();
   });
 
   it("creates base transport selections and clears routing for Codex", () => {

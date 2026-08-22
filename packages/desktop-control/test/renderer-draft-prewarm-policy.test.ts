@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { installRendererDraftPrewarmPolicy } from "../src/renderer-draft-prewarm-policy.js";
+import {
+  installRendererDraftPrewarmPolicy,
+  selectRendererRequestManager,
+} from "../src/renderer-draft-prewarm-policy.js";
 import {
   installDraftPrewarmPolicyBridge,
   installDraftPrewarmPolicyInRenderer,
@@ -99,6 +102,56 @@ function rendererFixture(
 }
 
 describe("Renderer draft prewarm policy", () => {
+  it("selects the request manager owned by the active remote Composer Host", () => {
+    const localManager = {};
+    const remoteManager = {};
+    const local = {
+      manager: localManager,
+      requestClient: { hostId: "local" },
+      hostId: "local",
+      prewarmedThreadManager: null,
+    };
+    const remote = {
+      manager: remoteManager,
+      requestClient: { hostId: "remote-ssh-discovered:mac" },
+      hostId: "remote-ssh-discovered:mac",
+      prewarmedThreadManager: {},
+    };
+
+    expect(
+      selectRendererRequestManager(
+        [local, remote, { ...remote, requestClient: remote.requestClient }],
+        ["remote-ssh-discovered:mac", "remote-ssh-discovered:mac"],
+      ),
+    ).toEqual(remote);
+  });
+
+  it("fails closed when the active Composer exposes conflicting Hosts", () => {
+    expect(
+      selectRendererRequestManager(
+        [
+          {
+            manager: {},
+            requestClient: {},
+            hostId: "remote-ssh-discovered:mac",
+            prewarmedThreadManager: null,
+          },
+        ],
+        ["local", "remote-ssh-discovered:mac"],
+      ),
+    ).toBeNull();
+  });
+
+  it("retains the single-manager fallback when the Composer has no Host markers", () => {
+    const candidate = {
+      manager: {},
+      requestClient: {},
+      hostId: "local",
+      prewarmedThreadManager: null,
+    };
+    expect(selectRendererRequestManager([candidate], [])).toBe(candidate);
+  });
+
   it("generates syntactically valid main-process code", async () => {
     const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
       expect(() => new Function(`return ${expression}`)).not.toThrow();
@@ -118,6 +171,8 @@ describe("Renderer draft prewarm policy", () => {
     const expression = evaluate.mock.calls[0]?.[0] ?? "";
     expect(expression).toContain("webContents.fromId(17)");
     expect(expression).toContain("typeof value.requestClient.enqueueRequest === 'function'");
+    expect(expression).toContain("executionTargetHostId");
+    expect(expression).toContain("permissionsHostId");
     expect(expression).not.toContain(
       "Function.prototype.toString.call(value.sendRequest).includes(\n          'send-cli-request-for-host',\n        )",
     );

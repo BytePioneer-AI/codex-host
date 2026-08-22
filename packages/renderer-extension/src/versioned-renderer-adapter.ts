@@ -561,12 +561,20 @@ export function activeRendererDraftPrewarmPolicy(
   policy: unknown,
   targets: readonly PrewarmTarget[],
 ): RendererDraftPrewarmPolicy | null {
-  if (!isDraftPrewarmPolicyReady(policy) || targets.length !== 1) return null;
-  const target = targets[0];
-  if (!target) return null;
-  const bridge = target.requestClient ?? target;
-  const hostId = target.getHostId?.() ?? bridge.hostId;
-  return hostId === policy.hostId ? policy : null;
+  if (!isDraftPrewarmPolicyReady(policy)) return null;
+  return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
+}
+
+function activeRendererDraftPrewarmTargets(
+  policy: unknown,
+  targets: readonly PrewarmTarget[],
+): readonly PrewarmTarget[] | null {
+  if (!isDraftPrewarmPolicyReady(policy)) return null;
+  const activeTargets = targets.filter((target) => {
+    const bridge = target.requestClient ?? target;
+    return (target.getHostId?.() ?? bridge.hostId) === policy.hostId;
+  });
+  return activeTargets.length === 1 ? activeTargets : null;
 }
 
 export interface RendererRequestRoute {
@@ -579,8 +587,10 @@ export function resolveRendererRequestRoute(
   discoveredTargets: readonly PrewarmTarget[],
   previous: RendererRequestRoute | null,
 ): RendererRequestRoute | null {
-  const activePolicy = activeRendererDraftPrewarmPolicy(policy, discoveredTargets);
-  if (activePolicy) return { policy: activePolicy, targets: discoveredTargets };
+  const activeTargets = activeRendererDraftPrewarmTargets(policy, discoveredTargets);
+  if (isDraftPrewarmPolicyReady(policy) && activeTargets) {
+    return { policy, targets: activeTargets };
+  }
 
   // Composer replacement and settings overlays can briefly remove the only
   // Fiber path that exposes the request manager. The installed routing policy
@@ -760,13 +770,10 @@ export function installCurrentRendererAdapter(): {
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
     desiredCarrier = carrier ?? null;
-    const activePolicy = activeRendererDraftPrewarmPolicy(
-      window.__codexhostDraftPrewarmPolicyV1,
-      findActivePrewarmTargets(document),
-    );
-    if (!activePolicy) return false;
-    routingPolicy = activePolicy;
-    if (activePolicy.select(desiredCarrier)) {
+    const route = currentRequestRoute();
+    if (!route) return false;
+    routingPolicy = route.policy;
+    if (route.policy.select(desiredCarrier)) {
       modelUpdates += 1;
       liveStatus.modelUpdates = modelUpdates;
     }

@@ -324,8 +324,8 @@ export function createRemoteAppServerWebSocketListener(input: {
           resolve();
         });
       });
-      if (process.platform !== "win32") await chmod(input.socketPath, 0o600);
       listening = true;
+      if (process.platform !== "win32") await chmod(input.socketPath, 0o600);
     },
     close() {
       if (closing) return closing;

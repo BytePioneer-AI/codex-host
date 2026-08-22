@@ -1,11 +1,32 @@
 import { once } from "node:events";
+import type * as FileSystemPromises from "node:fs/promises";
 import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+
+const filesystemFault = vi.hoisted(() => ({ chmodPath: null as string | null }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof FileSystemPromises>();
+  return {
+    ...original,
+    async chmod(
+      filePath: Parameters<typeof original.chmod>[0],
+      mode: Parameters<typeof original.chmod>[1],
+    ) {
+      if (filesystemFault.chmodPath === path.resolve(filePath.toString())) {
+        const error = new Error("fixture socket chmod failed") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+      return original.chmod(filePath, mode);
+    },
+  };
+});
 
 import {
   createRemoteAppServerWebSocketListener,
@@ -133,6 +154,33 @@ describe("remote SSH app-server transport", () => {
         await listener.listen();
         expect((await lstat(root)).mode & 0o777).toBe(0o700);
       } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "closes a bound server when socket permission hardening fails",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-chmod-"));
+      const socketPath = path.join(root, "control.sock");
+      const serverClose = vi.spyOn(net.Server.prototype, "close");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({ run: async () => 0 }),
+      });
+
+      try {
+        filesystemFault.chmodPath = path.resolve(socketPath);
+        await expect(listener.listen()).rejects.toMatchObject({ code: "EPERM" });
+        filesystemFault.chmodPath = null;
+        await expect(listener.close()).resolves.toBeUndefined();
+        expect(serverClose).toHaveBeenCalledOnce();
+      } finally {
+        filesystemFault.chmodPath = null;
+        serverClose.mockRestore();
         await listener.close();
         await rm(root, { recursive: true, force: true });
       }

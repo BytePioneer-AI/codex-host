@@ -255,10 +255,8 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
         .join("app-server-control")
         .join("app-server-control.sock");
     let ready = directory.join("ready");
-    let log_path = directory.join("listener.log");
-    let log = fs::File::create(&log_path).expect("create listener log");
     let started = Instant::now();
-    let status = Command::new(shim_path())
+    let child = Command::new(shim_path())
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -276,21 +274,17 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
         .stdin(Stdio::null())
-        .stdout(log.try_clone().expect("clone listener log"))
-        .stderr(log)
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("start managed remote listener");
-    if !status.success() {
-        let diagnostics = fs::read_to_string(&log_path)
-            .unwrap_or_else(|error| format!("<listener log unavailable: {error}>"));
-        fs::remove_dir_all(&directory).expect("remove failed remote listener fixture");
-        panic!("remote listener bootstrap failed: {status}; log:\n{diagnostics}");
-    }
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "remote listener bootstrap did not detach promptly"
-    );
+    let (completion_sender, completion_receiver) = mpsc::channel();
+    let waiter = thread::spawn(move || completion_sender.send(child.wait_with_output()));
 
+    let ready_deadline = Instant::now() + Duration::from_secs(2);
+    while !ready.exists() && Instant::now() < ready_deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
     let ready = fs::read_to_string(&ready).expect("read detached listener identity");
     let value = |label: &str| {
         ready
@@ -302,6 +296,37 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     };
     let root_id = value("root=");
     let shim_id = value("shim=");
+    let output = match completion_receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(output) => output.expect("wait for managed remote listener bootstrap"),
+        Err(error) => {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &shim_id.to_string(), &root_id.to_string()])
+                .status();
+            let _ = completion_receiver.recv_timeout(Duration::from_secs(5));
+            waiter
+                .join()
+                .expect("join failed bootstrap waiter")
+                .expect("send failed bootstrap output");
+            fs::remove_dir_all(&directory).expect("remove failed remote listener fixture");
+            panic!("remote listener bootstrap kept its output pipes open: {error}");
+        }
+    };
+    waiter
+        .join()
+        .expect("join remote listener bootstrap waiter")
+        .expect("send remote listener bootstrap output");
+    assert!(
+        output.status.success(),
+        "remote listener bootstrap failed: {}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "remote listener bootstrap did not detach promptly"
+    );
+
     assert!(socket.exists(), "detached listener socket is unavailable");
     assert!(process_exists(root_id), "detached listener root exited");
     assert!(process_exists(shim_id), "detached listener Shim exited");

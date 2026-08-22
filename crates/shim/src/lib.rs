@@ -437,8 +437,8 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         .args(arguments)
         .env(REMOTE_LISTENER_CHILD_ENV, "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     configure_background_command(&mut command);
     let mut child = command.spawn()?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;

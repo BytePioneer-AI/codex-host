@@ -1068,7 +1068,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const started = await fixture.collector.waitFor((message) => requestId(message, 10));
     const threadId = ((started.result as JsonObject).thread as JsonObject).id;
     if (typeof threadId !== "string") throw new Error("Paginated Thread has no ID");
-    await completePiTurn(fixture, threadId, 11);
+    const firstTurnId = await completePiTurn(fixture, threadId, 11);
     const secondTurnId = await completePiTurn(fixture, threadId, 12);
     const thirdTurnId = await completePiTurn(fixture, threadId, 13);
     const session = fixture.adapter.sessions[0];
@@ -1135,9 +1135,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         initialTurnsPage: { limit: 1, itemsView: "summary" },
       },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 17)),
-    ).resolves.toMatchObject({
+    const resumed = await fixture.collector.waitFor((message) => requestId(message, 17));
+    expect(resumed).toMatchObject({
       result: {
         thread: { id: threadId, turns: [] },
         initialTurnsPage: { data: [{ id: thirdTurnId }] },
@@ -1146,6 +1145,26 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     expect(session.snapshotReads).toBe(2);
+
+    const itemsBackwardsCursor = (resumed.result as JsonObject).itemsBackwardsCursor;
+    if (typeof itemsBackwardsCursor !== "string") {
+      throw new Error("Paginated resume did not return an Item head cursor");
+    }
+    writeRequest(fixture.desktopInput, {
+      id: 18,
+      method: "thread/items/list",
+      params: {
+        threadId,
+        turnId: firstTurnId,
+        cursor: itemsBackwardsCursor,
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 18)),
+    ).resolves.toMatchObject({
+      result: { data: [], nextCursor: null, backwardsCursor: null },
+    });
+
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });

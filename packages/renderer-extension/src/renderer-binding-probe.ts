@@ -195,6 +195,10 @@ export function draftPermissionMode(
   );
 }
 
+export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
+  return phase === "draft";
+}
+
 export function restoredThreadOwnership(inspection: ThreadInspection): RestoredThreadOwnership {
   if (inspection.owner === "codex") return { agent: "codex" };
   if (inspection.harnessId === "pi") {
@@ -966,12 +970,6 @@ export function installRendererBindingProbe(
           selected: selectedPermissionModeId,
         };
       }
-      writeNewThreadExternalConfigurationPreference(
-        agent,
-        selected,
-        selectedThinkingOptionId,
-        selectedPermissionModeId,
-      );
     } catch (error) {
       if (!isCurrentModelRequest(mounted, generation)) return;
       const selected = controller.modelForAgent(mounted.composer, agent);
@@ -1111,12 +1109,14 @@ export function installRendererBindingProbe(
       if (effectivePermissionModeId) {
         controller.setExternalPermissionMode(mounted.composer, agent, effectivePermissionModeId);
       }
-      writeNewThreadExternalConfigurationPreference(
-        agent,
-        effectiveModel,
-        effectiveThinkingOptionId,
-        effectivePermissionModeId,
-      );
+      if (shouldPersistNewThreadConfigurationSelection(current.phase)) {
+        writeNewThreadExternalConfigurationPreference(
+          agent,
+          effectiveModel,
+          effectiveThinkingOptionId,
+          effectivePermissionModeId,
+        );
+      }
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,
@@ -1238,14 +1238,16 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalPermissionMode(mounted.composer, agent, effectivePermissionModeId);
-      writeNewThreadExternalConfigurationPreference(
-        agent,
-        model,
-        thinkingOptionId,
-        effectivePermissionModeId,
-      );
-      if (agent === "claude-code") {
-        writeClaudePermissionModePreference(effectivePermissionModeId);
+      if (shouldPersistNewThreadConfigurationSelection(current.phase)) {
+        writeNewThreadExternalConfigurationPreference(
+          agent,
+          model,
+          thinkingOptionId,
+          effectivePermissionModeId,
+        );
+        if (agent === "claude-code") {
+          writeClaudePermissionModePreference(effectivePermissionModeId);
+        }
       }
       mounted.permissionModeView = {
         status: "ready",
@@ -1375,12 +1377,14 @@ export function installRendererBindingProbe(
       if (effectivePermissionModeId) {
         controller.setExternalPermissionMode(mounted.composer, agent, effectivePermissionModeId);
       }
-      writeNewThreadExternalConfigurationPreference(
-        agent,
-        model,
-        effectiveThinkingOptionId,
-        effectivePermissionModeId,
-      );
+      if (shouldPersistNewThreadConfigurationSelection(current.phase)) {
+        writeNewThreadExternalConfigurationPreference(
+          agent,
+          model,
+          effectiveThinkingOptionId,
+          effectivePermissionModeId,
+        );
+      }
       mounted.modelView = {
         status: "ready",
         catalog: effectiveCatalog,

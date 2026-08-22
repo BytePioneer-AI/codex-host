@@ -18,6 +18,7 @@ import {
   restoredThreadOwnership,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
+  shouldPersistNewThreadConfigurationSelection,
   shouldRetryExternalThreadUsage,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
@@ -505,6 +506,11 @@ describe("Renderer Composer DOM behavior", () => {
       "default",
     );
     expect(draftPermissionMode(catalog, undefined)).toBe("default");
+  });
+
+  it("persists explicit configuration selections only for a new-Thread draft", () => {
+    expect(shouldPersistNewThreadConfigurationSelection("draft")).toBe(true);
+    expect(shouldPersistNewThreadConfigurationSelection("locked")).toBe(false);
   });
 
   it("does not bind readable Thinking when current options are unavailable", () => {

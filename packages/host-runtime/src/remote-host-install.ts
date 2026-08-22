@@ -257,6 +257,7 @@ async function managedEntrypointState(
   });
   if (metadata === null) return "missing";
   if (!metadata.isFile()) return "modified";
+  if (process.platform !== "win32" && (metadata.mode & 0o111) === 0) return "modified";
   const entrypoint = await readFile(manifest.wrapperPath);
   if (
     entrypoint

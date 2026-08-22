@@ -130,6 +130,33 @@ describe("remote SSH Host installation", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "reports a managed entrypoint without execute permission as degraded",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-entrypoint-mode-"));
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "darwin" as const,
+      };
+
+      try {
+        const installed = await installRemoteHost(options);
+        await chmod(installed.wrapperPath, 0o600);
+
+        await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+          state: "degraded",
+          issues: expect.arrayContaining(["managed native entrypoint is missing or modified"]),
+        });
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("rolls back a first installation when manifest publication fails", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-rollback-"));
     const installRoot = path.join(home, ".codexhost", "remote");

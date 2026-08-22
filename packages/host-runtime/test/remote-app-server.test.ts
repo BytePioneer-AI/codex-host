@@ -33,6 +33,7 @@ import {
   isRemoteUnixListenerInvocation,
   remoteAppServerSocketPath,
   stdioArgumentsForRemoteListener,
+  withRemoteAppServerSocketInitializationLock,
 } from "../src/remote-app-server.js";
 
 function testSocketPath(): string {
@@ -223,6 +224,53 @@ describe("remote SSH app-server transport", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "serializes concurrent initialization of the same control socket",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-lock-"));
+      const socketPath = path.join(root, "control.sock");
+      let releaseFirst = (): void => undefined;
+      let firstEnteredResolve = (): void => undefined;
+      const firstEntered = new Promise<void>((resolve) => {
+        firstEnteredResolve = resolve;
+      });
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let activeInitializers = 0;
+      let maximumActiveInitializers = 0;
+      let secondEntered = false;
+
+      try {
+        const first = withRemoteAppServerSocketInitializationLock(socketPath, async () => {
+          activeInitializers += 1;
+          maximumActiveInitializers = Math.max(maximumActiveInitializers, activeInitializers);
+          firstEnteredResolve();
+          await firstGate;
+          activeInitializers -= 1;
+        });
+        await firstEntered;
+        const second = withRemoteAppServerSocketInitializationLock(socketPath, async () => {
+          secondEntered = true;
+          activeInitializers += 1;
+          maximumActiveInitializers = Math.max(maximumActiveInitializers, activeInitializers);
+          activeInitializers -= 1;
+        });
+
+        await new Promise<void>((resolve) => setTimeout(resolve, 75));
+        expect(secondEntered).toBe(false);
+        releaseFirst();
+        await Promise.all([first, second]);
+        expect(secondEntered).toBe(true);
+        expect(maximumActiveInitializers).toBe(1);
+        await expect(lstat(`${socketPath}.initializing`)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        releaseFirst();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",

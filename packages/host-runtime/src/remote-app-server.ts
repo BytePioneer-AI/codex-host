@@ -1,8 +1,9 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import net from "node:net";
-import { chmod, lstat, mkdir, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, type Readable, type Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 
@@ -176,6 +177,37 @@ function rawDataBuffer(data: RawData): Buffer {
   throw new Error("Unsupported WebSocket frame payload");
 }
 
+export async function withRemoteAppServerSocketInitializationLock<T>(
+  socketPath: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${socketPath}.initializing`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      handle = await open(lockPath, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await delay(25);
+    }
+  }
+  if (handle === null) {
+    throw new Error(
+      `Remote app-server socket initialization is already in progress at ${socketPath}`,
+    );
+  }
+  try {
+    return await action();
+  } finally {
+    try {
+      await handle.close();
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+  }
+}
+
 async function removeStaleSocket(socketPath: string): Promise<void> {
   if (process.platform === "win32") return;
   const metadata = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
@@ -326,21 +358,28 @@ export function createRemoteAppServerWebSocketListener(input: {
     closed: closed.promise,
     async listen() {
       if (listening) return;
+      const bind = async (): Promise<void> => {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: Error) => reject(error);
+          server.once("error", onError);
+          server.listen(input.socketPath, () => {
+            server.off("error", onError);
+            resolve();
+          });
+        });
+        listening = true;
+        if (process.platform !== "win32") await chmod(input.socketPath, 0o600);
+      };
       if (process.platform !== "win32") {
         const socketDirectory = path.dirname(input.socketPath);
         await preparePrivateSocketDirectory(socketDirectory);
-        await removeStaleSocket(input.socketPath);
-      }
-      await new Promise<void>((resolve, reject) => {
-        const onError = (error: Error) => reject(error);
-        server.once("error", onError);
-        server.listen(input.socketPath, () => {
-          server.off("error", onError);
-          resolve();
+        await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
+          await removeStaleSocket(input.socketPath);
+          await bind();
         });
-      });
-      listening = true;
-      if (process.platform !== "win32") await chmod(input.socketPath, 0o600);
+      } else {
+        await bind();
+      }
     },
     close() {
       if (closing) return closing;

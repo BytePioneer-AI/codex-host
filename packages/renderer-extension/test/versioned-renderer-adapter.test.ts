@@ -24,7 +24,10 @@ import {
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
-import { transitionRendererAdapterStatus } from "../src/versioned-renderer-adapter.js";
+import {
+  resolveRendererRequestRoute,
+  transitionRendererAdapterStatus,
+} from "../src/versioned-renderer-adapter.js";
 
 function composerWithFiber(fiber: object): Element {
   const composer = { matches: () => true, parentElement: null } as unknown as Element;
@@ -120,6 +123,30 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)[0]?.addNotificationCallback).toBe(
       addNotificationCallback,
     );
+  });
+
+  it("retains the confirmed request manager across transient Composer discovery gaps", () => {
+    const manager = {
+      hostId: "remote-ssh-discovered:mac",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: "remote-ssh-discovered:mac",
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    const discovered = resolveRendererRequestRoute(policy, [manager], null);
+    expect(discovered?.targets).toEqual([manager]);
+
+    const transientGap = resolveRendererRequestRoute(policy, [], discovered);
+    expect(transientGap).toBe(discovered);
+
+    const replacementPolicy = { ...policy };
+    expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
   });
 
   it("finds the current seven-slot new Thread draft identity", () => {

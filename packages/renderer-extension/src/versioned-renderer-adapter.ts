@@ -569,6 +569,27 @@ export function activeRendererDraftPrewarmPolicy(
   return hostId === policy.hostId ? policy : null;
 }
 
+export interface RendererRequestRoute {
+  readonly policy: RendererDraftPrewarmPolicy;
+  readonly targets: readonly PrewarmTarget[];
+}
+
+export function resolveRendererRequestRoute(
+  policy: unknown,
+  discoveredTargets: readonly PrewarmTarget[],
+  previous: RendererRequestRoute | null,
+): RendererRequestRoute | null {
+  const activePolicy = activeRendererDraftPrewarmPolicy(policy, discoveredTargets);
+  if (activePolicy) return { policy: activePolicy, targets: discoveredTargets };
+
+  // Composer replacement and settings overlays can briefly remove the only
+  // Fiber path that exposes the request manager. The installed routing policy
+  // still owns that bridge, so retain its confirmed route until the policy
+  // object itself changes. Object identity prevents reuse across reconnects or
+  // Host switches, including switches between two Hosts with the same id.
+  return isDraftPrewarmPolicyReady(policy) && previous?.policy === policy ? previous : null;
+}
+
 export async function waitForRendererDraftPrewarmPolicy(
   target: RendererDraftPrewarmPolicyTarget,
 ): Promise<RendererDraftPrewarmPolicy> {
@@ -643,8 +664,18 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const usageSubscription = createThreadUsageSubscriptionRelay();
+  let requestRoute: RendererRequestRoute | null = null;
+  const currentRequestRoute = (): RendererRequestRoute | null => {
+    const route = resolveRendererRequestRoute(
+      window.__codexhostDraftPrewarmPolicyV1,
+      findActivePrewarmTargets(document),
+      requestRoute,
+    );
+    if (route) requestRoute = route;
+    return route;
+  };
   const currentModelClient = (): RendererModelClient => {
-    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    const client = createRendererModelClient(currentRequestRoute()?.targets ?? []);
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     usageSubscription.connect(client);
     return client;
@@ -691,12 +722,9 @@ export function installCurrentRendererAdapter(): {
   let policyTimer: number | null = null;
   let desiredCarrier: string | null = null;
   const captureRoutingPolicy = (): boolean => {
-    const discovered = activeRendererDraftPrewarmPolicy(
-      window.__codexhostDraftPrewarmPolicyV1,
-      findActivePrewarmTargets(document),
-    );
-    if (!discovered) return false;
-    routingPolicy = discovered;
+    const route = currentRequestRoute();
+    if (!route) return false;
+    routingPolicy = route.policy;
     routingPolicy.select(desiredCarrier);
     if (policyTimer !== null) {
       window.clearInterval(policyTimer);
@@ -758,6 +786,7 @@ export function installCurrentRendererAdapter(): {
       );
       routingPolicy?.select(null);
       routingPolicy = null;
+      requestRoute = null;
       forkControl.dispose();
       usageSubscription.dispose();
     },

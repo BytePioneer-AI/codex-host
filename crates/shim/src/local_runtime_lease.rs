@@ -441,10 +441,11 @@ fn terminate_recorded_process(
     Ok(())
 }
 
-// This in-process contender is meaningful only with Windows handle-scoped locks. Unix flock locks
-// are process-scoped, so `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides
-// the cross-process integration coverage there.
-#[cfg(all(test, target_os = "windows"))]
+// Separate Windows handles and Linux open file descriptions contend even within one process, so
+// this focused unit test covers both platforms. macOS treats these flock acquisitions as
+// process-scoped; `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides the
+// cross-process integration coverage there.
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod tests {
     use super::*;
 

@@ -154,6 +154,22 @@ fn main() {
         );
     }
 
+    if env::var_os("FAKE_CODEX_PRINT_PROXY_ENV").is_some() {
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NODE_USE_ENV_PROXY",
+        ] {
+            if let Some(value) = env::var_os(name) {
+                eprintln!("{name}={}", value.to_string_lossy());
+            }
+        }
+    }
+
     if env::var_os("FAKE_CODEX_SPAWN_CHILD").is_some() {
         let mut child = Command::new(env::current_exe().expect("current executable"))
             .arg("--child-sleep")

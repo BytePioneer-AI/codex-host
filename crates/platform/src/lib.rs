@@ -18,6 +18,7 @@ mod linux_installation;
 mod macos_ui;
 mod process;
 mod process_supervision;
+mod proxy_environment;
 #[cfg(target_os = "macos")]
 mod system_proxy;
 #[cfg(target_os = "windows")]
@@ -54,6 +55,7 @@ pub use process::{
     process_snapshots,
 };
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
+pub use proxy_environment::proxy_environment;
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]

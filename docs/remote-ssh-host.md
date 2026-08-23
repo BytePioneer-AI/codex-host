@@ -38,6 +38,8 @@ The command:
 - records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.
 
+When a remote Host starts a Harness, it resolves the development host's proxy environment again: existing `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and related variables take precedence; macOS also supplies missing values from its static system proxy configuration; Linux preserves its environment-variable and TUN-based network paths. codexhost does not identify a specific proxy application or guess proxy ports. If no proxy can be resolved, it proceeds as a direct connection.
+
 Running `remote install` over an earlier preview that used a shell wrapper migrates that entrypoint in place. Reconnect the remote workspace after installation. A currently running remote app-server is not replaced in place.
 
 Detachment is deliberately narrow. The command must contain exactly one default `--listen unix://` and no `--stdio`; duplicate listeners, `app-server proxy`, stdio, explicit custom socket paths, and ordinary Codex commands retain their normal foreground lifecycle. If the default listener exits or does not make its socket ready within ten seconds, the bootstrap fails instead of reporting a false success.

@@ -38,6 +38,8 @@ codexhost remote install \
 - 记录已安装原生入口的摘要，因此旧版本包内 runtime 被清理后，后续卸载仍可校验该入口；
 - 保持原有 `codex` 命令和 OpenCodex 配置不变。
 
+远程 Host 启动 Harness 时会重新解析开发机上的代理环境：已有的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 等变量优先；macOS 再补充静态系统代理配置；Linux 保留其环境变量和 TUN 网络路径。codexhost 不识别具体代理软件，也不会猜测代理端口；没有可解析的代理时会按直连处理。
+
 如果早期候选版安装的是 Shell wrapper，再次运行 `remote install` 会原地迁移该入口。安装后请重新连接远程工作区。已经运行的远程 app-server 不会被就地替换。
 
 脱离规则有意保持严格：命令必须只包含一个默认 `--listen unix://`，并且不能同时启用 `--stdio`；重复 listener、`app-server proxy`、stdio、显式自定义 socket 路径和普通 Codex 命令仍保持原来的前台生命周期。如果默认 listener 提前退出，或十秒内没有把 socket 准备好，bootstrap 会失败，不会误报成功。

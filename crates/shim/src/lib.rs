@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
-    configure_background_command, node_entrypoint_path, spawn_supervised, validate_proxy_target,
+    configure_background_command, node_entrypoint_path, proxy_environment, spawn_supervised,
+    validate_proxy_target,
 };
 
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
@@ -508,6 +509,12 @@ fn child_command(
         env::var_os(NPM_NODE_PATH_ENV),
         env::var_os(NPM_PACKAGE_ROOT_ENV),
     );
+    let remote_proxy_environment =
+        if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
+            proxy_environment()
+        } else {
+            Vec::new()
+        };
     if should_start_host_runtime(arguments) {
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
@@ -527,6 +534,7 @@ fn child_command(
                 if inherited_remote_profile {
                     command.env_remove(DATA_DIRECTORY_ENV);
                 }
+                command.envs(remote_proxy_environment);
                 configure_background_command(&mut command);
                 return Ok(command);
             }
@@ -548,6 +556,7 @@ fn child_command(
         .env_remove(HOST_RUNTIME_PATH_ENV)
         .env_remove(REMOTE_SSH_MANAGED_ENV)
         .env_remove(REMOTE_LISTENER_CHILD_ENV);
+    command.envs(remote_proxy_environment);
     configure_background_command(&mut command);
     Ok(command)
 }

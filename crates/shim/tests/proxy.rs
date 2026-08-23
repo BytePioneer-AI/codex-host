@@ -74,6 +74,19 @@ fn run_shim(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+        "NODE_USE_ENV_PROXY",
+    ] {
+        command.env_remove(name);
+    }
     for (key, value) in environment {
         command.env(key, value);
     }
@@ -168,6 +181,29 @@ fn preserves_arguments_and_removes_recursive_environment() {
     assert!(stderr.contains("args=app-server|--analytics-default-enabled"));
     assert!(stderr.contains("codex_cli_path_present=false"));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn managed_remote_child_receives_inherited_proxy_environment() {
+    let output = run_shim(
+        b"",
+        &["app-server", "--analytics-default-enabled"],
+        &[
+            (REMOTE_SSH_MANAGED_ENV, "1"),
+            ("HTTP_PROXY", "http://remote-proxy:8080"),
+            ("FAKE_CODEX_PRINT_PROXY_ENV", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("HTTP_PROXY=http://remote-proxy:8080"),
+        "stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("http_proxy=http://remote-proxy:8080"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]

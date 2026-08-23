@@ -16,7 +16,7 @@ function rendererFixture(
   options: {
     candidateCount?: number;
     hostId?: string;
-    hostBridgeCandidates?: number;
+    includePrewarmedThreadManager?: boolean;
   } = {},
 ): {
   contents: RendererWebContents;
@@ -43,41 +43,21 @@ function rendererFixture(
                 { name: "candidateCount", value: { value: options.candidateCount ?? 1 } },
                 { name: "hostId", value: { value: options.hostId ?? "local" } },
                 { name: "manager", value: { objectId: "request-manager" } },
-                { name: "prewarmedThreadManager", value: { objectId: "prewarm-manager" } },
+                ...(options.includePrewarmedThreadManager === false
+                  ? []
+                  : [
+                      {
+                        name: "prewarmedThreadManager",
+                        value: { objectId: "prewarm-manager" },
+                      },
+                    ]),
               ],
-            };
-          case "request-manager":
-            return {
-              result: [],
-              internalProperties: [
-                { name: "[[Prototype]]", value: { objectId: "manager-prototype" } },
-              ],
-            };
-          case "manager-prototype":
-            return {
-              result: [{ name: "sendRequest", value: { objectId: "manager-send-request" } }],
-            };
-          case "manager-send-request":
-            return {
-              internalProperties: [{ name: "[[Scopes]]", value: { objectId: "scopes" } }],
-            };
-          case "scopes":
-            return { result: [{ value: { objectId: "module-scope" } }] };
-          case "module-scope":
-            return {
-              result: Array.from({ length: options.hostBridgeCandidates ?? 1 }, (_, index) => ({
-                name: `bridge-${index}`,
-                value: { objectId: `host-bridge-${index}`, type: "object" },
-              })),
             };
           default:
             throw new Error(`Unexpected Runtime.getProperties object: ${parameters.objectId}`);
         }
       }
       if (method === "Runtime.callFunctionOn") {
-        if (String(parameters.functionDeclaration).includes("messageHandler")) {
-          return { result: { value: true } };
-        }
         return { result: { value: { state: "ready", reason: "owned-request-bridge" } } };
       }
       throw new Error(`Unexpected CDP command: ${method}`);
@@ -171,11 +151,11 @@ describe("Renderer draft prewarm policy", () => {
     const expression = evaluate.mock.calls[0]?.[0] ?? "";
     expect(expression).toContain("webContents.fromId(17)");
     expect(expression).toContain("typeof value.requestClient.enqueueRequest === 'function'");
+    expect(expression).toContain(
+      "typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function'",
+    );
     expect(expression).toContain("executionTargetHostId");
     expect(expression).toContain("permissionsHostId");
-    expect(expression).not.toContain(
-      "Function.prototype.toString.call(value.sendRequest).includes(\n          'send-cli-request-for-host',\n        )",
-    );
   });
 
   it("retries while the current Renderer request manager is mounting", async () => {
@@ -215,7 +195,7 @@ describe("Renderer draft prewarm policy", () => {
     expect(fixture.sendCommand).toHaveBeenCalledWith(
       "Runtime.callFunctionOn",
       expect.objectContaining({
-        objectId: "host-bridge-0",
+        objectId: "request-manager",
         functionDeclaration: "function syntheticPolicy() {}",
         arguments: [{ value: "local" }, { objectId: "prewarm-manager" }],
       }),
@@ -236,7 +216,7 @@ describe("Renderer draft prewarm policy", () => {
     expect(fixture.sendCommand).toHaveBeenCalledWith(
       "Runtime.callFunctionOn",
       expect.objectContaining({
-        objectId: "host-bridge-0",
+        objectId: "request-manager",
         arguments: [{ value: "remote-ssh-discovered:mac" }, { objectId: "prewarm-manager" }],
       }),
     );
@@ -245,8 +225,7 @@ describe("Renderer draft prewarm policy", () => {
   it.each([
     [{ candidateCount: 2 }, "request manager is ambiguous"],
     [{ hostId: "" }, "request manager is ambiguous"],
-    [{ hostBridgeCandidates: 0 }, "Host request bridge is ambiguous"],
-    [{ hostBridgeCandidates: 2 }, "Host request bridge is ambiguous"],
+    [{ includePrewarmedThreadManager: false }, "prewarmed Thread manager is unavailable"],
   ] as const)("fails closed for an unsupported request bridge", async (options, error) => {
     const fixture = rendererFixture(options);
 
@@ -262,37 +241,12 @@ describe("Renderer draft prewarm policy", () => {
     );
   });
 
-  it("coalesces concurrent clear operations and allows a later clear", async () => {
-    const firstClear = Promise.withResolvers<undefined>();
-    const sendRequest = vi
-      .fn<(method: string, parameters: { hostId: string }) => Promise<undefined>>()
-      .mockReturnValueOnce(firstClear.promise)
-      .mockResolvedValue(undefined);
-    const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge({ sendRequest }, "local", target);
-    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
-      clear(): Promise<void>;
-    };
-
-    const first = policy.clear();
-    const concurrent = policy.clear();
-    expect(concurrent).toBe(first);
-    expect(sendRequest).toHaveBeenCalledOnce();
-    expect(sendRequest).toHaveBeenCalledWith("clear-prewarmed-threads-for-host", {
-      hostId: "local",
-    });
-
-    firstClear.resolve(undefined);
-    await first;
-    await policy.clear();
-    expect(sendRequest).toHaveBeenCalledTimes(2);
-  });
-
-  it("uses the current prewarmed Thread manager when available", async () => {
+  it("clears drafts through the current prewarmed Thread manager", async () => {
     const discardAllPrewarmedThreads = vi.fn();
     const sendRequest = vi.fn();
+    const prewarmThreadStart = vi.fn();
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge({ sendRequest }, "local", target, {
+    installDraftPrewarmPolicyBridge({ sendRequest, prewarmThreadStart }, "local", target, {
       discardAllPrewarmedThreads,
     });
     const policy = target.__codexhostDraftPrewarmPolicyV1 as { clear(): Promise<void> };
@@ -305,51 +259,34 @@ describe("Renderer draft prewarm policy", () => {
 
   it("keeps the selected route when the same Host bridge is reconciled", () => {
     const sendRequest = vi.fn();
-    const bridge = { sendRequest };
+    const prewarmThreadStart = vi.fn();
+    const bridge = { sendRequest, prewarmThreadStart };
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge(bridge, "remote-ssh-discovered:mac", target);
+    const prewarmedThreadManager = { discardAllPrewarmedThreads: vi.fn() };
+    installDraftPrewarmPolicyBridge(
+      bridge,
+      "remote-ssh-discovered:mac",
+      target,
+      prewarmedThreadManager,
+    );
     const first = target.__codexhostDraftPrewarmPolicyV1 as {
       hostId: string;
       select(model: string | null): boolean;
     };
     first.select("codexhost/claude-code-native");
 
-    installDraftPrewarmPolicyBridge(bridge, "remote-ssh-discovered:mac", target);
+    installDraftPrewarmPolicyBridge(
+      bridge,
+      "remote-ssh-discovered:mac",
+      target,
+      prewarmedThreadManager,
+    );
 
     expect(target.__codexhostDraftPrewarmPolicyV1).toBe(first);
     expect(first.hostId).toBe("remote-ssh-discovered:mac");
     void bridge.sendRequest("thread/start", { model: "gpt-5" });
     expect(sendRequest).toHaveBeenCalledWith("thread/start", {
       model: "codexhost/claude-code-native",
-    });
-  });
-
-  it("routes direct and prewarmed creates through the selected transport Model", async () => {
-    const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
-      async () => undefined,
-    );
-    const bridge = { sendRequest };
-    const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge(bridge, "local", target);
-    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
-      select(model: string | null): boolean;
-    };
-
-    policy.select("codexhost/pi-native");
-    await bridge.sendRequest("start-conversation", {
-      collaborationMode: { mode: "default", settings: { model: "codexhost/grok-native" } },
-    });
-    await bridge.sendRequest("prewarm-thread-start-for-host", {
-      hostId: "local",
-      params: { model: "codexhost/grok-native" },
-    });
-
-    expect(sendRequest).toHaveBeenNthCalledWith(1, "start-conversation", {
-      collaborationMode: { mode: "default", settings: { model: "codexhost/pi-native" } },
-    });
-    expect(sendRequest).toHaveBeenNthCalledWith(2, "prewarm-thread-start-for-host", {
-      hostId: "local",
-      params: { model: "codexhost/pi-native" },
     });
   });
 
@@ -360,7 +297,9 @@ describe("Renderer draft prewarm policy", () => {
     const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
     const bridge = { sendRequest, prewarmThreadStart };
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge(bridge, "local", target);
+    installDraftPrewarmPolicyBridge(bridge, "local", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
     const policy = target.__codexhostDraftPrewarmPolicyV1 as {
       select(model: string | null): boolean;
     };

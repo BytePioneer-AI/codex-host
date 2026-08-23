@@ -75,30 +75,6 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(publish).toHaveBeenCalledOnce();
   });
 
-  it("finds the current request manager from the active Composer Fiber", () => {
-    const editor = {
-      parentElement: null,
-      querySelectorAll: () => [],
-    } as unknown as Element;
-    const root = { querySelector: () => editor } as unknown as ParentNode;
-    const manager = {
-      requestClient: {
-        prewarmThreadStart: function prewarmThreadStart() {
-          return "prewarm-thread-start-for-host";
-        },
-      },
-      sendRequest: function sendRequest() {
-        return "send-cli-request-for-host";
-      },
-    };
-    Object.defineProperty(editor, "__reactFiber$test", {
-      configurable: true,
-      value: { memoizedState: { memoizedState: manager, next: null }, return: null },
-    });
-
-    expect(findActivePrewarmTargets(root)).toEqual([manager]);
-  });
-
   it("keeps the outer manager so Usage notifications stay attached after wrapping", () => {
     const editor = {
       parentElement: null,

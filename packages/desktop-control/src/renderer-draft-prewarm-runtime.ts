@@ -18,26 +18,33 @@ export interface DraftPrewarmPolicyTarget {
 
 export interface RendererHostRequestBridge {
   sendRequest(method: string, parameters: unknown, options?: unknown): unknown;
-  prewarmThreadStart?: (parameters: unknown, options?: unknown) => unknown;
+  prewarmThreadStart(parameters: unknown, options?: unknown): unknown;
 }
 
 export interface RendererPrewarmedThreadManager {
-  discardAllPrewarmedThreads?: () => void;
+  discardAllPrewarmedThreads(): void;
 }
 
 export function installDraftPrewarmPolicyBridge(
   bridge: RendererHostRequestBridge,
   hostId: string,
   target: DraftPrewarmPolicyTarget,
-  prewarmedThreadManager?: RendererPrewarmedThreadManager,
+  prewarmedThreadManager: RendererPrewarmedThreadManager,
 ): { state: "ready"; reason: "owned-request-bridge" } {
   const existing = target.__codexhostDraftPrewarmPolicyV1 as
     | {
-        owns?: (candidate: RendererHostRequestBridge, candidateHostId: string) => boolean;
+        owns?: (
+          candidate: RendererHostRequestBridge,
+          candidateHostId: string,
+          candidatePrewarmedThreadManager: RendererPrewarmedThreadManager,
+        ) => boolean;
         dispose?: () => void;
       }
     | undefined;
-  if (existing?.owns?.(bridge, hostId) === true) {
+  if (
+    existing?.owns?.length === 3 &&
+    existing.owns(bridge, hostId, prewarmedThreadManager) === true
+  ) {
     return { state: "ready", reason: "owned-request-bridge" };
   }
   existing?.dispose?.();
@@ -45,58 +52,42 @@ export function installDraftPrewarmPolicyBridge(
   const originalSend = bridge.sendRequest;
   const originalPrewarm = bridge.prewarmThreadStart;
   let selectedModel: string | null = null;
-  let clearInFlight: Promise<void> | null = null;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
-  const routeCollaborationMode = (method: string, parameters: unknown): unknown => {
-    if (selectedModel === null || !isRecord(parameters)) return parameters;
-    const collaborationMode = parameters.collaborationMode;
-    const settings = isRecord(collaborationMode) ? collaborationMode.settings : null;
-    if (!isRecord(collaborationMode) || !isRecord(settings)) {
-      throw new Error(`Codex ${method} omitted collaborationMode.settings`);
+  const routeThreadStart = (parameters: unknown): unknown => {
+    if (selectedModel === null || !isRecord(parameters) || parameters.ephemeral === true) {
+      return parameters;
     }
-    return {
-      ...parameters,
-      collaborationMode: {
-        ...collaborationMode,
-        settings: { ...settings, model: selectedModel },
-      },
-    };
-  };
-  const routeThreadStart = (method: string, parameters: unknown): unknown => {
-    if (selectedModel === null || !isRecord(parameters)) return parameters;
-    const direct = method === "thread/start";
-    const wrapped =
-      method === "prewarm-thread-start-for-host" || method === "send-cli-request-for-host";
-    if (!direct && !wrapped) return parameters;
-    const threadParams = direct ? parameters : parameters.params;
-    if (!isRecord(threadParams) || threadParams.ephemeral === true) return parameters;
-    if (direct) return { ...threadParams, model: selectedModel };
-    return { ...parameters, params: { ...threadParams, model: selectedModel } };
+    return { ...parameters, model: selectedModel };
   };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
-    const routedParameters =
-      method === "start-conversation" || method === "prewarm-conversation-for-host"
-        ? routeCollaborationMode(method, parameters)
-        : routeThreadStart(method, parameters);
+    const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
     return options === undefined
       ? originalSend.call(bridge, method, routedParameters)
       : originalSend.call(bridge, method, routedParameters, options);
   };
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
-    const routedParameters = routeThreadStart("thread/start", parameters);
+    const routedParameters = routeThreadStart(parameters);
     return options === undefined
-      ? originalPrewarm?.call(bridge, routedParameters)
-      : originalPrewarm?.call(bridge, routedParameters, options);
+      ? originalPrewarm.call(bridge, routedParameters)
+      : originalPrewarm.call(bridge, routedParameters, options);
   };
   bridge.sendRequest = routedSend;
-  if (originalPrewarm) bridge.prewarmThreadStart = routedPrewarm;
+  bridge.prewarmThreadStart = routedPrewarm;
 
   const policy = Object.freeze({
     state: "ready" as const,
     hostId,
-    owns(candidate: RendererHostRequestBridge, candidateHostId: string): boolean {
-      return candidate === bridge && candidateHostId === hostId;
+    owns(
+      candidate: RendererHostRequestBridge,
+      candidateHostId: string,
+      candidatePrewarmedThreadManager: RendererPrewarmedThreadManager,
+    ): boolean {
+      return (
+        candidate === bridge &&
+        candidateHostId === hostId &&
+        candidatePrewarmedThreadManager === prewarmedThreadManager
+      );
     },
     select(model: string | null): boolean {
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
@@ -107,26 +98,13 @@ export function installDraftPrewarmPolicyBridge(
       return true;
     },
     clear(): Promise<void> {
-      if (prewarmedThreadManager?.discardAllPrewarmedThreads) {
-        prewarmedThreadManager.discardAllPrewarmedThreads();
-        return Promise.resolve();
-      }
-      if (clearInFlight === null) {
-        clearInFlight = Promise.resolve(
-          originalSend.call(bridge, "clear-prewarmed-threads-for-host", { hostId }),
-        )
-          .then(() => undefined)
-          .finally(() => {
-            clearInFlight = null;
-          });
-      }
-      return clearInFlight;
+      prewarmedThreadManager.discardAllPrewarmedThreads();
+      return Promise.resolve();
     },
     dispose(): void {
       if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
-        if (originalPrewarm) bridge.prewarmThreadStart = originalPrewarm;
-        else delete bridge.prewarmThreadStart;
+        bridge.prewarmThreadStart = originalPrewarm;
       }
       selectedModel = null;
     },
@@ -192,105 +170,14 @@ export async function installDraftPrewarmPolicyInRenderer(
     ) {
       throw new Error("Renderer request manager is ambiguous");
     }
-
-    const managerFunctions = (await contents.debugger.sendCommand("Runtime.getProperties", {
-      objectId: manager.objectId,
-    })) as {
-      result?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
-      internalProperties?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
-    };
-    const managerPropertyNames = new Set(
-      managerFunctions.result?.map((property) => String(property.name)) ?? [],
-    );
-    let hostBridgeObjectId: string | undefined =
-      managerPropertyNames.has("sendRequest") &&
-      managerPropertyNames.has("prewarmThreadStart") &&
-      managerPropertyNames.has("enqueueRequest")
-        ? manager.objectId
-        : undefined;
-
-    if (!hostBridgeObjectId) {
-      let managerSendRequestId = managerFunctions.result?.find(
-        (property) => property.name === "sendRequest",
-      )?.value?.objectId;
-      const managerPrototypeId = managerFunctions.internalProperties?.find(
-        (property) => property.name === "[[Prototype]]",
-      )?.value?.objectId;
-      if (typeof managerSendRequestId !== "string" && typeof managerPrototypeId === "string") {
-        const prototypeFunctions = (await contents.debugger.sendCommand("Runtime.getProperties", {
-          objectId: managerPrototypeId,
-          ownProperties: true,
-        })) as { result?: Array<{ name?: unknown; value?: { objectId?: unknown } }> };
-        managerSendRequestId = prototypeFunctions.result?.find(
-          (property) => property.name === "sendRequest",
-        )?.value?.objectId;
-      }
-      if (typeof managerSendRequestId !== "string") {
-        throw new Error("Renderer request manager sendRequest is unavailable");
-      }
-      const functionProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
-        objectId: managerSendRequestId,
-      })) as {
-        internalProperties?: Array<{ name?: unknown; value?: { objectId?: unknown } }>;
-      };
-      const scopesId = functionProperties.internalProperties?.find(
-        (property) => property.name === "[[Scopes]]",
-      )?.value?.objectId;
-      const hostBridgeCandidates: Array<{ name: string; objectId: string }> = [];
-      if (typeof scopesId === "string") {
-        const scopes = (await contents.debugger.sendCommand("Runtime.getProperties", {
-          objectId: scopesId,
-          ownProperties: true,
-        })) as { result?: Array<{ value?: { objectId?: unknown } }> };
-        for (const scope of scopes.result ?? []) {
-          if (typeof scope.value?.objectId !== "string") continue;
-          const scopeProperties = (await contents.debugger.sendCommand("Runtime.getProperties", {
-            objectId: scope.value.objectId,
-            ownProperties: true,
-          })) as {
-            result?: Array<{
-              name?: unknown;
-              value?: { objectId?: unknown; type?: unknown };
-            }>;
-          };
-          for (const property of scopeProperties.result ?? []) {
-            if (property.value?.type !== "object" || typeof property.value.objectId !== "string") {
-              continue;
-            }
-            const candidateSignature = (await contents.debugger.sendCommand(
-              "Runtime.callFunctionOn",
-              {
-                objectId: property.value.objectId,
-                functionDeclaration:
-                  "function(){const send=this.sendRequest;return typeof send==='function'&&Function.prototype.toString.call(send).includes('messageHandler')}",
-                returnByValue: true,
-              },
-            )) as { result?: { value?: unknown } };
-            if (candidateSignature.result?.value === true) {
-              hostBridgeCandidates.push({
-                name: String(property.name),
-                objectId: property.value.objectId,
-              });
-            }
-          }
-        }
-      }
-      const hostBridge = hostBridgeCandidates[0];
-      if (hostBridgeCandidates.length !== 1 || !hostBridge) {
-        throw new Error("Renderer Host request bridge is ambiguous");
-      }
-      hostBridgeObjectId = hostBridge.objectId;
+    if (typeof prewarmedThreadManager?.objectId !== "string") {
+      throw new Error("Renderer prewarmed Thread manager is unavailable");
     }
 
     const installed = (await contents.debugger.sendCommand("Runtime.callFunctionOn", {
-      objectId: hostBridgeObjectId,
+      objectId: manager.objectId,
       functionDeclaration: installRendererPolicyFunction,
-      arguments: [
-        { value: hostId },
-        ...(typeof prewarmedThreadManager?.objectId === "string"
-          ? [{ objectId: prewarmedThreadManager.objectId }]
-          : []),
-      ],
+      arguments: [{ value: hostId }, { objectId: prewarmedThreadManager.objectId }],
       awaitPromise: true,
       returnByValue: true,
     })) as { result?: { value?: unknown } };

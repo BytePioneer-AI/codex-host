@@ -232,7 +232,7 @@ has prewarmThreadStart
 has enqueueRequest
 ```
 
-旧版 `Function.prototype.toString()` 特征只能作为兼容 fallback，不能作为当前版本的主路径。
+当前实现不再支持旧版 `Function.prototype.toString()` 特征。API 形状不匹配时应 fail closed，不再回退到函数源码或闭包扫描。
 
 ## 六、第五步：沿用户点击路径逐步验证
 
@@ -339,7 +339,7 @@ grok
 
 ### 1. 稳定 API 形状优先于函数源码
 
-函数名、压缩变量名、函数源码和闭包变量都属于高风险私有实现。只有在没有稳定 API 形状时，才使用源码特征作为版本 fallback。
+函数名、压缩变量名、函数源码和闭包变量都属于高风险私有实现。当前 request bridge 只按已审查的 API 形状识别；形状不匹配时 fail closed。
 
 ### 2. 每个 fallback 都要标记删除条件
 

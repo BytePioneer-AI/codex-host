@@ -79,6 +79,7 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
         typeof value.requestClient.prewarmThreadStart === 'function' &&
         typeof value.requestClient.sendRequest === 'function' &&
         typeof value.requestClient.enqueueRequest === 'function' &&
+        typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function' &&
         typeof value.sendRequest === 'function'
       ) {
         managers.add(value);

@@ -328,36 +328,14 @@ export function threadIdFromComposerModelTarget(
   return hostThreadIdSchema.parse(target[1]);
 }
 
-function hasPrewarmMethod(value: unknown): value is PrewarmTarget {
+function isCurrentRequestBridge(value: unknown): value is PrewarmTarget {
   return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    typeof (value as { prewarmThreadStart?: unknown }).prewarmThreadStart === "function"
-  );
-}
-
-function isActiveRequestManager(value: unknown): value is PrewarmTarget {
-  if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  const source = Function.prototype.toString.call(value.sendRequest);
-  return source.includes("send-cli-request-for-host") && hasPrewarmMethod(value.requestClient);
-}
-
-function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
-  const bridge = target.requestClient ?? target;
-  const stableApiShape =
-    typeof bridge.hostId === "string" &&
-    bridge.hostId.length > 0 &&
-    typeof bridge.sendRequest === "function" &&
-    typeof bridge.prewarmThreadStart === "function" &&
-    typeof bridge.enqueueRequest === "function";
-  if (stableApiShape) return true;
-
-  const prewarm = target.prewarmThreadStart ?? target.requestClient?.prewarmThreadStart;
-  if (!prewarm) return false;
-  const source = Function.prototype.toString.call(prewarm);
-  return (
-    (source.includes("enqueueRequest") && source.includes("thread-prewarm-start")) ||
-    source.includes("prewarm-thread-start-for-host")
+    isRecord(value) &&
+    typeof value.hostId === "string" &&
+    value.hostId.length > 0 &&
+    typeof value.sendRequest === "function" &&
+    typeof value.prewarmThreadStart === "function" &&
+    typeof value.enqueueRequest === "function"
   );
 }
 
@@ -397,13 +375,13 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
       const hookState = hook.memoizedState;
       if (isRecord(hookState)) {
         const requestClient = hookState.requestClient;
-        if (isActiveRequestManager(hookState) && matchesCurrentPrewarmSignature(hookState)) {
-          targets.add(hookState);
-        } else if (
-          hasPrewarmMethod(requestClient) &&
-          matchesCurrentPrewarmSignature(requestClient)
-        ) {
-          targets.add(typeof hookState.sendRequest === "function" ? hookState : requestClient);
+        const bridge = isCurrentRequestBridge(requestClient)
+          ? requestClient
+          : isCurrentRequestBridge(hookState)
+            ? hookState
+            : null;
+        if (bridge) {
+          targets.add(typeof hookState.sendRequest === "function" ? hookState : bridge);
         }
       }
       hook =

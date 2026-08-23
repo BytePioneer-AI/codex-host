@@ -1,6 +1,6 @@
 # Codex Desktop 26.814 兼容性记录
 
-本文记录本地 Codex Desktop 更新后，codexhost Renderer 注入和 Agent/Model 选择遇到的问题，以及为了兼容旧版 Codex 暂时保留的代码。本文不是 Codex Desktop 内部 API 的稳定契约；更新 Codex 后应重新做现场探针。
+本文记录本地 Codex Desktop 更新后，codexhost Renderer 注入和 Agent/Model 选择遇到的问题，以及旧版兼容代码的清理结果。本文不是 Codex Desktop 内部 API 的稳定契约；更新 Codex 后应重新做现场探针。
 
 ## 现场环境
 
@@ -105,45 +105,34 @@ Codex 更新后标题服务的压缩内部标识从此前观察到的 `tTe` 变�
 | `packages/renderer-extension/src/renderer-binding-probe.ts` | 在 Harness availability 的初次检查遇到启动竞态时进行有界重试。 |
 | `packages/desktop-control/src/main-process-title-policy.ts` | 验证标题服务结构，并安装标题隔离策略。 |
 
-## 仍保留的旧代码
+## 旧版兼容债务清理
 
-以下代码目前没有删除，是有意保留的兼容 fallback。它们不是当前 Codex 的首选路径。
+Renderer Agent routing 的最低支持基线现收敛为 Codex Desktop `26.814.41407` 所确认的结构。更早、缺少下列任一能力的 Desktop 不再受支持，并会在 policy 安装阶段 fail closed：
 
-| 位置 | 旧逻辑 | 当前状态 | 未来删除条件 |
-| --- | --- | --- | --- |
-| `packages/desktop-control/src/renderer-draft-prewarm-runtime.ts:103` | 当没有 `prewarmedThreadManager` 时发送 `clear-prewarmed-threads-for-host`。 | 兼容旧版 Codex；当前版本有 manager 时不会走这里。 | codexhost 不再支持缺少 `prewarmedThreadManager` 的 Codex 版本后删除。 |
-| `packages/desktop-control/src/renderer-draft-prewarm-runtime.ts:227-244` | 通过 `sendRequest` 的 `[[Scopes]]` 查找包含 `messageHandler` 的旧 Host bridge。 | 旧版 bridge fallback；当前版本优先按 API 形状识别。 | 所有支持版本都提供稳定的 `requestClient` 结构后删除。 |
-| `packages/renderer-extension/src/versioned-renderer-adapter.ts:310` | 通过 `send-cli-request-for-host` 判断旧版 active manager。 | 保留给旧版 Codex；当前版本通常走 inner bridge 的稳定 API 形状。 | 不再支持旧版 prewarm manager 结构后删除。 |
-| `packages/renderer-extension/src/versioned-renderer-adapter.ts:326-327` | 通过 `thread-prewarm-start` 或 `prewarm-thread-start-for-host` 判断旧版 prewarm 方法。 | 旧版函数源码特征 fallback。 | 完成最低支持 Codex 版本收敛后删除。 |
-| `packages/desktop-control/src/renderer-draft-prewarm-runtime.ts:61` | 兼容旧版 `prewarm-thread-start-for-host` 和 `send-cli-request-for-host` 参数包装。 | 旧版请求路由 fallback；当前版本同时支持直接 `thread/start`。 | 所有支持版本都使用 `thread/start` / `prewarmThreadStart` 后删除。 |
-| `packages/desktop-control/test/renderer-draft-prewarm-policy.test.ts` | 覆盖旧版清理 RPC、旧版 bridge 和旧版参数包装。 | 防止删除兼容分支时丢失旧版支持。 | 对应生产 fallback 删除后同步删除或改写。 |
-| `packages/renderer-extension/test/versioned-renderer-adapter.test.ts` | 覆盖旧版源码特征识别。 | 保留旧版兼容行为的回归测试。 | 对应源码 fallback 删除后同步删除。 |
+- 非空 `hostId`
+- `sendRequest`
+- `prewarmThreadStart`
+- `enqueueRequest`
+- `prewarmedThreadManager.discardAllPrewarmedThreads`
 
-行号会随后续编辑变化，以上路径和逻辑名称比固定行号更可靠。
+已完成以下清理：
 
-## 计划删除方式
+1. 删除通过 `Function.prototype.toString()`、`[[Scopes]]` 和 `messageHandler` 查找旧 Host bridge 的路径。
+2. 删除旧版 prewarm 清理 RPC fallback；`clear()` 只调用 `prewarmedThreadManager.discardAllPrewarmedThreads()`。
+3. 删除旧版 wrapped prewarm 和 conversation 请求的参数改写；Thread 创建路由只处理当前 `thread/start` 和 `prewarmThreadStart` 入口。
+4. Active request target 只按当前 API 形状识别，不再读取函数源码。
+5. 删除旧版 bridge、清理 RPC、源码特征和参数包装测试，保留当前结构、生命周期清理、直接创建和 fail-closed 测试。
+6. 更新 Renderer binding probe 文档，不再把已删除 RPC 描述为当前契约。
 
-删除前先确定 codexhost 的最低支持 Codex Desktop 版本，例如在发布说明或兼容性矩阵中明确记录。不要只因为当前本机版本通过，就直接删除旧分支。
+这次清理不删除其他独立的版本兼容路径。例如 Composer identity 的 DOM/Fiber 双路径和标题服务的 `[[Scopes]]` 检查不属于本记录中的 request bridge 债务。
 
-建议按以下顺序清理：
+清理后的真实 Composer 回归仍应覆盖：
 
-1. 记录最低支持 Codex 版本，并在该版本和当前版本各做一次现场探针。
-2. 确认所有支持版本都提供：
-   - `hostId: "local"`
-   - `sendRequest`
-   - `prewarmThreadStart`
-   - `enqueueRequest`
-   - `prewarmedThreadManager.discardAllPrewarmedThreads`
-3. 删除旧版 `Function.toString()` / `[[Scopes]]` bridge 查找逻辑。
-4. 删除 `clear-prewarmed-threads-for-host` fallback。
-5. 删除旧版 `prewarm-thread-start-for-host` 和 `send-cli-request-for-host` 路由分支。
-6. 同步删除只服务于这些 fallback 的测试和错误处理。
-7. 用真实 Composer 完成以下回归：
-   - 新 Thread 从 Codex 切换到每个外部 Agent。
-   - 外部 Agent 的 Model 目录能够加载。
-   - 在 Agent 之间连续切换后，下一次 Thread/start 使用当前选择的 Model。
-   - 切回 Codex 后，原生 Codex draft 仍然可用。
-   - 已锁定 Thread 不允许错误地切换 Agent。
+- 新 Thread 从 Codex 切换到每个外部 Agent。
+- 外部 Agent 的 Model 目录能够加载。
+- 在 Agent 之间连续切换后，下一次 `thread/start` 使用当前选择的 Model。
+- 切回 Codex 后，原生 Codex draft 仍然可用。
+- 已锁定 Thread 不允许错误地切换 Agent。
 
 ## 本次验证记录
 

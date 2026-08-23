@@ -220,6 +220,15 @@ impl LocalRuntimeLease {
             };
             let owner = match &stored_owner {
                 StoredOwnerRecord::Exact(owner) => owner.clone(),
+                StoredOwnerRecord::VersionOne(owner)
+                    if owner.process_id == process_id && owner.child_process_id.is_none() =>
+                {
+                    // A released childless record cannot belong to this acquiring Shim: it has not
+                    // returned from acquire or spawned its child yet. The PID was reused after the
+                    // released Shim exited, so do not wait on our own startup as a legacy owner.
+                    remove_stored_owner_if_matches(&mutation_lock, &directory, &stored_owner)?;
+                    continue;
+                }
                 StoredOwnerRecord::VersionOne(owner) => {
                     let Some(owner) = migrate_version_one_owner(&mutation_lock, &directory, owner)?
                     else {

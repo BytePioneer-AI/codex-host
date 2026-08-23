@@ -989,6 +989,57 @@ fn rejects_a_childless_version_one_owner_whose_process_id_was_reused() {
     );
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn discards_a_childless_version_one_owner_that_names_the_current_shim() {
+    let directory = temporary_directory();
+    let owner_directory = directory.join("local-host-runtime-owner-v1");
+    let replacement_ready = directory.join("replacement-ready");
+    let owner_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("local-host-runtime-owner.lock"))
+        .expect("open local Host Runtime owner mutation lock");
+    owner_lock
+        .lock_exclusive()
+        .expect("hold local Host Runtime owner mutation lock");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    fs::create_dir(&owner_directory).expect("create stale version-one owner directory");
+    fs::write(
+        owner_directory.join("owner"),
+        format!(
+            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id=\n",
+            replacement.id(),
+            process::id(),
+        ),
+    )
+    .expect("publish childless version-one self owner record");
+    FileExt::unlock(&owner_lock).expect("release local Host Runtime owner mutation lock");
+
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(1)) {
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = replacement_identity.as_deref() {
+            force_stop_test_process(process_id_from_ready(identity, "root="));
+        }
+        let _ = replacement.wait();
+    }
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        replacement_identity.is_some(),
+        "replacement waited on the childless version-one record that named its own Shim PID"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {

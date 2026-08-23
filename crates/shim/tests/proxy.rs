@@ -655,6 +655,69 @@ fn replacement_waits_for_the_local_runtime_owner_mutation_lock() {
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
+fn migrates_a_live_version_one_owner_before_starting_a_replacement() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
+    let contents = wait_for_file(&owner_record, Duration::from_secs(5));
+    let field = |name: &str| {
+        contents
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("owner record omitted {name}"))
+    };
+    fs::write(
+        &owner_record,
+        format!(
+            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id={}\n",
+            field("process_id"),
+            field("desktop_process_id"),
+            field("child_process_id"),
+        ),
+    )
+    .expect("publish version-one owner record");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    let owner_was_retired = wait_for_process_exit(&mut owner, Duration::from_secs(2));
+
+    drop(owner_stdin);
+    if !owner_was_retired {
+        force_stop_test_process(owner.id());
+        force_stop_test_process(owner_root);
+        let _ = owner.wait();
+    }
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+        let _ = fs::remove_dir_all(&directory);
+        panic!("replacement Host Runtime did not converge after legacy owner migration");
+    }
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        owner_was_retired && !process_exists(owner_root),
+        "replacement started without retiring the live version-one owner"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
 fn replacement_does_not_signal_a_reused_owner_process_id() {
     let directory = temporary_directory();
     let owner_ready = directory.join("owner-ready");

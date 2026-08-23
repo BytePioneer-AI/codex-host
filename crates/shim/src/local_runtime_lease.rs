@@ -31,10 +31,23 @@ struct OwnerRecord {
     child_process_started_at_micros: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VersionOneOwnerRecord {
+    process_id: u32,
+    desktop_process_id: u32,
+    child_process_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StoredOwnerRecord {
+    Exact(OwnerRecord),
+    VersionOne(VersionOneOwnerRecord),
+}
+
 impl OwnerRecord {
     fn encode(&self) -> String {
         format!(
-            "version=1\nprocess_id={}\nprocess_started_at_micros={}\ndesktop_process_id={}\nchild_process_id={}\nchild_process_started_at_micros={}\n",
+            "version=2\nprocess_id={}\nprocess_started_at_micros={}\ndesktop_process_id={}\nchild_process_id={}\nchild_process_started_at_micros={}\n",
             self.process_id,
             self.process_started_at_micros,
             self.desktop_process_id,
@@ -45,28 +58,40 @@ impl OwnerRecord {
         )
     }
 
-    fn decode(value: &str) -> Option<Self> {
+    fn decode(value: &str) -> Option<StoredOwnerRecord> {
         let field = |name: &str| {
             value
                 .lines()
                 .find_map(|line| line.strip_prefix(&format!("{name}=")))
         };
-        if field("version")? != "1" {
+        let version = field("version")?;
+        let process_id = field("process_id")?.parse().ok()?;
+        let desktop_process_id = field("desktop_process_id")?.parse().ok()?;
+        let child_process_id = field("child_process_id").and_then(|value| value.parse().ok());
+        // The released v1 shape has no start identities. Development builds of this follow-up
+        // briefly emitted start identities under v1, so accept those as exact records too.
+        if version == "1" && field("process_started_at_micros").is_none() {
+            return Some(StoredOwnerRecord::VersionOne(VersionOneOwnerRecord {
+                process_id,
+                desktop_process_id,
+                child_process_id,
+            }));
+        }
+        if version != "2" && version != "1" {
             return None;
         }
-        let child_process_id = field("child_process_id").and_then(|value| value.parse().ok());
         let child_process_started_at_micros =
             field("child_process_started_at_micros").and_then(|value| value.parse().ok());
         if child_process_id.is_some() != child_process_started_at_micros.is_some() {
             return None;
         }
-        Some(Self {
-            process_id: field("process_id")?.parse().ok()?,
+        Some(StoredOwnerRecord::Exact(Self {
+            process_id,
             process_started_at_micros: field("process_started_at_micros")?.parse().ok()?,
-            desktop_process_id: field("desktop_process_id")?.parse().ok()?,
+            desktop_process_id,
             child_process_id,
             child_process_started_at_micros,
-        })
+        }))
     }
 }
 
@@ -167,9 +192,20 @@ impl LocalRuntimeLease {
                 Err(error) => return Err(error.into()),
             }
 
-            let Some(owner) = read_owner_with_grace(&directory)? else {
+            let Some(stored_owner) = read_stored_owner_with_grace(&directory)? else {
                 fs::remove_dir_all(&directory)?;
                 continue;
+            };
+            let owner = match &stored_owner {
+                StoredOwnerRecord::Exact(owner) => owner.clone(),
+                StoredOwnerRecord::VersionOne(owner) => {
+                    let Some(owner) = migrate_version_one_owner(&mutation_lock, &directory, owner)?
+                    else {
+                        remove_stored_owner_if_matches(&mutation_lock, &directory, &stored_owner)?;
+                        continue;
+                    };
+                    owner
+                }
             };
             if owner.process_id == process_id {
                 return Err("current codexhost Shim already owns the local Host Runtime".into());
@@ -211,15 +247,8 @@ impl LocalRuntimeLease {
         Ok(())
     }
 
-    fn write_record(&self, _mutation_lock: &OwnerMutationLock) -> Result<(), Box<dyn Error>> {
-        let target = self.directory.join(OWNER_RECORD_NAME);
-        let temporary = self.directory.join(format!(
-            "{OWNER_RECORD_NAME}.tmp-{}",
-            self.record.process_id
-        ));
-        fs::write(&temporary, self.record.encode())?;
-        atomic_replace_file(&temporary, &target)?;
-        Ok(())
+    fn write_record(&self, mutation_lock: &OwnerMutationLock) -> Result<(), Box<dyn Error>> {
+        write_owner_record(mutation_lock, &self.directory, &self.record)
     }
 }
 
@@ -242,15 +271,24 @@ impl Drop for LocalRuntimeLease {
 }
 
 fn read_owner(directory: &Path) -> Option<OwnerRecord> {
+    match read_stored_owner(directory)? {
+        StoredOwnerRecord::Exact(owner) => Some(owner),
+        StoredOwnerRecord::VersionOne(_) => None,
+    }
+}
+
+fn read_stored_owner(directory: &Path) -> Option<StoredOwnerRecord> {
     fs::read_to_string(directory.join(OWNER_RECORD_NAME))
         .ok()
         .and_then(|value| OwnerRecord::decode(&value))
 }
 
-fn read_owner_with_grace(directory: &Path) -> Result<Option<OwnerRecord>, Box<dyn Error>> {
+fn read_stored_owner_with_grace(
+    directory: &Path,
+) -> Result<Option<StoredOwnerRecord>, Box<dyn Error>> {
     let deadline = Instant::now() + OWNER_READ_GRACE;
     loop {
-        if let Some(owner) = read_owner(directory) {
+        if let Some(owner) = read_stored_owner(directory) {
             return Ok(Some(owner));
         }
         if Instant::now() >= deadline {
@@ -265,10 +303,79 @@ fn remove_owner_if_matches(
     directory: &Path,
     expected: &OwnerRecord,
 ) -> io::Result<()> {
-    if read_owner(directory).as_ref() == Some(expected) {
+    if read_stored_owner(directory).as_ref() == Some(&StoredOwnerRecord::Exact(expected.clone())) {
         fs::remove_dir_all(directory)?;
     }
     Ok(())
+}
+
+fn remove_stored_owner_if_matches(
+    _mutation_lock: &OwnerMutationLock,
+    directory: &Path,
+    expected: &StoredOwnerRecord,
+) -> io::Result<()> {
+    if read_stored_owner(directory).as_ref() == Some(expected) {
+        fs::remove_dir_all(directory)?;
+    }
+    Ok(())
+}
+
+fn write_owner_record(
+    _mutation_lock: &OwnerMutationLock,
+    directory: &Path,
+    record: &OwnerRecord,
+) -> Result<(), Box<dyn Error>> {
+    let target = directory.join(OWNER_RECORD_NAME);
+    let temporary = directory.join(format!("{OWNER_RECORD_NAME}.tmp-{}", record.process_id));
+    fs::write(&temporary, record.encode())?;
+    atomic_replace_file(&temporary, &target)?;
+    Ok(())
+}
+
+fn migrate_version_one_owner(
+    mutation_lock: &OwnerMutationLock,
+    directory: &Path,
+    legacy: &VersionOneOwnerRecord,
+) -> Result<Option<OwnerRecord>, Box<dyn Error>> {
+    // v1 cannot itself distinguish PID reuse. While the mutation is serialized, validate the
+    // live Shim and its lineage, snapshot exact process instances, and publish v2 before sending
+    // any signal. An ambiguous live Shim is never treated as stale ownership.
+    let Some(shim_snapshot) = current_process_snapshot(legacy.process_id)? else {
+        return Ok(None);
+    };
+    let current_executable = env::current_exe()?;
+    if shim_snapshot.executable.file_name() != current_executable.file_name() {
+        return Ok(None);
+    }
+    if shim_snapshot.parent_id != legacy.desktop_process_id && shim_snapshot.parent_id != 1 {
+        return Err(format!(
+            "live version-one local Host Runtime owner PID {} no longer belongs to its recorded Desktop PID {}; refusing unsafe takeover",
+            legacy.process_id, legacy.desktop_process_id,
+        )
+        .into());
+    }
+
+    let child_snapshot = match legacy.child_process_id {
+        Some(child_process_id) => current_process_snapshot(child_process_id)?
+            .filter(|snapshot| snapshot.parent_id == legacy.process_id),
+        None => None,
+    };
+    let migrated = OwnerRecord {
+        process_id: legacy.process_id,
+        process_started_at_micros: shim_snapshot.started_at_micros,
+        desktop_process_id: legacy.desktop_process_id,
+        child_process_id: child_snapshot.as_ref().map(|snapshot| snapshot.id),
+        child_process_started_at_micros: child_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.started_at_micros),
+    };
+
+    let expected = StoredOwnerRecord::VersionOne(legacy.clone());
+    if read_stored_owner(directory).as_ref() != Some(&expected) {
+        return Ok(None);
+    }
+    write_owner_record(mutation_lock, directory, &migrated)?;
+    Ok(Some(migrated))
 }
 
 fn owner_is_codexhost_shim(owner: &OwnerRecord) -> Result<bool, Box<dyn Error>> {
@@ -415,6 +522,15 @@ fn wait_for_owner_exit(owner: &OwnerRecord, timeout: Duration) -> Result<bool, B
             return Ok(false);
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn current_process_snapshot(process_id: u32) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
+    match process_snapshot(process_id) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(_) if !process_exists(process_id) => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 

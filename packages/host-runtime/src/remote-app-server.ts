@@ -384,22 +384,30 @@ export function createRemoteAppServerWebSocketListener(input: {
       closing = (async () => {
         for (const socket of webSockets.clients) socket.terminate();
         await new Promise<void>((resolve) => webSockets.close(() => resolve()));
-        if (listening) {
+        const closeServer = async (): Promise<void> => {
+          if (!listening) return;
           await new Promise<void>((resolve, reject) =>
             server.close((error) => (error ? reject(error) : resolve())),
           );
-        }
-        await Promise.allSettled(sessions);
-        if (process.platform !== "win32" && ownedSocketIdentity) {
-          const identity = ownedSocketIdentity;
+        };
+        if (process.platform !== "win32" && listening) {
+          // Node unlinks a Unix socket as part of closing its server. Keep that
+          // operation and any explicit cleanup in the same critical section as
+          // a replacement listener's stale-socket removal and bind.
           await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
-            const current = await unixSocketIdentity(input.socketPath);
-            if (current && sameUnixFileIdentity(current, identity)) {
-              await rm(input.socketPath, { force: true });
+            await closeServer();
+            if (ownedSocketIdentity) {
+              const current = await unixSocketIdentity(input.socketPath);
+              if (current && sameUnixFileIdentity(current, ownedSocketIdentity)) {
+                await rm(input.socketPath, { force: true });
+              }
+              ownedSocketIdentity = null;
             }
           });
-          ownedSocketIdentity = null;
+        } else {
+          await closeServer();
         }
+        await Promise.allSettled(sessions);
         closed.resolve(undefined);
       })();
       return closing;

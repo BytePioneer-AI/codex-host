@@ -1,4 +1,6 @@
-use std::io::{self, Read};
+use std::io;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::io::Read;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};

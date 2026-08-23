@@ -287,6 +287,7 @@ interface MountedComposer {
   threadConfiguration: HarnessModelSelectionState | undefined;
   usage: ThreadUsageSnapshot | null;
   accountCredits: AccountCreditsSnapshot | null;
+  hostId: string | null;
   usageRequestGeneration: number;
 }
 
@@ -336,6 +337,14 @@ export function lateConversationTargetResolution(
   return mountedTarget?.[0] === "default" && (sourcePhase === "locked" || submissionPending)
     ? "transfer"
     : "inspect";
+}
+
+export function scopedComposerTarget(
+  target: readonly unknown[] | null,
+  hostId: string | null,
+): readonly unknown[] | null {
+  if (target?.[0] !== "conversation" || !hostId) return target;
+  return ["conversation", target[1], hostId];
 }
 
 export function isComposerModelWriteAllowed(target: readonly unknown[] | null): boolean {
@@ -412,6 +421,12 @@ export function installRendererBindingProbe(
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
+  const activeModelHostId = (): string | null => {
+    if (!modelControl) return null;
+    return modelControl.currentHostId ? modelControl.currentHostId() : "local";
+  };
+  const controllerTarget = (target: readonly unknown[] | null, hostId: string | null) =>
+    scopedComposerTarget(target, hostId);
   let usageNotificationDispose: (() => void) | null = null;
   const localAgentForSidebarThread = (input: {
     hostId: string;
@@ -696,17 +711,27 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "not-required";
       return;
     }
+    const requestModelControl = modelControl;
+    const requestHostId = activeModelHostId();
+    const client =
+      requestModelControl && requestHostId
+        ? (requestModelControl.clientForHost?.(requestHostId) ?? requestModelControl)
+        : null;
     const generation = controller.beginOwnershipRequest(mounted.composer);
     const usageGeneration = mounted.usageRequestGeneration;
     mounted.ownershipStatus = "loading";
     renderMounted(mounted);
     try {
-      if (!modelControl) throw new Error("Thread ownership control is unavailable");
-      const inspection = await modelControl.inspectThread({ threadId });
+      if (!client || !requestHostId) throw new Error("Thread ownership control is unavailable");
+      mounted.hostId = requestHostId;
+      const inspection = await client.inspectThread({ threadId });
       if (
         !isCurrentOwnershipRequest(mounted, generation) ||
         mountedByComposer.get(mounted.composer) !== mounted ||
-        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
+        mounted.hostId !== requestHostId ||
+        modelControl !== requestModelControl ||
+        activeModelHostId() !== requestHostId
       ) {
         return;
       }
@@ -786,11 +811,14 @@ export function installRendererBindingProbe(
     if (resolution === "none") return false;
 
     const previousTarget = mounted.modelTarget;
+    const nextHostId = activeModelHostId() ?? mounted.hostId;
+    const nextControllerTarget = controllerTarget(currentTarget, nextHostId);
     mounted.modelTarget = currentTarget;
+    mounted.hostId = nextHostId;
     const rebound =
       resolution === "transfer"
-        ? controller.transfer(mounted.composer, mounted.composer, currentTarget)
-        : controller.rebindConversation(mounted.composer, currentTarget) !== null;
+        ? controller.transfer(mounted.composer, mounted.composer, nextControllerTarget)
+        : controller.rebindConversation(mounted.composer, nextControllerTarget) !== null;
     if (!rebound) {
       mounted.ownershipStatus = "error";
       renderMounted(mounted);
@@ -1633,13 +1661,44 @@ export function installRendererBindingProbe(
     return promise;
   }
 
+  const reloadMountedOwnershipForHost = (hostId: string): void => {
+    for (const mounted of mountedByComposer.values()) {
+      if (mounted.hostId === hostId || !threadIdFromComposerModelTarget(mounted.modelTarget)) {
+        continue;
+      }
+      const target = controllerTarget(mounted.modelTarget, hostId);
+      if (controller.rebindConversation(mounted.composer, target) === null) {
+        mounted.ownershipStatus = "error";
+        renderMounted(mounted);
+        continue;
+      }
+      mounted.hostId = hostId;
+      mounted.composerId = controller.get(mounted.composer).composerId;
+      mounted.modelView = { status: "idle" };
+      mounted.permissionModeView = { status: "idle" };
+      mounted.threadConfiguration = undefined;
+      mounted.ownershipStatus = "loading";
+      mounted.usage = null;
+      mounted.accountCredits = null;
+      mounted.usageRequestGeneration += 1;
+      usageRefreshAttempts.delete(mounted.composer);
+      const timer = usageRefreshTimers.get(mounted.composer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        usageRefreshTimers.delete(mounted.composer);
+      }
+      renderMounted(mounted);
+      void loadThreadOwnership(mounted);
+    }
+    sidebarAgentIcons.refresh();
+  };
+
   function reconcileHarnessAvailabilityHost(): void {
-    const reportedHostId = modelControl?.currentHostId?.();
-    const hostId =
-      reportedHostId ?? (modelControl?.currentHostId ? activeAvailabilityHostId : "local");
-    if (hostId === activeAvailabilityHostId) return;
+    const hostId = activeModelHostId();
+    if (!hostId || hostId === activeAvailabilityHostId) return;
     activeAvailabilityHostId = hostId;
     hostHarnessAvailabilityState(hostId);
+    reloadMountedOwnershipForHost(hostId);
     publishConnectionStatus();
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     void refreshHarnessAvailabilityForHost(hostId);
@@ -1696,11 +1755,12 @@ export function installRendererBindingProbe(
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
+    const hostId = activeModelHostId();
     const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
     if (!editor) return;
     const state = controller.mount(
       composer,
-      modelTarget,
+      controllerTarget(modelTarget, hostId),
       modelTarget?.[0] === "default" ? readNewThreadAgentPreference(enabledAgentSet) : undefined,
     );
     const inherited = pendingReplacements.get(composer)?.source;
@@ -1750,6 +1810,7 @@ export function installRendererBindingProbe(
       threadConfiguration: inherited?.threadConfiguration,
       usage: inherited?.usage ?? null,
       accountCredits: inherited?.accountCredits ?? null,
+      hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
     };
     mountedByComposer.set(composer, mounted);
@@ -1794,6 +1855,7 @@ export function installRendererBindingProbe(
     for (const [target, replacement] of pendingReplacements) {
       const sourceState = controller.get(replacement.source.composer);
       const replacementTarget = findComposerModelTarget(target);
+      const replacementHostId = activeModelHostId() ?? replacement.source.hostId;
       if (
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
@@ -1801,7 +1863,11 @@ export function installRendererBindingProbe(
           sourceState.phase,
           controller.isSubmissionPending(replacement.source.composer),
         ) ||
-        !controller.transfer(replacement.source.composer, target, replacementTarget)
+        !controller.transfer(
+          replacement.source.composer,
+          target,
+          controllerTarget(replacementTarget, replacementHostId),
+        )
       ) {
         pendingReplacements.delete(target);
       }

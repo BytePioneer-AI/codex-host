@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { DraftAgentController } from "../src/index.js";
+import { scopedComposerTarget } from "../src/renderer-binding-probe.js";
 
 function controller(): DraftAgentController<object> {
   return new DraftAgentController<object>({
@@ -274,6 +275,31 @@ describe("Renderer draft Agent controller", () => {
     agents.mount(revisit, ["conversation", "late-fork-thread"]);
 
     expect(agents.get(revisit)).toEqual(original);
+  });
+
+  it("does not reuse a Thread Agent state across Hosts", () => {
+    const composer = {};
+    const target = ["conversation", "same-thread"] as const;
+    const agents = controller();
+    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.remote" });
+    const localTarget = scopedComposerTarget(target, "local");
+    const remoteTarget = scopedComposerTarget(target, "remote-ssh:company");
+
+    agents.mount(composer, localTarget);
+    agents.restore(composer, "pi", model);
+    expect(agents.get(composer)).toMatchObject({ agent: "pi", piModel: model });
+
+    expect(agents.rebindConversation(composer, remoteTarget)).toMatchObject({
+      agent: "codex",
+      phase: "draft",
+    });
+    expect(agents.get(composer)).not.toHaveProperty("piModel");
+
+    expect(agents.rebindConversation(composer, localTarget)).toMatchObject({
+      agent: "pi",
+      phase: "locked",
+      piModel: model,
+    });
   });
 
   it("rebinds a reused Composer without carrying another conversation's Pi state", () => {

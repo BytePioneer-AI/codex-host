@@ -18,7 +18,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
-use codexhost_platform::launch_desktop;
+use codexhost_platform::{
+    APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
+};
 #[cfg(not(target_os = "linux"))]
 use codexhost_platform::{CompatibilityChoice, prompt_compatibility_warning};
 use codexhost_platform::{
@@ -146,6 +148,7 @@ fn print_installation(installation: &DesktopInstallation, process_ids: &[u32]) {
         DesktopIdentity::WindowsPackage {
             package_name,
             package_family_name,
+            ..
         } => {
             println!("platform=windows");
             println!("package_name={package_name}");
@@ -495,7 +498,7 @@ fn start_desktop_controller(
 #[cfg(target_os = "windows")]
 fn wait_for_launched_desktop_ownership(
     installation: &DesktopInstallation,
-    desktop: &mut Child,
+    desktop: &mut DesktopProcess,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let desktop_pid = desktop.id();
@@ -529,7 +532,7 @@ fn wait_for_launched_desktop_ownership(
 
 #[cfg(target_os = "windows")]
 fn wait_for_desktop_exit(
-    desktop: &mut Child,
+    desktop: &mut DesktopProcess,
     timeout: Duration,
 ) -> std::io::Result<Option<ExitStatus>> {
     let started = Instant::now();
@@ -571,7 +574,7 @@ fn stop_managed_desktop_for_update(
 
 #[cfg(target_os = "windows")]
 fn stop_managed_desktop_for_update(
-    desktop: &mut Child,
+    desktop: &mut DesktopProcess,
     controller: &mut SupervisedChild,
 ) -> Result<(), Box<dyn Error>> {
     let _ = stop_desktop_controller(controller);
@@ -1293,6 +1296,10 @@ fn default_launch_options() -> LaunchOptions {
 
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
+        #[cfg(target_os = "windows")]
+        Some(APPX_RESUME_ARGUMENT) => {
+            resume_packaged_application(&arguments[1..]).map_err(Into::into)
+        }
         None => launch(default_launch_options(), false),
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") => {
@@ -1314,7 +1321,11 @@ fn main() -> ExitCode {
     #[cfg(target_os = "windows")]
     let start_menu_launch = arguments.as_slice() == [START_MENU_ARGUMENT];
     #[cfg(target_os = "windows")]
-    if start_menu_launch {
+    let appx_resume = arguments
+        .first()
+        .is_some_and(|argument| argument == APPX_RESUME_ARGUMENT);
+    #[cfg(target_os = "windows")]
+    if start_menu_launch || appx_resume {
         hide_console_window();
     }
     match run(&arguments) {
@@ -1538,10 +1549,11 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn observes_a_normal_desktop_exit_during_controller_shutdown() {
-        let mut desktop = Command::new("cmd.exe")
+        let desktop = Command::new("cmd.exe")
             .args(["/d", "/c", "exit", "0"])
             .spawn()
             .expect("spawn exiting Desktop fixture");
+        let mut desktop = codexhost_platform::DesktopProcess::from_child(desktop);
 
         let status = wait_for_desktop_exit(&mut desktop, Duration::from_secs(1))
             .expect("observe Desktop exit")

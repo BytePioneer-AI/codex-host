@@ -238,13 +238,8 @@ impl LocalRuntimeLease {
                     // A migrated exact record remains authoritative for its child after its Shim
                     // exits, even if the Shim PID has since been reused. Retire that exact child
                     // before admitting a replacement; never signal the absent or reused Shim PID.
-                    if is_live_other_desktop(owner.desktop_process_id, desktop_process_id) {
-                        return Err(format!(
-                            "another Codex Desktop process owns the orphaned local Host Runtime (former Shim PID {}, Desktop PID {})",
-                            owner.process_id, owner.desktop_process_id,
-                        )
-                        .into());
-                    }
+                    // The record has no Desktop start identity. Once the verified Shim is gone,
+                    // its PID-only parent can be stale or reused and must not block orphan cleanup.
                     stop_orphaned_owner_child(&owner)?;
                     remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
                     continue;

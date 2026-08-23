@@ -1095,6 +1095,13 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
         .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
         .filter(|value| !value.is_empty())
         .expect("fixture child start identity");
+    let mut reused_desktop_process = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_DELAY_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn reused Desktop PID fixture");
 
     force_stop_test_process(owner.id());
     assert!(
@@ -1111,6 +1118,8 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
                 format!("child_process_id={fixture_root}")
             } else if line.starts_with("child_process_started_at_micros=") {
                 format!("child_process_started_at_micros={fixture_child_started_at_micros}")
+            } else if line.starts_with("desktop_process_id=") {
+                format!("desktop_process_id={}", reused_desktop_process.id())
             } else {
                 line.to_owned()
             }
@@ -1129,14 +1138,22 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
         .stdin
         .take()
         .expect("replacement Host Runtime stdin");
-    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(10));
-    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
+    let replacement_root = replacement_identity
+        .as_deref()
+        .map(|identity| process_id_from_ready(identity, "root="));
     let orphaned_child_was_retired = !process_exists(fixture_root);
+    let reused_desktop_was_not_signalled = reused_desktop_process
+        .try_wait()
+        .expect("poll reused Desktop PID fixture")
+        .is_none();
 
     drop(replacement_stdin);
     if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
         force_stop_test_process(replacement.id());
-        force_stop_test_process(replacement_root);
+        if let Some(replacement_root) = replacement_root {
+            force_stop_test_process(replacement_root);
+        }
         let _ = replacement.wait();
     }
     drop(fixture_stdin);
@@ -1145,9 +1162,19 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
         force_stop_test_process(fixture_root);
         let _ = fixture.wait();
     }
+    force_stop_test_process(reused_desktop_process.id());
+    let _ = reused_desktop_process.wait();
     let _ = fs::remove_dir_all(&directory);
     let _ = fs::remove_dir_all(&fixture_directory);
 
+    assert!(
+        replacement_identity.is_some(),
+        "replacement trusted a stale PID-only Desktop identity after the exact owner Shim exited"
+    );
+    assert!(
+        reused_desktop_was_not_signalled,
+        "replacement signalled the unrelated process that reused the recorded Desktop PID"
+    );
     assert!(
         orphaned_child_was_retired,
         "replacement started without retiring the exact child whose recorded Shim had exited"

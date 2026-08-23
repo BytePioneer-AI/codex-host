@@ -11,6 +11,8 @@ use std::time::Duration;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::Instant;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use codexhost_platform::parent_process_id;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use codexhost_platform::process_exists;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
@@ -401,20 +403,458 @@ fn reports_an_official_cli_crash_without_polluting_stdout() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("terminated by signal"));
 }
 
-#[cfg(target_os = "macos")]
 fn wait_for_file(path: &std::path::Path, timeout: Duration) -> String {
+    wait_for_optional_file(path, timeout)
+        .unwrap_or_else(|| panic!("timed out waiting for {}", path.display()))
+}
+
+fn wait_for_optional_file(path: &std::path::Path, timeout: Duration) -> Option<String> {
     let started = Instant::now();
     loop {
         if let Ok(contents) = fs::read_to_string(path) {
-            return contents;
+            return Some(contents);
         }
-        assert!(
-            started.elapsed() < timeout,
-            "timed out waiting for {}",
-            path.display()
-        );
+        if started.elapsed() >= timeout {
+            return None;
+        }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn process_id_from_ready(contents: &str, label: &str) -> u32 {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(label))
+        .expect("ready process identity field")
+        .parse::<u32>()
+        .expect("ready process identity PID")
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn host_runtime_shim(directory: &std::path::Path, ready: &std::path::Path) -> process::Child {
+    Command::new(shim_path())
+        .args(["app-server", "--stdio"])
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .env("CODEXHOST_DATA_DIR", directory)
+        .env("FAKE_CODEX_HOST_RUNTIME_READY", ready)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fake Host Runtime Shim")
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn legacy_host_runtime_shim(
+    directory: &std::path::Path,
+    ready: &std::path::Path,
+    runtime: &std::path::Path,
+) -> process::Child {
+    Command::new(shim_path())
+        .args(["app-server", "--stdio"])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env(STOCK_CODEX_PATH_ENV, runtime)
+        .env("CODEXHOST_DATA_DIR", directory)
+        .env("FAKE_CODEX_HOST_RUNTIME_READY", ready)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn legacy fake Host Runtime Shim")
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn desktop_owned_shim(
+    directory: &std::path::Path,
+    launcher_ready: &std::path::Path,
+    runtime_ready: &std::path::Path,
+    runtime: &std::path::Path,
+    configured_host_runtime: bool,
+) -> process::Child {
+    let mut command = Command::new(fake_codex_path());
+    command
+        .env("FAKE_CODEX_ORPHAN_SHIM", shim_path())
+        .env("FAKE_CODEX_ORPHAN_RUNTIME", runtime)
+        .env("FAKE_CODEX_ORPHAN_DATA_DIR", directory)
+        .env("FAKE_CODEX_ORPHAN_RUNTIME_READY", runtime_ready)
+        .env("FAKE_CODEX_ORPHAN_LAUNCHER_READY", launcher_ready)
+        .env("FAKE_CODEX_ORPHAN_KEEP_DESKTOP", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if configured_host_runtime {
+        command.env("FAKE_CODEX_ORPHAN_USE_HOST_RUNTIME", "1");
+    }
+    command.spawn().expect("start fake live Desktop")
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn force_stop_test_process(process_id: u32) {
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("taskkill.exe")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", &process_id.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn wait_for_process_exit(child: &mut process::Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while child.try_wait().expect("poll test process").is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.try_wait().expect("final test process poll").is_some()
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn wait_for_process_id_exit(process_id: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while process_exists(process_id) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    !process_exists(process_id)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
+    let directory = temporary_directory();
+    let first_ready = directory.join("first-ready");
+    let second_ready = directory.join("second-ready");
+    let mut first = host_runtime_shim(&directory, &first_ready);
+    let first_stdin = first.stdin.take().expect("first Host Runtime stdin");
+    let first_identity = wait_for_file(&first_ready, Duration::from_secs(5));
+    let first_root = process_id_from_ready(&first_identity, "root=");
+
+    let mut second = host_runtime_shim(&directory, &second_ready);
+    let second_stdin = second.stdin.take().expect("second Host Runtime stdin");
+    // Reap the old direct child before waiting for the replacement to publish readiness. Linux
+    // reports an unreaped child as an existing PID, so reversing these waits deadlocks the fixture.
+    if !wait_for_process_exit(&mut first, Duration::from_secs(5)) {
+        force_stop_test_process(first.id());
+        force_stop_test_process(first_root);
+        force_stop_test_process(second.id());
+        if let Some(identity) = wait_for_optional_file(&second_ready, Duration::from_secs(1)) {
+            force_stop_test_process(process_id_from_ready(&identity, "root="));
+        }
+        let _ = first.wait();
+        let _ = second.wait();
+        fs::remove_dir_all(&directory).expect("remove failed handoff fixture");
+        panic!("replacement Host Runtime did not retire the previous Shim");
+    }
+    drop(first_stdin);
+    assert!(
+        !process_exists(first_root),
+        "previous Host Runtime PID {first_root} survived ownership handoff"
+    );
+    let second_identity = wait_for_file(&second_ready, Duration::from_secs(5));
+    let second_root = process_id_from_ready(&second_identity, "root=");
+
+    drop(second_stdin);
+    if !wait_for_process_exit(&mut second, Duration::from_secs(5)) {
+        force_stop_test_process(second.id());
+        force_stop_test_process(second_root);
+        let _ = second.wait();
+        fs::remove_dir_all(&directory).expect("remove failed EOF fixture");
+        panic!("Host Runtime Shim did not converge after Desktop stdin EOF");
+    }
+    assert!(
+        !process_exists(second_root),
+        "Host Runtime PID {second_root} survived Desktop stdin EOF"
+    );
+    fs::remove_dir_all(directory).expect("remove Host Runtime handoff fixture");
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn refuses_handoff_from_another_live_desktop() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let launcher_ready = directory.join("launcher-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let mut desktop = desktop_owned_shim(
+        &directory,
+        &launcher_ready,
+        &replacement_ready,
+        &fake_codex_path(),
+        true,
+    );
+    let desktop_stdin = desktop.stdin.take().expect("fake Desktop stdin");
+    let replacement_shim = process_id_from_ready(
+        &wait_for_file(&launcher_ready, Duration::from_secs(5)),
+        "shim=",
+    );
+    assert!(
+        wait_for_process_id_exit(replacement_shim, Duration::from_secs(5)),
+        "replacement Shim did not refuse another live Desktop owner"
+    );
+    assert!(!replacement_ready.exists());
+    assert!(
+        process_exists(owner.id()) && process_exists(owner_root),
+        "another live Desktop's Shim or Host Runtime was terminated"
+    );
+
+    drop(owner_stdin);
+    assert!(wait_for_process_exit(&mut owner, Duration::from_secs(5)));
+    drop(desktop_stdin);
+    assert!(wait_for_process_exit(&mut desktop, Duration::from_secs(5)));
+    fs::remove_dir_all(directory).expect("remove live Desktop owner fixture");
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn retires_a_legacy_runtime_from_its_mapping_store_lock() {
+    let directory = temporary_directory();
+    let legacy_ready = directory.join("legacy-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let legacy_runtime = directory.join(if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    });
+    fs::copy(fake_codex_path(), &legacy_runtime).expect("copy legacy fake Node runtime");
+
+    let mut legacy = legacy_host_runtime_shim(&directory, &legacy_ready, &legacy_runtime);
+    let legacy_stdin = legacy.stdin.take().expect("legacy Host Runtime stdin");
+    let legacy_identity = wait_for_file(&legacy_ready, Duration::from_secs(5));
+    let legacy_root = process_id_from_ready(&legacy_identity, "root=");
+    let mapping_store = directory.join("mapping-store");
+    fs::create_dir(&mapping_store).expect("create legacy Mapping Store directory");
+    fs::write(
+        mapping_store.join("store.lock"),
+        format!("{{\"pid\":{legacy_root},\"instanceId\":\"legacy\"}}\n"),
+    )
+    .expect("write legacy Mapping Store lock");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    // See the local-owner handoff above: the fixture parent must reap its old direct child before
+    // the replacement can finish validating that the legacy owner has disappeared on Linux.
+    if !wait_for_process_exit(&mut legacy, Duration::from_secs(5)) {
+        force_stop_test_process(legacy.id());
+        force_stop_test_process(legacy_root);
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = wait_for_optional_file(&replacement_ready, Duration::from_secs(1)) {
+            force_stop_test_process(process_id_from_ready(&identity, "root="));
+        }
+        let _ = legacy.wait();
+        let _ = replacement.wait();
+        fs::remove_dir_all(&directory).expect("remove failed legacy handoff fixture");
+        panic!("replacement Host Runtime did not retire the legacy Shim");
+    }
+    drop(legacy_stdin);
+    assert!(
+        !process_exists(legacy_root),
+        "legacy Host Runtime PID {legacy_root} survived ownership migration"
+    );
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+        fs::remove_dir_all(&directory).expect("remove failed legacy replacement fixture");
+        panic!("replacement Host Runtime did not converge after Desktop stdin EOF");
+    }
+    fs::remove_dir_all(directory).expect("remove legacy Host Runtime fixture");
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn refuses_legacy_migration_from_another_live_desktop() {
+    let directory = temporary_directory();
+    let launcher_ready = directory.join("launcher-ready");
+    let legacy_ready = directory.join("legacy-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let legacy_runtime = directory.join(if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    });
+    fs::copy(fake_codex_path(), &legacy_runtime).expect("copy live legacy fake Node runtime");
+
+    let mut desktop = desktop_owned_shim(
+        &directory,
+        &launcher_ready,
+        &legacy_ready,
+        &legacy_runtime,
+        false,
+    );
+    let desktop_stdin = desktop.stdin.take().expect("fake Desktop stdin");
+    let legacy_shim = process_id_from_ready(
+        &wait_for_file(&launcher_ready, Duration::from_secs(5)),
+        "shim=",
+    );
+    let legacy_root = process_id_from_ready(
+        &wait_for_file(&legacy_ready, Duration::from_secs(5)),
+        "root=",
+    );
+    let mapping_store = directory.join("mapping-store");
+    fs::create_dir(&mapping_store).expect("create live legacy Mapping Store directory");
+    fs::write(
+        mapping_store.join("store.lock"),
+        format!("{{\"pid\":{legacy_root},\"instanceId\":\"live-other\"}}\n"),
+    )
+    .expect("write live legacy Mapping Store lock");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = wait_for_optional_file(&replacement_ready, Duration::from_secs(1)) {
+            force_stop_test_process(process_id_from_ready(&identity, "root="));
+        }
+        force_stop_test_process(legacy_shim);
+        force_stop_test_process(legacy_root);
+        drop(desktop_stdin);
+        let _ = desktop.wait();
+        let _ = replacement.wait();
+        fs::remove_dir_all(&directory).expect("remove unsafe legacy migration fixture");
+        panic!("replacement Shim retired a Host Runtime owned by another live Desktop");
+    }
+    let mut replacement_error = String::new();
+    replacement
+        .stderr
+        .take()
+        .expect("replacement Shim stderr")
+        .read_to_string(&mut replacement_error)
+        .expect("read replacement Shim error");
+    assert!(
+        replacement_error.contains("another Codex Desktop process owns the legacy"),
+        "unexpected replacement error: {replacement_error}"
+    );
+    assert!(!replacement_ready.exists());
+    assert!(
+        process_exists(legacy_shim) && process_exists(legacy_root),
+        "legacy Shim or Host Runtime owned by another live Desktop was terminated"
+    );
+
+    force_stop_test_process(legacy_shim);
+    force_stop_test_process(legacy_root);
+    drop(desktop_stdin);
+    assert!(wait_for_process_exit(&mut desktop, Duration::from_secs(5)));
+    fs::remove_dir_all(directory).expect("remove live legacy Desktop fixture");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn retires_an_orphaned_legacy_runtime_after_desktop_exit() {
+    let directory = temporary_directory();
+    let launcher_ready = directory.join("launcher-ready");
+    let legacy_ready = directory.join("legacy-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let legacy_runtime = directory.join("node");
+    fs::copy(fake_codex_path(), &legacy_runtime).expect("copy orphaned fake Node runtime");
+
+    let launcher = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_ORPHAN_SHIM", shim_path())
+        .env("FAKE_CODEX_ORPHAN_RUNTIME", &legacy_runtime)
+        .env("FAKE_CODEX_ORPHAN_DATA_DIR", &directory)
+        .env("FAKE_CODEX_ORPHAN_RUNTIME_READY", &legacy_ready)
+        .env("FAKE_CODEX_ORPHAN_LAUNCHER_READY", &launcher_ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start fake Desktop launcher");
+    let launcher_process_id = launcher.id();
+    let launcher = launcher
+        .wait_with_output()
+        .expect("run fake Desktop launcher");
+    assert!(
+        launcher.status.success(),
+        "{}",
+        String::from_utf8_lossy(&launcher.stderr)
+    );
+    let legacy_shim = process_id_from_ready(
+        &wait_for_file(&launcher_ready, Duration::from_secs(5)),
+        "shim=",
+    );
+    let legacy_root = process_id_from_ready(
+        &wait_for_file(&legacy_ready, Duration::from_secs(5)),
+        "root=",
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while parent_process_id(legacy_shim)
+        .expect("read orphaned Shim parent")
+        .is_some_and(|parent| parent == launcher_process_id)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(
+        parent_process_id(legacy_shim).expect("read reparented Shim parent"),
+        Some(launcher_process_id),
+        "legacy Shim was not reparented after its fake Desktop exited"
+    );
+
+    let mapping_store = directory.join("mapping-store");
+    fs::create_dir(&mapping_store).expect("create orphaned Mapping Store directory");
+    fs::write(
+        mapping_store.join("store.lock"),
+        format!("{{\"pid\":{legacy_root},\"instanceId\":\"orphaned\"}}\n"),
+    )
+    .expect("write orphaned Mapping Store lock");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let Some(replacement_identity) =
+        wait_for_optional_file(&replacement_ready, Duration::from_secs(5))
+    else {
+        drop(replacement_stdin);
+        force_stop_test_process(legacy_shim);
+        force_stop_test_process(legacy_root);
+        force_stop_test_process(replacement.id());
+        let _ = replacement.wait();
+        let mut replacement_error = String::new();
+        if let Some(mut stderr) = replacement.stderr.take() {
+            let _ = stderr.read_to_string(&mut replacement_error);
+        }
+        let _ = fs::remove_dir_all(&directory);
+        panic!(
+            "replacement Host Runtime did not recover the orphaned legacy owner: {replacement_error}"
+        );
+    };
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    assert!(
+        !process_exists(legacy_shim) && !process_exists(legacy_root),
+        "orphaned legacy Shim or Host Runtime survived ownership migration"
+    );
+
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+        fs::remove_dir_all(&directory).expect("remove failed orphan replacement fixture");
+        panic!("replacement Host Runtime did not converge after orphan recovery");
+    }
+    fs::remove_dir_all(directory).expect("remove orphaned Host Runtime fixture");
 }
 
 #[cfg(target_os = "macos")]

@@ -15,6 +15,10 @@ use codexhost_platform::{
     validate_proxy_target,
 };
 
+mod local_runtime_lease;
+
+use local_runtime_lease::LocalRuntimeLease;
+
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
 
 pub const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
@@ -125,12 +129,14 @@ struct ChildOutcome {
     forwarded_signal: Option<i32>,
     forced: bool,
     terminated_descendants: bool,
+    desktop_input_closed: bool,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_child(
     child: &mut codexhost_platform::SupervisedChild,
     signals: &ShutdownSignals,
+    desktop_input: Option<&std::sync::mpsc::Receiver<io::Result<u64>>>,
 ) -> ShimResult<ChildOutcome> {
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
     const TERMINATION_GRACE: Duration = Duration::from_secs(2);
@@ -140,6 +146,7 @@ fn wait_for_child(
     let mut deadline = None;
     let mut forced = false;
     let mut terminated_descendants = false;
+    let mut desktop_input_closed = false;
     loop {
         if root_status.is_none() {
             root_status = child.try_wait()?;
@@ -153,9 +160,17 @@ fn wait_for_child(
                 forwarded_signal,
                 forced,
                 terminated_descendants,
+                desktop_input_closed,
             });
         }
-        if let Some(signal) = signals.pending().filter(|_| forwarded_signal.is_none()) {
+        if !desktop_input_closed
+            && root_status.is_none()
+            && desktop_input.is_some_and(|input| input.try_recv().is_ok())
+        {
+            child.terminate()?;
+            desktop_input_closed = true;
+            deadline = Some(Instant::now() + TERMINATION_GRACE);
+        } else if let Some(signal) = signals.pending().filter(|_| forwarded_signal.is_none()) {
             child.forward_signal(signal)?;
             forwarded_signal = Some(signal);
             deadline = Some(Instant::now() + TERMINATION_GRACE);
@@ -176,16 +191,35 @@ fn wait_for_child(
 fn wait_for_child(
     child: &mut codexhost_platform::SupervisedChild,
     _signals: &ShutdownSignals,
+    desktop_input: Option<&std::sync::mpsc::Receiver<io::Result<u64>>>,
 ) -> ShimResult<ChildOutcome> {
-    child
-        .wait()
-        .map(|status| ChildOutcome {
-            status,
-            forwarded_signal: None,
-            forced: false,
-            terminated_descendants: false,
-        })
-        .map_err(Into::into)
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const TERMINATION_GRACE: Duration = Duration::from_secs(2);
+
+    let mut desktop_input_closed = false;
+    let mut deadline = None;
+    let mut forced = false;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(ChildOutcome {
+                status,
+                forwarded_signal: None,
+                forced,
+                terminated_descendants: false,
+                desktop_input_closed,
+            });
+        }
+        if !desktop_input_closed && desktop_input.is_some_and(|input| input.try_recv().is_ok()) {
+            child.terminate()?;
+            desktop_input_closed = true;
+            deadline = Some(Instant::now() + TERMINATION_GRACE);
+        }
+        if !forced && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            child.force_terminate()?;
+            forced = true;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -494,6 +528,35 @@ fn select_host_paths(
     (configured_node, configured_runtime)
 }
 
+#[must_use]
+fn is_managed_remote_listener(arguments: &[OsString]) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+            && is_default_remote_unix_listener(arguments)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = arguments;
+        false
+    }
+}
+
+#[must_use]
+fn host_runtime_paths_are_configured() -> bool {
+    let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+    matches!(
+        select_host_paths(
+            env::var_os(HOST_NODE_PATH_ENV),
+            env::var_os(HOST_RUNTIME_PATH_ENV),
+            launcher_managed,
+            env::var_os(NPM_NODE_PATH_ENV),
+            env::var_os(NPM_PACKAGE_ROOT_ENV),
+        ),
+        (Some(_), Some(_))
+    )
+}
+
 fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
@@ -575,6 +638,17 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
+    let local_host_runtime = should_start_host_runtime(arguments)
+        && host_runtime_paths_are_configured()
+        && !is_managed_remote_listener(arguments)
+        && env::var_os(DATA_DIRECTORY_ENV).is_some();
+    let mut local_runtime_lease = if local_host_runtime {
+        Some(LocalRuntimeLease::acquire(&PathBuf::from(
+            env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
+        ))?)
+    } else {
+        None
+    };
     let mut command = child_command(arguments, &current_executable, &stock_codex_path)?;
     command
         .stdin(Stdio::piped())
@@ -582,6 +656,13 @@ pub fn run_proxy_with_observer(
         .stderr(Stdio::piped());
     let mut child = spawn_supervised(&mut command)?;
     let child_id = child.id();
+    if let Some(lease) = &mut local_runtime_lease
+        && let Err(error) = lease.set_child_process_id(child_id)
+    {
+        let _ = child.force_terminate();
+        let _ = child.wait();
+        return Err(error);
+    }
 
     let child_stdin = child
         .take_stdin()
@@ -593,11 +674,18 @@ pub fn run_proxy_with_observer(
         .take_stderr()
         .ok_or("official CLI stderr is unavailable")?;
 
-    let _stdin_pump = thread::spawn(move || copy_stream(io::stdin().lock(), child_stdin));
+    let (stdin_sender, stdin_receiver) = std::sync::mpsc::sync_channel(1);
+    let _stdin_pump = thread::spawn(move || {
+        let _ = stdin_sender.send(copy_stream(io::stdin().lock(), child_stdin));
+    });
     let stdout_pump = thread::spawn(move || copy_stream(child_stdout, io::stdout().lock()));
     let stderr_pump = thread::spawn(move || copy_stream(child_stderr, io::stderr().lock()));
 
-    let outcome = wait_for_child(&mut child, &shutdown_signals)?;
+    let outcome = wait_for_child(
+        &mut child,
+        &shutdown_signals,
+        local_host_runtime.then_some(&stdin_receiver),
+    )?;
     stdout_pump
         .join()
         .map_err(|_| "official CLI stdout pump panicked")??;
@@ -612,13 +700,20 @@ pub fn run_proxy_with_observer(
     if outcome.terminated_descendants {
         eprintln!("codexhost shim: terminated official CLI descendants after root exit");
     }
+    if outcome.desktop_input_closed {
+        eprintln!("codexhost shim: closed the local Host Runtime after Desktop stdin EOF");
+    }
     if outcome.forced {
         eprintln!("codexhost shim: forced official CLI process-group termination after timeout");
     }
     if let Some(signal) = exit_signal(&outcome.status) {
         eprintln!("codexhost shim: official CLI terminated by signal {signal}");
     }
-    Ok(outcome.status.code().unwrap_or(1))
+    Ok(if outcome.desktop_input_closed {
+        0
+    } else {
+        outcome.status.code().unwrap_or(1)
+    })
 }
 
 pub fn run_proxy(arguments: &[OsString]) -> ShimResult<i32> {

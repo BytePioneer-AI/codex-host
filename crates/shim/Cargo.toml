@@ -19,6 +19,7 @@ required-features = ["test-utils"]
 
 [dependencies]
 codexhost-platform = { path = "../platform" }
+fs2 = "0.4.3"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }

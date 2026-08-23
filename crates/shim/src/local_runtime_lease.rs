@@ -1,19 +1,20 @@
 use std::env;
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "windows")]
-use codexhost_platform::terminate_process_by_id;
 use codexhost_platform::{
-    atomic_replace_file, parent_process_id, process_executable_path, process_exists,
+    PlatformError, ProcessSnapshot, atomic_replace_file, process_exists, process_snapshot,
+    terminate_process_group_instance, terminate_process_instance,
 };
+use fs2::FileExt;
 
 const OWNER_DIRECTORY_NAME: &str = "local-host-runtime-owner-v1";
+const OWNER_LOCK_NAME: &str = "local-host-runtime-owner.lock";
 const OWNER_RECORD_NAME: &str = "owner";
 const MAPPING_STORE_LOCK_PATH: [&str; 2] = ["mapping-store", "store.lock"];
 const OWNER_READ_GRACE: Duration = Duration::from_millis(500);
@@ -24,17 +25,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OwnerRecord {
     process_id: u32,
+    process_started_at_micros: u64,
     desktop_process_id: u32,
     child_process_id: Option<u32>,
+    child_process_started_at_micros: Option<u64>,
 }
 
 impl OwnerRecord {
     fn encode(&self) -> String {
         format!(
-            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id={}\n",
+            "version=1\nprocess_id={}\nprocess_started_at_micros={}\ndesktop_process_id={}\nchild_process_id={}\nchild_process_started_at_micros={}\n",
             self.process_id,
+            self.process_started_at_micros,
             self.desktop_process_id,
             self.child_process_id
+                .map_or_else(String::new, |value| value.to_string()),
+            self.child_process_started_at_micros
                 .map_or_else(String::new, |value| value.to_string()),
         )
     }
@@ -48,38 +54,101 @@ impl OwnerRecord {
         if field("version")? != "1" {
             return None;
         }
+        let child_process_id = field("child_process_id").and_then(|value| value.parse().ok());
+        let child_process_started_at_micros =
+            field("child_process_started_at_micros").and_then(|value| value.parse().ok());
+        if child_process_id.is_some() != child_process_started_at_micros.is_some() {
+            return None;
+        }
         Some(Self {
             process_id: field("process_id")?.parse().ok()?,
+            process_started_at_micros: field("process_started_at_micros")?.parse().ok()?,
             desktop_process_id: field("desktop_process_id")?.parse().ok()?,
-            child_process_id: field("child_process_id").and_then(|value| value.parse().ok()),
+            child_process_id,
+            child_process_started_at_micros,
         })
     }
 }
 
 pub(crate) struct LocalRuntimeLease {
+    data_directory: PathBuf,
     directory: PathBuf,
     record: OwnerRecord,
+    mutation_lock: Option<OwnerMutationLock>,
+    active: bool,
+}
+
+struct OwnerMutationLock {
+    _file: File,
+}
+
+impl OwnerMutationLock {
+    fn open(data_directory: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data_directory.join(OWNER_LOCK_NAME))
+    }
+
+    fn acquire(data_directory: &Path) -> io::Result<Self> {
+        let file = Self::open(data_directory)?;
+        file.lock_exclusive()?;
+        Ok(Self { _file: file })
+    }
+
+    fn try_acquire(data_directory: &Path) -> io::Result<Option<Self>> {
+        let file = Self::open(data_directory)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl LocalRuntimeLease {
     pub(crate) fn acquire(data_directory: &Path) -> Result<Self, Box<dyn Error>> {
         fs::create_dir_all(data_directory)?;
+        // Serialize observation, retirement, removal, and publication as one cross-process
+        // mutation. Without this lock, a delayed contender can delete a newer contender's lease.
+        let mutation_lock = OwnerMutationLock::acquire(data_directory)?;
         let directory = data_directory.join(OWNER_DIRECTORY_NAME);
         let process_id = process::id();
-        let desktop_process_id = parent_process_id(process_id)?.ok_or_else(|| {
-            io::Error::other("codexhost Shim parent process identity is unavailable")
-        })?;
+        let process_snapshot = process_snapshot(process_id)?;
+        let desktop_process_id = process_snapshot.parent_id;
+        if desktop_process_id == 0 {
+            return Err(
+                io::Error::other("codexhost Shim parent process identity is unavailable").into(),
+            );
+        }
         let record = OwnerRecord {
             process_id,
+            process_started_at_micros: process_snapshot.started_at_micros,
             desktop_process_id,
             child_process_id: None,
+            child_process_started_at_micros: None,
         };
 
         loop {
             match fs::create_dir(&directory) {
                 Ok(()) => {
-                    let lease = Self { directory, record };
-                    if let Err(error) = lease.write_record() {
+                    let mut lease = Self {
+                        data_directory: data_directory.to_path_buf(),
+                        directory,
+                        record,
+                        // Keep the transaction closed to contenders until the caller has spawned
+                        // the Host Runtime and atomically published that exact child instance.
+                        mutation_lock: Some(mutation_lock),
+                        active: true,
+                    };
+                    let lease_lock = lease
+                        .mutation_lock
+                        .as_ref()
+                        .expect("new local Host Runtime lease owns the mutation lock");
+                    if let Err(error) = lease.write_record(lease_lock) {
+                        lease.active = false;
                         let _ = fs::remove_dir_all(&lease.directory);
                         return Err(error);
                     }
@@ -87,7 +156,9 @@ impl LocalRuntimeLease {
                         data_directory,
                         lease.record.desktop_process_id,
                     ) {
-                        drop(lease);
+                        let _ =
+                            remove_owner_if_matches(lease_lock, &lease.directory, &lease.record);
+                        lease.active = false;
                         return Err(error);
                     }
                     return Ok(lease);
@@ -104,7 +175,7 @@ impl LocalRuntimeLease {
                 return Err("current codexhost Shim already owns the local Host Runtime".into());
             }
             if !owner_is_codexhost_shim(&owner)? {
-                remove_owner_if_matches(&directory, &owner)?;
+                remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
                 continue;
             }
 
@@ -117,7 +188,7 @@ impl LocalRuntimeLease {
             }
 
             stop_owner(&owner)?;
-            remove_owner_if_matches(&directory, &owner)?;
+            remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
         }
     }
 
@@ -125,14 +196,22 @@ impl LocalRuntimeLease {
         &mut self,
         child_process_id: u32,
     ) -> Result<(), Box<dyn Error>> {
+        let mutation_lock = self
+            .mutation_lock
+            .as_ref()
+            .ok_or("local Host Runtime child identity was already published")?;
         if read_owner(&self.directory).as_ref() != Some(&self.record) {
             return Err("local Host Runtime ownership changed before child startup".into());
         }
+        let child_snapshot = process_snapshot(child_process_id)?;
         self.record.child_process_id = Some(child_process_id);
-        self.write_record()
+        self.record.child_process_started_at_micros = Some(child_snapshot.started_at_micros);
+        self.write_record(mutation_lock)?;
+        self.mutation_lock.take();
+        Ok(())
     }
 
-    fn write_record(&self) -> Result<(), Box<dyn Error>> {
+    fn write_record(&self, _mutation_lock: &OwnerMutationLock) -> Result<(), Box<dyn Error>> {
         let target = self.directory.join(OWNER_RECORD_NAME);
         let temporary = self.directory.join(format!(
             "{OWNER_RECORD_NAME}.tmp-{}",
@@ -146,7 +225,19 @@ impl LocalRuntimeLease {
 
 impl Drop for LocalRuntimeLease {
     fn drop(&mut self) {
-        let _ = remove_owner_if_matches(&self.directory, &self.record);
+        if !self.active {
+            return;
+        }
+        if let Some(mutation_lock) = self.mutation_lock.take() {
+            let _ = remove_owner_if_matches(&mutation_lock, &self.directory, &self.record);
+            return;
+        }
+        // A replacement owns this lock while it waits for us to exit. Blocking here would make
+        // its graceful handoff wait on our Drop while our Drop waits on the replacement.
+        let Ok(Some(mutation_lock)) = OwnerMutationLock::try_acquire(&self.data_directory) else {
+            return;
+        };
+        let _ = remove_owner_if_matches(&mutation_lock, &self.directory, &self.record);
     }
 }
 
@@ -169,7 +260,11 @@ fn read_owner_with_grace(directory: &Path) -> Result<Option<OwnerRecord>, Box<dy
     }
 }
 
-fn remove_owner_if_matches(directory: &Path, expected: &OwnerRecord) -> io::Result<()> {
+fn remove_owner_if_matches(
+    _mutation_lock: &OwnerMutationLock,
+    directory: &Path,
+    expected: &OwnerRecord,
+) -> io::Result<()> {
     if read_owner(directory).as_ref() == Some(expected) {
         fs::remove_dir_all(directory)?;
     }
@@ -177,15 +272,16 @@ fn remove_owner_if_matches(directory: &Path, expected: &OwnerRecord) -> io::Resu
 }
 
 fn owner_is_codexhost_shim(owner: &OwnerRecord) -> Result<bool, Box<dyn Error>> {
-    if !process_exists(owner.process_id) {
+    let Some(owner_snapshot) =
+        recorded_process_snapshot(owner.process_id, owner.process_started_at_micros)?
+    else {
         return Ok(false);
-    }
-    let owner_executable = process_executable_path(owner.process_id)?;
+    };
     let current_executable = env::current_exe()?;
     // npm upgrades and candidate packages can move the same Shim to another absolute path.
-    // The lease's PID and Desktop lineage are the trust boundary; the basename rejects PID reuse
-    // by an unrelated executable without making in-place upgrades impossible.
-    Ok(owner_executable.file_name() == current_executable.file_name())
+    // PID plus start time is the process-instance identity. The basename additionally rejects a
+    // corrupt lease without making an in-place npm upgrade impossible.
+    Ok(owner_snapshot.executable.file_name() == current_executable.file_name())
 }
 
 fn retire_legacy_mapping_store_owner(
@@ -200,36 +296,30 @@ fn retire_legacy_mapping_store_owner(
     let Some(runtime_process_id) = legacy_lock_process_id(&lock_path) else {
         return Ok(());
     };
-    if !process_exists(runtime_process_id) {
-        return Ok(());
-    }
-    let runtime_executable = match process_executable_path(runtime_process_id) {
-        Ok(path) => path,
+    let runtime_snapshot = match process_snapshot(runtime_process_id) {
+        Ok(snapshot) => snapshot,
         Err(_) if !process_exists(runtime_process_id) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if !runtime_executable
+    if !runtime_snapshot
+        .executable
         .file_name()
         .is_some_and(|name| is_node_executable_name(&name.to_string_lossy()))
     {
         return Ok(());
     }
 
-    let Some(shim_process_id) = parent_process_id(runtime_process_id)? else {
-        return Ok(());
-    };
-    let shim_executable = match process_executable_path(shim_process_id) {
-        Ok(path) => path,
+    let shim_process_id = runtime_snapshot.parent_id;
+    let shim_snapshot = match process_snapshot(shim_process_id) {
+        Ok(snapshot) => snapshot,
         Err(_) if !process_exists(shim_process_id) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     let current_executable = env::current_exe()?;
-    if shim_executable.file_name() != current_executable.file_name() {
+    if shim_snapshot.executable.file_name() != current_executable.file_name() {
         return Ok(());
     }
-    let Some(legacy_desktop_process_id) = parent_process_id(shim_process_id)? else {
-        return Ok(());
-    };
+    let legacy_desktop_process_id = shim_snapshot.parent_id;
     if is_live_other_desktop(legacy_desktop_process_id, current_desktop_process_id) {
         return Err(format!(
             "another Codex Desktop process owns the legacy local Host Runtime (Shim PID {shim_process_id}, Desktop PID {legacy_desktop_process_id})",
@@ -239,8 +329,10 @@ fn retire_legacy_mapping_store_owner(
 
     let legacy_owner = OwnerRecord {
         process_id: shim_process_id,
+        process_started_at_micros: shim_snapshot.started_at_micros,
         desktop_process_id: legacy_desktop_process_id,
         child_process_id: Some(runtime_process_id),
+        child_process_started_at_micros: Some(runtime_snapshot.started_at_micros),
     };
     eprintln!(
         "codexhost shim: retiring legacy local Host Runtime owned by Shim PID {shim_process_id}"
@@ -279,15 +371,20 @@ fn is_node_executable_name(name: &str) -> bool {
 }
 
 fn stop_owner(owner: &OwnerRecord) -> Result<(), Box<dyn Error>> {
-    terminate(owner.process_id, false)?;
-    if wait_for_owner_exit(owner, HANDOFF_GRACE) {
+    terminate_recorded_process(owner.process_id, owner.process_started_at_micros, false)?;
+    if wait_for_owner_exit(owner, HANDOFF_GRACE)? {
         return Ok(());
     }
-    terminate(owner.process_id, true)?;
-    if let Some(child_process_id) = owner.child_process_id {
-        terminate_child_group(child_process_id)?;
+    if let (Some(child_process_id), Some(child_process_started_at_micros)) = (
+        owner.child_process_id,
+        owner.child_process_started_at_micros,
+    ) && let Some(child_snapshot) =
+        recorded_process_snapshot(child_process_id, child_process_started_at_micros)?
+    {
+        terminate_process_group_instance(&child_snapshot, true)?;
     }
-    if wait_for_owner_exit(owner, FORCE_GRACE) {
+    terminate_recorded_process(owner.process_id, owner.process_started_at_micros, true)?;
+    if wait_for_owner_exit(owner, FORCE_GRACE)? {
         return Ok(());
     }
     Err(format!(
@@ -297,77 +394,100 @@ fn stop_owner(owner: &OwnerRecord) -> Result<(), Box<dyn Error>> {
     .into())
 }
 
-fn wait_for_owner_exit(owner: &OwnerRecord, timeout: Duration) -> bool {
+fn wait_for_owner_exit(owner: &OwnerRecord, timeout: Duration) -> Result<bool, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     loop {
-        let owner_alive = process_exists(owner.process_id);
-        let child_alive = owner.child_process_id.is_some_and(process_exists);
+        let owner_alive =
+            recorded_process_snapshot(owner.process_id, owner.process_started_at_micros)?.is_some();
+        let child_alive = match (
+            owner.child_process_id,
+            owner.child_process_started_at_micros,
+        ) {
+            (Some(process_id), Some(started_at_micros)) => {
+                recorded_process_snapshot(process_id, started_at_micros)?.is_some()
+            }
+            _ => false,
+        };
         if !owner_alive && !child_alive {
-            return true;
+            return Ok(true);
         }
         if Instant::now() >= deadline {
-            return false;
+            return Ok(false);
         }
         thread::sleep(POLL_INTERVAL);
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn terminate(process_id: u32, force: bool) -> Result<(), Box<dyn Error>> {
-    use nix::errno::Errno;
-    use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
-
-    let process_id = i32::try_from(process_id)?;
-    let signal = if force {
-        Signal::SIGKILL
-    } else {
-        Signal::SIGTERM
-    };
-    match kill(Pid::from_raw(process_id), signal) {
-        Ok(()) | Err(Errno::ESRCH) => Ok(()),
+fn recorded_process_snapshot(
+    process_id: u32,
+    started_at_micros: u64,
+) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
+    match process_snapshot(process_id) {
+        Ok(snapshot) if snapshot.started_at_micros == started_at_micros => Ok(Some(snapshot)),
+        Ok(_) | Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(_) if !process_exists(process_id) => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
 
-#[cfg(target_os = "windows")]
-fn terminate(process_id: u32, _force: bool) -> Result<(), Box<dyn Error>> {
-    if !process_exists(process_id) {
-        return Ok(());
+fn terminate_recorded_process(
+    process_id: u32,
+    started_at_micros: u64,
+    force: bool,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(snapshot) = recorded_process_snapshot(process_id, started_at_micros)? {
+        terminate_process_instance(&snapshot, force)?;
     }
-    terminate_process_by_id(process_id)?;
     Ok(())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn terminate(_process_id: u32, _force: bool) -> Result<(), Box<dyn Error>> {
-    Err("local Host Runtime ownership requires Windows, macOS, or Linux".into())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn terminate_child_group(process_id: u32) -> Result<(), Box<dyn Error>> {
-    use nix::errno::Errno;
-    use nix::sys::signal::{Signal, kill, killpg};
-    use nix::unistd::Pid;
-
-    let process_id = i32::try_from(process_id)?;
-    let process_id = Pid::from_raw(process_id);
-    match killpg(process_id, Signal::SIGKILL) {
-        Ok(()) | Err(Errno::ESRCH) => {}
-        Err(error) => return Err(error.into()),
+    fn temporary_data_directory() -> PathBuf {
+        static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        env::temp_dir().join(format!(
+            "codexhost-local-runtime-lease-{}-{sequence}",
+            process::id()
+        ))
     }
-    match kill(process_id, Signal::SIGKILL) {
-        Ok(()) | Err(Errno::ESRCH) => Ok(()),
-        Err(error) => Err(error.into()),
+
+    #[test]
+    fn holds_the_mutation_lock_until_child_identity_is_published() {
+        let data_directory = temporary_data_directory();
+        let mut lease = LocalRuntimeLease::acquire(&data_directory).expect("acquire owner lease");
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(data_directory.join(OWNER_LOCK_NAME))
+            .expect("open contender owner lock");
+
+        let contender_acquired_before_publish = contender.try_lock_exclusive().is_ok();
+        if contender_acquired_before_publish {
+            FileExt::unlock(&contender).expect("release unexpected contender lock");
+        }
+
+        lease
+            .set_child_process_id(process::id())
+            .expect("publish child identity");
+        let contender_acquired_after_publish = contender.try_lock_exclusive().is_ok();
+        if contender_acquired_after_publish {
+            FileExt::unlock(&contender).expect("release contender owner lock");
+        }
+
+        drop(contender);
+        drop(lease);
+        fs::remove_dir_all(&data_directory).expect("remove owner lease fixture");
+
+        assert!(
+            !contender_acquired_before_publish,
+            "a contender acquired ownership before the child identity was published"
+        );
+        assert!(
+            contender_acquired_after_publish,
+            "ownership mutation lock remained held after child identity publication"
+        );
     }
-}
-
-#[cfg(target_os = "windows")]
-fn terminate_child_group(process_id: u32) -> Result<(), Box<dyn Error>> {
-    terminate(process_id, true)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn terminate_child_group(_process_id: u32) -> Result<(), Box<dyn Error>> {
-    Ok(())
 }

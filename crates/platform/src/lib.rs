@@ -18,6 +18,7 @@ mod linux_installation;
 mod macos_ui;
 mod process;
 mod process_supervision;
+mod process_termination;
 mod proxy_environment;
 #[cfg(target_os = "macos")]
 mod system_proxy;
@@ -50,16 +51,16 @@ pub use process::force_stop_desktop;
 pub use process::{
     ProcessSnapshot, descendant_executable_exists, desktop_process_ids_for_installation,
     desktop_root_process_ids_for_installation, parent_process_id, process_executable_path,
-    process_exists, terminate_process_by_id,
+    process_exists, process_snapshot, terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
 pub use process::{desktop_process_ids, desktop_root_process_ids};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{
-    desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshot,
-    process_snapshots,
+    desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
+pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
 pub use proxy_environment::proxy_environment;
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};

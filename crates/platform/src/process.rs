@@ -122,6 +122,31 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
     unix_process_snapshot(process_id)
 }
 
+#[cfg(target_os = "windows")]
+pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+    let parent_id = windows_process::process_entries()?
+        .into_iter()
+        .find(|process| process.id == process_id)
+        .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
+        .parent_id;
+    let executable = windows_process::process_image_path(process_id)?;
+    let started_at_micros = windows_process::process_started_at_micros(process_id)?;
+    Ok(ProcessSnapshot {
+        id: process_id,
+        parent_id,
+        process_group_id: process_id,
+        executable,
+        started_at_micros,
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn process_snapshot(_process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+    Err(PlatformError::Unsupported(
+        "process snapshots require Windows, macOS, or Linux",
+    ))
+}
+
 #[cfg(target_os = "macos")]
 pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
     use libproc::processes::{ProcFilter, pids_by_type};
@@ -142,7 +167,6 @@ pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
         .collect())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn same_process_instance(expected: &ProcessSnapshot, current: &ProcessSnapshot) -> bool {
     expected.id == current.id && expected.started_at_micros == current.started_at_micros
 }

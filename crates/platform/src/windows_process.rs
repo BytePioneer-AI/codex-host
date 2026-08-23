@@ -56,6 +56,13 @@ struct IoCounters {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+#[repr(C)]
 struct ExtendedLimitInformation {
     basic_limit_information: BasicLimitInformation,
     io_info: IoCounters,
@@ -77,6 +84,13 @@ unsafe extern "system" {
         flags: u32,
         name: *mut u16,
         size: *mut u32,
+    ) -> i32;
+    fn GetProcessTimes(
+        process: Handle,
+        creation_time: *mut FileTime,
+        exit_time: *mut FileTime,
+        kernel_time: *mut FileTime,
+        user_time: *mut FileTime,
     ) -> i32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(
@@ -158,6 +172,79 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         }
         buffer.truncate(length as usize);
         Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
+    }
+}
+
+fn process_started_at_micros_from_handle(process: Handle) -> io::Result<u64> {
+    let mut creation_time = FileTime::default();
+    let mut exit_time = FileTime::default();
+    let mut kernel_time = FileTime::default();
+    let mut user_time = FileTime::default();
+    let result = unsafe {
+        GetProcessTimes(
+            process,
+            &mut creation_time,
+            &mut exit_time,
+            &mut kernel_time,
+            &mut user_time,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let ticks =
+        (u64::from(creation_time.high_date_time) << 32) | u64::from(creation_time.low_date_time);
+    Ok(ticks / 10)
+}
+
+pub fn process_started_at_micros(process_id: u32) -> io::Result<u64> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let result = process_started_at_micros_from_handle(process);
+        CloseHandle(process);
+        result
+    }
+}
+
+pub fn terminate_process_instance(
+    process_id: u32,
+    expected_started_at_micros: u64,
+    exit_code: u32,
+) -> io::Result<bool> {
+    unsafe {
+        let process = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+            0,
+            process_id,
+        );
+        if process.is_null() {
+            return Ok(false);
+        }
+        let current_started_at_micros = match process_started_at_micros_from_handle(process) {
+            Ok(value) => value,
+            Err(error) => {
+                CloseHandle(process);
+                return Err(error);
+            }
+        };
+        if current_started_at_micros != expected_started_at_micros {
+            CloseHandle(process);
+            return Ok(false);
+        }
+        let result = TerminateProcess(process, exit_code);
+        let error = if result == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
+        CloseHandle(process);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(true),
+        }
     }
 }
 

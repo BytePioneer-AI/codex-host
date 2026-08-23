@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+use std::fs::OpenOptions;
 #[cfg(target_os = "windows")]
 use std::io::{BufRead, BufReader};
 use std::io::{Read, Write};
@@ -17,6 +19,8 @@ use codexhost_platform::parent_process_id;
 use codexhost_platform::process_exists;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
 use codexhost_shim::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV, REMOTE_SSH_MANAGED_ENV};
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+use fs2::FileExt;
 
 fn shim_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost-shim"))
@@ -553,6 +557,17 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
         fs::remove_dir_all(&directory).expect("remove failed handoff fixture");
         panic!("replacement Host Runtime did not retire the previous Shim");
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = first.wait().expect("read retired owner Shim status");
+        assert_ne!(
+            status.signal(),
+            Some(nix::sys::signal::Signal::SIGKILL as i32),
+            "ownership handoff forced the previous Shim instead of allowing graceful exit"
+        );
+    }
     drop(first_stdin);
     assert!(
         !process_exists(first_root),
@@ -574,6 +589,149 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
         "Host Runtime PID {second_root} survived Desktop stdin EOF"
     );
     fs::remove_dir_all(directory).expect("remove Host Runtime handoff fixture");
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn replacement_waits_for_the_local_runtime_owner_mutation_lock() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let owner_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("local-host-runtime-owner.lock"))
+        .expect("open local Host Runtime owner mutation lock");
+    owner_lock
+        .lock_exclusive()
+        .expect("hold local Host Runtime owner mutation lock");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    thread::sleep(Duration::from_millis(300));
+    let owner_was_untouched =
+        process_exists(owner.id()) && process_exists(owner_root) && !replacement_ready.exists();
+    FileExt::unlock(&owner_lock).expect("release local Host Runtime owner mutation lock");
+
+    if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {
+        force_stop_test_process(owner.id());
+        force_stop_test_process(owner_root);
+        force_stop_test_process(replacement.id());
+        let _ = owner.wait();
+        let _ = replacement.wait();
+        let _ = fs::remove_dir_all(&directory);
+        panic!("replacement Host Runtime did not retire the owner after lock release");
+    }
+    drop(owner_stdin);
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+        let _ = fs::remove_dir_all(&directory);
+        panic!("replacement Host Runtime did not converge after Desktop stdin EOF");
+    }
+    fs::remove_dir_all(directory).expect("remove owner mutation lock fixture");
+
+    assert!(
+        owner_was_untouched,
+        "replacement observed or changed local Host Runtime ownership while the mutation lock was held"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn replacement_does_not_signal_a_reused_owner_process_id() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let contents = loop {
+        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
+        if contents.lines().any(|line| {
+            line.strip_prefix("child_process_started_at_micros=")
+                .is_some_and(|value| !value.is_empty())
+        }) {
+            break contents;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the complete local Host Runtime owner record"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut replaced_start_time = false;
+    let mut recycled = contents
+        .lines()
+        .map(|line| {
+            if line.starts_with("process_started_at_micros=") {
+                replaced_start_time = true;
+                "process_started_at_micros=18446744073709551615".to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !replaced_start_time {
+        recycled.push("process_started_at_micros=18446744073709551615".to_owned());
+    }
+    fs::write(&owner_record, format!("{}\n", recycled.join("\n")))
+        .expect("publish recycled owner process identity");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    let owner_was_not_signalled = owner
+        .try_wait()
+        .expect("poll recycled owner Shim")
+        .is_none();
+
+    drop(owner_stdin);
+    if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {
+        force_stop_test_process(owner.id());
+        force_stop_test_process(owner_root);
+        let _ = owner.wait();
+    }
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+        let _ = fs::remove_dir_all(&directory);
+        panic!("replacement Host Runtime did not converge after recycled owner recovery");
+    }
+    fs::remove_dir_all(directory).expect("remove recycled owner fixture");
+
+    assert!(
+        owner_was_not_signalled,
+        "replacement signalled a live process whose PID no longer matched the recorded owner instance"
+    );
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]

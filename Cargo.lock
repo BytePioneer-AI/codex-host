@@ -124,6 +124,7 @@ name = "codexhost-shim"
 version = "0.3.1"
 dependencies = [
  "codexhost-platform",
+ "fs2",
  "nix",
  "signal-hook",
 ]

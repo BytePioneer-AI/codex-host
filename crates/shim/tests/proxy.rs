@@ -871,6 +871,140 @@ fn waits_for_a_version_one_owner_to_publish_its_child_before_migration() {
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
+fn rejects_a_childless_version_one_owner_whose_process_id_was_reused() {
+    let directory = temporary_directory();
+    let owner_directory = directory.join("local-host-runtime-owner-v1");
+    let replacement_ready = directory.join("replacement-ready");
+    fs::create_dir(&owner_directory).expect("create version-one owner directory");
+
+    let mut unrelated = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_DELAY_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn unrelated reused-PID fixture");
+    fs::write(
+        owner_directory.join("owner"),
+        format!(
+            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id=\n",
+            unrelated.id(),
+            process::id(),
+        ),
+    )
+    .expect("publish childless version-one owner record");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
+    let unrelated_was_not_signalled = unrelated
+        .try_wait()
+        .expect("poll unrelated reused-PID fixture")
+        .is_none();
+
+    force_stop_test_process(unrelated.id());
+    let _ = unrelated.wait();
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = replacement_identity.as_deref() {
+            force_stop_test_process(process_id_from_ready(identity, "root="));
+        }
+        let _ = replacement.wait();
+    }
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        replacement_identity.is_some(),
+        "replacement waited on an unrelated process that reused a childless version-one owner PID"
+    );
+    assert!(
+        unrelated_was_not_signalled,
+        "replacement signalled an unrelated process that reused a version-one owner PID"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
+    let contents = wait_for_file(&owner_record, Duration::from_secs(5));
+    let field = |name: &str| {
+        contents
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("owner record omitted {name}"))
+    };
+    fs::write(
+        &owner_record,
+        format!(
+            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id={owner_root}\n",
+            field("process_id"),
+            field("desktop_process_id"),
+        ),
+    )
+    .expect("publish version-one owner record");
+
+    force_stop_test_process(owner.id());
+    assert!(
+        wait_for_process_exit(&mut owner, Duration::from_secs(5)),
+        "version-one owner Shim did not exit"
+    );
+    drop(owner_stdin);
+    let reparent_deadline = Instant::now() + Duration::from_secs(5);
+    while parent_process_id(owner_root).ok().flatten() == Some(owner.id())
+        && Instant::now() < reparent_deadline
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        process_exists(owner_root),
+        "recorded Host Runtime child exited"
+    );
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
+    let recorded_child_survived = process_exists(owner_root);
+
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(2)) {
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = replacement_identity.as_deref() {
+            force_stop_test_process(process_id_from_ready(identity, "root="));
+        }
+        let _ = replacement.wait();
+    }
+    force_stop_test_process(owner_root);
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        replacement_identity.is_none(),
+        "replacement started while a version-one owner's reparented child remained live"
+    );
+    assert!(
+        recorded_child_survived,
+        "replacement signalled a version-one child without a verified process-instance identity"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
 fn replacement_does_not_signal_a_reused_owner_process_id() {
     let directory = temporary_directory();
     let owner_ready = directory.join("owner-ready");

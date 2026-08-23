@@ -39,6 +39,11 @@ struct VersionOneOwnerRecord {
     child_process_id: Option<u32>,
 }
 
+struct VersionOneMigrationCandidate {
+    record: VersionOneOwnerRecord,
+    shim_snapshot: ProcessSnapshot,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StoredOwnerRecord {
     Exact(OwnerRecord),
@@ -257,7 +262,8 @@ impl LocalRuntimeLease {
     }
 
     fn write_record(&self, mutation_lock: &OwnerMutationLock) -> Result<(), Box<dyn Error>> {
-        write_owner_record(mutation_lock, &self.directory, &self.record)
+        write_owner_record(mutation_lock, &self.directory, &self.record)?;
+        Ok(())
     }
 }
 
@@ -333,25 +339,104 @@ fn write_owner_record(
     _mutation_lock: &OwnerMutationLock,
     directory: &Path,
     record: &OwnerRecord,
-) -> Result<(), Box<dyn Error>> {
+) -> io::Result<()> {
     let target = directory.join(OWNER_RECORD_NAME);
     let temporary = directory.join(format!("{OWNER_RECORD_NAME}.tmp-{}", record.process_id));
     fs::write(&temporary, record.encode())?;
-    atomic_replace_file(&temporary, &target)?;
+    atomic_replace_file(&temporary, &target).map_err(|error| match error {
+        PlatformError::Io(error) => error,
+        PlatformError::NotFound(message) => io::Error::new(io::ErrorKind::NotFound, message),
+        error => io::Error::other(error),
+    })?;
     Ok(())
+}
+
+fn write_migrated_owner_record(
+    mutation_lock: &OwnerMutationLock,
+    directory: &Path,
+    record: &OwnerRecord,
+) -> Result<bool, Box<dyn Error>> {
+    match write_owner_record(mutation_lock, directory, record) {
+        Ok(()) => Ok(true),
+        // A released v1 Shim does not use the mutation lock. Its Drop may remove the verified
+        // directory between the equality check and publication; let acquisition observe again.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn executable_file_name_matches(observed: &Path, expected: &Path) -> bool {
+    let (Some(observed), Some(expected)) = (observed.file_name(), expected.file_name()) else {
+        return false;
+    };
+    if observed == expected {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        return observed.as_bytes().strip_suffix(b" (deleted)") == Some(expected.as_bytes());
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+fn ensure_no_live_version_one_child(owner: &VersionOneOwnerRecord) -> Result<(), Box<dyn Error>> {
+    let Some(child_process_id) = owner.child_process_id else {
+        return Ok(());
+    };
+    if current_process_snapshot(child_process_id)?.is_some() {
+        return Err(format!(
+            "version-one local Host Runtime child PID {child_process_id} remains live without a verified Shim process instance; refusing unsafe takeover",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_version_one_shim_snapshot(
+    owner: &VersionOneOwnerRecord,
+    snapshot: &ProcessSnapshot,
+    current_executable: &Path,
+) -> Result<bool, Box<dyn Error>> {
+    if !executable_file_name_matches(&snapshot.executable, current_executable) {
+        return Ok(false);
+    }
+    if snapshot.parent_id != owner.desktop_process_id && snapshot.parent_id != 1 {
+        return Err(format!(
+            "live version-one local Host Runtime owner PID {} no longer belongs to its recorded Desktop PID {}; refusing unsafe takeover",
+            owner.process_id, owner.desktop_process_id,
+        )
+        .into());
+    }
+    Ok(true)
 }
 
 fn stabilize_version_one_owner(
     directory: &Path,
     initial: &VersionOneOwnerRecord,
-) -> Result<Option<VersionOneOwnerRecord>, Box<dyn Error>> {
+) -> Result<Option<VersionOneMigrationCandidate>, Box<dyn Error>> {
+    let current_executable = env::current_exe()?;
+    let Some(initial_snapshot) = current_process_snapshot(initial.process_id)? else {
+        ensure_no_live_version_one_child(initial)?;
+        return Ok(None);
+    };
+    if !validate_version_one_shim_snapshot(initial, &initial_snapshot, &current_executable)? {
+        ensure_no_live_version_one_child(initial)?;
+        return Ok(None);
+    }
     if initial.child_process_id.is_some() {
-        return Ok(Some(initial.clone()));
+        return Ok(Some(VersionOneMigrationCandidate {
+            record: initial.clone(),
+            shim_snapshot: initial_snapshot,
+        }));
     }
 
     // Released Shims publish an empty owner record, spawn the child, and then replace the record
     // without taking OWNER_LOCK_NAME. Do not overwrite that startup write with a child-less exact
-    // record: wait for its final publication or fail closed while the released owner remains live.
+    // record. Pin the live Shim instance before waiting and keep validating that exact PID/start
+    // identity until its final publication, or fail closed while the released owner remains live.
     let deadline = Instant::now() + VERSION_ONE_STARTUP_GRACE;
     loop {
         let Some(StoredOwnerRecord::VersionOne(current)) = read_stored_owner(directory) else {
@@ -362,11 +447,21 @@ fn stabilize_version_one_owner(
         {
             return Ok(None);
         }
-        if current.child_process_id.is_some() {
-            return Ok(Some(current));
-        }
-        if current_process_snapshot(initial.process_id)?.is_none() {
+        let Some(shim_snapshot) =
+            recorded_process_snapshot(initial_snapshot.id, initial_snapshot.started_at_micros)?
+        else {
+            ensure_no_live_version_one_child(&current)?;
             return Ok(None);
+        };
+        if !validate_version_one_shim_snapshot(&current, &shim_snapshot, &current_executable)? {
+            ensure_no_live_version_one_child(&current)?;
+            return Ok(None);
+        }
+        if current.child_process_id.is_some() {
+            return Ok(Some(VersionOneMigrationCandidate {
+                record: current,
+                shim_snapshot,
+            }));
         }
         if Instant::now() >= deadline {
             return Err(format!(
@@ -384,39 +479,38 @@ fn migrate_version_one_owner(
     directory: &Path,
     legacy: &VersionOneOwnerRecord,
 ) -> Result<Option<OwnerRecord>, Box<dyn Error>> {
-    let Some(legacy) = stabilize_version_one_owner(directory, legacy)? else {
+    let Some(candidate) = stabilize_version_one_owner(directory, legacy)? else {
         return Ok(None);
     };
+    let legacy = candidate.record;
     // v1 cannot itself distinguish PID reuse. While the mutation is serialized, validate the
-    // live Shim and its lineage, snapshot exact process instances, and publish them before sending
-    // any signal. An ambiguous live Shim is never treated as stale ownership.
-    let Some(shim_snapshot) = current_process_snapshot(legacy.process_id)? else {
-        return Ok(None);
-    };
-    let current_executable = env::current_exe()?;
-    if shim_snapshot.executable.file_name() != current_executable.file_name() {
-        return Ok(None);
-    }
-    if shim_snapshot.parent_id != legacy.desktop_process_id && shim_snapshot.parent_id != 1 {
-        return Err(format!(
-            "live version-one local Host Runtime owner PID {} no longer belongs to its recorded Desktop PID {}; refusing unsafe takeover",
-            legacy.process_id, legacy.desktop_process_id,
-        )
-        .into());
-    }
-
+    // live Shim and its lineage before waiting, snapshot the recorded child while its lineage is
+    // still provable, and publish both exact instances before sending any signal. Once captured,
+    // the child snapshot remains authoritative if the Shim exits and the child is reparented.
     let child_snapshot = match legacy.child_process_id {
-        Some(child_process_id) => current_process_snapshot(child_process_id)?
-            .filter(|snapshot| snapshot.parent_id == legacy.process_id),
+        Some(child_process_id) => match current_process_snapshot(child_process_id)? {
+            Some(snapshot) if snapshot.parent_id == legacy.process_id => Some(snapshot),
+            Some(_) => {
+                return Err(format!(
+                    "live version-one local Host Runtime child PID {child_process_id} no longer belongs to Shim PID {}; refusing unsafe takeover",
+                    legacy.process_id,
+                )
+                .into());
+            }
+            None => None,
+        },
         None => None,
     };
-    let migrated = migrated_owner_record(&legacy, &shim_snapshot, child_snapshot.as_ref());
+    let migrated =
+        migrated_owner_record(&legacy, &candidate.shim_snapshot, child_snapshot.as_ref());
 
-    let expected = StoredOwnerRecord::VersionOne(legacy);
+    let expected = StoredOwnerRecord::VersionOne(legacy.clone());
     if read_stored_owner(directory).as_ref() != Some(&expected) {
         return Ok(None);
     }
-    write_owner_record(mutation_lock, directory, &migrated)?;
+    if !write_migrated_owner_record(mutation_lock, directory, &migrated)? {
+        return Ok(None);
+    }
     Ok(Some(migrated))
 }
 
@@ -446,7 +540,10 @@ fn owner_is_codexhost_shim(owner: &OwnerRecord) -> Result<bool, Box<dyn Error>> 
     // npm upgrades and candidate packages can move the same Shim to another absolute path.
     // PID plus start time is the process-instance identity. The basename additionally rejects a
     // corrupt lease without making an in-place npm upgrade impossible.
-    Ok(owner_snapshot.executable.file_name() == current_executable.file_name())
+    Ok(executable_file_name_matches(
+        &owner_snapshot.executable,
+        &current_executable,
+    ))
 }
 
 fn retire_legacy_mapping_store_owner(
@@ -481,7 +578,7 @@ fn retire_legacy_mapping_store_owner(
         Err(error) => return Err(error.into()),
     };
     let current_executable = env::current_exe()?;
-    if shim_snapshot.executable.file_name() != current_executable.file_name() {
+    if !executable_file_name_matches(&shim_snapshot.executable, &current_executable) {
         return Ok(());
     }
     let legacy_desktop_process_id = shim_snapshot.parent_id;
@@ -621,7 +718,7 @@ fn terminate_recorded_process(
 // macOS treats these flock acquisitions as process-scoped;
 // `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides the cross-process
 // integration coverage there.
-#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -641,6 +738,7 @@ mod tests {
         })
     }
 
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn contender_can_acquire(data_directory: &Path) -> bool {
         let contender = OwnerMutationLock::open(data_directory).expect("open contender owner lock");
         let acquired = contender.try_lock_exclusive().is_ok();
@@ -659,6 +757,7 @@ mod tests {
         ))
     }
 
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]
     fn holds_the_mutation_lock_until_child_identity_is_published() {
         let data_directory = temporary_data_directory();
@@ -724,5 +823,41 @@ mod tests {
         let migrated = migrated_owner_record(&legacy, &shim_snapshot, None);
 
         assert_eq!(migrated.desktop_process_id, 1);
+    }
+
+    #[test]
+    fn a_missing_owner_directory_retries_version_one_migration() {
+        let data_directory = temporary_data_directory();
+        fs::create_dir(&data_directory).expect("create owner lock fixture");
+        let mutation_lock =
+            OwnerMutationLock::acquire(&data_directory).expect("acquire owner mutation lock");
+        let missing_owner_directory = data_directory.join(OWNER_DIRECTORY_NAME);
+        let migrated = OwnerRecord {
+            process_id: 101,
+            process_started_at_micros: 202,
+            desktop_process_id: 303,
+            child_process_id: Some(404),
+            child_process_started_at_micros: Some(505),
+        };
+
+        let result =
+            write_migrated_owner_record(&mutation_lock, &missing_owner_directory, &migrated);
+
+        drop(mutation_lock);
+        fs::remove_dir_all(&data_directory).expect("remove owner lock fixture");
+        assert!(!result.expect("missing owner directory should request another acquisition pass"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn matches_an_unlinked_linux_shim_executable() {
+        assert!(executable_file_name_matches(
+            Path::new("/tmp/codexhost-shim (deleted)"),
+            Path::new("/opt/codexhost-shim"),
+        ));
+        assert!(!executable_file_name_matches(
+            Path::new("/tmp/not-codexhost-shim (deleted)"),
+            Path::new("/opt/codexhost-shim"),
+        ));
     }
 }

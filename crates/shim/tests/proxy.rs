@@ -613,6 +613,15 @@ fn wait_for_process_id_exit(process_id: u32, timeout: Duration) -> bool {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn exact_process_instance_is_executable(process_id: u32, started_at_micros: u64) -> bool {
+    // Linux keeps a killed child PID visible to kill(2) while its parent is about to reap the
+    // zombie, even though /proc/<pid>/exe is already gone. Match the production lease's exact
+    // process-instance semantics instead of treating that transient zombie as a live runtime.
+    process_snapshot(process_id)
+        .is_ok_and(|snapshot| snapshot.started_at_micros == started_at_micros)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
 fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
     let directory = temporary_directory();
@@ -1145,7 +1154,9 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
         .lines()
         .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
         .filter(|value| !value.is_empty())
-        .expect("fixture child start identity");
+        .expect("fixture child start identity")
+        .parse::<u64>()
+        .expect("fixture child start identity micros");
     let mut reused_desktop_process = Command::new(fake_codex_path())
         .env("FAKE_CODEX_DELAY_MS", "60000")
         .stdin(Stdio::null())
@@ -1180,7 +1191,7 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
     fs::write(&owner_record, format!("{orphaned_exact_owner}\n"))
         .expect("publish orphaned exact owner record");
     assert!(
-        process_exists(fixture_root),
+        exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros),
         "exact child fixture exited before replacement"
     );
 
@@ -1193,7 +1204,8 @@ fn retires_an_exact_owner_child_after_its_shim_exits() {
     let replacement_root = replacement_identity
         .as_deref()
         .map(|identity| process_id_from_ready(identity, "root="));
-    let orphaned_child_was_retired = !process_exists(fixture_root);
+    let orphaned_child_was_retired =
+        !exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros);
     let reused_desktop_was_not_signalled = reused_desktop_process
         .try_wait()
         .expect("poll reused Desktop PID fixture")
@@ -1286,11 +1298,8 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         .try_wait()
         .expect("poll reused owner PID fixture")
         .is_none();
-    // Linux keeps a killed child PID visible to kill(2) while its parent is about to reap the
-    // zombie, even though /proc/<pid>/exe is already gone. Match the production lease's exact
-    // process-instance semantics instead of treating that transient zombie as a live runtime.
-    let old_exact_child_was_retired = !process_snapshot(owner_root)
-        .is_ok_and(|snapshot| snapshot.started_at_micros == old_exact_child_started_at_micros);
+    let old_exact_child_was_retired =
+        !exact_process_instance_is_executable(owner_root, old_exact_child_started_at_micros);
 
     drop(owner_stdin);
     if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {

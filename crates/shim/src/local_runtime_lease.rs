@@ -607,7 +607,10 @@ fn terminate_recorded_process(
     Ok(())
 }
 
-#[cfg(test)]
+// This in-process contender is meaningful only with Windows handle-scoped locks. Unix flock locks
+// are process-scoped, so `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides
+// the cross-process integration coverage there.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
 

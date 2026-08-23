@@ -242,11 +242,18 @@ pub fn desktop_process_tree(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+enum RootExecutablePolicy {
+    Fixed,
+    FollowSameProcess,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) struct ObservedProcessTree {
     pub(crate) root: ProcessSnapshot,
     known: Vec<ProcessSnapshot>,
     process_group_id: Option<u32>,
     process_group_started_at_micros: u64,
+    root_executable_policy: RootExecutablePolicy,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -254,6 +261,12 @@ impl ObservedProcessTree {
     pub(crate) fn new(root: ProcessSnapshot) -> Self {
         let process_group_id = (root.process_group_id == root.id).then_some(root.process_group_id);
         Self::new_with_process_group(root, process_group_id, None)
+    }
+
+    pub(crate) fn new_following_root_exec(root: ProcessSnapshot) -> Self {
+        let mut tree = Self::new(root);
+        tree.root_executable_policy = RootExecutablePolicy::FollowSameProcess;
+        tree
     }
 
     pub(crate) fn new_with_process_group(
@@ -287,6 +300,7 @@ impl ObservedProcessTree {
                 .unwrap_or(root.started_at_micros),
             known,
             root,
+            root_executable_policy: RootExecutablePolicy::Fixed,
         }
     }
 
@@ -305,10 +319,16 @@ impl ObservedProcessTree {
                     )));
                 }
                 if expected.id == self.root.id && current.executable != self.root.executable {
-                    return Err(PlatformError::Invalid(format!(
-                        "Desktop root PID {} changed executable identity",
-                        expected.id
-                    )));
+                    if matches!(self.root_executable_policy, RootExecutablePolicy::Fixed) {
+                        return Err(PlatformError::Invalid(format!(
+                            "Desktop root PID {} changed executable identity",
+                            expected.id
+                        )));
+                    }
+                    // A supervised root may legitimately exec into another executable while
+                    // retaining the same PID and start identity. Preserve the strict
+                    // process-instance check above, then follow that exact root across exec.
+                    self.root.executable = current.executable.clone();
                 }
                 *expected = current.clone();
             }

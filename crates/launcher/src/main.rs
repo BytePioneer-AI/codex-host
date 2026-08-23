@@ -1773,14 +1773,20 @@ mod tests {
 
     #[test]
     fn npm_update_runtime_environment_forwards_only_absolute_paths() {
+        let fixture_root = std::env::current_dir()
+            .expect("resolve current directory")
+            .join("npm-runtime-fixture");
+        let node_path = fixture_root.join("node");
+        let cli_path = fixture_root.join("npm/bin/npm-cli.js");
+        let package_root = fixture_root.join("@codexhost/cli-platform");
         let forwarded = npm_update_runtime_environment([
             (
                 OsString::from(NPM_NODE_PATH_ENV),
-                OsString::from("/usr/bin/node"),
+                node_path.clone().into_os_string(),
             ),
             (
                 OsString::from(NPM_CLI_PATH_ENV),
-                OsString::from("/usr/lib/node_modules/npm/bin/npm-cli.js"),
+                cli_path.clone().into_os_string(),
             ),
             (
                 OsString::from(NPM_LAUNCHER_PATH_ENV),
@@ -1788,11 +1794,11 @@ mod tests {
             ),
             (
                 OsString::from(NPM_PACKAGE_ROOT_ENV),
-                OsString::from("/usr/lib/node_modules/@codexhost/cli-darwin-arm64"),
+                package_root.clone().into_os_string(),
             ),
             (
                 OsString::from("UNRELATED"),
-                OsString::from("/tmp/unrelated"),
+                fixture_root.join("unrelated").into_os_string(),
             ),
         ]);
 
@@ -1801,15 +1807,12 @@ mod tests {
             [
                 (
                     OsString::from(NPM_NODE_PATH_ENV),
-                    OsString::from("/usr/bin/node"),
+                    node_path.into_os_string(),
                 ),
-                (
-                    OsString::from(NPM_CLI_PATH_ENV),
-                    OsString::from("/usr/lib/node_modules/npm/bin/npm-cli.js"),
-                ),
+                (OsString::from(NPM_CLI_PATH_ENV), cli_path.into_os_string(),),
                 (
                     OsString::from(NPM_PACKAGE_ROOT_ENV),
-                    OsString::from("/usr/lib/node_modules/@codexhost/cli-darwin-arm64"),
+                    package_root.into_os_string(),
                 ),
             ]
         );

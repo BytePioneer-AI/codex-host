@@ -1565,7 +1565,17 @@ fn retires_a_legacy_runtime_from_its_mapping_store_lock() {
         wait_for_process_id_exit(legacy_root, Duration::from_secs(5)),
         "legacy Host Runtime PID {legacy_root} survived ownership migration"
     );
-    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    // Legacy retirement can consume the four-second graceful window and the two-second forced
+    // window before the replacement publishes readiness. Keep the fixture outside that bounded
+    // production handoff and report an early Shim exit with its owner record and stderr.
+    let replacement_identity = wait_for_child_file_matching(
+        &mut replacement,
+        &replacement_ready,
+        &directory,
+        Duration::from_secs(10),
+        "replacement Host Runtime readiness failed after legacy retirement",
+        |_| true,
+    );
     let replacement_root = process_id_from_ready(&replacement_identity, "root=");
 
     drop(replacement_stdin);

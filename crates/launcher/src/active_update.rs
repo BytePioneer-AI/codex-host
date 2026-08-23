@@ -333,8 +333,8 @@ mod tests {
     use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
     #[cfg(target_os = "macos")]
     use super::{
-        pending_startable_update_at, pending_update_at, transfer_lock_to_updater,
-        wait_for_updater_ready,
+        atomic_replace_file, pending_startable_update_at, pending_update_at,
+        transfer_lock_to_updater, wait_for_updater_ready,
     };
 
     fn fixture_directory(label: &str) -> PathBuf {
@@ -450,8 +450,10 @@ mod tests {
         let ready_status_path = status_path.clone();
         let writer = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(50));
+            let temporary_status_path = ready_status_path
+                .with_file_name(format!(".{STATUS_FILE}.{}.tmp", std::process::id()));
             fs::write(
-                ready_status_path,
+                &temporary_status_path,
                 format!(
                     "{}\n",
                     json!({
@@ -464,6 +466,8 @@ mod tests {
                 ),
             )
             .expect("write waiting status fixture");
+            atomic_replace_file(&temporary_status_path, &ready_status_path)
+                .expect("publish waiting status fixture");
         });
         let started = std::time::Instant::now();
         wait_for_updater_ready(&mut child, &status_path).expect("wait for updater readiness");

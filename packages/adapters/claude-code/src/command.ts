@@ -41,17 +41,21 @@ function isExecutable(candidate: string, platform: NodeJS.Platform): boolean {
   }
 }
 
-function runnableCandidate(candidate: string, platform: NodeJS.Platform): string {
+function claudeNpmNativeExecutable(npmDirectory: string): string {
+  return path.join(
+    npmDirectory,
+    "node_modules",
+    "@anthropic-ai",
+    "claude-code",
+    "bin",
+    "claude.exe",
+  );
+}
+
+function runnableCandidate(candidate: string, platform: NodeJS.Platform): string | undefined {
   if (platform === "win32" && path.basename(candidate).toLowerCase() === "claude.cmd") {
-    const nativeExecutable = path.join(
-      path.dirname(candidate),
-      "node_modules",
-      "@anthropic-ai",
-      "claude-code",
-      "bin",
-      "claude.exe",
-    );
-    if (isExecutable(nativeExecutable, platform)) return nativeExecutable;
+    const nativeExecutable = claudeNpmNativeExecutable(path.dirname(candidate));
+    return isExecutable(nativeExecutable, platform) ? nativeExecutable : undefined;
   }
   return candidate;
 }
@@ -78,15 +82,7 @@ function userInstallCandidates(
   if (platform === "win32") {
     const appData = environment.APPDATA ?? path.join(homeDirectory, "AppData", "Roaming");
     return [
-      path.join(
-        appData,
-        "npm",
-        "node_modules",
-        "@anthropic-ai",
-        "claude-code",
-        "bin",
-        "claude.exe",
-      ),
+      claudeNpmNativeExecutable(path.join(appData, "npm")),
       path.join(appData, "npm", "claude.cmd"),
       path.join(homeDirectory, ".local", "bin", "claude.exe"),
       path.join(homeDirectory, ".local", "bin", "claude.cmd"),
@@ -122,7 +118,10 @@ export function resolveClaudeCodeExecutable(
   ];
   const executable = resolutionCandidates
     .map((candidate) => runnableCandidate(candidate, platform))
-    .find((candidate) => isExecutable(candidate, platform));
+    .find(
+      (candidate): candidate is string =>
+        candidate !== undefined && isExecutable(candidate, platform),
+    );
   if (!executable) throw new ClaudeCodeExecutableError("Claude Code is not installed");
   return path.resolve(executable);
 }

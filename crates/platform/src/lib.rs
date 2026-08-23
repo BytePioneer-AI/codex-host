@@ -154,12 +154,17 @@ impl DesktopLaunchMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsAppxActivationIdentity {
+    pub package_full_name: String,
+    pub app_user_model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopIdentity {
     WindowsPackage {
         package_name: String,
         package_family_name: String,
-        package_full_name: Option<String>,
-        app_user_model_id: Option<String>,
+        appx_activation: Option<WindowsAppxActivationIdentity>,
     },
     MacOsBundle {
         bundle_identifier: String,

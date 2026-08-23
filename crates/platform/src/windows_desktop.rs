@@ -14,9 +14,9 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessIdOfThread, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
-    TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, GetProcessIdOfThread, OpenProcess, OpenThread,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, ResumeThread,
+    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
     ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager,
@@ -206,6 +206,33 @@ impl WindowsDesktopProcess {
     }
 }
 
+struct ActivatedProcessGuard {
+    process: Option<WindowsDesktopProcess>,
+}
+
+impl ActivatedProcessGuard {
+    fn new(process: WindowsDesktopProcess) -> Self {
+        Self {
+            process: Some(process),
+        }
+    }
+
+    fn disarm(mut self) -> WindowsDesktopProcess {
+        self.process.take().expect("armed activated process")
+    }
+}
+
+impl Drop for ActivatedProcessGuard {
+    fn drop(&mut self) {
+        let Some(process) = &mut self.process else {
+            return;
+        };
+        if process.try_wait().ok().flatten().is_none() && process.kill().is_ok() {
+            let _ = process.wait();
+        }
+    }
+}
+
 pub fn quote_windows_argument(argument: &OsStr) -> OsString {
     let value = argument.to_string_lossy();
     if !value.is_empty() && !value.contains([' ', '\t', '"']) {
@@ -333,12 +360,12 @@ pub fn resume_packaged_application(arguments: &[String]) -> Result<(), PlatformE
 fn wait_for_desktop_root(
     activation_process_id: u32,
     timeout: Duration,
-) -> Result<WindowsDesktopProcess, PlatformError> {
+) -> Result<(), PlatformError> {
     let started = Instant::now();
     loop {
         match desktop_root_process_ids()?.as_slice() {
             [process_id] if *process_id == activation_process_id => {
-                return supervise_desktop(*process_id);
+                return Ok(());
             }
             [] if started.elapsed() < timeout => thread::sleep(Duration::from_millis(20)),
             [] => {
@@ -381,15 +408,21 @@ pub fn activate_packaged_desktop(
         )
     }
     .map_err(|error| windows_error("cannot activate Codex Desktop AppX package", error))?;
-    let desktop = wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
+    let desktop = ActivatedProcessGuard::new(supervise_desktop(activation_process_id)?);
+    wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
     package_environment.disable()?;
-    Ok(desktop)
+    Ok(desktop.disarm())
 }
 
 pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, PlatformError> {
-    let process =
-        unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, process_id) }
-            .map_err(|error| windows_error("cannot supervise activated Codex Desktop", error))?;
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+            false,
+            process_id,
+        )
+    }
+    .map_err(|error| windows_error("cannot supervise activated Codex Desktop", error))?;
     Ok(WindowsDesktopProcess {
         process_id,
         process: WindowsDesktopBacking::Activated(unsafe { Owned::new(process) }),
@@ -424,15 +457,19 @@ pub fn activate_stock_desktop(
         )
     }
     .map_err(|error| windows_error("cannot activate stock Codex Desktop", error))?;
-    wait_for_desktop_root(activation_process_id, Duration::from_secs(5))
+    let desktop = ActivatedProcessGuard::new(supervise_desktop(activation_process_id)?);
+    wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
+    Ok(desktop.disarm())
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
+    use std::process::Command;
 
     use super::{
-        quote_windows_argument, resume_packaged_application, windows_command_line,
+        ActivatedProcessGuard, WindowsDesktopProcess, quote_windows_argument,
+        resume_packaged_application, supervise_desktop, windows_command_line,
         windows_environment_block,
     };
 
@@ -486,5 +523,33 @@ mod tests {
         assert!(
             windows_environment_block(&[(OsString::from("bad=name"), OsString::new())]).is_err()
         );
+    }
+
+    #[test]
+    fn reads_exit_status_from_a_supervised_process() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 2 127.0.0.1 >nul & exit /b 7"])
+            .spawn()
+            .expect("spawn supervised process fixture");
+        let mut process = supervise_desktop(child.id()).expect("supervise process fixture");
+
+        let status = process.wait().expect("read supervised process exit status");
+        let _ = child.wait();
+
+        assert_eq!(status.code(), Some(7));
+    }
+
+    #[test]
+    fn armed_activation_guard_terminates_its_process() {
+        let child = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
+            .spawn()
+            .expect("spawn guarded process fixture");
+        let process_id = child.id();
+        let guard = ActivatedProcessGuard::new(WindowsDesktopProcess::from_child(child));
+
+        drop(guard);
+
+        assert!(!crate::process_exists(process_id));
     }
 }

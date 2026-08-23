@@ -65,6 +65,21 @@ describe("Claude Code executable resolution", () => {
     ).toBe(nativeExecutable);
   });
 
+  it("rejects a Windows npm shim without a native executable", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-npm-"));
+    directories.push(directory);
+    const shim = path.join(directory, "claude.cmd");
+    fs.writeFileSync(shim, "@echo off\r\n", { mode: 0o700 });
+
+    expect(() =>
+      resolveClaudeCodeExecutable({
+        command: shim,
+        environment: {},
+        platform: "win32",
+      }),
+    ).toThrow("not installed");
+  });
+
   it("finds a user npm installation when a Finder-style PATH omits it", () => {
     const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
     directories.push(homeDirectory);

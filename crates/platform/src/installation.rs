@@ -23,6 +23,8 @@ use super::DesktopIdentity;
 #[cfg(not(target_os = "linux"))]
 use super::DesktopInstallation;
 use super::PlatformError;
+#[cfg(target_os = "windows")]
+use super::WindowsAppxActivationIdentity;
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
@@ -93,8 +95,7 @@ const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
 struct WindowsPackageDetails {
     package_name: String,
     package_family_name: String,
-    package_full_name: Option<String>,
-    app_user_model_id: Option<String>,
+    appx_activation: WindowsAppxActivationIdentity,
     version: String,
     install_root: PathBuf,
 }
@@ -169,8 +170,10 @@ fn probe_package_details(
     Ok(Some(WindowsPackageDetails {
         package_name: text(0),
         package_family_name: text(1),
-        package_full_name: Some(text(2)),
-        app_user_model_id: Some(text(3)),
+        appx_activation: WindowsAppxActivationIdentity {
+            package_full_name: text(2),
+            app_user_model_id: text(3),
+        },
         version: text(4),
         install_root: PathBuf::from(values[5].1.as_ref().expect("complete Gate A override")),
     }))
@@ -243,8 +246,10 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
             WindowsPackageDetails {
                 package_name,
                 package_family_name,
-                package_full_name: Some(package_full_name),
-                app_user_model_id: Some(app_user_model_id),
+                appx_activation: WindowsAppxActivationIdentity {
+                    package_full_name,
+                    app_user_model_id,
+                },
                 version: format!(
                     "{}.{}.{}.{}",
                     version_key[0], version_key[1], version_key[2], version_key[3]
@@ -290,8 +295,7 @@ fn windows_installation(
         identity: DesktopIdentity::WindowsPackage {
             package_name: details.package_name,
             package_family_name: details.package_family_name,
-            package_full_name: details.package_full_name,
-            app_user_model_id: details.app_user_model_id,
+            appx_activation: Some(details.appx_activation),
         },
         build: details.version.clone(),
         version: details.version,
@@ -413,8 +417,7 @@ pub fn discover_codex_desktop_from_root(
         identity: DesktopIdentity::WindowsPackage {
             package_name: WINDOWS_CODEX_PACKAGE_NAME.to_owned(),
             package_family_name: format!("{WINDOWS_CODEX_PACKAGE_NAME}_portable"),
-            package_full_name: None,
-            app_user_model_id: None,
+            appx_activation: None,
         },
         build: version.clone(),
         version,
@@ -440,7 +443,9 @@ mod windows_tests {
         PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV,
         PROBE_PACKAGE_NAME_ENV,
     };
-    use crate::{DesktopIdentity, PlatformError, temporary_directory};
+    use crate::{
+        DesktopIdentity, PlatformError, WindowsAppxActivationIdentity, temporary_directory,
+    };
 
     #[test]
     fn gate_override_is_optional_but_must_be_complete() {
@@ -479,8 +484,10 @@ mod windows_tests {
             Some(WindowsPackageDetails {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
-                package_full_name: Some("OpenAI.Codex_1.2.3.4_x64_family".into()),
-                app_user_model_id: Some("OpenAI.Codex_family!App".into()),
+                appx_activation: WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                    app_user_model_id: "OpenAI.Codex_family!App".into(),
+                },
                 version: "1.2.3.4".into(),
                 install_root: PathBuf::from("C:\\Codex"),
             })
@@ -511,8 +518,10 @@ mod windows_tests {
             WindowsPackageDetails {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
-                package_full_name: Some("OpenAI.Codex_1.2.3.4_x64_family".into()),
-                app_user_model_id: Some("OpenAI.Codex_family!App".into()),
+                appx_activation: WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                    app_user_model_id: "OpenAI.Codex_family!App".into(),
+                },
                 version: "1.2.3.4".into(),
                 install_root: install_root.clone(),
             },
@@ -525,8 +534,10 @@ mod windows_tests {
             DesktopIdentity::WindowsPackage {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_family".into(),
-                package_full_name: Some("OpenAI.Codex_1.2.3.4_x64_family".into()),
-                app_user_model_id: Some("OpenAI.Codex_family!App".into()),
+                appx_activation: Some(WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                    app_user_model_id: "OpenAI.Codex_family!App".into(),
+                }),
             }
         );
         assert_eq!(installation.version, "1.2.3.4");
@@ -578,8 +589,7 @@ mod windows_tests {
             DesktopIdentity::WindowsPackage {
                 package_name: "OpenAI.Codex".into(),
                 package_family_name: "OpenAI.Codex_portable".into(),
-                package_full_name: None,
-                app_user_model_id: None,
+                appx_activation: None,
             }
         );
         assert_eq!(installation.version, "2.5.1.0");

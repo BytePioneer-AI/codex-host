@@ -2,12 +2,16 @@ use std::ffi::OsString;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+#[cfg(not(target_os = "windows"))]
+use std::process::Child;
+use std::process::{Command, Stdio};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::thread;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use super::DesktopIdentity;
 #[cfg(target_os = "macos")]
 use super::process::desktop_root_snapshots_for_installation;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -21,6 +25,11 @@ use super::{
     CODEX_CLI_PATH_ENV, DesktopInstallation, DesktopLaunchMode, PlatformError,
     STOCK_CODEX_PATH_ENV, canonical_existing_file,
 };
+
+#[cfg(target_os = "windows")]
+pub type DesktopProcess = super::windows_desktop::WindowsDesktopProcess;
+#[cfg(not(target_os = "windows"))]
+pub type DesktopProcess = Child;
 
 const CODEXHOST_RELEASES_LATEST_URL: &str =
     "https://github.com/BytePioneer-AI/codex-host/releases/latest";
@@ -37,6 +46,26 @@ fn remove_codexhost_environment(command: &mut Command, names: impl IntoIterator<
             command.env_remove(name);
         }
     }
+}
+
+fn managed_desktop_environment(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    additional_environment: &[(OsString, OsString)],
+) -> Result<Vec<(OsString, OsString)>, PlatformError> {
+    let shim_path = canonical_existing_file(shim_path)?;
+    let mut environment = vec![
+        (
+            OsString::from(CODEX_CLI_PATH_ENV),
+            shim_path.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from(STOCK_CODEX_PATH_ENV),
+            installation.executable_codex_cli.as_os_str().to_owned(),
+        ),
+    ];
+    environment.extend_from_slice(additional_environment);
+    Ok(environment)
 }
 
 fn configure_managed_desktop_environment(
@@ -82,10 +111,41 @@ fn stock_desktop_command(installation: &DesktopInstallation) -> Result<Command, 
     Ok(command)
 }
 
-pub fn launch_stock_desktop(installation: &DesktopInstallation) -> Result<Child, PlatformError> {
+#[cfg(not(target_os = "windows"))]
+pub fn launch_stock_desktop(
+    installation: &DesktopInstallation,
+) -> Result<DesktopProcess, PlatformError> {
     stock_desktop_command(installation)?
         .spawn()
         .map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_stock_desktop(
+    installation: &DesktopInstallation,
+) -> Result<DesktopProcess, PlatformError> {
+    let DesktopIdentity::WindowsPackage {
+        appx_activation, ..
+    } = &installation.identity
+    else {
+        return Err(PlatformError::Invalid(
+            "Windows Codex Desktop has no package identity".into(),
+        ));
+    };
+    match appx_activation {
+        Some(appx_activation) => super::windows_desktop::activate_stock_desktop(
+            &appx_activation.package_full_name,
+            &appx_activation.app_user_model_id,
+        ),
+        None => {
+            let child = stock_desktop_command(installation)?
+                .spawn()
+                .map_err(PlatformError::Io)?;
+            Ok(super::windows_desktop::WindowsDesktopProcess::from_child(
+                child,
+            ))
+        }
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -143,18 +203,7 @@ fn desktop_launch_command(
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<Command, PlatformError> {
-    let shim_path = canonical_existing_file(shim_path)?;
-    let mut environment = vec![
-        (
-            OsString::from(CODEX_CLI_PATH_ENV),
-            shim_path.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from(STOCK_CODEX_PATH_ENV),
-            installation.executable_codex_cli.as_os_str().to_owned(),
-        ),
-    ];
-    environment.extend_from_slice(additional_environment);
+    let environment = managed_desktop_environment(installation, shim_path, additional_environment)?;
 
     #[cfg(target_os = "macos")]
     let mut command = match mode {
@@ -217,13 +266,14 @@ fn desktop_launch_command(
     Ok(command)
 }
 
+#[cfg(not(target_os = "windows"))]
 pub fn launch_desktop(
     installation: &DesktopInstallation,
     shim_path: &Path,
     mode: DesktopLaunchMode,
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
-) -> Result<Child, PlatformError> {
+) -> Result<DesktopProcess, PlatformError> {
     desktop_launch_command(
         installation,
         shim_path,
@@ -233,6 +283,55 @@ pub fn launch_desktop(
     )?
     .spawn()
     .map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_desktop(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
+    additional_environment: &[(OsString, OsString)],
+) -> Result<DesktopProcess, PlatformError> {
+    if mode != DesktopLaunchMode::DirectExecutable {
+        return Err(PlatformError::Unsupported(
+            "Windows packaged Desktop requires AppX activation",
+        ));
+    }
+    let DesktopIdentity::WindowsPackage {
+        appx_activation, ..
+    } = &installation.identity
+    else {
+        return Err(PlatformError::Invalid(
+            "Windows Codex Desktop has no package identity".into(),
+        ));
+    };
+    match appx_activation {
+        Some(appx_activation) => {
+            let environment =
+                managed_desktop_environment(installation, shim_path, additional_environment)?;
+            super::windows_desktop::activate_packaged_desktop(
+                &appx_activation.package_full_name,
+                &appx_activation.app_user_model_id,
+                additional_arguments,
+                &environment,
+            )
+        }
+        None => {
+            let child = desktop_launch_command(
+                installation,
+                shim_path,
+                mode,
+                additional_arguments,
+                additional_environment,
+            )?
+            .spawn()
+            .map_err(PlatformError::Io)?;
+            Ok(super::windows_desktop::WindowsDesktopProcess::from_child(
+                child,
+            ))
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

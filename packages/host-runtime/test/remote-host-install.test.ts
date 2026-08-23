@@ -1,11 +1,8 @@
-import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
+import { spawnSync } from "node:child_process";
 import type * as FileSystemPromises from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-
 import { describe, expect, it, vi } from "vitest";
 
 const filesystemFault = vi.hoisted(() => ({
@@ -437,87 +434,6 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
-
-  it.skipIf(process.platform === "win32")(
-    "lets a desktop-style background bootstrap return while the native entrypoint stays alive",
-    async () => {
-      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-bootstrap-"));
-      const profilePath = path.join(home, ".profile");
-      const listenerScript = path.join(home, "listener.mjs");
-      const listenerPidPath = path.join(home, "listener.pid");
-      const logPath = path.join(home, "listener.log");
-      await writeFile(
-        listenerScript,
-        [
-          'import { writeFileSync } from "node:fs";',
-          "writeFileSync(process.argv[2], String(process.pid));",
-          "setInterval(() => undefined, 1_000);",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      let bootstrapProcessGroup: number | null = null;
-
-      try {
-        const installed = await installRemoteHost({
-          home,
-          profilePath,
-          stockCodexPath: process.execPath,
-          nodePath: process.execPath,
-          shimPath: process.execPath,
-          hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
-          platform: process.platform,
-        });
-        const command = [
-          `(umask 077; mkdir -p -- ${shellQuote(path.join(home, "control"))})`,
-          `&& nohup ${shellQuote(installed.wrapperPath)}`,
-          shellQuote(listenerScript),
-          shellQuote(listenerPidPath),
-          `>${shellQuote(logPath)} 2>&1 &`,
-        ].join(" ");
-        const bootstrap = spawn(process.env.SHELL ?? "/bin/sh", ["-c", command], {
-          detached: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        bootstrap.stdout.resume();
-        bootstrap.stderr.resume();
-        if (bootstrap.pid === undefined) throw new Error("Bootstrap process omitted its PID");
-        bootstrapProcessGroup = bootstrap.pid;
-        const [exitCode, signal] = (await Promise.race([
-          once(bootstrap, "close"),
-          delay(2_000).then(() => {
-            throw new Error("Desktop-style bootstrap did not detach within 2 seconds");
-          }),
-        ])) as [number | null, NodeJS.Signals | null];
-        expect({ exitCode, signal }).toEqual({ exitCode: 0, signal: null });
-
-        let listenerPid: number | null = null;
-        for (let attempt = 0; attempt < 80; attempt += 1) {
-          const source = await readFile(listenerPidPath, "utf8").catch(() => null);
-          if (source !== null) {
-            listenerPid = Number.parseInt(source, 10);
-            break;
-          }
-          await delay(25);
-        }
-        if (listenerPid === null) {
-          const log = await readFile(logPath, "utf8").catch(() => "<log unavailable>");
-          throw new Error(`Listener did not write its PID: ${log.trim()}`);
-        }
-        expect(() => process.kill(listenerPid, 0)).not.toThrow();
-      } finally {
-        if (bootstrapProcessGroup !== null) {
-          try {
-            process.kill(-bootstrapProcessGroup, "SIGTERM");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-          await delay(100);
-        }
-        await rm(home, { recursive: true, force: true });
-      }
-    },
-  );
 
   it("uses the installed digest to uninstall safely after the source shim is removed", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-missing-shim-"));

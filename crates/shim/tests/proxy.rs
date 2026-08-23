@@ -667,7 +667,21 @@ fn migrates_a_live_version_one_owner_before_starting_a_replacement() {
     );
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let contents = wait_for_file(&owner_record, Duration::from_secs(5));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let contents = loop {
+        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
+        if contents.lines().any(|line| {
+            line.strip_prefix("child_process_started_at_micros=")
+                .is_some_and(|value| !value.is_empty())
+        }) {
+            break contents;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the complete local Host Runtime owner record"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
     let field = |name: &str| {
         contents
             .lines()
@@ -713,6 +727,138 @@ fn migrates_a_live_version_one_owner_before_starting_a_replacement() {
     assert!(
         owner_was_retired && !process_exists(owner_root),
         "replacement started without retiring the live version-one owner"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn waits_for_a_version_one_owner_to_publish_its_child_before_migration() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
+    let owner_record_deadline = Instant::now() + Duration::from_secs(5);
+    let contents = loop {
+        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
+        if contents.lines().any(|line| {
+            line.strip_prefix("child_process_started_at_micros=")
+                .is_some_and(|value| !value.is_empty())
+        }) {
+            break contents;
+        }
+        assert!(
+            Instant::now() < owner_record_deadline,
+            "timed out waiting for the complete local Host Runtime owner record"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let field = |name: &str| {
+        contents
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("owner record omitted {name}"))
+    };
+    let version_one_without_child = format!(
+        "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id=\n",
+        field("process_id"),
+        field("desktop_process_id"),
+    );
+    fs::write(&owner_record, &version_one_without_child)
+        .expect("publish starting version-one owner record");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let owner_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("local-host-runtime-owner.lock"))
+        .expect("open local Host Runtime owner mutation lock");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let replacement_holds_lock = loop {
+        match owner_lock.try_lock_exclusive() {
+            Ok(()) => {
+                FileExt::unlock(&owner_lock).expect("release owner mutation lock probe");
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || (cfg!(target_os = "windows") && error.raw_os_error() == Some(33)) =>
+            {
+                break true;
+            }
+            Err(error) => panic!("probe local Host Runtime owner mutation lock: {error}"),
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    thread::sleep(Duration::from_millis(100));
+    let observed_record = fs::read_to_string(&owner_record).ok();
+    let owner_is_live = process_exists(owner.id());
+    let owner_child_is_live = process_exists(owner_root);
+    let replacement_is_ready = replacement_ready.exists();
+    let replacement_waited_for_child = observed_record.as_deref()
+        == Some(version_one_without_child.as_str())
+        && owner_is_live
+        && owner_child_is_live
+        && !replacement_is_ready;
+    if replacement_waited_for_child {
+        fs::write(
+            &owner_record,
+            format!(
+                "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id={owner_root}\n",
+                field("process_id"),
+                field("desktop_process_id"),
+            ),
+        )
+        .expect("publish completed version-one owner record");
+    }
+
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = replacement_identity
+        .as_deref()
+        .map(|identity| process_id_from_ready(identity, "root="));
+    let owner_was_retired = wait_for_process_exit(&mut owner, Duration::from_secs(2));
+
+    drop(owner_stdin);
+    if !owner_was_retired {
+        force_stop_test_process(owner.id());
+        force_stop_test_process(owner_root);
+        let _ = owner.wait();
+    }
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        if let Some(replacement_root) = replacement_root {
+            force_stop_test_process(replacement_root);
+        }
+        let _ = replacement.wait();
+    }
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        replacement_holds_lock,
+        "replacement did not acquire the local Host Runtime owner mutation lock"
+    );
+    assert!(
+        replacement_waited_for_child,
+        "replacement migrated or signalled a version-one owner before its child identity was published: record={observed_record:?}, owner_live={owner_is_live}, child_live={owner_child_is_live}, replacement_ready={replacement_is_ready}"
+    );
+    assert!(
+        replacement_identity.is_some() && owner_was_retired && !process_exists(owner_root),
+        "replacement did not retire the completed version-one owner and its child"
     );
 }
 

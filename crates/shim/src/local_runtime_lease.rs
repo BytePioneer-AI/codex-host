@@ -18,6 +18,7 @@ const OWNER_LOCK_NAME: &str = "local-host-runtime-owner.lock";
 const OWNER_RECORD_NAME: &str = "owner";
 const MAPPING_STORE_LOCK_PATH: [&str; 2] = ["mapping-store", "store.lock"];
 const OWNER_READ_GRACE: Duration = Duration::from_millis(500);
+const VERSION_ONE_STARTUP_GRACE: Duration = Duration::from_secs(4);
 const HANDOFF_GRACE: Duration = Duration::from_secs(4);
 const FORCE_GRACE: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -332,11 +333,52 @@ fn write_owner_record(
     Ok(())
 }
 
+fn stabilize_version_one_owner(
+    directory: &Path,
+    initial: &VersionOneOwnerRecord,
+) -> Result<Option<VersionOneOwnerRecord>, Box<dyn Error>> {
+    if initial.child_process_id.is_some() {
+        return Ok(Some(initial.clone()));
+    }
+
+    // Released Shims publish an empty owner record, spawn the child, and then replace the record
+    // without taking OWNER_LOCK_NAME. Do not overwrite that startup write with a child-less exact
+    // record: wait for its final publication or fail closed while the released owner remains live.
+    let deadline = Instant::now() + VERSION_ONE_STARTUP_GRACE;
+    loop {
+        let Some(StoredOwnerRecord::VersionOne(current)) = read_stored_owner(directory) else {
+            return Ok(None);
+        };
+        if current.process_id != initial.process_id
+            || current.desktop_process_id != initial.desktop_process_id
+        {
+            return Ok(None);
+        }
+        if current.child_process_id.is_some() {
+            return Ok(Some(current));
+        }
+        if current_process_snapshot(initial.process_id)?.is_none() {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "live version-one local Host Runtime owner PID {} did not publish its child process identity; refusing unsafe takeover",
+                initial.process_id,
+            )
+            .into());
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn migrate_version_one_owner(
     mutation_lock: &OwnerMutationLock,
     directory: &Path,
     legacy: &VersionOneOwnerRecord,
 ) -> Result<Option<OwnerRecord>, Box<dyn Error>> {
+    let Some(legacy) = stabilize_version_one_owner(directory, legacy)? else {
+        return Ok(None);
+    };
     // v1 cannot itself distinguish PID reuse. While the mutation is serialized, validate the
     // live Shim and its lineage, snapshot exact process instances, and publish them before sending
     // any signal. An ambiguous live Shim is never treated as stale ownership.
@@ -360,9 +402,9 @@ fn migrate_version_one_owner(
             .filter(|snapshot| snapshot.parent_id == legacy.process_id),
         None => None,
     };
-    let migrated = migrated_owner_record(legacy, &shim_snapshot, child_snapshot.as_ref());
+    let migrated = migrated_owner_record(&legacy, &shim_snapshot, child_snapshot.as_ref());
 
-    let expected = StoredOwnerRecord::VersionOne(legacy.clone());
+    let expected = StoredOwnerRecord::VersionOne(legacy);
     if read_stored_owner(directory).as_ref() != Some(&expected) {
         return Ok(None);
     }

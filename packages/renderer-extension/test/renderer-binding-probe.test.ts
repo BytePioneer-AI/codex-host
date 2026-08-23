@@ -427,7 +427,7 @@ describe("Renderer Composer DOM behavior", () => {
         getAttribute(name: string) {
           return name === "aria-label" ? label : null;
         },
-      }) as HTMLButtonElement;
+      }) as unknown as HTMLButtonElement;
 
     expect(isComposerVoiceButton(button("Dictation"))).toBe(true);
     expect(isComposerVoiceButton(button("语音"))).toBe(true);

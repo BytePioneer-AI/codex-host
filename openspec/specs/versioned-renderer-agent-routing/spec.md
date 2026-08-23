@@ -628,6 +628,15 @@ The versioned Renderer Adapter SHALL bind Agent selection and draft prewarm rout
 - **THEN** Renderer continues loading and retaining local Harness availability independently
 - **AND** the remote request does not block or overwrite local availability
 
+#### Scenario: Connection diagnostics are grouped by Host
+
+- **GIVEN** Renderer has retained local and remote Harness availability
+- **WHEN** the user opens Connection settings
+- **THEN** it SHALL display Local and each known remote Host as separate tab pages
+- **AND** open the Local tab by default
+- **AND** identify the active Host without replacing the Local tab
+- **AND** opening settings SHALL read cached state without starting an additional SSH request
+
 #### Scenario: Active composer moves to an SSH host
 
 - **WHEN** the Renderer already has an installed local draft policy and the active composer changes to a remote host ID

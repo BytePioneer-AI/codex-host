@@ -161,6 +161,7 @@ export type {
   DefaultRendererSettingsPageId,
   RendererConnectionAgentSnapshot,
   RendererConnectionDiagnostics,
+  RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
   RendererUpdateClient,
 } from "./settings/pages.js";

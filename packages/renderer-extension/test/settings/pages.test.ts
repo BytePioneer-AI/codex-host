@@ -146,18 +146,29 @@ describe("Renderer Connections page", () => {
           modelUpdates: 1,
           hook: "request-bridge",
         },
-        agents: [
+        hosts: [
           {
-            agent: "pi",
-            availability: "error",
-            error: {
-              code: "processExited",
-              message: "pi exited with code 1",
-              retryable: true,
-              stage: "startup",
-              durationMs: 120,
-              stderrTail: "check ~/.pi/agent/settings.json",
-            },
+            hostId: "local",
+            active: false,
+            agents: [
+              {
+                agent: "pi",
+                availability: "error",
+                error: {
+                  code: "processExited",
+                  message: "pi exited with code 1",
+                  retryable: true,
+                  stage: "startup",
+                  durationMs: 120,
+                  stderrTail: "check ~/.pi/agent/settings.json",
+                },
+              },
+            ],
+          },
+          {
+            hostId: "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
+            active: true,
+            agents: [{ agent: "pi", availability: "ready", error: null }],
           },
         ],
       })),
@@ -180,6 +191,8 @@ describe("Renderer Connections page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
+    expect(visibleText(content)).toContain("本地");
+    expect(visibleText(content)).toContain("远程 Host: 公司 · 当前");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
     expect(visibleText(content)).toContain("startup");
@@ -207,7 +220,28 @@ describe("Renderer Connections page", () => {
     if (!copyAll) throw new Error("Copy-all diagnostics button is not rendered");
     copyAll.dispatch("click");
     await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(
+      expect.stringContaining("host: local"),
+    );
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(
+      expect.stringContaining("host: remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8"),
+    );
     await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
+
+    const remoteTab = descendants(content).find(
+      ({ tagName, dataset }) =>
+        tagName === "button" &&
+        dataset.connectionHostTab === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
+    );
+    if (!remoteTab) throw new Error("Remote Host tab is not rendered");
+    remoteTab.dispatch("click");
+    const selectedPanel = descendants(content).find(
+      ({ tagName, dataset }) =>
+        tagName === "section" &&
+        dataset.connectionHost === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
+    );
+    expect(selectedPanel).toBeDefined();
+    expect(visibleText(content)).not.toContain("pi exited with code 1");
 
     cleanup?.();
   });

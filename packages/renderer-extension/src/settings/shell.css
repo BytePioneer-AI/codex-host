@@ -381,6 +381,43 @@ button {
   border-top: 1px solid var(--settings-divider);
 }
 
+.settings-connection-host-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 20px 0 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-connection-host-tab {
+  flex: none;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.settings-connection-host-tab:hover {
+  background: var(--settings-hover);
+  color: var(--settings-text);
+}
+
+.settings-connection-host-tab[aria-selected="true"] {
+  background: var(--settings-active);
+  color: var(--settings-text);
+  font-weight: 600;
+}
+
+.settings-connection-host-tab:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: -2px;
+}
+
 .settings-connection-row {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto minmax(260px, 1.5fr);

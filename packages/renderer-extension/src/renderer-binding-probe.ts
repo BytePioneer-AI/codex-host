@@ -68,8 +68,8 @@ import {
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import type {
-  RendererConnectionAgentSnapshot,
   RendererConnectionDiagnostics,
+  RendererConnectionSnapshot,
 } from "./settings/pages.js";
 import {
   startCompatibilityUpdate,
@@ -1588,7 +1588,10 @@ export function installRendererBindingProbe(
           if (generation !== state.requestGeneration || disposed) return;
           state.errors[agent] = nextError;
           state.availability = { ...state.availability, [agent]: status };
-          if (hostId !== activeAvailabilityHostId) return;
+          if (hostId !== activeAvailabilityHostId) {
+            publishConnectionStatus();
+            return;
+          }
           for (const mounted of mountedByComposer.values()) {
             const composerState = controller.get(mounted.composer);
             if (
@@ -1648,22 +1651,32 @@ export function installRendererBindingProbe(
   };
 
   connectionDiagnostics = {
-    snapshot(): {
-      adapter: RendererAdapterStatus;
-      agents: readonly RendererConnectionAgentSnapshot[];
-    } {
-      const state = activeHarnessAvailabilityState();
+    snapshot(): RendererConnectionSnapshot {
+      const hostIds = [
+        "local",
+        ...[...harnessAvailabilityByHost.keys()].filter((hostId) => hostId !== "local").sort(),
+      ];
       return {
         adapter: { ...adapterStatus },
-        agents: externalAgents.map((agent) => ({
-          agent,
-          availability: state.availability[agent] ?? "checking",
-          error: state.errors[agent] ?? null,
-        })),
+        hosts: hostIds.map((hostId) => {
+          const state = hostHarnessAvailabilityState(hostId);
+          return {
+            hostId,
+            active: hostId === activeAvailabilityHostId,
+            agents: externalAgents.map((agent) => ({
+              agent,
+              availability: state.availability[agent] ?? "checking",
+              error: state.errors[agent] ?? null,
+            })),
+          };
+        }),
       };
     },
     refresh(): Promise<void> {
-      return refreshHarnessAvailability(true);
+      for (const hostId of harnessAvailabilityByHost.keys()) {
+        void refreshHarnessAvailabilityForHost(hostId, true);
+      }
+      return Promise.resolve();
     },
     subscribe(listener: () => void): () => void {
       connectionListeners.add(listener);

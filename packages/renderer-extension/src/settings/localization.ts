@@ -29,6 +29,10 @@ export interface RendererSettingsMessages {
   readonly runtimeCapabilityNotInstalled: string;
   readonly connectionsDescription: string;
   readonly connectionAdapter: string;
+  readonly connectionHosts: string;
+  readonly connectionLocalHost: string;
+  readonly connectionRemoteHost: string;
+  readonly connectionActiveHost: string;
   readonly connectionReason: string;
   readonly connectionRefresh: string;
   readonly connectionRefreshing: string;
@@ -93,6 +97,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionsDescription:
     "Inspect the adapter and each Agent runtime used by the picker. Failed checks keep their error details here.",
   connectionAdapter: "Renderer adapter",
+  connectionHosts: "Hosts",
+  connectionLocalHost: "Local",
+  connectionRemoteHost: "Remote Host",
+  connectionActiveHost: "Current",
   connectionReason: "Reason",
   connectionRefresh: "Run connection diagnostics",
   connectionRefreshing: "Running diagnostics...",
@@ -163,6 +171,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionsDescription:
     "查看适配器和 Agent 运行时的真实检查结果。失败检查会保留错误详情，方便排查无法选择的问题。",
   connectionAdapter: "Renderer 适配器",
+  connectionHosts: "Host 列表",
+  connectionLocalHost: "本地",
+  connectionRemoteHost: "远程 Host",
+  connectionActiveHost: "当前",
   connectionReason: "原因",
   connectionRefresh: "重新诊断连接",
   connectionRefreshing: "正在诊断...",

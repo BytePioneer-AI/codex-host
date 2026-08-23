@@ -54,9 +54,15 @@ export interface RendererConnectionAgentSnapshot {
   readonly error: CodexhostError | null;
 }
 
+export interface RendererConnectionHostSnapshot {
+  readonly hostId: string;
+  readonly active: boolean;
+  readonly agents: readonly RendererConnectionAgentSnapshot[];
+}
+
 export interface RendererConnectionSnapshot {
   readonly adapter: RendererAdapterStatus;
-  readonly agents: readonly RendererConnectionAgentSnapshot[];
+  readonly hosts: readonly RendererConnectionHostSnapshot[];
 }
 
 export interface RendererConnectionDiagnostics {
@@ -117,10 +123,15 @@ function connectionStatusTone(
   return "failed";
 }
 
-function diagnosticText(name: string, snapshot: RendererConnectionAgentSnapshot): string {
+function diagnosticText(
+  hostId: string,
+  name: string,
+  snapshot: RendererConnectionAgentSnapshot,
+): string {
   const error = snapshot.error;
   const lines = [
     "codexhost connection diagnostics",
+    `host: ${hostId}`,
     `agent: ${name}`,
     `status: ${snapshot.availability}`,
     ...(error
@@ -192,6 +203,7 @@ function appendConnectionRow(
   messages: RendererSettingsMessages,
   rowAttribute?: string,
   diagnosticSnapshot?: RendererConnectionAgentSnapshot,
+  diagnosticHostId?: string,
 ): void {
   const row = document.createElement("div");
   row.className = "settings-connection-row";
@@ -259,7 +271,7 @@ function appendConnectionRow(
       copyDiagnosticsToClipboard(
         document,
         copy,
-        diagnosticText(name, diagnosticSnapshot),
+        diagnosticText(diagnosticHostId ?? "unknown", name, diagnosticSnapshot),
         messages,
         messages.connectionCopyDetails,
       );
@@ -274,6 +286,24 @@ function appendConnectionRow(
   }
   row.append(identity, status, detailElement, details);
   parent.append(row);
+}
+
+function connectionHostLabel(
+  hostId: string,
+  active: boolean,
+  messages: RendererSettingsMessages,
+): string {
+  const activeLabel = active ? ` · ${messages.connectionActiveHost}` : "";
+  if (hostId === "local") return `${messages.connectionLocalHost}${activeLabel}`;
+  const separator = hostId.lastIndexOf(":");
+  const encodedName = separator >= 0 ? hostId.slice(separator + 1) : hostId;
+  let name = encodedName;
+  try {
+    name = decodeURIComponent(encodedName);
+  } catch {
+    // Preserve the stable Host ID when its suffix is not URL encoded.
+  }
+  return `${messages.connectionRemoteHost}: ${name}${activeLabel}`;
 }
 
 function connectionsPage(
@@ -310,7 +340,10 @@ function connectionsPage(
       context.content.append(heading, description, actions, content);
 
       let pending = false;
+      let selectedHostId = "local";
+      let latestSnapshot: RendererConnectionSnapshot | null = null;
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
+        latestSnapshot = snapshot;
         content.replaceChildren();
         if (!snapshot) {
           const empty = document.createElement("div");
@@ -329,10 +362,44 @@ function connectionsPage(
           messages,
           "renderer-adapter",
         );
-        for (const agent of snapshot.agents) {
+        const selectedHost =
+          snapshot.hosts.find((host) => host.hostId === selectedHostId) ??
+          snapshot.hosts.find((host) => host.hostId === "local") ??
+          snapshot.hosts[0];
+        if (!selectedHost) return;
+        selectedHostId = selectedHost.hostId;
+
+        const tabs = document.createElement("div");
+        tabs.className = "settings-connection-host-tabs";
+        tabs.setAttribute("role", "tablist");
+        tabs.setAttribute("aria-label", messages.connectionHosts);
+        const hostSection = document.createElement("section");
+        hostSection.className = "settings-connection-host";
+        hostSection.dataset.connectionHost = selectedHost.hostId;
+        hostSection.setAttribute("role", "tabpanel");
+        const panelId = "codexhost-settings-connection-host-panel";
+        hostSection.id = panelId;
+
+        for (const host of snapshot.hosts) {
+          const tab = document.createElement("button");
+          tab.type = "button";
+          tab.className = "settings-connection-host-tab";
+          tab.dataset.connectionHostTab = host.hostId;
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-controls", panelId);
+          tab.setAttribute("aria-selected", String(host.hostId === selectedHost.hostId));
+          tab.tabIndex = host.hostId === selectedHost.hostId ? 0 : -1;
+          tab.textContent = connectionHostLabel(host.hostId, host.active, messages);
+          tab.addEventListener("click", () => {
+            selectedHostId = host.hostId;
+            render(latestSnapshot);
+          });
+          tabs.append(tab);
+        }
+        for (const agent of selectedHost.agents) {
           appendConnectionRow(
             document,
-            content,
+            hostSection,
             RENDERER_AGENT_LABELS[agent.agent],
             agent.availability,
             null,
@@ -340,8 +407,10 @@ function connectionsPage(
             messages,
             agent.agent,
             agent,
+            selectedHost.hostId,
           );
         }
+        content.append(tabs, hostSection);
       };
       const diagnostics = getDiagnostics();
       render(diagnostics?.snapshot() ?? null);
@@ -351,8 +420,12 @@ function connectionsPage(
       }
       copyAll.addEventListener("click", () => {
         const snapshot = diagnostics.snapshot();
-        const report = snapshot.agents
-          .map((agent) => diagnosticText(RENDERER_AGENT_LABELS[agent.agent], agent))
+        const report = snapshot.hosts
+          .flatMap((host) =>
+            host.agents.map((agent) =>
+              diagnosticText(host.hostId, RENDERER_AGENT_LABELS[agent.agent], agent),
+            ),
+          )
           .join("\n\n");
         copyDiagnosticsToClipboard(document, copyAll, report, messages, messages.connectionCopyAll);
       });
@@ -382,17 +455,21 @@ function connectionsPage(
               createRendererSettingsIcon("diagnose", 16),
               messages.connectionRefresh,
             );
+            const snapshot = diagnostics.snapshot();
             render({
-              ...diagnostics.snapshot(),
-              agents: diagnostics.snapshot().agents.map((agent) => ({
-                ...agent,
-                availability: "error",
-                error: {
-                  code: "internalError",
-                  message: error instanceof Error ? error.message : String(error),
-                  retryable: true,
-                  stage: "request",
-                },
+              ...snapshot,
+              hosts: snapshot.hosts.map((host) => ({
+                ...host,
+                agents: host.agents.map((agent) => ({
+                  ...agent,
+                  availability: "error",
+                  error: {
+                    code: "internalError",
+                    message: error instanceof Error ? error.message : String(error),
+                    retryable: true,
+                    stage: "request",
+                  },
+                })),
               })),
             });
           },

@@ -30,10 +30,15 @@ class FakeRow implements SidebarAgentIconRow {
   constructor(
     public id: string | null,
     public draft: string | null = null,
+    public host: string | null = "local",
   ) {}
 
   isConnected(): boolean {
     return this.connected;
+  }
+
+  hostId(): string | null {
+    return this.host;
   }
 
   threadId(): string | null {
@@ -263,6 +268,50 @@ describe("Renderer sidebar Agent ownership", () => {
       threadIds: ["codex-thread", "pi-thread", "claude-thread", "unknown-thread"],
     });
     expect(rows.map((row) => row.agent)).toEqual([null, "pi", "claude-code", null]);
+    control.dispose();
+  });
+
+  it("queries local and remote sidebar rows independently", async () => {
+    const threadId = "shared-thread";
+    const localRow = new FakeRow(threadId);
+    const remoteRow = new FakeRow(threadId, null, "remote-ssh:company");
+    const dom = new FakeDom([localRow, remoteRow]);
+    let resolveRemote: ((result: ThreadOwnershipListResult) => void) | undefined;
+    const remoteResult = new Promise<ThreadOwnershipListResult>((resolve) => {
+      resolveRemote = resolve;
+    });
+    const localClient = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((id) => ({
+        threadId: id,
+        owner: "external" as const,
+        harnessId: PI_HARNESS_ID,
+      })),
+    }));
+    const remoteClient = clientWith(async () => remoteResult);
+    const control = installRendererSidebarAgentIcons({
+      getClient: (hostId) => (hostId === "local" ? localClient : remoteClient),
+      dom,
+    });
+
+    await settle();
+    expect(localRow.agent).toBe("pi");
+    expect(remoteRow.agent).toBeNull();
+    expect(localClient.listThreadOwnership).toHaveBeenCalledWith({ threadIds: [threadId] });
+    expect(remoteClient.listThreadOwnership).toHaveBeenCalledWith({ threadIds: [threadId] });
+
+    resolveRemote?.({
+      threads: [
+        {
+          threadId: threadId as HostThreadId,
+          owner: "external",
+          harnessId: CLAUDE_CODE_HARNESS_ID,
+        },
+      ],
+    });
+    await settle();
+
+    expect(localRow.agent).toBe("pi");
+    expect(remoteRow.agent).toBe("claude-code");
     control.dispose();
   });
 

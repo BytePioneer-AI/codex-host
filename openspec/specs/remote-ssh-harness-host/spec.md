@@ -39,7 +39,7 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 
 ### Requirement: Remote installation SHALL be isolated and reversible
 
-`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, malformed, or legacy managed resources as degraded. Install and uninstall SHALL remain fail-closed for a malformed managed profile block. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
+`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded SSH-scoped environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, malformed, or legacy managed resources as degraded. Install and uninstall SHALL remain fail-closed for a malformed managed profile block. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
 
 #### Scenario: OpenCodex already owns the normal Codex command
 
@@ -78,7 +78,15 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 
 - **WHEN** the remote login shell is zsh and no profile override is provided
 - **THEN** installation writes its bounded `CODEX_INSTALL_DIR` and runtime environment block to `.zshenv`
+- **AND** the block exports remote Host ownership only when the shell has an SSH connection identity
 - **AND** reconnecting the remote workspace resolves the managed native entrypoint
+
+#### Scenario: Local shell runs on the same SSH host
+
+- **GIVEN** the machine also runs a local codexhost Desktop or development checkout
+- **WHEN** a local shell reads the managed profile without an SSH connection identity
+- **THEN** the managed block does not export `CODEX_INSTALL_DIR` or any `CODEXHOST_*` remote Host ownership
+- **AND** the local Launcher and Host Runtime retain their own paths, data, and update ownership
 
 #### Scenario: bash profile returns before interactive setup
 

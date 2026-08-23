@@ -559,16 +559,26 @@ export function activeRendererDraftPrewarmPolicy(
   return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
 }
 
+function prewarmTargetHostId(target: PrewarmTarget): string | null {
+  const bridge = target.requestClient ?? target;
+  const hostId = target.getHostId?.() ?? bridge.hostId;
+  return typeof hostId === "string" && hostId.length > 0 ? hostId : null;
+}
+
+export function rendererRequestTargetsForHost(
+  targets: readonly PrewarmTarget[],
+  hostId: string,
+): readonly PrewarmTarget[] | null {
+  const matching = targets.filter((target) => prewarmTargetHostId(target) === hostId);
+  return matching.length === 1 ? matching : null;
+}
+
 function activeRendererDraftPrewarmTargets(
   policy: unknown,
   targets: readonly PrewarmTarget[],
 ): readonly PrewarmTarget[] | null {
   if (!isDraftPrewarmPolicyReady(policy)) return null;
-  const activeTargets = targets.filter((target) => {
-    const bridge = target.requestClient ?? target;
-    return (target.getHostId?.() ?? bridge.hostId) === policy.hostId;
-  });
-  return activeTargets.length === 1 ? activeTargets : null;
+  return rendererRequestTargetsForHost(targets, policy.hostId);
 }
 
 export interface RendererRequestRoute {
@@ -698,13 +708,28 @@ export function installCurrentRendererAdapter(): {
     () => findActivePrewarmTargets(document),
   );
   const currentRequestRoute = () => requestRouteResolver.resolve();
+  const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
+  const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
+    const target = targets[0];
+    if (targets.length !== 1 || !target) return null;
+    const cached = clientsByTarget.get(target);
+    if (cached) return cached;
+    const client = createRendererModelClient([target]);
+    if (client) clientsByTarget.set(target, client);
+    return client;
+  };
   const currentModelClient = (): RendererModelClient => {
-    const client = createRendererModelClient(currentRequestRoute()?.targets ?? []);
+    const client = modelClientForTargets(currentRequestRoute()?.targets ?? []);
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     usageSubscription.connect(client);
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
+    currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
+    clientForHost(hostId: string): RendererModelClient | null {
+      const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
+      return modelClientForTargets(targets ?? []);
+    },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),

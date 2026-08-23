@@ -58,18 +58,34 @@ describe("remote SSH Host installation", () => {
   it("uses the startup file read by non-interactive zsh SSH commands", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-zsh-"));
     try {
-      const installed = await installRemoteHost({
+      const options = {
         home,
         stockCodexPath: await executable(path.join(home, "stock-codex")),
         nodePath: await executable(path.join(home, "node")),
         shimPath: await executable(path.join(home, "codexhost-shim")),
         hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
-        platform: "darwin",
+        platform: "darwin" as const,
         environment: { HOME: home, SHELL: "/bin/zsh" },
-      });
+      };
+      const installed = await installRemoteHost(options);
 
       expect(installed.profilePath).toBe(path.join(home, ".zshenv"));
-      expect(await readFile(installed.profilePath, "utf8")).toContain("CODEX_INSTALL_DIR");
+      const profile = await readFile(installed.profilePath, "utf8");
+      const sshCondition = 'if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then';
+      expect(profile).toContain(sshCondition);
+      expect(profile).toContain("CODEX_INSTALL_DIR");
+
+      const unscopedProfile = profile
+        .replace(`${sshCondition}\n`, "")
+        .replace(/^  export/gmu, "export")
+        .replace("\nfi\n# <<< codexhost remote SSH <<<", "\n# <<< codexhost remote SSH <<<");
+      await writeFile(installed.profilePath, unscopedProfile, "utf8");
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "degraded",
+      });
+
+      await installRemoteHost(options);
+      expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -124,22 +140,37 @@ describe("remote SSH Host installation", () => {
         expect(profile.startsWith("# >>> codexhost remote SSH >>>\n")).toBe(true);
         expect(profile.match(/>>> codexhost remote SSH >>>/gu)).toHaveLength(1);
 
-        const probe = spawnSync(
-          "/bin/bash",
-          [
-            "--noprofile",
-            "--norc",
-            "-c",
-            `. ${shellQuote(profilePath)}; printf '%s\\n%s\\n' "$CODEXHOST_REMOTE_SSH_MANAGED" "$CODEX_INSTALL_DIR"`,
-          ],
-          { encoding: "utf8", env: { HOME: home } },
-        );
-        expect({ status: probe.status, signal: probe.signal, stderr: probe.stderr }).toEqual({
+        const probeArguments = [
+          "--noprofile",
+          "--norc",
+          "-c",
+          `. ${shellQuote(profilePath)}; printf '%s\\n%s\\n' "$CODEXHOST_REMOTE_SSH_MANAGED" "$CODEX_INSTALL_DIR"`,
+        ];
+        const localProbe = spawnSync("/bin/bash", probeArguments, {
+          encoding: "utf8",
+          env: { HOME: home },
+        });
+        expect({
+          status: localProbe.status,
+          signal: localProbe.signal,
+          stderr: localProbe.stderr,
+          stdout: localProbe.stdout,
+        }).toEqual({ status: 0, signal: null, stderr: "", stdout: "\n\n" });
+
+        const sshProbe = spawnSync("/bin/bash", probeArguments, {
+          encoding: "utf8",
+          env: { HOME: home, SSH_CONNECTION: "192.0.2.10 43123 192.0.2.20 22" },
+        });
+        expect({
+          status: sshProbe.status,
+          signal: sshProbe.signal,
+          stderr: sshProbe.stderr,
+        }).toEqual({
           status: 0,
           signal: null,
           stderr: "",
         });
-        expect(probe.stdout).toBe(`1\n${path.dirname(installed.wrapperPath)}\n`);
+        expect(sshProbe.stdout).toBe(`1\n${path.dirname(installed.wrapperPath)}\n`);
         await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
           state: "ready",
         });

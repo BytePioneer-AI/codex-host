@@ -92,6 +92,8 @@ function usageNotificationTarget(manager: RequestManagerCandidate): RequestManag
 }
 
 export interface RendererModelClient {
+  currentHostId?(): string | null;
+  clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;

@@ -248,11 +248,18 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
       ? [`export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}`]
       : []),
   ];
-  const block = `${PROFILE_START}\n${environment.join("\n")}\n${PROFILE_END}\n`;
+  const block = [
+    PROFILE_START,
+    'if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then',
+    ...environment.map((entry) => `  ${entry}`),
+    "fi",
+    PROFILE_END,
+    "",
+  ].join("\n");
   // Standard Linux .bashrc files return before their interactive setup when
-  // Bash is started by a non-interactive SSH command. Keep the remote bootstrap
-  // exports ahead of that guard; appending them would make an installation look
-  // ready on disk while Codex Desktop never observes CODEX_INSTALL_DIR.
+  // Bash is started by a non-interactive SSH command. Keep the guarded remote
+  // bootstrap ahead of that guard; local shells pass through without receiving
+  // remote Host ownership, while SSH shells still observe CODEX_INSTALL_DIR.
   if (path.basename(manifest.profilePath) === ".bashrc") return `${block}${base}`;
   const separator = base.length > 0 && !base.endsWith("\n") ? "\n" : "";
   return `${base}${separator}${block}`;

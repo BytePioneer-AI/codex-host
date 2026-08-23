@@ -33,7 +33,7 @@ The command:
 
 - installs the packaged native Shim as `~/.codexhost/remote/bin/codex`. In the managed remote environment, the exact default `app-server --listen unix://` invocation starts a detached listener, waits until a freshly created control socket accepts connections, and then lets Codex Desktop's background SSH bootstrap return;
 - stores remote Mapping Store data separately under `~/.codexhost/remote/data`;
-- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. In `.bashrc`, the block is placed before the standard non-interactive early-return guard used by Linux distributions such as Ubuntu. The block selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
+- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. The block activates only for an SSH session, so local shells and a local codexhost Desktop on the same machine do not inherit remote Host ownership. In `.bashrc`, the guarded block is placed before the standard non-interactive early-return guard used by Linux distributions such as Ubuntu. It selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
 - writes a timestamped profile backup before changing it;
 - records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.
@@ -46,7 +46,7 @@ Socket initialization remains serialized across an in-place upgrade. The current
 
 ## Use from Codex Desktop
 
-Start the client-side Codex Desktop through codexhost, open the SSH workspace, and use the Agent/Model selector in that remote composer. Harness discovery, model selection, Threads, Turns, tools, approvals, and history then use the codexhost process on the SSH host.
+Start the client-side Codex Desktop through codexhost, open the SSH workspace, and use the Agent/Model selector in that remote composer. Harness discovery, model selection, Threads, Turns, tools, approvals, and history then use the codexhost process on the SSH host. Local Harness availability remains initialized and cached independently, so an unavailable SSH connection cannot block local controls after switching back to a local Composer.
 
 A newly opened task in a remote project remains a draft and should allow Agent selection. Current Desktop builds are classified from the active Composer's own marker, so a background/prewarmed conversation elsewhere on the project page cannot incorrectly lock the new task. Once the first Turn binds the draft, the resulting Thread identity becomes authoritative.
 

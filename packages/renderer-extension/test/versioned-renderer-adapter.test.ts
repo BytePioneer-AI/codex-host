@@ -29,6 +29,7 @@ import {
 } from "../src/index.js";
 import {
   createRendererRequestRouteResolver,
+  rendererRequestTargetsForHost,
   resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
 } from "../src/versioned-renderer-adapter.js";
@@ -103,6 +104,25 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)[0]?.addNotificationCallback).toBe(
       addNotificationCallback,
     );
+  });
+
+  it("keeps local and remote request targets independently addressable", () => {
+    const local = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const remote = {
+      hostId: "remote-ssh-discovered:mac",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+
+    expect(rendererRequestTargetsForHost([remote, local], "local")).toEqual([local]);
+    expect(rendererRequestTargetsForHost([remote, local], remote.hostId)).toEqual([remote]);
+    expect(rendererRequestTargetsForHost([local, { ...local }], "local")).toBeNull();
   });
 
   it("retains the confirmed request manager across transient Composer discovery gaps", () => {

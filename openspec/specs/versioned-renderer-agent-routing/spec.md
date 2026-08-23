@@ -620,13 +620,27 @@ The Renderer SHALL recognize `deepseek-harness` ownership records and display th
 
 ### Requirement: Renderer routing SHALL bind Agent selection to the active Codex host
 
-The versioned Renderer Adapter SHALL bind Agent selection and draft prewarm routing to the currently active non-empty Codex host ID and the current Composer's scoped draft-or-Thread identity. It SHALL reconcile the installed policy when the active bridge or host changes and SHALL preserve the selected carrier across that reconciliation. An empty host ID or ambiguous Composer identity SHALL be rejected.
+The versioned Renderer Adapter SHALL bind Agent selection and draft prewarm routing to the currently active non-empty Codex host ID and the current Composer's scoped draft-or-Thread identity. It SHALL always inspect and retain the local Host's Harness availability independently of any remote Host, SHALL partition availability, errors, in-flight requests, and retries by host ID, and SHALL reconcile the displayed state when the active bridge or host changes. It SHALL preserve the selected carrier across that reconciliation. An empty host ID or ambiguous Composer identity SHALL be rejected.
+
+#### Scenario: Startup restores an unavailable SSH Composer
+
+- **WHEN** the local Host is ready but the initially active SSH Host inspection remains pending or fails
+- **THEN** Renderer continues loading and retaining local Harness availability independently
+- **AND** the remote request does not block or overwrite local availability
 
 #### Scenario: Active composer moves to an SSH host
 
 - **WHEN** the Renderer already has an installed local draft policy and the active composer changes to a remote host ID
 - **THEN** the Adapter replaces the policy with one owned by the remote bridge and host ID
 - **AND** re-applies the selected Harness carrier to the remote active request manager
+- **AND** retains the independently loaded local Harness state
+
+#### Scenario: Active composer returns to the local host
+
+- **GIVEN** a prior SSH inspection is still pending or later fails
+- **WHEN** the active Composer changes to the local host ID
+- **THEN** Renderer immediately displays the retained local Harness availability and starts an independent local refresh
+- **AND** a late SSH result cannot replace the local state
 
 #### Scenario: Active bridge and host remain unchanged
 

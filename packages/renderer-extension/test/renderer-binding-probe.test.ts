@@ -25,10 +25,12 @@ import {
   isComposerInputIntent,
   isComposerSubmissionKey,
   isComposerSubmitButton,
+  isComposerVoiceButton,
   creditsPlacementAnchor,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
+  trailingActionAnchor,
   type ComposerAgentControl,
 } from "../src/renderer-composer-dom.js";
 import {
@@ -292,6 +294,102 @@ describe("Renderer Composer DOM behavior", () => {
     expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
   });
 
+  it("walks past a voice button when anchoring credits to the leading plus control", () => {
+    const plus = {
+      hasAttribute: () => false,
+      contains: () => false,
+    };
+    const voice = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const usageRoot = { hasAttribute: () => false, contains: () => false };
+    const cluster = {
+      hasAttribute: () => false,
+      contains: (node: unknown) => node === usageRoot || node === voice,
+      children: [voice, usageRoot],
+    };
+    const footer = {
+      children: [plus, cluster],
+    };
+    Object.assign(plus, { parentElement: footer });
+    Object.assign(voice, { parentElement: cluster });
+    Object.assign(usageRoot, { parentElement: cluster });
+    Object.assign(cluster, { parentElement: footer });
+    Object.assign(footer, { parentElement: {} });
+
+    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
+  });
+
+  it("walks past a pause button when anchoring credits to the leading plus control", () => {
+    const plus = {
+      hasAttribute: () => false,
+      contains: () => false,
+    };
+    const pause = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Pause" : null),
+      contains: () => false,
+    };
+    const usageRoot = { hasAttribute: () => false, contains: () => false };
+    const cluster = {
+      hasAttribute: () => false,
+      contains: (node: unknown) => node === usageRoot || node === pause,
+      children: [pause, usageRoot],
+    };
+    const footer = {
+      children: [plus, cluster],
+    };
+    Object.assign(plus, { parentElement: footer });
+    Object.assign(pause, { parentElement: cluster });
+    Object.assign(usageRoot, { parentElement: cluster });
+    Object.assign(cluster, { parentElement: footer });
+    Object.assign(footer, { parentElement: {} });
+
+    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
+  });
+
+  it("uses the plus control inside a leading footer group as the credits anchor", () => {
+    const plus = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Add files" : null),
+      contains: () => false,
+    };
+    const left = {
+      hasAttribute: () => false,
+      contains: () => false,
+      children: [plus],
+      querySelectorAll: () => [plus],
+    };
+    const voice = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const usageRoot = { hasAttribute: () => false, contains: () => false };
+    const right = {
+      hasAttribute: () => false,
+      contains: (node: unknown) => node === usageRoot || node === voice,
+      children: [voice, usageRoot],
+    };
+    const toolbar = {
+      children: [left, right],
+    };
+    Object.assign(plus, { parentElement: left });
+    Object.assign(left, { parentElement: toolbar });
+    Object.assign(voice, { parentElement: right });
+    Object.assign(usageRoot, { parentElement: right });
+    Object.assign(right, { parentElement: toolbar });
+    Object.assign(toolbar, { parentElement: {} });
+
+    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
+  });
+
   it("does not treat codexhost Usage controls as native anchors", () => {
     const usage = {
       hasAttribute: (name: string) => name === "data-codexhost-usage-control",
@@ -317,6 +415,274 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerSubmitButton(button("Attach files"))).toBe(false);
     expect(isComposerSubmitButton(button("Send"))).toBe(true);
     expect(isComposerSubmitButton(button("", "submit"))).toBe(true);
+  });
+
+  it("recognizes a dictation control without treating attach or send as voice", () => {
+    const button = (label: string, type = "button") =>
+      ({
+        type,
+        hasAttribute: () => false,
+        getAttribute(name: string) {
+          return name === "aria-label" ? label : null;
+        },
+      }) as HTMLButtonElement;
+
+    expect(isComposerVoiceButton(button("Dictation"))).toBe(true);
+    expect(isComposerVoiceButton(button("语音"))).toBe(true);
+    expect(isComposerVoiceButton(button("Voice"))).toBe(true);
+    expect(isComposerVoiceButton(button("Pause"))).toBe(true);
+    expect(isComposerVoiceButton(button("暂停"))).toBe(true);
+    expect(isComposerVoiceButton(button("Stop"))).toBe(true);
+    expect(isComposerVoiceButton(button("Cancel"))).toBe(false);
+    expect(isComposerVoiceButton(button("Cancel recording"))).toBe(false);
+    expect(isComposerVoiceButton(button("Send"))).toBe(false);
+    expect(isComposerVoiceButton(button("Attach files"))).toBe(false);
+    expect(isComposerVoiceButton(button("Model: Grok 4.6 High Effort"))).toBe(false);
+  });
+
+  it("uses the voice button as the trailing action when it shares the send toolbar", () => {
+    const voice = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+      compareDocumentPosition: () => 2,
+    };
+    const toolbar = {
+      children: [voice, send],
+      querySelectorAll: () => [voice, send],
+    };
+    Object.assign(voice, { parentElement: toolbar });
+    Object.assign(send, { parentElement: toolbar });
+
+    expect(trailingActionAnchor(send as unknown as HTMLButtonElement)).toBe(voice);
+  });
+
+  it("keeps send as the trailing action when voice is absent", () => {
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const toolbar = {
+      children: [send],
+      querySelectorAll: () => [send],
+    };
+    Object.assign(send, { parentElement: toolbar });
+
+    expect(trailingActionAnchor(send as unknown as HTMLButtonElement)).toBe(send);
+  });
+
+  it("uses the leftmost voice control when dictation and empty-state voice share the toolbar", () => {
+    const dictation = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const waveform = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Voice" : null),
+      contains: () => false,
+    };
+    const toolbar = {
+      children: [dictation, waveform],
+    };
+    Object.assign(dictation, { parentElement: toolbar });
+    Object.assign(waveform, { parentElement: toolbar });
+
+    expect(trailingActionAnchor(waveform as unknown as HTMLButtonElement)).toBe(dictation);
+  });
+
+  it("uses the pause button as the trailing action while recording", () => {
+    const pause = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Pause" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const toolbar = {
+      children: [pause, send],
+    };
+    Object.assign(pause, { parentElement: toolbar });
+    Object.assign(send, { parentElement: toolbar });
+
+    expect(trailingActionAnchor(send as unknown as HTMLButtonElement)).toBe(pause);
+  });
+
+  it("does not treat a recording cancel control as the trailing action", () => {
+    const cancel = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Cancel recording" : null),
+      contains: () => false,
+    };
+    const pause = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Pause" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const toolbar = {
+      children: [cancel, pause, send],
+    };
+    Object.assign(cancel, { parentElement: toolbar });
+    Object.assign(pause, { parentElement: toolbar });
+    Object.assign(send, { parentElement: toolbar });
+
+    expect(trailingActionAnchor(send as unknown as HTMLButtonElement)).toBe(pause);
+  });
+
+  it("walks up to a cousin dictation control outside the send cluster", () => {
+    const dictation = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const cluster = {
+      hasAttribute: () => false,
+      children: [send],
+      matches: () => false,
+    };
+    const footer = {
+      hasAttribute: () => false,
+      children: [dictation, cluster],
+      matches: () => false,
+    };
+    Object.assign(dictation, { parentElement: footer });
+    Object.assign(send, { parentElement: cluster });
+    Object.assign(cluster, { parentElement: footer });
+
+    expect(trailingActionAnchor(send as unknown as HTMLButtonElement)).toBe(dictation);
+  });
+
+  it("re-places model and agent pickers before the voice button", () => {
+    const voice = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+      compareDocumentPosition: () => 2,
+    };
+    const insertBefore = vi.fn();
+    const toolbar = {
+      children: [voice, send],
+      querySelectorAll: () => [voice, send],
+      insertBefore,
+    };
+    Object.assign(voice, { parentElement: toolbar });
+    Object.assign(send, { parentElement: toolbar });
+    const modelRoot = { parentElement: toolbar, nextElementSibling: send };
+    const agentRoot = { parentElement: toolbar, nextElementSibling: send };
+    const control = {
+      composer: { querySelectorAll: () => [] },
+      sendButton: send,
+      root: agentRoot,
+      picker: { root: agentRoot },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      credits: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+      usage: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
+    expect(insertBefore).toHaveBeenCalledWith(modelRoot, voice);
+    expect(insertBefore).toHaveBeenCalledWith(agentRoot, voice);
+  });
+
+  it("re-places model and agent pickers before the pause button", () => {
+    const pause = {
+      type: "button",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Pause" : null),
+      contains: () => false,
+    };
+    const send = {
+      type: "submit",
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const insertBefore = vi.fn();
+    const toolbar = {
+      children: [pause, send],
+      insertBefore,
+    };
+    Object.assign(pause, { parentElement: toolbar });
+    Object.assign(send, { parentElement: toolbar });
+    const modelRoot = { parentElement: toolbar, nextElementSibling: send };
+    const agentRoot = { parentElement: toolbar, nextElementSibling: send };
+    const control = {
+      composer: { querySelectorAll: () => [] },
+      sendButton: send,
+      root: agentRoot,
+      picker: { root: agentRoot },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      credits: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+      usage: {
+        anchor: null,
+        place: vi.fn(),
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
+    expect(insertBefore).toHaveBeenCalledWith(modelRoot, pause);
+    expect(insertBefore).toHaveBeenCalledWith(agentRoot, pause);
   });
 
   it("freezes only on a non-composing Enter without Shift", () => {

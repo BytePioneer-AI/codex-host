@@ -84,21 +84,79 @@ export function eventElement(target: EventTarget | null): Element | null {
   return target instanceof Node ? target.parentElement : null;
 }
 
-function buttonText(button: HTMLButtonElement): string {
-  return [
-    button.type,
-    button.getAttribute("aria-label"),
-    button.getAttribute("title"),
-    button.getAttribute("data-testid"),
-  ]
+function controlDescription(element: Element): string {
+  const typed = element as HTMLButtonElement;
+  const read = (name: string): string | null =>
+    typeof element.getAttribute === "function" ? element.getAttribute(name) : null;
+  return [typed.type, read("aria-label"), read("title"), read("data-testid")]
     .filter((value): value is string => typeof value === "string")
     .join(" ")
     .toLowerCase();
 }
 
+function buttonText(button: HTMLButtonElement): string {
+  return controlDescription(button);
+}
+
+function isOwnedRendererControl(element: Element): boolean {
+  return (
+    element.hasAttribute(CONTROL_ATTRIBUTE) ||
+    element.hasAttribute("data-codexhost-model-control") ||
+    element.hasAttribute("data-codexhost-permission-mode-control") ||
+    element.hasAttribute("data-codexhost-usage-control") ||
+    element.hasAttribute("data-codexhost-credits-control") ||
+    element.hasAttribute("data-codexhost-harness-command-control")
+  );
+}
+
 export function isComposerSubmitButton(button: HTMLButtonElement): boolean {
   if (button.type === "submit") return true;
   return /(^|\s)(send|submit|发送|提交)(\s|$)/u.test(buttonText(button));
+}
+
+const VOICE_CONTROL_PATTERN =
+  /(dictat|microphone|speech(?:[-_\s]?to[-_\s]?text)?|voice[-_\s]?input|(^|\s)voice(\s|$)|composer[-_](?:speech|dictat|mic)|语音|听写|麦克风|pause|暂停|stop recording|stop dictation|停止录音|停止听写|(^|\s)stop(\s|$))/iu;
+const CANCEL_CONTROL_PATTERN = /(cancel|discard|close|dismiss|取消|关闭|丢弃)/iu;
+const ATTACH_CONTROL_PATTERN =
+  /(add files|attach files|attach file|attachment|composer[-_]attach|添加文件|附件)/iu;
+const TRAILING_ACTION_WALK_DEPTH = 3;
+
+function isComposerCancelButton(element: Element): boolean {
+  if (isOwnedRendererControl(element)) return false;
+  return CANCEL_CONTROL_PATTERN.test(controlDescription(element));
+}
+
+export function isComposerVoiceButton(element: Element): boolean {
+  if (isOwnedRendererControl(element) || isComposerCancelButton(element)) return false;
+  const description = controlDescription(element);
+  if (/(^|\s)(send|submit|发送|提交)(\s|$)/u.test(description)) return false;
+  return VOICE_CONTROL_PATTERN.test(description);
+}
+
+function isComposerAttachButton(element: Element): boolean {
+  if (isOwnedRendererControl(element)) return false;
+  return ATTACH_CONTROL_PATTERN.test(controlDescription(element));
+}
+
+function isComposerTrailingActionButton(element: Element): boolean {
+  return isComposerVoiceButton(element) || isComposerSubmitButton(element as HTMLButtonElement);
+}
+
+function isTrailingActionNode(element: Element): boolean {
+  if (isComposerCancelButton(element)) return false;
+  if (isComposerTrailingActionButton(element)) return true;
+  if (typeof element.querySelectorAll !== "function") return false;
+  const buttons = [...element.querySelectorAll("button")];
+  return buttons.length > 0 && buttons.every((button) => isComposerTrailingActionButton(button));
+}
+
+function attachControlWithin(root: Element): HTMLElement | null {
+  if (isComposerAttachButton(root)) return root as HTMLElement;
+  if (typeof root.querySelectorAll !== "function") return null;
+  const matches = [
+    ...root.querySelectorAll<HTMLElement>("button, [aria-label], [title], [data-testid]"),
+  ].filter(isComposerAttachButton);
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export function sendButtonWithin(root: Element): HTMLButtonElement | null {
@@ -107,6 +165,32 @@ export function sendButtonWithin(root: Element): HTMLButtonElement | null {
       isComposerSubmitButton(button),
     ) ?? null
   );
+}
+
+function leftmostTrailingSibling(container: Element, before: Element): HTMLElement | null {
+  for (const child of container.children) {
+    if (child === before) break;
+    if (typeof (child as HTMLElement).hasAttribute !== "function") continue;
+    const element = child as HTMLElement;
+    if (isOwnedRendererControl(element) || isComposerCancelButton(element)) continue;
+    if (isTrailingActionNode(element)) return element;
+  }
+  return null;
+}
+
+export function trailingActionAnchor(sendButton: HTMLButtonElement): HTMLElement {
+  let container: HTMLElement | null = sendButton.parentElement;
+  let before: HTMLElement = sendButton;
+  for (let depth = 0; container && depth < TRAILING_ACTION_WALK_DEPTH; depth += 1) {
+    if (typeof container.matches === "function" && container.matches(CODEX_COMPOSER_SELECTOR)) {
+      break;
+    }
+    const candidate = leftmostTrailingSibling(container, before);
+    if (candidate) return candidate;
+    before = container;
+    container = container.parentElement;
+  }
+  return sendButton;
 }
 
 export function editorForElement(element: Element): Element | null {
@@ -319,10 +403,12 @@ function firstMaterialChild(parent: Element): HTMLElement | null {
   for (const child of parent.children) {
     if (typeof (child as HTMLElement).hasAttribute !== "function") continue;
     const element = child as HTMLElement;
-    // Harness Commands sit with Usage; skip them so the walk reaches the + button.
+    // Skip injected trailing-cluster controls and native action buttons so the
+    // walk can reach the leading + control instead of voice/send.
     if (
       element.hasAttribute("data-codexhost-credits-control") ||
-      element.hasAttribute("data-codexhost-harness-command-control")
+      element.hasAttribute("data-codexhost-harness-command-control") ||
+      isTrailingActionNode(element)
     ) {
       continue;
     }
@@ -340,11 +426,33 @@ export function creditsPlacementAnchor(
     const parent: HTMLElement | null = current.parentElement;
     if (!parent) break;
     const first = firstMaterialChild(parent);
-    if (first && first !== current && !first.contains(usageRoot)) return first;
+    if (first && first !== current && !first.contains(usageRoot)) {
+      return attachControlWithin(first) ?? first;
+    }
     if (parent === composer) break;
     current = parent;
   }
   return null;
+}
+
+function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
+  const sendButton = control.sendButton;
+  const modelRoot = control.modelPicker?.root;
+  const agentRoot = control.root ?? control.picker?.root;
+  if (!sendButton || !modelRoot || !agentRoot) return;
+  const anchor = trailingActionAnchor(sendButton);
+  const parent = anchor.parentElement;
+  if (!parent || typeof parent.insertBefore !== "function") return;
+  if (
+    modelRoot.parentElement === parent &&
+    agentRoot.parentElement === parent &&
+    modelRoot.nextElementSibling === agentRoot &&
+    agentRoot.nextElementSibling === anchor
+  ) {
+    return;
+  }
+  parent.insertBefore(modelRoot, anchor);
+  parent.insertBefore(agentRoot, anchor);
 }
 
 function refreshUsagePlacement(control: ComposerAgentControl): void {
@@ -413,6 +521,7 @@ export function reconcileComposerNativeControls(
   hidePermissionMode: boolean,
 ): void {
   refreshNativeModelControl(control);
+  refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshNativePermissionModeControl(control);
   setNativeControlHidden(control.nativeModelControl, hideModel);
@@ -456,7 +565,7 @@ export function mountComposerAgentControl(
   const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
     toolbar ?? composer,
-    sendButton,
+    trailingActionAnchor(sendButton),
     onSelectCommand,
   );
 
@@ -467,12 +576,7 @@ export function mountComposerAgentControl(
     composer.append(permissionModePicker.root);
   }
 
-  if (toolbar) {
-    toolbar.insertBefore(modelPicker.root, sendButton);
-    toolbar.insertBefore(picker.root, sendButton);
-  } else {
-    composer.append(modelPicker.root, picker.root);
-  }
+  if (!toolbar) composer.append(modelPicker.root, picker.root);
   const control = {
     composer,
     root: picker.root,
@@ -488,6 +592,7 @@ export function mountComposerAgentControl(
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
+  refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   return control;
 }

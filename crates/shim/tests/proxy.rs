@@ -1049,6 +1049,65 @@ fn discards_a_childless_version_one_owner_that_names_the_current_shim() {
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn ignores_a_reused_version_one_child_pid_after_its_shim_exits() {
+    let directory = temporary_directory();
+    let owner_directory = directory.join("local-host-runtime-owner-v1");
+    let replacement_ready = directory.join("replacement-ready");
+    fs::create_dir(&owner_directory).expect("create stale version-one owner directory");
+
+    let mut unrelated = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_DELAY_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn unrelated reused-child-PID fixture");
+    fs::write(
+        owner_directory.join("owner"),
+        format!(
+            "version=1\nprocess_id={}\ndesktop_process_id={}\nchild_process_id={}\n",
+            u32::MAX,
+            process::id(),
+            unrelated.id(),
+        ),
+    )
+    .expect("publish stale version-one owner record with a reused child PID");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
+    let unrelated_was_not_signalled = unrelated
+        .try_wait()
+        .expect("poll unrelated reused-child-PID fixture")
+        .is_none();
+
+    force_stop_test_process(unrelated.id());
+    let _ = unrelated.wait();
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        if let Some(identity) = replacement_identity.as_deref() {
+            force_stop_test_process(process_id_from_ready(identity, "root="));
+        }
+        let _ = replacement.wait();
+    }
+    let _ = fs::remove_dir_all(&directory);
+
+    assert!(
+        replacement_identity.is_some(),
+        "replacement trusted a live process that reused a dead Windows v1 child PID"
+    );
+    assert!(
+        unrelated_was_not_signalled,
+        "replacement signalled an unrelated process that reused a dead Windows v1 child PID"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {

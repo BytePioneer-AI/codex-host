@@ -423,6 +423,16 @@ fn executable_file_name_matches(observed: &Path, expected: &Path) -> bool {
     false
 }
 
+#[cfg(target_os = "windows")]
+fn ensure_no_live_version_one_child(_owner: &VersionOneOwnerRecord) -> Result<(), Box<dyn Error>> {
+    // Released Windows Shims spawn the Host Runtime only after assigning it to their
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE Job. Once the Shim process is gone, that child cannot
+    // legitimately remain alive; a live process at the PID-only v1 child ID is therefore PID
+    // reuse. Never wait on or signal that unrelated process.
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 fn ensure_no_live_version_one_child(owner: &VersionOneOwnerRecord) -> Result<(), Box<dyn Error>> {
     let Some(child_process_id) = owner.child_process_id else {
         return Ok(());

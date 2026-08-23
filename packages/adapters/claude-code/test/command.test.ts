@@ -38,6 +38,33 @@ describe("Claude Code executable resolution", () => {
     ).toBe(executable);
   });
 
+  it("resolves the Windows npm shim to Claude Code's native executable", () => {
+    const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
+    directories.push(homeDirectory);
+    const appData = path.join(homeDirectory, "AppData", "Roaming");
+    const npmDirectory = path.join(appData, "npm");
+    const shim = path.join(npmDirectory, "claude.cmd");
+    const nativeExecutable = path.join(
+      npmDirectory,
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "bin",
+      "claude.exe",
+    );
+    fs.mkdirSync(path.dirname(nativeExecutable), { recursive: true });
+    fs.writeFileSync(shim, "@echo off\r\n", { mode: 0o700 });
+    fs.writeFileSync(nativeExecutable, "native Claude Code", { mode: 0o700 });
+
+    expect(
+      resolveClaudeCodeExecutable({
+        environment: { APPDATA: appData, PATH: npmDirectory, PATHEXT: ".CMD" },
+        homeDirectory,
+        platform: "win32",
+      }),
+    ).toBe(nativeExecutable);
+  });
+
   it("finds a user npm installation when a Finder-style PATH omits it", () => {
     const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
     directories.push(homeDirectory);

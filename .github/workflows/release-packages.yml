@@ -254,6 +254,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
+    if: needs.prepare.outputs.npm_tag != 'test'
     needs: [prepare, package, publish-npm]
     runs-on: ubuntu-latest
     permissions:

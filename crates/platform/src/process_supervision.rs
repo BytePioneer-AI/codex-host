@@ -1,6 +1,6 @@
-use std::io;
+use std::io::{self, Read};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
@@ -253,10 +253,26 @@ fn spawned_root_snapshot(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+fn expected_executable(command: &Command) -> Option<PathBuf> {
+    let executable = std::fs::canonicalize(command.get_program()).ok()?;
+    let mut file = std::fs::File::open(&executable).ok()?;
+    let mut prefix = [0_u8; 2];
+
+    // A Unix shebang script is launched through its interpreter. The process
+    // identity therefore becomes the interpreter (for example `node`), not
+    // the script path passed to Command::new (for example `codex.js`).
+    if file.read_exact(&mut prefix).is_ok() && prefix == *b"#!" {
+        None
+    } else {
+        Some(executable)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, PlatformError> {
     use std::os::unix::process::CommandExt;
 
-    let expected_executable = std::fs::canonicalize(command.get_program()).ok();
+    let expected_executable = expected_executable(command);
     command.process_group(0);
     let mut child = command.spawn()?;
     let root = match spawned_root_snapshot(&mut child, expected_executable.as_deref()) {
@@ -283,6 +299,45 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
             armed: true,
         }),
     })
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod tests {
+    use super::spawn_supervised;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn accepts_a_shebang_script_that_runs_under_an_interpreter() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "codexhost-process-supervision-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("create temporary directory");
+        let script = directory.join("codex.js");
+        fs::write(&script, "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n")
+            .expect("write shebang script");
+        let mut permissions = fs::metadata(&script)
+            .expect("stat shebang script")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).expect("make shebang script executable");
+
+        let mut command = Command::new(&script);
+        let mut child =
+            spawn_supervised(&mut command).expect("supervise an interpreter-backed executable");
+        child
+            .force_terminate()
+            .expect("terminate supervised script");
+        child.wait().expect("wait for supervised script");
+        fs::remove_dir_all(directory).expect("remove temporary directory");
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

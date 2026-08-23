@@ -11,6 +11,7 @@ export default defineConfig({
       "tests/release/**/*.test.mjs",
       "tools/**/*.test.mjs",
     ],
+    maxWorkers: 4,
     passWithNoTests: false,
   },
 });

@@ -376,7 +376,7 @@ fn executable_file_name_matches(observed: &Path, expected: &Path) -> bool {
     {
         use std::os::unix::ffi::OsStrExt;
 
-        return observed.as_bytes().strip_suffix(b" (deleted)") == Some(expected.as_bytes());
+        observed.as_bytes().strip_suffix(b" (deleted)") == Some(expected.as_bytes())
     }
     #[cfg(not(target_os = "linux"))]
     false

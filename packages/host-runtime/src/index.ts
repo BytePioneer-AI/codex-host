@@ -20,6 +20,29 @@ export {
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
+export {
+  createRemoteAppServerWebSocketListener,
+  isRemoteUnixListenerInvocation,
+  remoteAppServerSocketPath,
+  remoteUnixListenerUrl,
+  stdioArgumentsForRemoteListener,
+} from "./remote-app-server.js";
+export type {
+  RemoteAppServerSession,
+  RemoteAppServerSessionStreams,
+  RemoteAppServerWebSocketListener,
+} from "./remote-app-server.js";
+export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
+export { runRemoteHostCli } from "./remote-host-cli.js";
+export {
+  inspectRemoteHostInstallation,
+  installRemoteHost,
+  uninstallRemoteHost,
+} from "./remote-host-install.js";
+export type {
+  RemoteHostInstallationStatus,
+  RemoteHostInstallOptions,
+} from "./remote-host-install.js";
 export { createHostUpdateCoordinator } from "./update-coordinator.js";
 export type {
   CreateHostUpdateCoordinatorOptions,

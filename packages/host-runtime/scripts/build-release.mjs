@@ -16,6 +16,7 @@ const allowedRuntimePackages = new Set([
   "@anthropic-ai/claude-agent-sdk",
   "@deepseek-ai/dsh-host-apiproxy",
   "diff",
+  "ws",
   "zod",
 ]);
 
@@ -45,6 +46,8 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/host-runtime/src/release-main.ts/",
     "/packages/host-runtime/src/app-server-host.ts/",
     "/packages/host-runtime/src/adapter-composition.ts/",
+    "/packages/host-runtime/src/remote-app-server.ts/",
+    "/packages/host-runtime/src/remote-socket-lock.ts/",
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
     "/packages/adapters/deepseek-harness/",
@@ -52,6 +55,7 @@ export function auditHostBundleMetafile(metafile) {
     "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
     "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
+    "/node_modules/ws/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {
       throw new Error(`release Host Bundle is missing required input: ${required}`);
@@ -99,6 +103,9 @@ export async function buildReleaseHostBundle({ repositoryRoot, outputPath }) {
     treeShaking: true,
     charset: "utf8",
     legalComments: "none",
+    banner: {
+      js: 'import { createRequire as __codexhostCreateRequire } from "node:module"; const require = __codexhostCreateRequire(import.meta.url);',
+    },
     logLevel: "silent",
   });
   if (!result.metafile) throw new Error("release Host Bundle build did not return a metafile");

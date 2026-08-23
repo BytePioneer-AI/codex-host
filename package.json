@@ -81,6 +81,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@playwright/test": "1.62.0",
     "@types/node": "24.13.3",
+    "@types/ws": "8.18.1",
     "diff": "8.0.2",
     "esbuild": "0.28.1",
     "eslint": "10.8.0",

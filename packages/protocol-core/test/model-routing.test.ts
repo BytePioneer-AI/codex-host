@@ -179,21 +179,26 @@ describe("external Harness transport model routing", () => {
     });
   });
 
-  it("round-trips request-scoped Grok Model and Thinking selection", () => {
+  it("round-trips request-scoped Grok Model, Permission Mode, and Thinking selection", () => {
     const model = harnessModelRefSchema.parse({ id: "grok-4.6" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
-    const transportModelId = encodeGrokTransportModel(model, thinkingOptionId);
+    const transportModelId = encodeGrokTransportModel(model, permissionModeId, thinkingOptionId);
 
     expect(transportModelId).toBe(
-      `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+      `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
     );
     expect(decodeGrokTransportSelection(transportModelId)).toEqual({
       model,
+      permissionModeId,
       thinkingOptionId,
     });
     expect(
       decodeCreateRoute({ id: 10, method: "thread/start", params: { model: transportModelId } }),
-    ).toMatchObject({ harnessId: "grok", model, thinkingOptionId });
+    ).toMatchObject({ harnessId: "grok", model, permissionModeId, thinkingOptionId });
+
+    const legacyCarrier = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`;
+    expect(decodeGrokTransportSelection(legacyCarrier)).toEqual({ model, thinkingOptionId });
   });
 
   it("decodes existing Thread carriers only for their owning Harness", () => {

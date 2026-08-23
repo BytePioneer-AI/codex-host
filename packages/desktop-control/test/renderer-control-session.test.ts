@@ -199,6 +199,10 @@ describe("Renderer Control Session", () => {
         calls.push(`prewarm:${rendererId}`);
         return { state: "ready" as const, reason: "owned-request-bridge" as const };
       },
+      async readDraftPrewarmPolicy() {
+        calls.push("read-prewarm");
+        return "ready";
+      },
       async reload() {
         calls.push("reload");
         binding = null;

@@ -7,6 +7,7 @@ import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { resolve } from "node:path";
 import {
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
@@ -54,10 +55,12 @@ const initialize: InitializeResponse = {
 
 class FakeGrokTransport implements GrokAcpTransportLike {
   sessionId = "grok-session";
+  readonly openCalls: GrokOpenInput[] = [];
   readonly compactCalls: Array<string | undefined> = [];
   readonly cancel = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
+  readonly setPermissionMode = vi.fn(async () => undefined);
   readonly deleteSession = vi.fn(async (sessionId: string) => {
     this.histories.delete(sessionId);
   });
@@ -84,6 +87,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   }
 
   async open(input: GrokOpenInput): Promise<GrokOpenResult> {
+    this.openCalls.push(input);
     if (input.kind === "resume") {
       this.sessionId = input.sessionId;
       const stored = this.histories.get(input.sessionId);
@@ -293,7 +297,53 @@ describe("Grok Adapter ACP projection", () => {
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
       catalog: { models: [{ ref: { id: "grok-4.6" } }] },
-      capabilities: { configuration: { selectModel: true } },
+      permissionModes: {
+        modes: [
+          { id: "default", label: "Default" },
+          { id: "ask", label: "Ask" },
+          { id: "auto", label: "Auto" },
+          { id: "always-approve", label: "Always approve", dangerous: true },
+        ],
+        defaultModeId: "default",
+      },
+      capabilities: {
+        configuration: { selectModel: true, selectPermissionMode: true },
+      },
+    });
+
+    await adapter.close();
+  });
+
+  it("seeds and changes the native Grok Permission Mode", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: auto,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(transport.openCalls).toContainEqual({ kind: "create", permissionModeId: auto });
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(auto);
+    expect(opened.value.initialState.effectivePermissionModeId).toBe(auto);
+    const outputs = opened.value.outputs[Symbol.asyncIterator]();
+    await expect(
+      opened.value.execute({ type: "permissionMode.select", permissionModeId: alwaysApprove }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
+    await expect(nextEvent(outputs)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: alwaysApprove },
     });
 
     await adapter.close();
@@ -1299,6 +1349,56 @@ describe("Grok Adapter ACP projection", () => {
     ]);
     expect(transport.deleteSession).not.toHaveBeenCalled();
     await opened.value.close();
+  });
+
+  it("preserves the active source Permission Mode when forking", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const source = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: alwaysApprove,
+    });
+    if (!source.ok) throw new Error(source.error.message);
+    const sourceRef = source.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+    const sourceHistory: GrokTransportEvent[] = [
+      { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+      { type: "agent.text", text: "answer-1" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ];
+    transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
+    transport.forkImpl = async () => {
+      transport.histories.set("child-session", sourceHistory);
+      return { sessionId: "child-session" };
+    };
+    transport.setPermissionMode.mockClear();
+
+    const forked = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: sourceRef.nativeSessionId,
+        checkpointId: "0",
+        formatVersion: 1,
+      }),
+    });
+    if (!forked.ok) throw new Error(forked.error.message);
+
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
+    expect(forked.value.initialState.effectivePermissionModeId).toBe(alwaysApprove);
+    await source.value.close();
+    await forked.value.close();
   });
 
   it("forks into a caller-selected cwd as a Worktree Session", async () => {

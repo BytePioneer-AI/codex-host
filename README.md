@@ -52,7 +52,7 @@ Pi, Claude Code, DeepSeek Harness, and Grok run as independent sessions in the s
 | Ask / cancel | Native | ✅ | ✅ | 🚧 | ✅ |
 | Model / thinking selection | Native | ✅ | ✅ | ✅ | 🚧 |
 | Tool approvals | Native | ✅ | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | ✅ | — | — |
+| Permission modes | Native | — | ✅ | ✅ | — |
 | Usage | Native | ✅ | ✅ | ✅ | ✅ |
 | Session resume | Native | ✅ | ✅ | ✅ | ✅ |
 | Thread management | Native | ✅ | 🚧 | 🚧 | 🚧 |
@@ -91,6 +91,11 @@ On Windows, if you use a portable/extracted Codex Desktop, set `CODEXHOST_INSTAL
 ```
 
 Then open a new terminal and start codexhost. This applies to both the npm command and the Windows installer.
+
+### Remote SSH hosts
+
+To use a Harness that is installed and authenticated only on a remote development machine, install codexhost on both machines and configure the SSH host with `codexhost remote install`. See [Remote SSH Harness Host](docs/remote-ssh-host.md) for setup, security boundaries, OpenCodex coexistence, diagnostics, and rollback.
+
 <details>
 <summary><h3>How it works</h3></summary>
 

@@ -13,6 +13,32 @@ export interface RendererDraftPrewarmPolicyStatus {
   reason: "owned-request-bridge";
 }
 
+export interface RendererRequestManagerCandidate<Manager = object, RequestClient = object> {
+  manager: Manager;
+  requestClient: RequestClient;
+  hostId: unknown;
+  prewarmedThreadManager: unknown;
+}
+
+export function selectRendererRequestManager<Manager, RequestClient>(
+  candidates: readonly RendererRequestManagerCandidate<Manager, RequestClient>[],
+  activeHostIds: readonly unknown[],
+): RendererRequestManagerCandidate<Manager, RequestClient> | null {
+  const unique = new Map<Manager, RendererRequestManagerCandidate<Manager, RequestClient>>();
+  for (const candidate of candidates) unique.set(candidate.manager, candidate);
+
+  const hosts = new Set(
+    activeHostIds.filter((value): value is string => typeof value === "string" && value.length > 0),
+  );
+  if (hosts.size > 1) return null;
+
+  const activeHostId = hosts.values().next().value as string | undefined;
+  const eligible = [...unique.values()].filter(
+    (candidate) => activeHostId === undefined || candidate.hostId === activeHostId,
+  );
+  return eligible.length === 1 ? (eligible[0] ?? null) : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -34,7 +60,15 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
     element = element.parentElement;
   }
   const managers = new Set();
+  const activeHostIds = new Set();
   for (let depth = 0; fiber != null && depth < 200; depth += 1, fiber = fiber.return) {
+    const props = fiber.memoizedProps;
+    if (props != null && typeof props === 'object') {
+      for (const name of ['executionTargetHostId', 'permissionsHostId']) {
+        const value = props[name];
+        if (typeof value === 'string' && value.length > 0) activeHostIds.add(value);
+      }
+    }
     let hook = fiber.memoizedState;
     for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
       const value = hook.memoizedState;
@@ -51,19 +85,26 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
       }
     }
   }
-  const manager = managers.size === 1 ? managers.values().next().value : null;
-  const requestClient =
-    manager != null &&
-    typeof manager.requestClient?.sendRequest === 'function' &&
-    typeof manager.requestClient?.prewarmThreadStart === 'function' &&
-    typeof manager.requestClient?.enqueueRequest === 'function'
-      ? manager.requestClient
-      : manager;
+  const candidates = [...managers].map((manager) => {
+    const requestClient =
+      typeof manager.requestClient?.sendRequest === 'function' &&
+      typeof manager.requestClient?.prewarmThreadStart === 'function' &&
+      typeof manager.requestClient?.enqueueRequest === 'function'
+        ? manager.requestClient
+        : manager;
+    return {
+      manager,
+      requestClient,
+      hostId: manager?.getHostId?.() ?? requestClient?.hostId ?? null,
+      prewarmedThreadManager: manager?.prewarmedThreadManager ?? null,
+    };
+  });
+  const selected = (${selectRendererRequestManager.toString()})(candidates, [...activeHostIds]);
   return {
-    candidateCount: managers.size,
-    hostId: manager?.getHostId?.() ?? requestClient?.hostId ?? null,
-    manager: requestClient,
-    prewarmedThreadManager: manager?.prewarmedThreadManager ?? null,
+    candidateCount: selected == null ? candidates.length : 1,
+    hostId: selected?.hostId ?? null,
+    manager: selected?.requestClient ?? null,
+    prewarmedThreadManager: selected?.prewarmedThreadManager ?? null,
   };
 })()`;
 

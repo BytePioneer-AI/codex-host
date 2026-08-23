@@ -8,6 +8,9 @@ use std::process::{self, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix::net::UnixListener;
+
 use codexhost_platform::CODEX_CLI_PATH_ENV;
 
 fn environment_u64(name: &str, default: u64) -> u64 {
@@ -21,6 +24,39 @@ fn write_ready_file(path: &Path, contents: &str) {
     let temporary = path.with_extension(format!("tmp-{}", process::id()));
     fs::write(&temporary, contents).expect("write temporary ready file");
     fs::rename(temporary, path).expect("publish ready file");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn run_unix_listener() -> bool {
+    let Some(socket_path) =
+        env::var_os("FAKE_CODEX_UNIX_LISTENER_PATH").map(std::path::PathBuf::from)
+    else {
+        return false;
+    };
+    let ready_path = env::var_os("FAKE_CODEX_READY_PATH").map(std::path::PathBuf::from);
+    fs::create_dir_all(socket_path.parent().expect("fake listener parent"))
+        .expect("create fake listener directory");
+    let _ = fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).expect("bind fake Unix listener");
+    if let Some(path) = ready_path {
+        write_ready_file(
+            &path,
+            &format!(
+                "root={}\nshim={}\n",
+                process::id(),
+                nix::unistd::getppid().as_raw()
+            ),
+        );
+    }
+    for connection in listener.incoming() {
+        drop(connection.expect("accept fake Unix listener connection"));
+    }
+    true
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn run_unix_listener() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]
@@ -71,6 +107,9 @@ fn main() {
 
         let error = Command::new("/bin/sh").args(["-c", "kill -SEGV $$"]).exec();
         panic!("failed to exec crashing process: {error}");
+    }
+    if run_unix_listener() {
+        return;
     }
     if run_signal_observer() {
         return;

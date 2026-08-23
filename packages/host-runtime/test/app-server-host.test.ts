@@ -160,6 +160,7 @@ function createFixture(
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
+    closeMappingStoreOnExit?: boolean;
     updateCoordinator?: HostUpdateCoordinator;
   } = {},
 ) {
@@ -183,6 +184,9 @@ function createFixture(
     desktopOutput,
     diagnosticOutput,
     mappingStore,
+    ...(options.closeMappingStoreOnExit !== undefined
+      ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
+      : {}),
     ...(options.environment ? { environment: options.environment } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
@@ -196,6 +200,7 @@ function createFixture(
     desktopInput,
     desktopOutput,
     diagnosticOutput,
+    host,
     official,
     running,
     mappingStore,
@@ -272,6 +277,50 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("terminates the official app-server when its Host session closes", async () => {
+    const fixture = createFixture();
+    fixture.official.kill.mockImplementationOnce(() => {
+      fixture.official.stdout.end();
+      fixture.official.emit("exit", null, "SIGTERM");
+      return true;
+    });
+
+    try {
+      expect(() => fixture.host.close()).not.toThrow();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("can share one initialized Mapping Store across concurrent remote sessions", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-shared-"));
+    const mappingStore = new MappingStore({ directory });
+    await mappingStore.initialize();
+    const close = vi.spyOn(mappingStore, "close");
+    const first = createFixture({
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+    const second = createFixture({
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+
+    try {
+      await Promise.all([closeFixture(first), closeFixture(second)]);
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      await mappingStore.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("routes fixed update controls locally without requesting Desktop quit", async () => {
     const updateCoordinator: HostUpdateCoordinator = {
       check: vi.fn(async () => ({
@@ -1039,7 +1088,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const started = await fixture.collector.waitFor((message) => requestId(message, 10));
     const threadId = ((started.result as JsonObject).thread as JsonObject).id;
     if (typeof threadId !== "string") throw new Error("Paginated Thread has no ID");
-    await completePiTurn(fixture, threadId, 11);
+    const firstTurnId = await completePiTurn(fixture, threadId, 11);
     const secondTurnId = await completePiTurn(fixture, threadId, 12);
     const thirdTurnId = await completePiTurn(fixture, threadId, 13);
     const session = fixture.adapter.sessions[0];
@@ -1106,9 +1155,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         initialTurnsPage: { limit: 1, itemsView: "summary" },
       },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 17)),
-    ).resolves.toMatchObject({
+    const resumed = await fixture.collector.waitFor((message) => requestId(message, 17));
+    expect(resumed).toMatchObject({
       result: {
         thread: { id: threadId, turns: [] },
         initialTurnsPage: { data: [{ id: thirdTurnId }] },
@@ -1117,6 +1165,26 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     expect(session.snapshotReads).toBe(2);
+
+    const itemsBackwardsCursor = (resumed.result as JsonObject).itemsBackwardsCursor;
+    if (typeof itemsBackwardsCursor !== "string") {
+      throw new Error("Paginated resume did not return an Item head cursor");
+    }
+    writeRequest(fixture.desktopInput, {
+      id: 18,
+      method: "thread/items/list",
+      params: {
+        threadId,
+        turnId: firstTurnId,
+        cursor: itemsBackwardsCursor,
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 18)),
+    ).resolves.toMatchObject({
+      result: { data: [], nextCursor: null, backwardsCursor: null },
+    });
+
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });

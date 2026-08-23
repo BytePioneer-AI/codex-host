@@ -2,11 +2,14 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { encodeGrokTransportModel } from "@codexhost/protocol-core";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
@@ -74,5 +77,76 @@ describe("ExternalThreadRuntime register", () => {
       effectiveModel: model,
       effectiveThinkingOptionId: thinkingOptionId,
     });
+  });
+
+  it("reapplies a persisted Grok Permission Mode before reading restored history", async () => {
+    const grokHarnessId = harnessIdSchema.parse("grok");
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "auto", label: "Auto" },
+      ],
+      defaultModeId: "default",
+    });
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const autoMode = harnessPermissionModeIdSchema.parse("auto");
+    const adapter = new FakeHarnessAdapter(
+      grokHarnessId,
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const model = adapter.catalog.defaultModel;
+    if (!model) throw new Error("Fake Grok catalog has no default Model");
+    const created = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model,
+      permissionModeId: defaultMode,
+    });
+    if (!created.ok || !created.value.initialState.nativeRef) {
+      throw new Error("Fake Grok Session did not open");
+    }
+    const session = created.value;
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: grokHarnessId,
+      nativeSessionRef: created.value.initialState.nativeRef,
+      title: "Grok Thread",
+      transportModelId: encodeGrokTransportModel(model, autoMode),
+    } as StoredThreadRecordV1;
+    const execute = vi.spyOn(session, "execute");
+    const readSnapshot = vi.spyOn(session, "readSnapshot");
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async () => ({ record: stored, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["grok", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
+    expect(execute).toHaveBeenCalledWith({
+      type: "permissionMode.select",
+      permissionModeId: autoMode,
+    });
+    const executeOrder = execute.mock.invocationCallOrder[0];
+    const readOrder = readSnapshot.mock.invocationCallOrder[0];
+    if (executeOrder === undefined || readOrder === undefined) {
+      throw new Error("Restore did not select Permission Mode before reading history");
+    }
+    expect(executeOrder).toBeLessThan(readOrder);
+    expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(autoMode);
+
+    await adapter.close();
   });
 });

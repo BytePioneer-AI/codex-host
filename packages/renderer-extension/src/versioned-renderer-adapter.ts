@@ -93,6 +93,7 @@ interface PrewarmTarget {
   sendRequest?: (method: string, params: unknown, options?: unknown) => Promise<unknown> | unknown;
   requestClient?: PrewarmTarget;
   hostId?: unknown;
+  getHostId?: () => unknown;
 }
 
 export interface ModelPowerSelection {
@@ -103,6 +104,7 @@ export interface ModelPowerSelection {
 
 export interface RendererDraftPrewarmPolicy {
   state: "ready";
+  hostId: string;
   select(model: string | null): boolean;
   clear(): Promise<void>;
 }
@@ -175,37 +177,53 @@ export function claudeTransportModelId(
 
 export function grokTransportModelId(
   model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("Grok transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Grok transport configuration requires a Model Ref");
+    }
     return GROK_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
-  return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@@${parsedThinking}` : ""}`;
+  if (parsedThinking) {
+    return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGrokTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 } | null {
   if (value === GROK_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(GROK_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(GROK_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length !== 1 && components.length !== 3) return null;
-  const [modelId, emptyPermissionMode, thinkingOptionId] = components;
-  if (components.length === 3 && (emptyPermissionMode !== "" || !thinkingOptionId)) return null;
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
   const thinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
     : null;
   if (thinking && !thinking.success) return null;
   return {
     model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
     ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
@@ -327,7 +345,8 @@ function isActiveRequestManager(value: unknown): value is PrewarmTarget {
 function matchesCurrentPrewarmSignature(target: PrewarmTarget): boolean {
   const bridge = target.requestClient ?? target;
   const stableApiShape =
-    bridge.hostId === "local" &&
+    typeof bridge.hostId === "string" &&
+    bridge.hostId.length > 0 &&
     typeof bridge.sendRequest === "function" &&
     typeof bridge.prewarmThreadStart === "function" &&
     typeof bridge.enqueueRequest === "function";
@@ -468,11 +487,32 @@ function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
   }
 }
 
-export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
-  const conversationThreadId = findComposerConversationThreadId(composer);
-  if (conversationThreadId === null) return null;
-  if (conversationThreadId !== undefined) return ["conversation", conversationThreadId];
+type ComposerDomIdentity =
+  | { kind: "unsupported" }
+  | { kind: "draft" }
+  | { kind: "conversation"; threadId: HostThreadId }
+  | { kind: "ambiguous" };
 
+function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
+  // Codex 26.818 renders one direct portal marker inside the Composer root. The
+  // conversation attribute is omitted for an unsubmitted client-new-thread and
+  // populated once that draft is bound to a real Thread. Prefer this scoped DOM
+  // contract over arbitrary ancestor props: remote project pages can carry a
+  // background/prewarm conversationId above an otherwise-new Composer.
+  const children = Array.from(composer.children ?? []);
+  const portals = children.filter((child) => child.hasAttribute("data-above-composer-portal"));
+  if (portals.length === 0) return { kind: "unsupported" };
+  if (portals.length !== 1) return { kind: "ambiguous" };
+
+  const value = portals[0]?.getAttribute("data-above-composer-conversation-id");
+  if (value === null) return { kind: "draft" };
+  const candidate = hostThreadIdSchema.safeParse(value);
+  return candidate.success
+    ? { kind: "conversation", threadId: candidate.data }
+    : { kind: "ambiguous" };
+}
+
+function findComposerDraftIds(composer: Element): Set<string> {
   const draftIds = new Set<string>();
   let fiber = findComposerFiber(composer);
   for (let depth = 0; fiber && depth < 120; depth += 1) {
@@ -494,6 +534,26 @@ export function findComposerModelTarget(composer: Element): readonly unknown[] |
         ? (parent as typeof fiber)
         : null;
   }
+  return draftIds;
+}
+
+export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  const draftIds = findComposerDraftIds(composer);
+  const domIdentity = findComposerDomIdentity(composer);
+  if (domIdentity.kind === "ambiguous") return null;
+  if (domIdentity.kind === "conversation") {
+    return ["conversation", domIdentity.threadId];
+  }
+  if (domIdentity.kind === "draft") {
+    return draftIds.size === 1 ? ["default", draftIds.values().next().value] : null;
+  }
+
+  // Older supported Desktop builds do not expose the scoped portal marker.
+  // Retain their reviewed Fiber fallback, including fail-closed ambiguity.
+  const conversationThreadId = findComposerConversationThreadId(composer);
+  if (conversationThreadId === null) return null;
+  if (conversationThreadId !== undefined) return ["conversation", conversationThreadId];
+
   if (draftIds.size !== 1) return null;
   return ["default", draftIds.values().next().value];
 }
@@ -506,9 +566,79 @@ export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraf
   return (
     isRecord(value) &&
     value.state === "ready" &&
+    typeof value.hostId === "string" &&
+    value.hostId.length > 0 &&
     typeof value.select === "function" &&
     typeof value.clear === "function"
   );
+}
+
+export function activeRendererDraftPrewarmPolicy(
+  policy: unknown,
+  targets: readonly PrewarmTarget[],
+): RendererDraftPrewarmPolicy | null {
+  if (!isDraftPrewarmPolicyReady(policy)) return null;
+  return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
+}
+
+function activeRendererDraftPrewarmTargets(
+  policy: unknown,
+  targets: readonly PrewarmTarget[],
+): readonly PrewarmTarget[] | null {
+  if (!isDraftPrewarmPolicyReady(policy)) return null;
+  const activeTargets = targets.filter((target) => {
+    const bridge = target.requestClient ?? target;
+    return (target.getHostId?.() ?? bridge.hostId) === policy.hostId;
+  });
+  return activeTargets.length === 1 ? activeTargets : null;
+}
+
+export interface RendererRequestRoute {
+  readonly policy: RendererDraftPrewarmPolicy;
+  readonly targets: readonly PrewarmTarget[];
+}
+
+export function resolveRendererRequestRoute(
+  policy: unknown,
+  discoveredTargets: readonly PrewarmTarget[],
+  previous: RendererRequestRoute | null,
+): RendererRequestRoute | null {
+  const activeTargets = activeRendererDraftPrewarmTargets(policy, discoveredTargets);
+  if (isDraftPrewarmPolicyReady(policy) && activeTargets) {
+    return { policy, targets: activeTargets };
+  }
+
+  // Composer replacement and settings overlays can briefly remove the only
+  // Fiber path that exposes the request manager. Retain the confirmed route
+  // only while discovery is empty and the installed policy object is unchanged.
+  // Positive discovery for another Host invalidates the cache immediately;
+  // policy identity also prevents reuse across reconnects or same-id switches.
+  return discoveredTargets.length === 0 &&
+    isDraftPrewarmPolicyReady(policy) &&
+    previous?.policy === policy
+    ? previous
+    : null;
+}
+
+export function createRendererRequestRouteResolver(
+  readPolicy: () => unknown,
+  discoverTargets: () => readonly PrewarmTarget[],
+): {
+  resolve(): RendererRequestRoute | null;
+  clear(): void;
+} {
+  let route: RendererRequestRoute | null = null;
+  return {
+    resolve() {
+      // Persist null invalidations too, otherwise a later empty discovery gap
+      // could revive a request manager that belonged to the previous Host.
+      route = resolveRendererRequestRoute(readPolicy(), discoverTargets(), route);
+      return route;
+    },
+    clear() {
+      route = null;
+    },
+  };
 }
 
 export async function waitForRendererDraftPrewarmPolicy(
@@ -542,7 +672,7 @@ export function modelSelectionForAgent(
         : agent === "deepseek-harness"
           ? deepSeekHarnessTransportModelId(model)
           : agent === "grok"
-            ? grokTransportModelId(model, thinkingOptionId)
+            ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
             : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
@@ -585,8 +715,13 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const usageSubscription = createThreadUsageSubscriptionRelay();
+  const requestRouteResolver = createRendererRequestRouteResolver(
+    () => window.__codexhostDraftPrewarmPolicyV1,
+    () => findActivePrewarmTargets(document),
+  );
+  const currentRequestRoute = () => requestRouteResolver.resolve();
   const currentModelClient = (): RendererModelClient => {
-    const client = createRendererModelClient(findActivePrewarmTargets(document));
+    const client = createRendererModelClient(currentRequestRoute()?.targets ?? []);
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     usageSubscription.connect(client);
     return client;
@@ -631,10 +766,12 @@ export function installCurrentRendererAdapter(): {
 
   let routingPolicy: RendererDraftPrewarmPolicy | null = null;
   let policyTimer: number | null = null;
+  let desiredCarrier: string | null = null;
   const captureRoutingPolicy = (): boolean => {
-    const discovered = window.__codexhostDraftPrewarmPolicyV1;
-    if (!isDraftPrewarmPolicyReady(discovered)) return false;
-    routingPolicy = discovered;
+    const route = currentRequestRoute();
+    if (!route) return false;
+    routingPolicy = route.policy;
+    routingPolicy.select(desiredCarrier);
     if (policyTimer !== null) {
       window.clearInterval(policyTimer);
       policyTimer = null;
@@ -646,6 +783,10 @@ export function installCurrentRendererAdapter(): {
     updateStatus("installing", "draft-routing-policy-unavailable", null);
     policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
   }
+  const handleRoutingPolicyChange = (): void => {
+    captureRoutingPolicy();
+  };
+  window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
 
   const applyAgent = (
     agent: RendererAgent,
@@ -653,7 +794,7 @@ export function installCurrentRendererAdapter(): {
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
   ): boolean => {
-    if (disposed || routingPolicy === null) return false;
+    if (disposed) return false;
     const selection = modelSelectionForAgent(
       null,
       null,
@@ -664,7 +805,11 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
-    if (routingPolicy.select(carrier ?? null)) {
+    desiredCarrier = carrier ?? null;
+    const route = currentRequestRoute();
+    if (!route) return false;
+    routingPolicy = route.policy;
+    if (route.policy.select(desiredCarrier)) {
       modelUpdates += 1;
       liveStatus.modelUpdates = modelUpdates;
     }
@@ -678,8 +823,13 @@ export function installCurrentRendererAdapter(): {
       if (disposed) return;
       disposed = true;
       if (policyTimer !== null) window.clearInterval(policyTimer);
+      window.removeEventListener(
+        "codexhost:draft-prewarm-policy-changed",
+        handleRoutingPolicyChange,
+      );
       routingPolicy?.select(null);
       routingPolicy = null;
+      requestRouteResolver.clear();
       forkControl.dispose();
       usageSubscription.dispose();
     },

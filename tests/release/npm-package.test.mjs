@@ -277,11 +277,41 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--host-runtime", hostRuntime)');
     expect(source).toContain('extras.push("--desktop-controller", desktopController)');
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
-    expect(source).toContain('if (launchArguments[0] === "launch")');
+    expect(source).toContain('if (launchArguments?.[0] === "launch")');
+    expect(source).toContain('userArguments[0] === "remote"');
+    expect(source).toContain('"--codexhost-remote"');
+    expect(source).toContain('"--host-runtime", hostRuntime');
     expect(source).toContain('stdio: ["ignore", "pipe", "inherit"]');
     expect(source).toContain('launcherOutput.includes("ready\\n")');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it("does not forward remote SSH bootstrap variables into a local Desktop launch", () => {
+    const source = createNpmBinLauncherSource({ version: "0.1.0" });
+    expect(source).toContain('import { homedir } from "node:os"');
+    expect(source).toContain('if (updateEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1")');
+    expect(source).toContain("delete updateEnvironment[name]");
+    expect(source).toContain(
+      'updateEnvironment.CODEXHOST_DATA_DIR = path.join(homedir(), ".codexhost")',
+    );
+    const listStart = source.indexOf("const remoteSshBootstrapEnvironment = [");
+    const listEnd = source.indexOf("];", listStart);
+    expect(listStart).toBeGreaterThanOrEqual(0);
+    expect(listEnd).toBeGreaterThan(listStart);
+    const sanitizationSource = source.slice(listStart, listEnd);
+    for (const name of [
+      "CODEX_INSTALL_DIR",
+      "CODEXHOST_DATA_DIR",
+      "CODEXHOST_DEFAULT_AGENT",
+      "CODEXHOST_HOST_NODE_PATH",
+      "CODEXHOST_HOST_RUNTIME_PATH",
+      "CODEXHOST_REMOTE_SSH_MANAGED",
+      "CODEXHOST_STOCK_CODEX_PATH",
+    ]) {
+      expect(sanitizationSource).toContain(JSON.stringify(name));
+    }
+    expect(sanitizationSource).not.toContain("CODEXHOST_CLAUDE_COMMAND");
   });
 
   it.runIf(process.platform === "darwin")(

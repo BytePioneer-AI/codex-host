@@ -131,17 +131,26 @@ export function encodeClaudeTransportModel(
 
 export function encodeGrokTransportModel(
   model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("Grok transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Grok transport configuration requires a Model Ref");
+    }
     return GROK_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
-  return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@@${parsedThinking}` : ""}`;
+  if (parsedThinking) {
+    return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGrokTransportSelection(
@@ -152,15 +161,24 @@ export function decodeGrokTransportSelection(
     return null;
   }
   const components = value.slice(GROK_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length !== 1 && components.length !== 3) {
+  if (components.length < 1 || components.length > 3) {
     throw new Error("Grok transport configuration has an invalid component count");
   }
-  const [modelId, emptyPermissionMode, thinkingOptionId] = components;
-  if (components.length === 3 && (emptyPermissionMode !== "" || !thinkingOptionId)) {
-    throw new Error("Grok transport configuration has an invalid Thinking option");
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Grok transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Grok transport configuration has an empty Thinking option");
   }
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("Grok transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Grok transport configuration contains an invalid Permission Mode");
+  }
   const thinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
     : null;
@@ -169,6 +187,7 @@ export function decodeGrokTransportSelection(
   }
   return {
     model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
     ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
@@ -254,10 +273,11 @@ export function encodeExternalTransportSelection(
     case "deepseek-harness":
       return encodeDeepSeekHarnessTransportModel(selection.model);
     case "grok":
-      if (selection.permissionModeId) {
-        throw new Error("Grok transport does not support Permission Mode selection");
-      }
-      return encodeGrokTransportModel(selection.model, selection.thinkingOptionId);
+      return encodeGrokTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
   }
 }
 

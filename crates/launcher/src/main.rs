@@ -66,6 +66,8 @@ use system_proxy_environment::launcher_proxy_environment;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
+const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
+const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
 const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
@@ -80,6 +82,17 @@ const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
 const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
+
+fn managed_desktop_data_directory(
+    data_directory: Option<OsString>,
+    remote_ssh_managed: Option<OsString>,
+) -> Option<OsString> {
+    if remote_ssh_managed.as_deref() == Some(std::ffi::OsStr::new("1")) {
+        None
+    } else {
+        data_directory
+    }
+}
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug)]
@@ -965,6 +978,7 @@ fn desktop_environment(
     control: &RuntimeControl,
     launcher_executable: &Path,
     descriptor_path: &Path,
+    data_directory: Option<OsString>,
 ) -> Vec<(OsString, OsString)> {
     let mut environment = vec![
         (
@@ -1002,6 +1016,9 @@ fn desktop_environment(
             OsString::from(PI_COMMAND_ENV),
             node_entrypoint_path(pi).into_os_string(),
         ));
+    }
+    if let Some(data_directory) = data_directory {
+        environment.push((OsString::from(DATA_DIRECTORY_ENV), data_directory));
     }
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
@@ -1145,8 +1162,16 @@ fn launch(
 
         let control = allocate_runtime_control()?;
         let launcher_executable = env::current_exe()?.canonicalize()?;
-        let environment =
-            desktop_environment(&options, &control, &launcher_executable, &descriptor_path);
+        let environment = desktop_environment(
+            &options,
+            &control,
+            &launcher_executable,
+            &descriptor_path,
+            managed_desktop_data_directory(
+                env::var_os(DATA_DIRECTORY_ENV),
+                env::var_os(REMOTE_SSH_MANAGED_ENV),
+            ),
+        );
         #[cfg(target_os = "macos")]
         let environment = {
             let mut environment = environment;
@@ -1234,8 +1259,16 @@ fn launch(
     }
     let control = allocate_runtime_control()?;
     let launcher_executable = env::current_exe()?.canonicalize()?;
-    let environment =
-        desktop_environment(&options, &control, &launcher_executable, &descriptor_path);
+    let environment = desktop_environment(
+        &options,
+        &control,
+        &launcher_executable,
+        &descriptor_path,
+        managed_desktop_data_directory(
+            env::var_os(DATA_DIRECTORY_ENV),
+            env::var_os(REMOTE_SSH_MANAGED_ENV),
+        ),
+    );
     supervise_desktop(
         &installation,
         &options,
@@ -1334,7 +1367,8 @@ mod tests {
         LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
         ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
         allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
-        parse_inspect_options, parse_launch_options, read_bounded_controller_line,
+        managed_desktop_data_directory, parse_inspect_options, parse_launch_options,
+        read_bounded_controller_line,
     };
     #[cfg(target_os = "linux")]
     use crate::compatibility::{
@@ -1663,6 +1697,7 @@ mod tests {
             &control,
             Path::new("/opt/codexhost"),
             Path::new("/run/user/1000/codexhost/desktop-runtime-v1.json"),
+            None,
         );
         let value = |name: &str| {
             environment
@@ -1692,6 +1727,36 @@ mod tests {
         assert_eq!(
             value(CONTROL_NONCE_ENV),
             Some(&OsString::from(&control.nonce))
+        );
+    }
+
+    #[test]
+    fn desktop_environment_propagates_an_explicit_local_data_directory() {
+        let environment = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            Path::new("/opt/codexhost"),
+            Path::new("/run/user/1000/codexhost/desktop-runtime-v1.json"),
+            Some(OsString::from("/home/codex/.codexhost")),
+        );
+
+        assert!(environment.contains(&(
+            OsString::from("CODEXHOST_DATA_DIR"),
+            OsString::from("/home/codex/.codexhost"),
+        )));
+    }
+
+    #[test]
+    fn managed_desktop_data_directory_rejects_a_remote_profile_value() {
+        let remote_data = Some(OsString::from("/home/codex/.codexhost/remote/data"));
+
+        assert_eq!(
+            managed_desktop_data_directory(remote_data.clone(), Some(OsString::from("1"))),
+            None
+        );
+        assert_eq!(
+            managed_desktop_data_directory(remote_data.clone(), None),
+            remote_data
         );
     }
 
@@ -1819,6 +1884,7 @@ mod tests {
                 &runtime_control(),
                 Path::new(r"C:\codexhost.exe"),
                 Path::new(r"C:\Users\Codex\AppData\Local\codexhost\desktop-runtime-v1.json"),
+                None,
             )
             .into_iter()
             .find(|(name, _)| name == PI_COMMAND_ENV)

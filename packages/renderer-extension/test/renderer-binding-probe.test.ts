@@ -17,6 +17,8 @@ import {
   lateConversationTargetResolution,
   restoredThreadOwnership,
   rendererUsageRefreshDelay,
+  shouldApplyDraftAgentCarrier,
+  shouldPersistNewThreadConfigurationSelection,
   shouldRetryExternalThreadUsage,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
@@ -747,6 +749,37 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "grok",
+        transportModelId: "codexhost/grok-native@grok-4.6@auto@high",
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        effectiveModel: harnessModelRefSchema.parse({ id: "grok-4.6" }),
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "grok",
+      model: { id: "grok-4.6" },
+      thinkingOptionId: "high",
+      permissionModeId: "auto",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "grok",
+        transportModelId: "codexhost/grok-native@grok-4.6@always-approve",
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "grok",
+      model: { id: "grok-4.6" },
+      permissionModeId: "always-approve",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "claude-code",
         transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits",
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
@@ -841,6 +874,11 @@ describe("Renderer Composer DOM behavior", () => {
     expect(draftPermissionMode(catalog, undefined)).toBe("default");
   });
 
+  it("persists explicit configuration selections only for a new-Thread draft", () => {
+    expect(shouldPersistNewThreadConfigurationSelection("draft")).toBe(true);
+    expect(shouldPersistNewThreadConfigurationSelection("locked")).toBe(false);
+  });
+
   it("does not bind readable Thinking when current options are unavailable", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.legacy" });
     expect(
@@ -863,6 +901,9 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isLateConversationTarget(defaultTarget, conversationTarget)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "draft")).toBe(
       "inspect",
+    );
+    expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "draft", true)).toBe(
+      "transfer",
     );
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
@@ -887,6 +928,9 @@ describe("Renderer Composer DOM behavior", () => {
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(
       false,
     );
+    expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft", true)).toBe(
+      true,
+    );
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "locked")).toBe(
       true,
     );
@@ -902,6 +946,14 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerModelWriteAllowed(["conversation", "pi-thread"])).toBe(false);
     expect(isComposerModelWriteAllowed(["conversation", "codex-thread"])).toBe(false);
     expect(isComposerModelWriteAllowed(null)).toBe(false);
+  });
+
+  it("does not emit a base external carrier before its concrete configuration loads", () => {
+    expect(shouldApplyDraftAgentCarrier("codex", undefined)).toBe(true);
+    expect(shouldApplyDraftAgentCarrier("grok", undefined)).toBe(false);
+    expect(
+      shouldApplyDraftAgentCarrier("grok", harnessModelRefSchema.parse({ id: "grok-4.6" })),
+    ).toBe(true);
   });
 
   it("never writes the native Model while repeatedly switching existing conversations", () => {

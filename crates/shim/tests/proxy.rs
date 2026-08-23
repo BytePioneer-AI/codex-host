@@ -404,7 +404,12 @@ fn reports_an_official_cli_crash_without_polluting_stdout() {
     let output = run_shim(b"", &[], &[("FAKE_CODEX_CRASH", "1")]);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("terminated by signal"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("terminated by signal"),
+        "unexpected crash status {:?} with stderr: {stderr}",
+        output.status
+    );
 }
 
 fn wait_for_file(path: &std::path::Path, timeout: Duration) -> String {
@@ -570,7 +575,7 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
     }
     drop(first_stdin);
     assert!(
-        !process_exists(first_root),
+        wait_for_process_id_exit(first_root, Duration::from_secs(5)),
         "previous Host Runtime PID {first_root} survived ownership handoff"
     );
     let second_identity = wait_for_file(&second_ready, Duration::from_secs(5));
@@ -585,7 +590,7 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
         panic!("Host Runtime Shim did not converge after Desktop stdin EOF");
     }
     assert!(
-        !process_exists(second_root),
+        wait_for_process_id_exit(second_root, Duration::from_secs(5)),
         "Host Runtime PID {second_root} survived Desktop stdin EOF"
     );
     fs::remove_dir_all(directory).expect("remove Host Runtime handoff fixture");
@@ -823,7 +828,7 @@ fn retires_a_legacy_runtime_from_its_mapping_store_lock() {
     }
     drop(legacy_stdin);
     assert!(
-        !process_exists(legacy_root),
+        wait_for_process_id_exit(legacy_root, Duration::from_secs(5)),
         "legacy Host Runtime PID {legacy_root} survived ownership migration"
     );
     let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));

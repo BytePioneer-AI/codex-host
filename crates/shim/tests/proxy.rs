@@ -1203,6 +1203,12 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
     let contents = wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
+    let old_exact_child_started_at_micros = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
+        .expect("recorded child start identity")
+        .parse::<u64>()
+        .expect("recorded child start identity micros");
     let recycled = contents
         .lines()
         .map(|line| {
@@ -1229,7 +1235,11 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         .try_wait()
         .expect("poll reused owner PID fixture")
         .is_none();
-    let old_exact_child_was_retired = !process_exists(owner_root);
+    // Linux keeps a killed child PID visible to kill(2) while its parent is about to reap the
+    // zombie, even though /proc/<pid>/exe is already gone. Match the production lease's exact
+    // process-instance semantics instead of treating that transient zombie as a live runtime.
+    let old_exact_child_was_retired = !process_snapshot(owner_root)
+        .is_ok_and(|snapshot| snapshot.started_at_micros == old_exact_child_started_at_micros);
 
     drop(owner_stdin);
     if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {

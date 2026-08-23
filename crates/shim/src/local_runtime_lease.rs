@@ -108,6 +108,14 @@ impl OwnerMutationLock {
     }
 }
 
+impl Drop for OwnerMutationLock {
+    fn drop(&mut self) {
+        // Child publication is the ownership handoff boundary. Release it explicitly instead of
+        // relying on platform-specific file-close timing before a contender observes that boundary.
+        let _ = FileExt::unlock(&self._file);
+    }
+}
+
 impl LocalRuntimeLease {
     pub(crate) fn acquire(data_directory: &Path) -> Result<Self, Box<dyn Error>> {
         fs::create_dir_all(data_directory)?;

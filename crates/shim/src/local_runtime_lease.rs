@@ -47,7 +47,7 @@ enum StoredOwnerRecord {
 impl OwnerRecord {
     fn encode(&self) -> String {
         format!(
-            "version=2\nprocess_id={}\nprocess_started_at_micros={}\ndesktop_process_id={}\nchild_process_id={}\nchild_process_started_at_micros={}\n",
+            "version=1\nprocess_id={}\nprocess_started_at_micros={}\ndesktop_process_id={}\nchild_process_id={}\nchild_process_started_at_micros={}\n",
             self.process_id,
             self.process_started_at_micros,
             self.desktop_process_id,
@@ -338,7 +338,7 @@ fn migrate_version_one_owner(
     legacy: &VersionOneOwnerRecord,
 ) -> Result<Option<OwnerRecord>, Box<dyn Error>> {
     // v1 cannot itself distinguish PID reuse. While the mutation is serialized, validate the
-    // live Shim and its lineage, snapshot exact process instances, and publish v2 before sending
+    // live Shim and its lineage, snapshot exact process instances, and publish them before sending
     // any signal. An ambiguous live Shim is never treated as stale ownership.
     let Some(shim_snapshot) = current_process_snapshot(legacy.process_id)? else {
         return Ok(None);
@@ -561,6 +561,22 @@ fn terminate_recorded_process(
 mod tests {
     use super::*;
 
+    fn decode_released_version_one_owner(value: &str) -> Option<VersionOneOwnerRecord> {
+        let field = |name: &str| {
+            value
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{name}=")))
+        };
+        if field("version")? != "1" {
+            return None;
+        }
+        Some(VersionOneOwnerRecord {
+            process_id: field("process_id")?.parse().ok()?,
+            desktop_process_id: field("desktop_process_id")?.parse().ok()?,
+            child_process_id: field("child_process_id").and_then(|value| value.parse().ok()),
+        })
+    }
+
     fn temporary_data_directory() -> PathBuf {
         static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -604,6 +620,29 @@ mod tests {
         assert!(
             contender_acquired_after_publish,
             "ownership mutation lock remained held after child identity publication"
+        );
+    }
+
+    #[test]
+    fn exact_owner_records_remain_readable_by_released_version_one_shims() {
+        let record = OwnerRecord {
+            process_id: 101,
+            process_started_at_micros: 202,
+            desktop_process_id: 303,
+            child_process_id: Some(404),
+            child_process_started_at_micros: Some(505),
+        };
+
+        let decoded = decode_released_version_one_owner(&record.encode())
+            .expect("released v1 Shim should accept an exact owner record");
+
+        assert_eq!(
+            decoded,
+            VersionOneOwnerRecord {
+                process_id: record.process_id,
+                desktop_process_id: record.desktop_process_id,
+                child_process_id: record.child_process_id,
+            }
         );
     }
 }

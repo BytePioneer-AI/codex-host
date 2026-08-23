@@ -60,12 +60,16 @@ export function createHostUpdateCoordinator(
 ): HostUpdateCoordinator {
   const platform = options.platform ?? process.platform;
   const manager = options.manager ?? createBackgroundUpdateManager({ platform });
-  const contextPromise = resolveInstalledUpdateContext({
-    hostRuntimePath: options.hostRuntimePath,
-    ...(options.environment ? { environment: options.environment } : {}),
-    ...(options.platform ? { platform: options.platform } : {}),
-    ...(options.architecture ? { architecture: options.architecture } : {}),
-  });
+  let contextPromise: Promise<InstalledUpdateContext> | undefined;
+  const installedContext = (): Promise<InstalledUpdateContext> => {
+    contextPromise ??= resolveInstalledUpdateContext({
+      hostRuntimePath: options.hostRuntimePath,
+      ...(options.environment ? { environment: options.environment } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.architecture ? { architecture: options.architecture } : {}),
+    });
+    return contextPromise;
+  };
   const fetchLatest: (signal?: AbortSignal) => Promise<CodexhostLatestRelease> =
     options.fetchLatest ??
     ((signal?: AbortSignal) =>
@@ -104,7 +108,7 @@ export function createHostUpdateCoordinator(
     async check(signal?: AbortSignal): Promise<UpdateCheckResult> {
       let context: InstalledUpdateContext;
       try {
-        context = await contextPromise;
+        context = await installedContext();
         await recoverUpdateOperationLock(context.common.stateDirectory);
         await cleanupTerminalUpdateState(context.common.stateDirectory);
       } catch (error) {
@@ -161,7 +165,7 @@ export function createHostUpdateCoordinator(
     },
 
     async start(): Promise<UpdateStartResult> {
-      const context = await contextPromise;
+      const context = await installedContext();
       await recoverUpdateOperationLock(context.common.stateDirectory);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
       if (!lock) {
@@ -250,7 +254,7 @@ export function createHostUpdateCoordinator(
 
     async status(): Promise<UpdateStatusResult> {
       try {
-        const context = await contextPromise;
+        const context = await installedContext();
         await recoverUpdateOperationLock(context.common.stateDirectory);
         return { status: await latestStatus(context) };
       } catch {

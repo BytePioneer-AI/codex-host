@@ -260,6 +260,34 @@ describe("Host update coordinator", () => {
     await expect(coordinator.check()).resolves.toMatchObject({ status: null });
   });
 
+  it("does not reject during construction when npm runtime paths are missing", async () => {
+    const fixture = await npmFixture();
+    delete fixture.environment.CODEXHOST_NPM_NODE_PATH;
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const coordinator = createHostUpdateCoordinator({
+        hostRuntimePath: fixture.hostRuntimePath,
+        environment: fixture.environment,
+        platform: "darwin",
+        architecture: "arm64",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+      await expect(coordinator.check()).resolves.toMatchObject({
+        currentVersion: "0.0.0",
+        installation: null,
+        error: expect.stringContaining("CODEXHOST_NPM_NODE_PATH"),
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("keeps GitHub failures non-blocking and reports no same-version update", async () => {
     const fixture = await npmFixture();
     const failed = createHostUpdateCoordinator({

@@ -77,6 +77,16 @@ const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
 const RUNTIME_DESCRIPTOR_PATH_ENV: &str = "CODEXHOST_RUNTIME_DESCRIPTOR_PATH";
 const CONTROL_PORT_ENV: &str = "CODEXHOST_CONTROL_PORT";
 const CONTROL_NONCE_ENV: &str = "CODEXHOST_CONTROL_NONCE";
+const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
+const NPM_CLI_PATH_ENV: &str = "CODEXHOST_NPM_CLI_PATH";
+const NPM_LAUNCHER_PATH_ENV: &str = "CODEXHOST_NPM_LAUNCHER_PATH";
+const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
+const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
+    NPM_NODE_PATH_ENV,
+    NPM_CLI_PATH_ENV,
+    NPM_LAUNCHER_PATH_ENV,
+    NPM_PACKAGE_ROOT_ENV,
+];
 const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
@@ -1026,7 +1036,25 @@ fn desktop_environment(
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
     }
+    environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment
+}
+
+/// Forward absolute npm update paths. AppX and LaunchServices do not inherit
+/// the Launcher process environment.
+fn npm_update_runtime_environment(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let variables = variables.into_iter().collect::<Vec<_>>();
+    NPM_UPDATE_RUNTIME_ENV
+        .iter()
+        .filter_map(|name| {
+            variables.iter().find_map(|(candidate, value)| {
+                (candidate == name && Path::new(value).is_absolute())
+                    .then(|| (OsString::from(*name), value.clone()))
+            })
+        })
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -1375,11 +1403,12 @@ mod tests {
     use super::wait_for_desktop_exit;
     use super::{
         CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
-        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
+        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV,
+        NPM_NODE_PATH_ENV, NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
         ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
         allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
-        managed_desktop_data_directory, parse_inspect_options, parse_launch_options,
-        read_bounded_controller_line,
+        managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
+        parse_launch_options, read_bounded_controller_line,
     };
     #[cfg(target_os = "linux")]
     use crate::compatibility::{
@@ -1739,6 +1768,50 @@ mod tests {
         assert_eq!(
             value(CONTROL_NONCE_ENV),
             Some(&OsString::from(&control.nonce))
+        );
+    }
+
+    #[test]
+    fn npm_update_runtime_environment_forwards_only_absolute_paths() {
+        let forwarded = npm_update_runtime_environment([
+            (
+                OsString::from(NPM_NODE_PATH_ENV),
+                OsString::from("/usr/bin/node"),
+            ),
+            (
+                OsString::from(NPM_CLI_PATH_ENV),
+                OsString::from("/usr/lib/node_modules/npm/bin/npm-cli.js"),
+            ),
+            (
+                OsString::from(NPM_LAUNCHER_PATH_ENV),
+                OsString::from("codexhost.js"),
+            ),
+            (
+                OsString::from(NPM_PACKAGE_ROOT_ENV),
+                OsString::from("/usr/lib/node_modules/@codexhost/cli-darwin-arm64"),
+            ),
+            (
+                OsString::from("UNRELATED"),
+                OsString::from("/tmp/unrelated"),
+            ),
+        ]);
+
+        assert_eq!(
+            forwarded,
+            [
+                (
+                    OsString::from(NPM_NODE_PATH_ENV),
+                    OsString::from("/usr/bin/node"),
+                ),
+                (
+                    OsString::from(NPM_CLI_PATH_ENV),
+                    OsString::from("/usr/lib/node_modules/npm/bin/npm-cli.js"),
+                ),
+                (
+                    OsString::from(NPM_PACKAGE_ROOT_ENV),
+                    OsString::from("/usr/lib/node_modules/@codexhost/cli-darwin-arm64"),
+                ),
+            ]
         );
     }
 

@@ -27,6 +27,11 @@ export interface DecodedThreadRollbackRequest {
   numTurns: number;
 }
 
+export interface DecodedThreadRevertRequest {
+  threadId: string;
+  beforeTurnId: HostTurnId;
+}
+
 export interface ExternalThreadRpcError {
   code: number;
   message: string;
@@ -97,6 +102,21 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   };
 }
 
+export function decodeThreadRevertRequest(
+  request: JsonRpcRequest,
+): DecodedThreadRevertRequest | null {
+  if (request.method !== "thread/revert") return null;
+  if (!isRecord(request.params)) throw new Error("thread/revert params must be an object");
+  const { threadId, beforeTurnId } = request.params;
+  if (typeof threadId !== "string" || threadId.length === 0) {
+    throw new Error("thread/revert params.threadId must be non-empty text");
+  }
+  if (typeof beforeTurnId !== "string" || beforeTurnId.length === 0) {
+    throw new Error("thread/revert params.beforeTurnId must be non-empty text");
+  }
+  return { threadId, beforeTurnId: hostTurnIdSchema.parse(beforeTurnId) };
+}
+
 export function decodeThreadRollbackRequest(
   request: JsonRpcRequest,
 ): DecodedThreadRollbackRequest | null {
@@ -146,6 +166,10 @@ export function mapExternalThreadHarnessError(
     case "invalidState":
       return { code: -32076, message: `External Thread ${operation} failed` };
   }
+}
+
+export function threadRevertResult(thread: JsonObject): JsonObject {
+  return { thread: { ...thread, turns: [] } };
 }
 
 export function threadRollbackResult(thread: JsonObject): JsonObject {

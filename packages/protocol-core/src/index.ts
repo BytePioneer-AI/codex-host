@@ -20,13 +20,16 @@ export type {
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,
+  decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   threadForkResult,
+  threadRevertResult,
   threadRollbackResult,
 } from "./thread-fork.js";
 export type {
   DecodedThreadForkRequest,
+  DecodedThreadRevertRequest,
   DecodedThreadRollbackRequest,
   ExternalThreadRpcError,
 } from "./thread-fork.js";

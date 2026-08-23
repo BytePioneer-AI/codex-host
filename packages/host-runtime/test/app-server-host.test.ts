@@ -213,11 +213,12 @@ async function startExternalThread(
   fixture: ReturnType<typeof createFixture>,
   model: string,
   id = 1,
+  additionalParams: JsonObject = {},
 ): Promise<string> {
   writeRequest(fixture.desktopInput, {
     id,
     method: "thread/start",
-    params: { model, cwd: "/synthetic" },
+    params: { model, cwd: "/synthetic", ...additionalParams },
   });
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
   const result = response.result as JsonObject;
@@ -2062,6 +2063,63 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reverts the latest completed Turn of a paginated External Thread", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const firstTurnId = await completePiTurn(fixture, threadId, 2);
+    const lastTurnId = await completePiTurn(fixture, threadId, 3);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
+    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      turnMappings: [{ hostTurnId: firstTurnId }],
+    });
+    expect(adapter.sessions).toHaveLength(2);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects a stale paginated Revert boundary without changing history", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: "stale-turn" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32080 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(adapter.sessions).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
   it("rolls the only current External Turn back to empty history", async () => {
     const adapter = rollbackCapableAdapter();
     const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
@@ -2567,6 +2625,35 @@ describe("AppServerHost HarnessAdapter projection", () => {
         beforeTurnId: "two",
         cwd: "official-relative-worktree",
         runtimeWorkspaceRoots: ["official-relative-worktree"],
+        extraOfficialField: { keep: true },
+      },
+    };
+    const forwarded = new Promise<JsonObject>((resolve) => {
+      fixture.official.stdin.once("data", (chunk: Buffer) => {
+        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
+        resolve(value);
+        fixture.official.stdout.write(`${JSON.stringify({ id: 90, result: {} })}\n`);
+      });
+    });
+    writeRequest(fixture.desktopInput, request);
+
+    await expect(forwarded).resolves.toEqual(request);
+    await expect(fixture.collector.waitFor((message) => requestId(message, 90))).resolves.toEqual({
+      id: 90,
+      result: {},
+    });
+    expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards an unknown Codex thread/revert frame unchanged", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 90,
+      method: "thread/revert",
+      params: {
+        threadId: "official-thread",
+        beforeTurnId: "official-turn",
         extraOfficialField: { keep: true },
       },
     };

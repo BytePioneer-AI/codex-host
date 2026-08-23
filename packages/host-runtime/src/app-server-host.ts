@@ -88,6 +88,7 @@ import {
   decodeThreadForkRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   parseJsonFrame,
@@ -97,12 +98,14 @@ import {
   writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
+  threadRevertResult,
   threadRollbackResult,
   transportModelIdForHarness,
   type CodexApprovalProjection,
   type CodexQuestionProjection,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
+  type DecodedThreadRevertRequest,
   type DecodedThreadRollbackRequest,
   type ExternalThreadRpcError,
   type CodexApprovalRequestProjection,
@@ -251,6 +254,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/name/set",
   "thread/read",
   "thread/resume",
+  "thread/revert",
   "thread/rollback",
   "thread/turns/list",
   "thread/unarchive",
@@ -648,6 +652,32 @@ export class AppServerHost {
             continue;
           }
           await this.#forkExternalThread(request, resolution.thread, fork);
+          continue;
+        }
+      }
+      if (request.method === "thread/revert") {
+        const params = isRecord(request.params) ? request.params : {};
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (resolution.kind === "error") {
+          await this.#writer.json(
+            rpcError(request, resolution.error.code, resolution.error.message),
+          );
+          continue;
+        }
+        if (resolution.kind === "external") {
+          let revert: DecodedThreadRevertRequest;
+          try {
+            const decoded = decodeThreadRevertRequest(request);
+            if (!decoded) throw new Error("Expected thread/revert request");
+            revert = decoded;
+          } catch (error) {
+            await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+            continue;
+          }
+          await this.#revertExternalThread(request, resolution.thread, revert);
           continue;
         }
       }
@@ -1752,6 +1782,33 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { thread: { ...thread, turns: [] } },
     });
+  }
+
+  async #revertExternalThread(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    revert: DecodedThreadRevertRequest,
+  ): Promise<void> {
+    if (thread.record.historyMode !== "paginated") {
+      await this.#writer.json(
+        rpcError(request, -32602, "External thread/revert requires paginated history"),
+      );
+      return;
+    }
+    const result = await executeExternalThreadRollback({
+      derived: thread,
+      rollback: { threadId: revert.threadId, numTurns: 1 },
+      expectedLastTurnId: revert.beforeTurnId,
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, result.error.code, result.error.message));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: threadRevertResult(result.thread) }));
+    await this.#writer.json({ method: "thread/reverted", params: { threadId: thread.id } });
   }
 
   async #rollbackExternalThread(

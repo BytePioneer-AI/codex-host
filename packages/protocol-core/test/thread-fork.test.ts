@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   decodeThreadForkRequest,
+  decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
   threadForkResult,
+  threadRevertResult,
   threadRollbackResult,
 } from "../src/index.js";
 
@@ -65,6 +67,24 @@ describe("Codex thread/fork protocol boundary", () => {
     ).toThrow("excludeTurns must be boolean");
   });
 
+  it("decodes the current paginated thread/revert boundary", () => {
+    expect(
+      decodeThreadRevertRequest({
+        id: 4,
+        method: "thread/revert",
+        params: { threadId: "thread-1", beforeTurnId: "turn-2" },
+      }),
+    ).toEqual({ threadId: "thread-1", beforeTurnId: "turn-2" });
+    expect(decodeThreadRevertRequest({ id: 5, method: "thread/read", params: {} })).toBeNull();
+    for (const params of [
+      { threadId: "", beforeTurnId: "turn-2" },
+      { threadId: "thread-1", beforeTurnId: "" },
+      { threadId: "thread-1", beforeTurnId: 2 },
+    ]) {
+      expect(() => decodeThreadRevertRequest({ id: 6, method: "thread/revert", params })).toThrow();
+    }
+  });
+
   it("decodes the current bounded thread/rollback request", () => {
     expect(
       decodeThreadRollbackRequest({
@@ -102,6 +122,12 @@ describe("Codex thread/fork protocol boundary", () => {
         "fork",
       ),
     ).toEqual({ code: -32080, message: "External Fork Checkpoint is unavailable" });
+  });
+
+  it("builds the paginated ThreadRevertResponse without embedding history", () => {
+    expect(threadRevertResult({ id: "thread-1", turns: [{ id: "turn-1" }] })).toEqual({
+      thread: { id: "thread-1", turns: [] },
+    });
   });
 
   it("builds the current ThreadRollbackResponse envelope", () => {

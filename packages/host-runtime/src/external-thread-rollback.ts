@@ -6,7 +6,11 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type { NativeCheckpointRef, NativeSessionRef } from "@codexhost/shared-contracts";
+import type {
+  HostTurnId,
+  NativeCheckpointRef,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   externalThreadValue,
@@ -129,13 +133,23 @@ export async function executeExternalThreadRollback(input: {
   adapters: Map<ExternalHarnessId, HarnessAdapter>;
   repository: ExternalThreadRepository;
   runtime: ExternalThreadRuntime;
+  expectedLastTurnId?: HostTurnId;
 }): Promise<ExternalThreadRollbackResult> {
-  const { derived, rollback, adapters, repository, runtime } = input;
+  const { derived, rollback, adapters, repository, runtime, expectedLastTurnId } = input;
   if (derived.running) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
+  if (
+    expectedLastTurnId !== undefined &&
+    derived.record.turnMappings.at(-1)?.hostTurnId !== expectedLastTurnId
+  ) {
+    return {
+      ok: false,
+      error: { code: -32080, message: "External Revert boundary is unavailable" },
+    };
+  }
   if (rollback.numTurns === 1 && derived.session.capabilities.history.rollbackLastTurn) {
     return executeCurrentLastTurnRollback({
       current: derived,

@@ -431,6 +431,83 @@ fn wait_for_optional_file(path: &std::path::Path, timeout: Duration) -> Option<S
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn wait_for_child_file_matching(
+    child: &mut process::Child,
+    path: &std::path::Path,
+    data_directory: &std::path::Path,
+    timeout: Duration,
+    description: &str,
+    matches: impl Fn(&str) -> bool,
+) -> String {
+    let started = Instant::now();
+    let mut last_contents = None;
+    loop {
+        if let Ok(contents) = fs::read_to_string(path) {
+            if matches(&contents) {
+                return contents;
+            }
+            last_contents = Some(contents);
+        }
+        if let Some(status) = child.try_wait().expect("poll Host Runtime Shim") {
+            let mut stderr = Vec::new();
+            if let Some(mut stream) = child.stderr.take() {
+                stream
+                    .read_to_end(&mut stderr)
+                    .expect("read exited Host Runtime Shim stderr");
+            }
+            let owner_record = fs::read_to_string(
+                data_directory
+                    .join("local-host-runtime-owner-v1")
+                    .join("owner"),
+            )
+            .ok();
+            panic!(
+                "{description}: Shim PID {} exited with {status}; stderr={}; owner_record={owner_record:?}; observed_file={last_contents:?}",
+                child.id(),
+                String::from_utf8_lossy(&stderr),
+            );
+        }
+        if started.elapsed() >= timeout {
+            let owner_record = fs::read_to_string(
+                data_directory
+                    .join("local-host-runtime-owner-v1")
+                    .join("owner"),
+            )
+            .ok();
+            panic!(
+                "{description}: timed out after {timeout:?} while Shim PID {} remained live; owner_record={owner_record:?}; observed_file={last_contents:?}",
+                child.id(),
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn wait_for_complete_owner_record(
+    child: &mut process::Child,
+    data_directory: &std::path::Path,
+    timeout: Duration,
+) -> String {
+    let owner_record = data_directory
+        .join("local-host-runtime-owner-v1")
+        .join("owner");
+    wait_for_child_file_matching(
+        child,
+        &owner_record,
+        data_directory,
+        timeout,
+        "local Host Runtime owner publication failed",
+        |contents| {
+            contents.lines().any(|line| {
+                line.strip_prefix("child_process_started_at_micros=")
+                    .is_some_and(|value| !value.is_empty())
+            })
+        },
+    )
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn process_id_from_ready(contents: &str, label: &str) -> u32 {
     contents
         .lines()
@@ -546,6 +623,12 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
     let first_identity = wait_for_file(&first_ready, Duration::from_secs(5));
     let first_root = process_id_from_ready(&first_identity, "root=");
 
+    // Child readiness is written by the fake Host Runtime before the Shim atomically publishes
+    // that child's process-instance identity. Start the handoff clock only after publication has
+    // completed and the mutation lock is released; startup scheduling is not part of the bounded
+    // production handoff window tested below.
+    let _ = wait_for_complete_owner_record(&mut first, &directory, Duration::from_secs(10));
+
     let mut second = host_runtime_shim(&directory, &second_ready);
     let second_stdin = second.stdin.take().expect("second Host Runtime stdin");
     // Reap the old direct child before waiting for the replacement to publish readiness. Linux
@@ -580,7 +663,14 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
     );
     // A replacement can consume both the graceful and forced production handoff windows before
     // it launches its Host Runtime. Keep enough scheduling margin around that bounded takeover.
-    let second_identity = wait_for_file(&second_ready, Duration::from_secs(10));
+    let second_identity = wait_for_child_file_matching(
+        &mut second,
+        &second_ready,
+        &directory,
+        Duration::from_secs(10),
+        "replacement Host Runtime readiness failed",
+        |_| true,
+    );
     let second_root = process_id_from_ready(&second_identity, "root=");
 
     drop(second_stdin);
@@ -674,21 +764,7 @@ fn migrates_a_live_version_one_owner_before_starting_a_replacement() {
     );
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let contents = loop {
-        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
-        if contents.lines().any(|line| {
-            line.strip_prefix("child_process_started_at_micros=")
-                .is_some_and(|value| !value.is_empty())
-        }) {
-            break contents;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for the complete local Host Runtime owner record"
-        );
-        thread::sleep(Duration::from_millis(20));
-    };
+    let contents = wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
     let field = |name: &str| {
         contents
             .lines()
@@ -751,21 +827,7 @@ fn waits_for_a_version_one_owner_to_publish_its_child_before_migration() {
     );
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let owner_record_deadline = Instant::now() + Duration::from_secs(5);
-    let contents = loop {
-        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
-        if contents.lines().any(|line| {
-            line.strip_prefix("child_process_started_at_micros=")
-                .is_some_and(|value| !value.is_empty())
-        }) {
-            break contents;
-        }
-        assert!(
-            Instant::now() < owner_record_deadline,
-            "timed out waiting for the complete local Host Runtime owner record"
-        );
-        thread::sleep(Duration::from_millis(20));
-    };
+    let contents = wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
     let field = |name: &str| {
         contents
             .lines()
@@ -1017,21 +1079,7 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
     );
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let contents = loop {
-        let contents = fs::read_to_string(&owner_record).expect("read local Host Runtime owner");
-        if contents.lines().any(|line| {
-            line.strip_prefix("child_process_started_at_micros=")
-                .is_some_and(|value| !value.is_empty())
-        }) {
-            break contents;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for the complete local Host Runtime owner record"
-        );
-        thread::sleep(Duration::from_millis(20));
-    };
+    let contents = wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
     let mut replaced_start_time = false;
     let mut recycled = contents
         .lines()

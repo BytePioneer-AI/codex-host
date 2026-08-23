@@ -196,7 +196,15 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     let guard = match windows_process::guard_child(&child) {
         Ok(job) => Some(ChildProcessGuard { job }),
         Err(_) if child.try_wait()?.is_some() => None,
-        Err(error) => return Err(PlatformError::Io(error)),
+        Err(error) => {
+            return Err(PlatformError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "assign supervised child PID {} to its cleanup Job: {error}",
+                    child.id()
+                ),
+            )));
+        }
     };
     Ok(SupervisedChild { child, guard })
 }

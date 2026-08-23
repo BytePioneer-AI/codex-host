@@ -124,13 +124,30 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
 
 #[cfg(target_os = "windows")]
 pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
-    let parent_id = windows_process::process_entries()?
+    let parent_id = windows_process::process_entries()
+        .map_err(|error| {
+            PlatformError::Io(std::io::Error::new(
+                error.kind(),
+                format!("enumerate processes while inspecting PID {process_id}: {error}"),
+            ))
+        })?
         .into_iter()
         .find(|process| process.id == process_id)
         .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
         .parent_id;
-    let executable = windows_process::process_image_path(process_id)?;
-    let started_at_micros = windows_process::process_started_at_micros(process_id)?;
+    let executable = windows_process::process_image_path(process_id).map_err(|error| {
+        PlatformError::Io(std::io::Error::new(
+            error.kind(),
+            format!("read executable while inspecting PID {process_id}: {error}"),
+        ))
+    })?;
+    let started_at_micros =
+        windows_process::process_started_at_micros(process_id).map_err(|error| {
+            PlatformError::Io(std::io::Error::new(
+                error.kind(),
+                format!("read start time while inspecting PID {process_id}: {error}"),
+            ))
+        })?;
     Ok(ProcessSnapshot {
         id: process_id,
         parent_id,

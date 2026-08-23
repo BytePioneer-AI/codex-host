@@ -343,10 +343,19 @@ fn write_owner_record(
     let target = directory.join(OWNER_RECORD_NAME);
     let temporary = directory.join(format!("{OWNER_RECORD_NAME}.tmp-{}", record.process_id));
     fs::write(&temporary, record.encode())?;
-    atomic_replace_file(&temporary, &target).map_err(|error| match error {
-        PlatformError::Io(error) => error,
-        PlatformError::NotFound(message) => io::Error::new(io::ErrorKind::NotFound, message),
-        error => io::Error::other(error),
+    atomic_replace_file(&temporary, &target).map_err(|error| {
+        let error = match error {
+            PlatformError::Io(error) => error,
+            PlatformError::NotFound(message) => io::Error::new(io::ErrorKind::NotFound, message),
+            error => io::Error::other(error),
+        };
+        io::Error::new(
+            error.kind(),
+            format!(
+                "publish local Host Runtime owner record {}: {error}",
+                target.display()
+            ),
+        )
     })?;
     Ok(())
 }

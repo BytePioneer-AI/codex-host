@@ -6,6 +6,8 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Child;
 use std::ptr::null;
+use std::thread;
+use std::time::{Duration, Instant};
 
 type Handle = *mut c_void;
 
@@ -17,6 +19,8 @@ const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
 const MOVE_FILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 const MOVE_FILE_WRITE_THROUGH: u32 = 0x0000_0008;
+const ATOMIC_REPLACE_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const ATOMIC_REPLACE_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[repr(C)]
 struct NativeProcessEntry {
@@ -279,17 +283,24 @@ pub fn atomic_replace_file(source: &std::path::Path, target: &std::path::Path) -
         .encode_wide()
         .chain([0])
         .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    let started = Instant::now();
+    loop {
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+            )
+        };
+        if result != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        let transient_conflict = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        if !transient_conflict || started.elapsed() >= ATOMIC_REPLACE_RETRY_TIMEOUT {
+            return Err(error);
+        }
+        thread::sleep(ATOMIC_REPLACE_RETRY_INTERVAL);
     }
 }
 
@@ -318,5 +329,58 @@ pub fn guard_child(child: &Child) -> io::Result<ChildJob> {
             return Err(error);
         }
         Ok(ChildJob(job))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{self, OpenOptions};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::atomic_replace_file;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+
+    #[test]
+    fn retries_atomic_replace_while_a_transient_reader_blocks_deletion() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "codexhost-atomic-replace-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("create atomic replacement fixture");
+        let source = directory.join("owner.next");
+        let target = directory.join("owner");
+        fs::write(&source, b"replacement").expect("write replacement source");
+        fs::write(&target, b"original").expect("write replacement target");
+
+        // Readers outside codexhost, including real-time scanners, may briefly omit FILE_SHARE_DELETE.
+        // The publication remains safe to retry because MoveFileExW has not consumed the source when
+        // it reports a sharing/access violation.
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&target)
+            .expect("open target without delete sharing");
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(blocker);
+        });
+
+        let result = atomic_replace_file(&source, &target);
+        release.join().expect("release replacement blocker");
+        result.expect("retry transient atomic replacement conflict");
+        assert_eq!(
+            fs::read(&target).expect("read replaced target"),
+            b"replacement"
+        );
+        assert!(!source.exists(), "atomic replacement retained its source");
+        fs::remove_dir_all(directory).expect("remove atomic replacement fixture");
     }
 }

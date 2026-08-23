@@ -134,6 +134,14 @@ impl OwnerMutationLock {
     }
 }
 
+impl Drop for OwnerMutationLock {
+    fn drop(&mut self) {
+        // Child publication is the ownership handoff boundary. Release it explicitly instead of
+        // relying on platform-specific file-close timing before a contender observes that boundary.
+        let _ = FileExt::unlock(&self._file);
+    }
+}
+
 impl LocalRuntimeLease {
     pub(crate) fn acquire(data_directory: &Path) -> Result<Self, Box<dyn Error>> {
         fs::create_dir_all(data_directory)?;
@@ -608,9 +616,11 @@ fn terminate_recorded_process(
 }
 
 // Separate Windows handles and Linux open file descriptions contend even within one process, so
-// this focused unit test covers both platforms. macOS treats these flock acquisitions as
-// process-scoped; `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides the
-// cross-process integration coverage there.
+// this focused unit test covers both platforms. Each boundary observation uses a freshly opened
+// contender, matching separate replacement processes and avoiding reuse of a failed flock attempt.
+// macOS treats these flock acquisitions as process-scoped;
+// `replacement_waits_for_the_local_runtime_owner_mutation_lock` provides the cross-process
+// integration coverage there.
 #[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod tests {
     use super::*;
@@ -631,6 +641,15 @@ mod tests {
         })
     }
 
+    fn contender_can_acquire(data_directory: &Path) -> bool {
+        let contender = OwnerMutationLock::open(data_directory).expect("open contender owner lock");
+        let acquired = contender.try_lock_exclusive().is_ok();
+        if acquired {
+            FileExt::unlock(&contender).expect("release contender owner lock");
+        }
+        acquired
+    }
+
     fn temporary_data_directory() -> PathBuf {
         static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -644,26 +663,13 @@ mod tests {
     fn holds_the_mutation_lock_until_child_identity_is_published() {
         let data_directory = temporary_data_directory();
         let mut lease = LocalRuntimeLease::acquire(&data_directory).expect("acquire owner lease");
-        let contender = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(data_directory.join(OWNER_LOCK_NAME))
-            .expect("open contender owner lock");
-
-        let contender_acquired_before_publish = contender.try_lock_exclusive().is_ok();
-        if contender_acquired_before_publish {
-            FileExt::unlock(&contender).expect("release unexpected contender lock");
-        }
+        let contender_acquired_before_publish = contender_can_acquire(&data_directory);
 
         lease
             .set_child_process_id(process::id())
             .expect("publish child identity");
-        let contender_acquired_after_publish = contender.try_lock_exclusive().is_ok();
-        if contender_acquired_after_publish {
-            FileExt::unlock(&contender).expect("release contender owner lock");
-        }
+        let contender_acquired_after_publish = contender_can_acquire(&data_directory);
 
-        drop(contender);
         drop(lease);
         fs::remove_dir_all(&data_directory).expect("remove owner lease fixture");
 

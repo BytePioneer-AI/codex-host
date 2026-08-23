@@ -578,7 +578,9 @@ fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
         wait_for_process_id_exit(first_root, Duration::from_secs(5)),
         "previous Host Runtime PID {first_root} survived ownership handoff"
     );
-    let second_identity = wait_for_file(&second_ready, Duration::from_secs(5));
+    // A replacement can consume both the graceful and forced production handoff windows before
+    // it launches its Host Runtime. Keep enough scheduling margin around that bounded takeover.
+    let second_identity = wait_for_file(&second_ready, Duration::from_secs(10));
     let second_root = process_id_from_ready(&second_identity, "root=");
 
     drop(second_stdin);

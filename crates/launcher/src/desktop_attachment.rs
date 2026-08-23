@@ -2,7 +2,7 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::thread;
@@ -178,7 +178,13 @@ fn send_controlled_attachment(
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
     let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
+    match BufReader::new(stream).read_line(&mut response) {
+        Ok(_) => {}
+        // An orderly Controller close is an empty response, but Winsock may surface the same
+        // close as WSAECONNRESET. Both mean the controlled Desktop is not attachable yet.
+        Err(error) if error.kind() == io::ErrorKind::ConnectionReset => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
     match response.trim_end() {
         "ready" => Ok(true),
         "rejected" => Err("Desktop Controller rejected the attachment nonce".into()),

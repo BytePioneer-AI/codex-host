@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import type * as FileSystemPromises from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -77,6 +77,83 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "loads the managed block before the standard non-interactive bash guard",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-bash-"));
+      const profilePath = path.join(home, ".bashrc");
+      const originalProfile = [
+        "# Stop before interactive-only setup, as in the default Ubuntu .bashrc.",
+        "case $- in",
+        "  *i*) ;;",
+        "  *) return ;;",
+        "esac",
+        "export INTERACTIVE_ONLY=1",
+        "",
+      ].join("\n");
+      await writeFile(profilePath, originalProfile, "utf8");
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "linux" as const,
+        environment: { HOME: home, SHELL: "/bin/bash" },
+      };
+
+      try {
+        const installed = await installRemoteHost(options);
+        const initialProfile = await readFile(profilePath, "utf8");
+        const blockEnd =
+          initialProfile.indexOf("# <<< codexhost remote SSH <<<") +
+          "# <<< codexhost remote SSH <<<\n".length;
+        await writeFile(
+          profilePath,
+          `${initialProfile.slice(blockEnd)}${initialProfile.slice(0, blockEnd)}`,
+          "utf8",
+        );
+        await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+          state: "degraded",
+          issues: expect.arrayContaining([
+            "shell profile does not configure the managed native entrypoint",
+          ]),
+        });
+
+        await installRemoteHost(options);
+        await installRemoteHost(options);
+        const profile = await readFile(profilePath, "utf8");
+        expect(profile.startsWith("# >>> codexhost remote SSH >>>\n")).toBe(true);
+        expect(profile.match(/>>> codexhost remote SSH >>>/gu)).toHaveLength(1);
+
+        const probe = spawnSync(
+          "/bin/bash",
+          [
+            "--noprofile",
+            "--norc",
+            "-c",
+            `. ${shellQuote(profilePath)}; printf '%s\\n%s\\n' "$CODEXHOST_REMOTE_SSH_MANAGED" "$CODEX_INSTALL_DIR"`,
+          ],
+          { encoding: "utf8", env: { HOME: home } },
+        );
+        expect({ status: probe.status, signal: probe.signal, stderr: probe.stderr }).toEqual({
+          status: 0,
+          signal: null,
+          stderr: "",
+        });
+        expect(probe.stdout).toBe(`1\n${path.dirname(installed.wrapperPath)}\n`);
+        await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+          state: "ready",
+        });
+
+        await uninstallRemoteHost(options);
+        expect(await readFile(profilePath, "utf8")).toBe(originalProfile);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("installs an idempotent native entrypoint without replacing the existing Codex chain", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-install-"));

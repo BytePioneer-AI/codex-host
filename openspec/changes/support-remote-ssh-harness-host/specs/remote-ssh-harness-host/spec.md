@@ -74,6 +74,13 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 - **THEN** installation writes its bounded `CODEX_INSTALL_DIR` and runtime environment block to `.zshenv`
 - **AND** reconnecting the remote workspace resolves the managed native entrypoint
 
+#### Scenario: bash profile returns before interactive setup
+
+- **GIVEN** the remote login shell is bash and `.bashrc` contains a standard non-interactive early-return guard
+- **WHEN** remote installation writes its bounded environment block
+- **THEN** the managed exports appear before that guard and are applied to non-interactive SSH commands
+- **AND** reinstall remains idempotent while uninstall restores the original profile contents
+
 ### Requirement: Concurrent local and remote Hosts SHALL not share mutable ownership
 
 The remote native entrypoint SHALL use a dedicated Mapping Store data directory and SHALL not initialize Launcher-owned update state without a Launcher runtime contract.

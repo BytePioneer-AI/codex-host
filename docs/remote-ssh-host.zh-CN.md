@@ -33,7 +33,7 @@ codexhost remote install \
 
 - 把打包的原生 Shim 安装为 `~/.codexhost/remote/bin/codex`。在托管远程环境中，只有精确匹配默认形式的 `app-server --listen unix://` 会启动脱离会话的 listener；Shim 会先等新的 control socket 可连接，再让 Codex Desktop 的后台 SSH bootstrap 返回；
 - 把远程 Mapping Store 数据隔离在 `~/.codexhost/remote/data`；
-- 在 `.zshenv`、`.bashrc` 或显式指定的 profile 中加入一段带标记的环境配置；该配置既设置 `CODEX_INSTALL_DIR`，也为原生入口提供官方 Codex、Node、Host Runtime、数据目录和可选 Claude Code 的绝对路径；
+- 在 `.zshenv`、`.bashrc` 或显式指定的 profile 中加入一段带标记的环境配置；对于 `.bashrc`，该配置会放在 Ubuntu 等 Linux 发行版常见的非交互提前退出判断之前；该配置既设置 `CODEX_INSTALL_DIR`，也为原生入口提供官方 Codex、Node、Host Runtime、数据目录和可选 Claude Code 的绝对路径；
 - 修改 profile 前写入带时间戳的备份；
 - 记录已安装原生入口的摘要，因此旧版本包内 runtime 被清理后，后续卸载仍可校验该入口；
 - 保持原有 `codex` 命令和 OpenCodex 配置不变。

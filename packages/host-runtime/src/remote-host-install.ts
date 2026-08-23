@@ -236,7 +236,6 @@ function removeManagedProfileBlock(contents: string): string {
 
 function installManagedProfileBlock(contents: string, manifest: RemoteHostManifestV1): string {
   const base = removeManagedProfileBlock(contents);
-  const separator = base.length > 0 && !base.endsWith("\n") ? "\n" : "";
   const environment = [
     `export CODEX_INSTALL_DIR=${shellQuote(path.dirname(manifest.wrapperPath))}`,
     `export CODEXHOST_STOCK_CODEX_PATH=${shellQuote(manifest.stockCodexPath)}`,
@@ -249,7 +248,14 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
       ? [`export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}`]
       : []),
   ];
-  return `${base}${separator}${PROFILE_START}\n${environment.join("\n")}\n${PROFILE_END}\n`;
+  const block = `${PROFILE_START}\n${environment.join("\n")}\n${PROFILE_END}\n`;
+  // Standard Linux .bashrc files return before their interactive setup when
+  // Bash is started by a non-interactive SSH command. Keep the remote bootstrap
+  // exports ahead of that guard; appending them would make an installation look
+  // ready on disk while Codex Desktop never observes CODEX_INSTALL_DIR.
+  if (path.basename(manifest.profilePath) === ".bashrc") return `${block}${base}`;
+  const separator = base.length > 0 && !base.endsWith("\n") ? "\n" : "";
+  return `${base}${separator}${block}`;
 }
 
 type ManagedEntrypointState =

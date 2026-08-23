@@ -33,7 +33,7 @@ The command:
 
 - installs the packaged native Shim as `~/.codexhost/remote/bin/codex`. In the managed remote environment, the exact default `app-server --listen unix://` invocation starts a detached listener, waits until a freshly created control socket accepts connections, and then lets Codex Desktop's background SSH bootstrap return;
 - stores remote Mapping Store data separately under `~/.codexhost/remote/data`;
-- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. The block selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
+- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. In `.bashrc`, the block is placed before the standard non-interactive early-return guard used by Linux distributions such as Ubuntu. The block selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
 - writes a timestamped profile backup before changing it;
 - records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.

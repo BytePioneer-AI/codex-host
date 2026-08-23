@@ -11,6 +11,7 @@
 - [x] 2.3 Isolate remote Mapping Store data and disable Launcher-owned updates for direct remote Host invocations.
 - [x] 2.4 Detach only the managed default Unix listener after socket readiness while preserving foreground proxy and command semantics.
 - [x] 2.5 Record installed entrypoint integrity so uninstall remains verifiable across packaged-runtime rotation.
+- [x] 2.6 Place managed `.bashrc` exports before standard non-interactive early-return guards and cover idempotent install/status/uninstall behavior.
 
 ## 3. Renderer Routing
 

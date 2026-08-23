@@ -1067,6 +1067,95 @@ fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
+fn retires_an_exact_owner_child_after_its_shim_exits() {
+    let directory = temporary_directory();
+    let fixture_directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let fixture_ready = fixture_directory.join("fixture-ready");
+    let replacement_ready = directory.join("replacement-ready");
+
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    wait_for_file(&owner_ready, Duration::from_secs(5));
+    let owner_contents =
+        wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
+
+    // Keep an independently owned Host Runtime alive so this exact-child fixture also works on
+    // Windows, where killing a Shim normally closes its Job and retires its own process tree.
+    let mut fixture = host_runtime_shim(&fixture_directory, &fixture_ready);
+    let fixture_stdin = fixture.stdin.take().expect("fixture Host Runtime stdin");
+    let fixture_root = process_id_from_ready(
+        &wait_for_file(&fixture_ready, Duration::from_secs(5)),
+        "root=",
+    );
+    let fixture_contents =
+        wait_for_complete_owner_record(&mut fixture, &fixture_directory, Duration::from_secs(10));
+    let fixture_child_started_at_micros = fixture_contents
+        .lines()
+        .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
+        .filter(|value| !value.is_empty())
+        .expect("fixture child start identity");
+
+    force_stop_test_process(owner.id());
+    assert!(
+        wait_for_process_exit(&mut owner, Duration::from_secs(5)),
+        "exact owner Shim did not exit"
+    );
+    drop(owner_stdin);
+
+    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
+    let orphaned_exact_owner = owner_contents
+        .lines()
+        .map(|line| {
+            if line.starts_with("child_process_id=") {
+                format!("child_process_id={fixture_root}")
+            } else if line.starts_with("child_process_started_at_micros=") {
+                format!("child_process_started_at_micros={fixture_child_started_at_micros}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&owner_record, format!("{orphaned_exact_owner}\n"))
+        .expect("publish orphaned exact owner record");
+    assert!(
+        process_exists(fixture_root),
+        "exact child fixture exited before replacement"
+    );
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(10));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    let orphaned_child_was_retired = !process_exists(fixture_root);
+
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+    }
+    drop(fixture_stdin);
+    if !wait_for_process_exit(&mut fixture, Duration::from_secs(5)) {
+        force_stop_test_process(fixture.id());
+        force_stop_test_process(fixture_root);
+        let _ = fixture.wait();
+    }
+    let _ = fs::remove_dir_all(&directory);
+    let _ = fs::remove_dir_all(&fixture_directory);
+
+    assert!(
+        orphaned_child_was_retired,
+        "replacement started without retiring the exact child whose recorded Shim had exited"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
 fn replacement_does_not_signal_a_reused_owner_process_id() {
     let directory = temporary_directory();
     let owner_ready = directory.join("owner-ready");

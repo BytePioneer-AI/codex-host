@@ -50,6 +50,13 @@ enum StoredOwnerRecord {
     VersionOne(VersionOneOwnerRecord),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnerShimState {
+    Valid,
+    Missing,
+    Mismatched,
+}
+
 impl OwnerRecord {
     fn encode(&self) -> String {
         format!(
@@ -224,9 +231,29 @@ impl LocalRuntimeLease {
             if owner.process_id == process_id {
                 return Err("current codexhost Shim already owns the local Host Runtime".into());
             }
-            if !owner_is_codexhost_shim(&owner)? {
-                remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
-                continue;
+            match owner_shim_state(&owner)? {
+                OwnerShimState::Valid => {}
+                OwnerShimState::Missing => {
+                    // A migrated exact record remains authoritative for its child after its Shim
+                    // exits. Retire that exact child before admitting a replacement; otherwise a
+                    // post-migration Shim exit can leave two Host Runtimes running concurrently.
+                    if is_live_other_desktop(owner.desktop_process_id, desktop_process_id) {
+                        return Err(format!(
+                            "another Codex Desktop process owns the orphaned local Host Runtime (former Shim PID {}, Desktop PID {})",
+                            owner.process_id, owner.desktop_process_id,
+                        )
+                        .into());
+                    }
+                    stop_orphaned_owner_child(&owner)?;
+                    remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
+                    continue;
+                }
+                OwnerShimState::Mismatched => {
+                    // The recorded Shim instance is live but is not codexhost. Treat the record as
+                    // corrupt and never signal either that process or its claimed child.
+                    remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
+                    continue;
+                }
             }
 
             if is_live_other_desktop(owner.desktop_process_id, desktop_process_id) {
@@ -539,20 +566,24 @@ fn migrated_owner_record(
     }
 }
 
-fn owner_is_codexhost_shim(owner: &OwnerRecord) -> Result<bool, Box<dyn Error>> {
-    let Some(owner_snapshot) =
-        recorded_process_snapshot(owner.process_id, owner.process_started_at_micros)?
-    else {
-        return Ok(false);
+fn owner_shim_state(owner: &OwnerRecord) -> Result<OwnerShimState, Box<dyn Error>> {
+    let Some(owner_snapshot) = current_process_snapshot(owner.process_id)? else {
+        return Ok(OwnerShimState::Missing);
     };
+    if owner_snapshot.started_at_micros != owner.process_started_at_micros {
+        return Ok(OwnerShimState::Mismatched);
+    }
     let current_executable = env::current_exe()?;
     // npm upgrades and candidate packages can move the same Shim to another absolute path.
     // PID plus start time is the process-instance identity. The basename additionally rejects a
     // corrupt lease without making an in-place npm upgrade impossible.
-    Ok(executable_file_name_matches(
-        &owner_snapshot.executable,
-        &current_executable,
-    ))
+    Ok(
+        if executable_file_name_matches(&owner_snapshot.executable, &current_executable) {
+            OwnerShimState::Valid
+        } else {
+            OwnerShimState::Mismatched
+        },
+    )
 }
 
 fn retire_legacy_mapping_store_owner(
@@ -660,6 +691,25 @@ fn stop_owner(owner: &OwnerRecord) -> Result<(), Box<dyn Error>> {
     }
     Err(format!(
         "previous local Host Runtime did not exit (Shim PID {}, child PID {:?})",
+        owner.process_id, owner.child_process_id,
+    )
+    .into())
+}
+
+fn stop_orphaned_owner_child(owner: &OwnerRecord) -> Result<(), Box<dyn Error>> {
+    if let (Some(child_process_id), Some(child_process_started_at_micros)) = (
+        owner.child_process_id,
+        owner.child_process_started_at_micros,
+    ) && let Some(child_snapshot) =
+        recorded_process_snapshot(child_process_id, child_process_started_at_micros)?
+    {
+        terminate_process_group_instance(&child_snapshot, true)?;
+    }
+    if wait_for_owner_exit(owner, FORCE_GRACE)? {
+        return Ok(());
+    }
+    Err(format!(
+        "orphaned local Host Runtime child did not exit (former Shim PID {}, child PID {:?})",
         owner.process_id, owner.child_process_id,
     )
     .into())

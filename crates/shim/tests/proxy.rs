@@ -15,9 +15,9 @@ use std::time::Instant;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::parent_process_id;
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-use codexhost_platform::process_exists;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+use codexhost_platform::{process_exists, process_snapshot};
 use codexhost_shim::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV, REMOTE_SSH_MANAGED_ENV};
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use fs2::FileExt;
@@ -1166,24 +1166,28 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         &wait_for_file(&owner_ready, Duration::from_secs(5)),
         "root=",
     );
+    let mut reused_owner_process = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_DELAY_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn reused owner PID fixture");
 
     let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
     let contents = wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
-    let mut replaced_start_time = false;
-    let mut recycled = contents
+    let recycled = contents
         .lines()
         .map(|line| {
-            if line.starts_with("process_started_at_micros=") {
-                replaced_start_time = true;
+            if line.starts_with("process_id=") {
+                format!("process_id={}", reused_owner_process.id())
+            } else if line.starts_with("process_started_at_micros=") {
                 "process_started_at_micros=18446744073709551615".to_owned()
             } else {
                 line.to_owned()
             }
         })
         .collect::<Vec<_>>();
-    if !replaced_start_time {
-        recycled.push("process_started_at_micros=18446744073709551615".to_owned());
-    }
     fs::write(&owner_record, format!("{}\n", recycled.join("\n")))
         .expect("publish recycled owner process identity");
 
@@ -1194,10 +1198,11 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         .expect("replacement Host Runtime stdin");
     let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
     let replacement_root = process_id_from_ready(&replacement_identity, "root=");
-    let owner_was_not_signalled = owner
+    let reused_process_was_not_signalled = reused_owner_process
         .try_wait()
-        .expect("poll recycled owner Shim")
+        .expect("poll reused owner PID fixture")
         .is_none();
+    let old_exact_child_was_retired = !process_exists(owner_root);
 
     drop(owner_stdin);
     if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {
@@ -1213,11 +1218,102 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         let _ = fs::remove_dir_all(&directory);
         panic!("replacement Host Runtime did not converge after recycled owner recovery");
     }
+    force_stop_test_process(reused_owner_process.id());
+    let _ = reused_owner_process.wait();
     fs::remove_dir_all(directory).expect("remove recycled owner fixture");
 
     assert!(
-        owner_was_not_signalled,
+        reused_process_was_not_signalled,
         "replacement signalled a live process whose PID no longer matched the recorded owner instance"
+    );
+    assert!(
+        old_exact_child_was_retired,
+        "replacement started without retiring the exact child after its Shim PID was reused"
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
+fn replacement_does_not_signal_an_exact_owner_with_a_mismatched_executable() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let replacement_ready = directory.join("replacement-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+    let owner_contents =
+        wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
+
+    let mut mismatched_process = Command::new(fake_codex_path())
+        .env("FAKE_CODEX_DELAY_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mismatched owner executable fixture");
+    let mismatched_snapshot =
+        process_snapshot(mismatched_process.id()).expect("snapshot mismatched owner executable");
+    let mismatched_owner = owner_contents
+        .lines()
+        .map(|line| {
+            if line.starts_with("process_id=") {
+                format!("process_id={}", mismatched_process.id())
+            } else if line.starts_with("process_started_at_micros=") {
+                format!(
+                    "process_started_at_micros={}",
+                    mismatched_snapshot.started_at_micros
+                )
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        directory.join("local-host-runtime-owner-v1").join("owner"),
+        format!("{mismatched_owner}\n"),
+    )
+    .expect("publish mismatched owner executable record");
+
+    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
+    let replacement_stdin = replacement
+        .stdin
+        .take()
+        .expect("replacement Host Runtime stdin");
+    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    let replacement_root = process_id_from_ready(&replacement_identity, "root=");
+    let mismatched_process_was_not_signalled = mismatched_process
+        .try_wait()
+        .expect("poll mismatched owner executable")
+        .is_none();
+    let claimed_child_was_not_signalled = process_exists(owner_root);
+
+    drop(owner_stdin);
+    if !wait_for_process_exit(&mut owner, Duration::from_secs(5)) {
+        force_stop_test_process(owner.id());
+        force_stop_test_process(owner_root);
+        let _ = owner.wait();
+    }
+    drop(replacement_stdin);
+    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
+        force_stop_test_process(replacement.id());
+        force_stop_test_process(replacement_root);
+        let _ = replacement.wait();
+    }
+    force_stop_test_process(mismatched_process.id());
+    let _ = mismatched_process.wait();
+    fs::remove_dir_all(directory).expect("remove mismatched executable fixture");
+
+    assert!(
+        mismatched_process_was_not_signalled,
+        "replacement signalled a live exact owner whose executable was not codexhost"
+    );
+    assert!(
+        claimed_child_was_not_signalled,
+        "replacement trusted and signalled the child claimed by a mismatched executable"
     );
 }
 

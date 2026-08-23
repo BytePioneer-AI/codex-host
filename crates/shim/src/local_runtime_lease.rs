@@ -54,7 +54,8 @@ enum StoredOwnerRecord {
 enum OwnerShimState {
     Valid,
     Missing,
-    Mismatched,
+    Reused,
+    MismatchedExecutable,
 }
 
 impl OwnerRecord {
@@ -233,10 +234,10 @@ impl LocalRuntimeLease {
             }
             match owner_shim_state(&owner)? {
                 OwnerShimState::Valid => {}
-                OwnerShimState::Missing => {
+                OwnerShimState::Missing | OwnerShimState::Reused => {
                     // A migrated exact record remains authoritative for its child after its Shim
-                    // exits. Retire that exact child before admitting a replacement; otherwise a
-                    // post-migration Shim exit can leave two Host Runtimes running concurrently.
+                    // exits, even if the Shim PID has since been reused. Retire that exact child
+                    // before admitting a replacement; never signal the absent or reused Shim PID.
                     if is_live_other_desktop(owner.desktop_process_id, desktop_process_id) {
                         return Err(format!(
                             "another Codex Desktop process owns the orphaned local Host Runtime (former Shim PID {}, Desktop PID {})",
@@ -248,7 +249,7 @@ impl LocalRuntimeLease {
                     remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
                     continue;
                 }
-                OwnerShimState::Mismatched => {
+                OwnerShimState::MismatchedExecutable => {
                     // The recorded Shim instance is live but is not codexhost. Treat the record as
                     // corrupt and never signal either that process or its claimed child.
                     remove_owner_if_matches(&mutation_lock, &directory, &owner)?;
@@ -571,7 +572,7 @@ fn owner_shim_state(owner: &OwnerRecord) -> Result<OwnerShimState, Box<dyn Error
         return Ok(OwnerShimState::Missing);
     };
     if owner_snapshot.started_at_micros != owner.process_started_at_micros {
-        return Ok(OwnerShimState::Mismatched);
+        return Ok(OwnerShimState::Reused);
     }
     let current_executable = env::current_exe()?;
     // npm upgrades and candidate packages can move the same Shim to another absolute path.
@@ -581,7 +582,7 @@ fn owner_shim_state(owner: &OwnerRecord) -> Result<OwnerShimState, Box<dyn Error
         if executable_file_name_matches(&owner_snapshot.executable, &current_executable) {
             OwnerShimState::Valid
         } else {
-            OwnerShimState::Mismatched
+            OwnerShimState::MismatchedExecutable
         },
     )
 }

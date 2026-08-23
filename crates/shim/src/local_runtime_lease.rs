@@ -360,15 +360,7 @@ fn migrate_version_one_owner(
             .filter(|snapshot| snapshot.parent_id == legacy.process_id),
         None => None,
     };
-    let migrated = OwnerRecord {
-        process_id: legacy.process_id,
-        process_started_at_micros: shim_snapshot.started_at_micros,
-        desktop_process_id: legacy.desktop_process_id,
-        child_process_id: child_snapshot.as_ref().map(|snapshot| snapshot.id),
-        child_process_started_at_micros: child_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.started_at_micros),
-    };
+    let migrated = migrated_owner_record(legacy, &shim_snapshot, child_snapshot.as_ref());
 
     let expected = StoredOwnerRecord::VersionOne(legacy.clone());
     if read_stored_owner(directory).as_ref() != Some(&expected) {
@@ -376,6 +368,22 @@ fn migrate_version_one_owner(
     }
     write_owner_record(mutation_lock, directory, &migrated)?;
     Ok(Some(migrated))
+}
+
+fn migrated_owner_record(
+    legacy: &VersionOneOwnerRecord,
+    shim_snapshot: &ProcessSnapshot,
+    child_snapshot: Option<&ProcessSnapshot>,
+) -> OwnerRecord {
+    OwnerRecord {
+        process_id: legacy.process_id,
+        process_started_at_micros: shim_snapshot.started_at_micros,
+        desktop_process_id: shim_snapshot.parent_id,
+        child_process_id: child_snapshot.as_ref().map(|snapshot| snapshot.id),
+        child_process_started_at_micros: child_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.started_at_micros),
+    }
 }
 
 fn owner_is_codexhost_shim(owner: &OwnerRecord) -> Result<bool, Box<dyn Error>> {
@@ -644,5 +652,25 @@ mod tests {
                 child_process_id: record.child_process_id,
             }
         );
+    }
+
+    #[test]
+    fn migrated_owner_records_preserve_observed_reparenting() {
+        let legacy = VersionOneOwnerRecord {
+            process_id: 101,
+            desktop_process_id: 303,
+            child_process_id: None,
+        };
+        let shim_snapshot = ProcessSnapshot {
+            id: legacy.process_id,
+            parent_id: 1,
+            process_group_id: legacy.process_id,
+            executable: PathBuf::from("codexhost-shim"),
+            started_at_micros: 202,
+        };
+
+        let migrated = migrated_owner_record(&legacy, &shim_snapshot, None);
+
+        assert_eq!(migrated.desktop_process_id, 1);
     }
 }

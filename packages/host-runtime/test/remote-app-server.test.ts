@@ -66,8 +66,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
+  officialListenerArgumentsForRemoteListener,
   remoteAppServerSocketPath,
-  stdioArgumentsForRemoteListener,
   withRemoteAppServerSocketInitializationLock,
 } from "../src/remote-app-server.js";
 
@@ -162,16 +162,26 @@ describe("remote SSH app-server transport", () => {
     ).toBe(false);
   });
 
-  it("converts the remote listener invocation into a per-connection stdio app-server", () => {
+  it("routes every Host session through one shared official listener", () => {
+    const incoming = [
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--listen",
+      "unix://",
+      "--analytics-default-enabled",
+    ];
+
     expect(
-      stdioArgumentsForRemoteListener([
-        "-c",
-        "features.code_mode_host=true",
-        "app-server",
-        "--listen",
-        "unix://",
-      ]),
-    ).toEqual(["-c", "features.code_mode_host=true", "app-server", "--stdio"]);
+      officialListenerArgumentsForRemoteListener(incoming, "/tmp/codexhost-official.sock"),
+    ).toEqual([
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--listen",
+      "unix:///tmp/codexhost-official.sock",
+      "--analytics-default-enabled",
+    ]);
   });
 
   it("uses the Codex control socket under the remote CODEX_HOME", () => {

@@ -7,19 +7,41 @@ import {
   createExternalHarnessAdapters,
   prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
-import { AppServerHost } from "./app-server-host.js";
+import { AppServerHost, officialEnvironment } from "./app-server-host.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
+  officialListenerArgumentsForRemoteListener,
+  prepareRemoteAppServerSocketDirectory,
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
-  stdioArgumentsForRemoteListener,
 } from "./remote-app-server.js";
+import {
+  createRemoteOfficialAppServerListener,
+  remoteOfficialAppServerSocketPath,
+  type RemoteOfficialAppServerExit,
+} from "./remote-official-app-server.js";
+import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
+
+export function createRemoteOfficialAppServerPlan(
+  arguments_: readonly string[],
+  desktopControlSocketPath: string,
+  token?: string,
+): {
+  socketPath: string;
+  listenerArguments: string[];
+} {
+  const socketPath = remoteOfficialAppServerSocketPath(desktopControlSocketPath, token);
+  return {
+    socketPath,
+    listenerArguments: officialListenerArgumentsForRemoteListener(arguments_, socketPath),
+  };
+}
 
 export function hasLauncherManagedUpdateRuntime(
   environment: NodeJS.ProcessEnv,
@@ -83,7 +105,14 @@ export async function runHostRuntime(input: {
   const listenUrl = remoteUnixListenerUrl(input.arguments);
   if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
   const socketPath = remoteAppServerSocketPath(input.environment, listenUrl);
-  const officialArguments = stdioArgumentsForRemoteListener(input.arguments);
+  const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
+  const officialListener = createRemoteOfficialAppServerListener({
+    stockCodexPath,
+    arguments: officialPlan.listenerArguments,
+    socketPath: officialPlan.socketPath,
+    environment: officialEnvironment(input.environment),
+    diagnosticOutput: process.stderr,
+  });
   const mappingStore = createProductionExternalThreadStore(input.environment);
   await mappingStore.initialize();
   const listener = createRemoteAppServerWebSocketListener({
@@ -94,7 +123,7 @@ export async function runHostRuntime(input: {
       void prefetchClaudeCodeModelCatalog(externalAdapters);
       return new AppServerHost({
         stockCodexPath,
-        arguments: officialArguments,
+        arguments: [],
         defaultAgent,
         environment: input.environment,
         desktopInput,
@@ -103,28 +132,47 @@ export async function runHostRuntime(input: {
         externalAdapters,
         mappingStore,
         closeMappingStoreOnExit: false,
+        createOfficialConnection: () =>
+          createRemoteOfficialAppServerConnection(officialPlan.socketPath),
         ...(updateCoordinator ? { updateCoordinator } : {}),
       });
     },
   });
 
+  let stopping = false;
+  const officialState: { unexpectedExit: RemoteOfficialAppServerExit | null } = {
+    unexpectedExit: null,
+  };
   const stop = (): void => {
+    stopping = true;
     void listener.close();
   };
   try {
+    await prepareRemoteAppServerSocketDirectory(socketPath);
+    await officialListener.listen();
     await listener.listen();
+    void officialListener.closed.then((result) => {
+      if (stopping) return;
+      officialState.unexpectedExit = result;
+      void listener.close();
+    });
     process.title = "codex app-server desktop-ssh-websocket-v0.sock";
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
     await listener.closed;
-    return 0;
+    return officialState.unexpectedExit ? 1 : 0;
   } finally {
+    stopping = true;
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
     try {
       await listener.close();
     } finally {
-      await mappingStore.close();
+      try {
+        await officialListener.close();
+      } finally {
+        await mappingStore.close();
+      }
     }
   }
 }

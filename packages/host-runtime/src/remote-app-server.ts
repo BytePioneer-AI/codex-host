@@ -173,6 +173,34 @@ export function stdioArgumentsForRemoteListener(arguments_: readonly string[]): 
   throw new Error("Unix listener invocation omitted --listen");
 }
 
+export function officialListenerArgumentsForRemoteListener(
+  arguments_: readonly string[],
+  socketPath: string,
+): string[] {
+  if (!path.posix.isAbsolute(socketPath)) {
+    throw new Error("Shared official app-server socket path must be absolute");
+  }
+  if (remoteUnixListenerUrl(arguments_) === null) {
+    throw new Error("Expected a Unix listener app-server invocation");
+  }
+  const result = [...arguments_];
+  const appServerIndex = appServerSubcommandIndex(result);
+  if (appServerIndex === null) throw new Error("Expected an app-server invocation");
+  const listenUrl = `unix://${socketPath}`;
+  for (let index = appServerIndex + 1; index < result.length; index += 1) {
+    const argument = result[index];
+    if (argument === "--listen") {
+      result.splice(index, 2, "--listen", listenUrl);
+      return result;
+    }
+    if (argument?.startsWith("--listen=")) {
+      result.splice(index, 1, `--listen=${listenUrl}`);
+      return result;
+    }
+  }
+  throw new Error("Unix listener invocation omitted --listen");
+}
+
 function rawDataBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data);
@@ -222,7 +250,8 @@ async function removeStaleSocket(socketPath: string): Promise<void> {
   await rm(socketPath, { force: true });
 }
 
-async function preparePrivateSocketDirectory(socketDirectory: string): Promise<void> {
+export async function prepareRemoteAppServerSocketDirectory(socketPath: string): Promise<void> {
+  const socketDirectory = path.dirname(socketPath);
   const existing = await lstat(socketDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -369,8 +398,7 @@ export function createRemoteAppServerWebSocketListener(input: {
         }
       };
       if (process.platform !== "win32") {
-        const socketDirectory = path.dirname(input.socketPath);
-        await preparePrivateSocketDirectory(socketDirectory);
+        await prepareRemoteAppServerSocketDirectory(input.socketPath);
         await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
           await removeStaleSocket(input.socketPath);
           await bind();

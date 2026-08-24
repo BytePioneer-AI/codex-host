@@ -8,7 +8,7 @@ Define secure, isolated, and reversible execution of registered Harnesses throug
 
 ### Requirement: Remote Host SHALL use Codex's native SSH control transport
 
-On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
+On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
 
 #### Scenario: Desktop connects through the stock proxy
 
@@ -24,6 +24,15 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **AND** binary WebSocket messages are rejected
 - **AND** concurrent startup and shutdown operations serialize socket ownership, including recovery from an abandoned initializer and a late initializer from an already-loaded previous managed Shim during an in-place upgrade
 - **AND** an active socket or non-socket path is not overwritten
+
+#### Scenario: Two Desktop clients resume one loaded native Thread
+
+- **GIVEN** one Desktop connection has started or resumed a persisted native Codex Thread
+- **WHEN** a second Desktop connection resumes the same Thread through the same remote Host listener
+- **THEN** both Host sessions connect to the same stock app-server listener through separate WebSocket connections
+- **AND** the stock app-server attaches the second connection to its loaded Thread and native subscription state
+- **AND** codexhost does not start a competing stdio app-server or surface an `active writer` error caused by a second process
+- **AND** closing either Desktop connection does not stop the shared stock listener or the remaining connection
 
 ### Requirement: Remote Harness execution SHALL remain local to the SSH host
 
@@ -110,6 +119,7 @@ The remote native entrypoint SHALL use a dedicated Mapping Store data directory 
 
 - **WHEN** two WebSocket connections are active against one remote Host listener
 - **THEN** both sessions use the listener-owned Mapping Store without a lock conflict
+- **AND** both sessions use independent WebSocket connections to one listener-owned stock app-server process
 - **AND** closing one session does not close persistence for the other session
 
 ### Requirement: Renderer Harness routing SHALL follow the active Codex host

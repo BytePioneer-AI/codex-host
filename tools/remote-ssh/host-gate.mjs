@@ -1,10 +1,22 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Duplex } from "node:stream";
 
 import WebSocket from "ws";
+
+const INITIALIZE_PARAMS = {
+  clientInfo: {
+    name: "codex_app_server_daemon",
+    title: "codexhost remote SSH gate",
+    version: "0.0.0",
+  },
+  capabilities: {
+    experimentalApi: true,
+    mcpServerOpenaiFormElicitation: true,
+  },
+};
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -61,6 +73,7 @@ const temporaryRoot = process.platform === "darwin" ? "/tmp" : os.tmpdir();
 const temporary = await mkdtemp(path.join(temporaryRoot, "ch-gate-"));
 const codexHome = path.join(temporary, "codex-home");
 const socketPath = path.join(codexHome, "app-server-control", "app-server-control.sock");
+await mkdir(path.dirname(socketPath), { recursive: true });
 const environment = {
   ...process.env,
   CODEX_HOME: codexHome,
@@ -147,6 +160,8 @@ try {
     if (response.error) throw new Error(`${method} failed: ${JSON.stringify(response.error)}`);
     return response;
   };
+  await request(1, "initialize", INITIALIZE_PARAMS);
+  client.send(JSON.stringify({ method: "initialized", params: {} }));
   const response = await request(31, "codexhost/harness/inspect", {
     harnessId: "claude-code",
     cwd,
@@ -157,6 +172,27 @@ try {
   if (response.result?.status !== "ready") {
     throw new Error(`Claude Code Harness is not ready: ${JSON.stringify(response.result)}`);
   }
+  const modelList = await request(33, "model/list", {});
+  const defaultModel = modelList.result?.data?.find((entry) => entry.isDefault)?.model;
+  if (typeof defaultModel !== "string") {
+    throw new Error(`Official model/list returned no default Model: ${JSON.stringify(modelList)}`);
+  }
+  const nativeThreadStart = await request(34, "thread/start", {
+    model: defaultModel,
+    cwd,
+    approvalPolicy: "on-request",
+    sandbox: "read-only",
+  });
+  const nativeThreadId = nativeThreadStart.result?.thread?.id;
+  if (typeof nativeThreadId !== "string") {
+    throw new Error(
+      `Official thread/start returned no Thread ID: ${JSON.stringify(nativeThreadStart)}`,
+    );
+  }
+  await request(37, "thread/name/set", {
+    threadId: nativeThreadId,
+    name: "codexhost concurrent connection gate",
+  });
 
   secondProxy = spawn(
     remoteCodexPath ?? stockCodexPath,
@@ -175,6 +211,26 @@ try {
     secondClient.once("open", resolve);
     secondClient.once("error", reject);
   });
+  const takeSecondResponse = async (id, label) =>
+    waitFor(
+      label,
+      async () => {
+        if (secondProxy.exitCode !== null || secondProxy.signalCode !== null) {
+          throw new Error(
+            `Concurrent proxy exited: ${secondProxyDiagnostics.join("\n") || "no diagnostics"}`,
+          );
+        }
+        const index = secondResponses.findIndex((message) => message.id === id);
+        return index < 0 ? undefined : secondResponses.splice(index, 1)[0];
+      },
+      30_000,
+    );
+  secondClient.send(JSON.stringify({ id: 35, method: "initialize", params: INITIALIZE_PARAMS }));
+  const secondInitialize = await takeSecondResponse(35, "concurrent initialize");
+  if (secondInitialize.error) {
+    throw new Error(`Concurrent initialize failed: ${JSON.stringify(secondInitialize.error)}`);
+  }
+  secondClient.send(JSON.stringify({ method: "initialized", params: {} }));
   secondClient.send(
     JSON.stringify({
       id: 32,
@@ -182,21 +238,23 @@ try {
       params: { harnessId: "claude-code", cwd, refresh: false },
     }),
   );
-  const secondInspection = await waitFor(
-    "concurrent Harness inspection",
-    async () => {
-      if (secondProxy.exitCode !== null || secondProxy.signalCode !== null) {
-        throw new Error(
-          `Concurrent proxy exited: ${secondProxyDiagnostics.join("\n") || "no diagnostics"}`,
-        );
-      }
-      const index = secondResponses.findIndex((message) => message.id === 32);
-      return index < 0 ? undefined : secondResponses.splice(index, 1)[0];
-    },
-    30_000,
-  );
+  const secondInspection = await takeSecondResponse(32, "concurrent Harness inspection");
   if (secondInspection.error || secondInspection.result?.status !== "ready") {
     throw new Error(`Concurrent Harness inspection failed: ${JSON.stringify(secondInspection)}`);
+  }
+  secondClient.send(
+    JSON.stringify({ id: 36, method: "thread/resume", params: { threadId: nativeThreadId } }),
+  );
+  const secondResume = await takeSecondResponse(36, "concurrent official thread/resume");
+  if (secondResume.error) {
+    throw new Error(
+      `Concurrent official thread/resume failed: ${JSON.stringify(secondResume.error)}`,
+    );
+  }
+  if (secondResume.result?.thread?.id !== nativeThreadId) {
+    throw new Error(
+      `Concurrent official thread/resume returned the wrong Thread: ${JSON.stringify(secondResume)}`,
+    );
   }
   secondClient.close();
   await stop(secondProxy);

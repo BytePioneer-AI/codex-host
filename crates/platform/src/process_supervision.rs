@@ -196,7 +196,15 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     let guard = match windows_process::guard_child(&child) {
         Ok(job) => Some(ChildProcessGuard { job }),
         Err(_) if child.try_wait()?.is_some() => None,
-        Err(error) => return Err(PlatformError::Io(error)),
+        Err(error) => {
+            return Err(PlatformError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "assign supervised child PID {} to its cleanup Job: {error}",
+                    child.id()
+                ),
+            )));
+        }
     };
     Ok(SupervisedChild { child, guard })
 }
@@ -297,7 +305,7 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
     Ok(SupervisedChild {
         child,
         guard: Some(ChildProcessGuard {
-            tree: std::sync::Mutex::new(ObservedProcessTree::new(root)),
+            tree: std::sync::Mutex::new(ObservedProcessTree::new_following_root_exec(root)),
             armed: true,
         }),
     })
@@ -305,14 +313,14 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
-    use super::spawn_supervised;
+    use super::{spawn_supervised, unix_process_snapshot};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn accepts_a_shebang_script_that_runs_under_an_interpreter() {
+    fn tracks_a_shebang_root_across_an_exec_transition() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock is before the Unix epoch")
@@ -323,8 +331,12 @@ mod tests {
         ));
         fs::create_dir(&directory).expect("create temporary directory");
         let script = directory.join("codex.js");
-        fs::write(&script, "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n")
-            .expect("write shebang script");
+        let exec_ready = directory.join("exec-ready");
+        fs::write(
+            &script,
+            "#!/bin/sh\nwhile [ ! -e \"$CODEXHOST_EXEC_READY\" ]; do /bin/sleep 0.01; done\nexec /bin/sleep 30\n",
+        )
+        .expect("write shebang script");
         let mut permissions = fs::metadata(&script)
             .expect("stat shebang script")
             .permissions();
@@ -332,8 +344,29 @@ mod tests {
         fs::set_permissions(&script, permissions).expect("make shebang script executable");
 
         let mut command = Command::new(&script);
+        command.env("CODEXHOST_EXEC_READY", &exec_ready);
         let mut child =
             spawn_supervised(&mut command).expect("supervise an interpreter-backed executable");
+        fs::write(&exec_ready, b"ready").expect("release the shebang exec transition");
+        let expected_executable = fs::canonicalize("/bin/sleep").expect("resolve /bin/sleep");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = unix_process_snapshot(child.id()).expect("observe shebang root process");
+            if snapshot.executable == expected_executable {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.force_terminate();
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&directory);
+                panic!(
+                    "shebang root did not exec {} (observed {})",
+                    expected_executable.display(),
+                    snapshot.executable.display()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         child
             .force_terminate()
             .expect("terminate supervised script");

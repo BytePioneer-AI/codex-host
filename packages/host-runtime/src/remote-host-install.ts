@@ -21,7 +21,7 @@ const WRAPPER_MARKER = "# codexhost remote SSH wrapper v1";
 const PROFILE_START = "# >>> codexhost remote SSH >>>";
 const PROFILE_END = "# <<< codexhost remote SSH <<<";
 
-interface RemoteHostManifestV1 {
+export interface RemoteHostManifestV1 {
   format: 1;
   wrapperPath: string;
   profilePath: string;

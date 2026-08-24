@@ -111,6 +111,12 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+export function allowsDangerouslySkipPermissions(
+  getuid: (() => number) | undefined = process.getuid,
+): boolean {
+  return getuid === undefined || getuid() !== 0;
+}
+
 function processExited(child: ChildProcessWithoutNullStreams): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
@@ -365,7 +371,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],
         permissionMode: this.#permissionMode,
-        allowDangerouslySkipPermissions: true,
+        ...(allowsDangerouslySkipPermissions() ? { allowDangerouslySkipPermissions: true } : {}),
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,

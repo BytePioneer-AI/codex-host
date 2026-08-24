@@ -16,6 +16,8 @@ use codexhost_platform::{
 };
 
 mod local_runtime_lease;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod remote_lifecycle;
 
 use local_runtime_lease::LocalRuntimeLease;
 
@@ -722,6 +724,16 @@ pub fn run_proxy(arguments: &[OsString]) -> ShimResult<i32> {
 
 pub fn run_from_environment() -> ShimResult<i32> {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if arguments.first().and_then(|argument| argument.to_str())
+        == Some("--codexhost-remote-terminate")
+    {
+        let lifecycle_arguments = arguments[1..]
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        return remote_lifecycle::run_terminate(&lifecycle_arguments);
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
         && is_default_remote_unix_listener(&arguments)

@@ -398,6 +398,100 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     fs::remove_dir_all(directory).expect("remove remote listener fixture");
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn remote_lifecycle_terminates_only_the_matching_socket_listener() {
+    let directory = temporary_directory();
+    let socket = directory.join("control.sock");
+    let ready = directory.join("ready");
+    let mut listener = Command::new(fake_codex_path())
+        .args(["app-server", "--listen", "unix://"])
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start lifecycle listener fixture");
+    let ready = wait_for_file(&ready, Duration::from_secs(2));
+    let root_id = ready
+        .lines()
+        .find_map(|line| line.strip_prefix("root="))
+        .expect("listener root identity")
+        .parse::<u32>()
+        .expect("listener root PID");
+
+    let output = Command::new(shim_path())
+        .args(["--codexhost-remote-terminate", "stock", "--socket"])
+        .arg(&socket)
+        .arg("--stock-codex")
+        .arg(fake_codex_path())
+        .arg("--node")
+        .arg(fake_codex_path())
+        .arg("--host-runtime")
+        .arg(directory.join("host-runtime.mjs"))
+        .output()
+        .expect("terminate lifecycle listener fixture");
+    assert!(
+        output.status.success(),
+        "lifecycle termination failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_exists(root_id) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if process_exists(root_id) {
+        let _ = listener.kill();
+    }
+    let _ = listener.wait();
+    assert!(
+        !process_exists(root_id),
+        "matching socket listener survived"
+    );
+    fs::remove_dir_all(directory).expect("remove lifecycle listener fixture");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn remote_lifecycle_refuses_a_mismatched_installed_command() {
+    let directory = temporary_directory();
+    let socket = directory.join("control.sock");
+    let ready = directory.join("ready");
+    let mut listener = Command::new(fake_codex_path())
+        .args(["app-server", "--listen", "unix://"])
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start mismatched lifecycle listener fixture");
+    let _ = wait_for_file(&ready, Duration::from_secs(2));
+
+    let output = Command::new(shim_path())
+        .args(["--codexhost-remote-terminate", "stock", "--socket"])
+        .arg(&socket)
+        .arg("--stock-codex")
+        .arg(directory.join("different-codex"))
+        .arg("--node")
+        .arg(fake_codex_path())
+        .arg("--host-runtime")
+        .arg(directory.join("host-runtime.mjs"))
+        .output()
+        .expect("reject mismatched lifecycle listener fixture");
+    assert!(!output.status.success());
+    assert!(
+        listener
+            .try_wait()
+            .expect("poll mismatched listener")
+            .is_none()
+    );
+    let _ = listener.kill();
+    let _ = listener.wait();
+    fs::remove_dir_all(directory).expect("remove mismatched lifecycle fixture");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn reports_an_official_cli_crash_without_polluting_stdout() {

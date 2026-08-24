@@ -33,6 +33,8 @@ describe("remote SSH Host CLI", () => {
       }),
     ).resolves.toBe(0);
     expect(stdout.text()).toContain("codexhost remote install");
+    expect(stdout.text()).toContain("codexhost remote start");
+    expect(stdout.text()).toContain("codexhost remote stop");
     expect(stdout.text()).toContain("codexhost remote uninstall");
     expect(stderr.text()).toBe("");
   });
@@ -50,8 +52,33 @@ describe("remote SSH Host CLI", () => {
           diagnosticOutput: stderr.output,
         }),
       ).resolves.toBe(0);
-      expect(JSON.parse(stdout.text())).toMatchObject({ state: "not-installed" });
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        state: "not-installed",
+        runtime: { state: "stopped" },
+      });
       expect(stderr.text()).toBe("");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses lifecycle operations before installation", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-cli-"));
+    try {
+      for (const command of ["start", "stop"]) {
+        const stdout = textSink();
+        const stderr = textSink();
+        await expect(
+          runRemoteHostCli({
+            arguments: [command],
+            environment: { HOME: home, SHELL: "/bin/bash" },
+            output: stdout.output,
+            diagnosticOutput: stderr.output,
+          }),
+        ).resolves.toBe(1);
+        expect(stdout.text()).toBe("");
+        expect(stderr.text()).toContain("Remote Host is not installed");
+      }
     } finally {
       await rm(home, { recursive: true, force: true });
     }

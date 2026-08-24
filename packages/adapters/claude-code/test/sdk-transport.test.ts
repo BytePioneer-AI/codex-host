@@ -5,6 +5,7 @@ import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-a
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
+  allowsDangerouslySkipPermissions,
   ClaudeSdkModelInspector,
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
@@ -512,6 +513,17 @@ describe("ClaudeSdkTransport Thinking control", () => {
     expect(options(disabled).thinking).toEqual({ type: "disabled" });
     expect(options(disabled).effort).toBeUndefined();
     await disabled.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport root safety", () => {
+  it("does not enable dangerous permission skipping when running as root", () => {
+    expect(allowsDangerouslySkipPermissions(() => 0)).toBe(false);
+  });
+
+  it("enables dangerous permission skipping for non-root and platforms without getuid", () => {
+    expect(allowsDangerouslySkipPermissions(() => 1000)).toBe(true);
+    expect(allowsDangerouslySkipPermissions(undefined)).toBe(true);
   });
 });
 

@@ -18,6 +18,7 @@ Windows is supported as the client. A Windows machine is not currently supported
 ```bash
 npm install -g @codexhost/cli
 codexhost remote install
+codexhost remote start
 codexhost remote status
 ```
 
@@ -40,7 +41,7 @@ The command:
 
 When a remote Host starts a Harness, it resolves the development host's proxy environment again: existing `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and related variables take precedence; macOS also supplies missing values from its static system proxy configuration; Linux preserves its environment-variable and TUN-based network paths. codexhost does not identify a specific proxy application or guess proxy ports. If no proxy can be resolved, it proceeds as a direct connection.
 
-Running `remote install` over an earlier preview that used a shell wrapper migrates that entrypoint in place. Reconnect the remote workspace after installation. A currently running remote app-server is not replaced in place.
+Running `remote install` over an earlier preview that used a shell wrapper migrates that entrypoint in place. `remote start` then starts the headless Host without requiring the shell profile to be reloaded. If the target socket is occupied by the current user's installed stock Codex default listener, it terminates that specific listener tree before starting codexhost; unknown socket owners are never terminated automatically.
 
 Detachment is deliberately narrow. The command must contain exactly one default `--listen unix://` and no `--stdio`; duplicate listeners, `app-server proxy`, stdio, explicit custom socket paths, and ordinary Codex commands retain their normal foreground lifecycle. If the default listener exits or does not make its socket ready within ten seconds, the bootstrap fails instead of reporting a false success.
 
@@ -57,10 +58,12 @@ The remote Claude Code process sees the remote cwd and account. Prompts, streame
 ## Diagnose and roll back
 
 ```bash
+codexhost remote start
+codexhost remote stop
 codexhost remote status
 codexhost remote uninstall
 ```
 
-`status` reports a missing or modified native entrypoint, startup block, runtime, or data directory. A partially edited or otherwise malformed managed startup block is reported as degraded; install and uninstall still refuse to rewrite it automatically. Status also identifies the legacy blocking shell entrypoint and asks for a reinstall migration. `uninstall` verifies the recorded entrypoint digest before removing only the managed entrypoint, manifest, and startup block. It preserves profile backups and `~/.codexhost/remote/data` so Thread mappings remain recoverable. Reconnect the remote workspace after uninstalling.
+`start` is idempotent and starts the installed headless Remote Host. `stop` stops only a verified codexhost listener and leaves unrelated Codex processes running. `status` reports runtime state and protocol identity in addition to a missing or modified native entrypoint, startup block, runtime, or data directory. A partially edited or otherwise malformed managed startup block is reported as degraded; install and uninstall still refuse to rewrite it automatically. Status also identifies the legacy blocking shell entrypoint and asks for a reinstall migration. `uninstall` verifies the recorded entrypoint digest before removing only the managed entrypoint, manifest, and startup block. It preserves profile backups and `~/.codexhost/remote/data` so Thread mappings remain recoverable. Reconnect the remote workspace after uninstalling.
 
 Remote Host processes do not own the local codexhost Launcher or self-update controller. Update codexhost with the same package manager on both machines, then reconnect.

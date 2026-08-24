@@ -42,7 +42,19 @@ export {
 export type {
   RemoteHostInstallationStatus,
   RemoteHostInstallOptions,
+  RemoteHostManifestV1,
 } from "./remote-host-install.js";
+export {
+  classifyRemoteHostProbeResponse,
+  inspectRemoteHost,
+  startRemoteHost,
+  stopRemoteHost,
+} from "./remote-host-lifecycle.js";
+export type {
+  RemoteHostLifecycleResult,
+  RemoteHostRuntimeStatus,
+  RemoteHostStatus,
+} from "./remote-host-lifecycle.js";
 export { createHostUpdateCoordinator } from "./update-coordinator.js";
 export type {
   CreateHostUpdateCoordinatorOptions,

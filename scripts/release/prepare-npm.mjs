@@ -438,7 +438,7 @@ if (userArguments.length === 0) {
       "  codexhost --version",
       "  codexhost inspect",
       "  codexhost launch [launcher options]",
-      "  codexhost remote install|status|uninstall",
+      "  codexhost remote install|start|stop|status|uninstall",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
       "Rust launcher/shim. Codex Desktop must already be installed.",
@@ -587,6 +587,8 @@ codexhost --version
 codexhost inspect
 codexhost launch
 codexhost remote install
+codexhost remote start
+codexhost remote stop
 codexhost remote status
 codexhost remote uninstall
 \`\`\`

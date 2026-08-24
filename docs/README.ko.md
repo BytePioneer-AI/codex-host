@@ -111,6 +111,7 @@ SSH 원격 Host에서 실행하세요:
 ```bash
 npm install -g @codexhost/cli
 codexhost remote install
+codexhost remote start
 codexhost remote status
 ```
 

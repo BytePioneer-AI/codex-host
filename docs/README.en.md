@@ -113,6 +113,7 @@ Run this on the SSH remote host:
 ```bash
 npm install -g @codexhost/cli
 codexhost remote install
+codexhost remote start
 codexhost remote status
 ```
 

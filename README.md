@@ -109,6 +109,7 @@ Windows 可以作为客户端，但暂不支持作为远程 Host；远程 Host �
 ```bash
 npm install -g @codexhost/cli
 codexhost remote install
+codexhost remote start
 codexhost remote status
 ```
 

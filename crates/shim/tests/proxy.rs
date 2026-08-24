@@ -1445,7 +1445,17 @@ fn replacement_does_not_signal_a_reused_owner_process_id() {
         .stdin
         .take()
         .expect("replacement Host Runtime stdin");
-    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    // A replacement may consume the bounded orphan-child retirement window before launching its
+    // Host Runtime. Diagnose early exits and timeout state rather than reporting only a missing
+    // ready file, and leave scheduling margin beyond that production window.
+    let replacement_identity = wait_for_child_file_matching(
+        &mut replacement,
+        &replacement_ready,
+        &directory,
+        Duration::from_secs(10),
+        "replacement Host Runtime did not recover from a reused owner PID",
+        |_| true,
+    );
     let replacement_root = process_id_from_ready(&replacement_identity, "root=");
     let reused_process_was_not_signalled = reused_owner_process
         .try_wait()

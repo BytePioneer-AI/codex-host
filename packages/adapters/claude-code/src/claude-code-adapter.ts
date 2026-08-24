@@ -64,6 +64,7 @@ import {
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { forkClaudeSession } from "./claude-fork.js";
 import { mapClaudeSnapshot } from "./claude-history.js";
+import { claudeTranscriptItemId } from "./item-identity.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
   decodeClaudeModelRef,
@@ -121,12 +122,15 @@ interface ActiveTurn {
   command: TurnStartCommand;
   compactionItem: HostContextCompactionItem | null;
   item: HostAgentMessageItem | null;
+  agentMessageOrdinal: number;
   assistantMessageId: string | null;
   reasoningItems: Map<string, HostReasoningItem>;
+  reasoningOrdinal: number;
   tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
   checkpointId: string | null;
+  nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   completion: Promise<void>;
@@ -409,17 +413,20 @@ class ClaudeHarnessSession implements HarnessSession {
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
+    const nativeTurnKey = this.#randomUUID();
     const item: HostAgentMessageItem = {
       type: "agentMessage",
-      itemId: hostItemIdSchema.parse(this.#randomUUID()),
+      itemId: claudeTranscriptItemId(nativeTurnKey, "agentMessage", 1),
       text: "",
     };
     const active: ActiveTurn = {
       command,
       compactionItem: null,
       item,
+      agentMessageOrdinal: 1,
       assistantMessageId: null,
       reasoningItems: new Map(),
+      reasoningOrdinal: 0,
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -429,6 +436,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactions: new Map(),
       interactionByRequestId: new Map(),
       checkpointId: null,
+      nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
       completion,
@@ -441,7 +449,7 @@ class ClaudeHarnessSession implements HarnessSession {
       const nativeTurnRef = nativeTurnRefSchema.parse({
         harnessId: this.harnessId,
         nativeSessionId: this.#sessionId,
-        nativeTurnKey: this.#randomUUID(),
+        nativeTurnKey,
         formatVersion: 1,
       });
       const running = transport.runTurn(text, nativeTurnRef.nativeTurnKey, (event) => {
@@ -1023,9 +1031,14 @@ class ClaudeHarnessSession implements HarnessSession {
       this.#completeAgentItem(active, { status: "succeeded" }, false);
     }
     if (!active.item) {
+      active.agentMessageOrdinal += 1;
       active.item = {
         type: "agentMessage",
-        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        itemId: claudeTranscriptItemId(
+          active.nativeTurnKey,
+          "agentMessage",
+          active.agentMessageOrdinal,
+        ),
         text: "",
       };
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.item });
@@ -1062,9 +1075,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || delta.length === 0) return;
     let item = active.reasoningItems.get(messageId);
     if (!item) {
+      active.reasoningOrdinal += 1;
       item = {
         type: "reasoning",
-        itemId: hostItemIdSchema.parse(this.#randomUUID()),
+        itemId: claudeTranscriptItemId(active.nativeTurnKey, "reasoning", active.reasoningOrdinal),
         text: "",
       };
       active.reasoningItems.set(messageId, item);

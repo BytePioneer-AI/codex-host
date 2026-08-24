@@ -838,6 +838,84 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("uses one Item identity for a live response and its native history snapshot", async () => {
+    const { adapter, history, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("stable-live-history-item"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const liveStarted = await nextEvent(iterator);
+    if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+      throw new Error("Claude live Agent Message did not start");
+    }
+    const transport = transports[0];
+    const nativeTurnKey = transport?.turns[0]?.userMessageId;
+    if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+    transport.reasoning("native-message", "one thought");
+    const liveReasoningStarted = await nextEvent(iterator);
+    if (
+      liveReasoningStarted.type !== "item.started" ||
+      liveReasoningStarted.item.type !== "reasoning"
+    ) {
+      throw new Error("Claude live Reasoning did not start");
+    }
+    await nextEvent(iterator);
+    transport.completeReasoning("native-message");
+    await nextEvent(iterator);
+    transport.delta("one response", "native-message");
+    await nextEvent(iterator);
+    transport.event({
+      type: "message.completed",
+      messageId: "native-message",
+      checkpointId: "native-assistant",
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    history.push(
+      {
+        type: "user",
+        uuid: nativeTurnKey,
+        session_id: transport.sessionId,
+        message: { role: "user", content: "stable-live-history-item" },
+      },
+      {
+        type: "assistant",
+        uuid: "native-thinking",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "one thought" }],
+          stop_reason: "end_turn",
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "native-assistant",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [{ type: "text", text: "one response" }],
+          stop_reason: "end_turn",
+        },
+      },
+    );
+
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual([
+      liveReasoningStarted.item.itemId,
+      liveStarted.item.itemId,
+    ]);
+    await session.close();
+  });
+
   it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

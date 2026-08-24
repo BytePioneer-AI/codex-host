@@ -1278,6 +1278,9 @@ describe("Claude Code HarnessAdapter", () => {
 
     transport.autonomousTurnHandler?.({
       nativeTurnKey: "task-notification-1",
+      completedSubagents: [
+        { nativeSubagentId: "native-agent-1", resultSummary: "Analysis complete" },
+      ],
       events: [
         {
           type: "text.delta",
@@ -1291,6 +1294,12 @@ describe("Claude Code HarnessAdapter", () => {
         },
       ],
       result: { status: "succeeded" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "native-agent-1",
+      status: "completed",
+      resultSummary: "Analysis complete",
     });
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.autonomous.started", input: [] });
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });

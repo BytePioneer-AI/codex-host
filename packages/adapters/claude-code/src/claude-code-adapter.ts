@@ -1159,6 +1159,14 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    for (const completed of turn.completedSubagents ?? []) {
+      this.#event({
+        type: "subagent.state.changed",
+        nativeSubagentId: completed.nativeSubagentId,
+        status: "completed",
+        ...(completed.resultSummary ? { resultSummary: completed.resultSummary } : {}),
+      });
+    }
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });

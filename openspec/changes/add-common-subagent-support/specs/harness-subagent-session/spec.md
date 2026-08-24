@@ -52,6 +52,12 @@ When a supporting Harness provides a stable native Subagent identity and transcr
 - **THEN** Host Runtime SHALL return metadata with the correct Parent Thread relationship and read-only input capability
 - **AND** paginated Turn and Item history SHALL be reconstructed from the Adapter's Subagent transcript operation
 
+#### Scenario: Child Agent work starts and finishes
+
+- **WHEN** a native Subagent starts or resumes work
+- **THEN** Host Runtime SHALL publish the Child Host Thread as active
+- **AND** when the Harness reports that native Subagent completed, failed, or was interrupted, Host Runtime SHALL publish the Child Host Thread as idle
+
 #### Scenario: Host restarts before Child detail is opened
 
 - **WHEN** a persisted Child Host Thread is opened after Host restart
@@ -64,8 +70,9 @@ A supporting Harness SHALL emit an autonomous Turn start when native work resume
 #### Scenario: Background task completion resumes Root Agent
 
 - **WHEN** a background Subagent completion notification causes the native Root Agent to generate a follow-up answer after the requested Turn completed
-- **THEN** the Adapter SHALL emit `turn.autonomous.started` followed by the normal Turn and Item lifecycle
+- **THEN** the Adapter SHALL emit the correlated Session-scoped Subagent completion before `turn.autonomous.started` and the normal Turn and Item lifecycle
 - **AND** the follow-up answer SHALL appear in the Parent Thread instead of being dropped
+- **AND** the correlated Child Host Thread SHALL no longer remain in a loading or active state
 
 #### Scenario: Autonomous continuation overlaps active requested work
 

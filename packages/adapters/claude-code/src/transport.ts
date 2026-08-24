@@ -110,6 +110,7 @@ export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
   events: ClaudeTurnEvent[];
   result: ClaudeTransportTurnResult;
+  completedSubagents?: Array<{ nativeSubagentId: string; resultSummary?: string }>;
 }
 
 export interface ClaudeTurnTransport {

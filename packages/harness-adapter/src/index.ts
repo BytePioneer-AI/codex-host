@@ -81,6 +81,7 @@ export type {
   SessionFaultedEvent,
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
+  SubagentStateChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,

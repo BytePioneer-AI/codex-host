@@ -502,6 +502,22 @@ export class FakeHarnessSession implements HarnessSession {
     this.#updateItem(itemId, { type: "subagents.replace", subagents });
   }
 
+  emitSubagentState(
+    nativeSubagentId: string,
+    status: HostSubagentState["status"],
+    resultSummary?: string,
+  ): void {
+    this.#channel.emit({
+      kind: "event",
+      event: {
+        type: "subagent.state.changed",
+        nativeSubagentId,
+        status,
+        ...(resultSummary ? { resultSummary } : {}),
+      },
+    });
+  }
+
   replaceToolOutput(itemId: HostItemId, output: HostToolOutput): void {
     const active = this.#requireActive();
     const item = active.items.get(itemId);

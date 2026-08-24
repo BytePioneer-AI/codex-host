@@ -112,6 +112,22 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function taskNotificationSubagent(message: unknown): {
+  nativeSubagentId: string;
+  resultSummary?: string;
+} | null {
+  if (!isRecord(message) || message.type !== "user" || !isRecord(message.origin)) return null;
+  if (message.origin.kind !== "task-notification" || !isRecord(message.message)) return null;
+  if (typeof message.message.content !== "string") return null;
+  const taskId = message.message.content.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
+  if (!taskId) return null;
+  const summary = message.message.content.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
+  return {
+    nativeSubagentId: taskId,
+    ...(summary ? { resultSummary: summary.slice(0, 2_000) } : {}),
+  };
+}
+
 export function allowsDangerouslySkipPermissions(
   getuid: (() => number) | undefined = process.getuid,
 ): boolean {
@@ -333,6 +349,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     accumulator: ClaudeNativeTurnAccumulator;
     events: ClaudeTurnEvent[];
     nativeTurnKey: string | null;
+    completedSubagents: Array<{ nativeSubagentId: string; resultSummary?: string }>;
   } | null = null;
   #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   #closePromise: Promise<void> | null = null;
@@ -699,6 +716,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
             accumulator: new ClaudeNativeTurnAccumulator(),
             events: [],
             nativeTurnKey: null,
+            completedSubagents: [],
           });
         if (
           autonomous.nativeTurnKey === null &&
@@ -710,6 +728,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         ) {
           autonomous.nativeTurnKey = message.uuid;
         }
+        const completedSubagent = taskNotificationSubagent(message);
+        if (completedSubagent) autonomous.completedSubagents.push(completedSubagent);
         const interpreted = autonomous.accumulator.consume(message);
         autonomous.events.push(...interpreted.events);
         if (interpreted.terminal) {
@@ -719,6 +739,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
             nativeTurnKey,
             events: autonomous.events,
             result: interpreted.terminal,
+            ...(autonomous.completedSubagents.length > 0
+              ? { completedSubagents: autonomous.completedSubagents }
+              : {}),
           });
         }
       }

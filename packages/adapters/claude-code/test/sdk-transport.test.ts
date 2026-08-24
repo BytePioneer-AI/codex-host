@@ -553,7 +553,12 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
       uuid: "00000000-0000-4000-8000-000000000040",
       session_id: "00000000-0000-4000-8000-000000000001",
       parent_tool_use_id: null,
-      message: { role: "user", content: "<task-notification>completed</task-notification>" },
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content:
+          "<task-notification><task-id>native-agent-1</task-id><tool-use-id>send-1</tool-use-id><summary>Analysis complete</summary></task-notification>",
+      },
     } as unknown as SDKMessage);
     pushPartialText(
       value.fakeQuery,
@@ -571,6 +576,9 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
+      completedSubagents: [
+        { nativeSubagentId: "native-agent-1", resultSummary: "Analysis complete" },
+      ],
       events: [
         { type: "text.delta", delta: "Background analysis result" },
         { type: "message.completed" },

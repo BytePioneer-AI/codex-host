@@ -375,6 +375,7 @@ export class AppServerHost {
   #officialRequestBroker: OfficialRequestBroker;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
+  #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
@@ -2290,6 +2291,18 @@ export class AppServerHost {
       if (turnId) await this.#writeExternalUsage(thread, turnId);
       return;
     }
+    if (event.type === "subagent.state.changed") {
+      const nativeSubagentId = event.nativeSubagentId;
+      const record = (await this.#repository.list()).find(
+        (candidate) =>
+          candidate.subagent?.parentHostThreadId === thread.id &&
+          candidate.subagent.nativeSubagentId === nativeSubagentId,
+      );
+      if (!record) return;
+      const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
+      await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      return;
+    }
     if (event.type === "session.faulted") {
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
@@ -2380,13 +2393,18 @@ export class AppServerHost {
     subagent: HostSubagentState,
   ): Promise<HostSubagentState> {
     if (!subagent.nativeSubagentId || !parent.record.nativeSessionRef) return subagent;
+    const status =
+      subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
     const records = await this.#repository.list();
     const existing = records.find(
       (record) =>
         record.subagent?.parentHostThreadId === parent.id &&
         record.subagent.nativeSubagentId === subagent.nativeSubagentId,
     );
-    if (existing) return { ...subagent, subagentId: existing.hostThreadId };
+    if (existing) {
+      await this.#setSubagentThreadStatus(existing.hostThreadId, status);
+      return { ...subagent, subagentId: existing.hostThreadId };
+    }
     const recordInput = createExternalThreadRecordInput({
       harnessId: parent.record.harnessId,
       cwd: parent.cwd,
@@ -2409,14 +2427,28 @@ export class AppServerHost {
       record,
       turns: [],
       sessionId: parent.sessionId,
-      loaded: false,
+      running: status === "active",
     });
+    this.#subagentThreadStatuses.set(record.hostThreadId, status);
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),
       params: { thread },
     });
     return { ...subagent, subagentId: record.hostThreadId };
+  }
+
+  async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
+    if (this.#subagentThreadStatuses.get(threadId) === status) return;
+    this.#subagentThreadStatuses.set(threadId, status);
+    await this.#writer.json({
+      method: "thread/status/changed",
+      emittedAtMs: Date.now(),
+      params: {
+        threadId,
+        status: status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" },
+      },
+    });
   }
 
   async #projectApproval(

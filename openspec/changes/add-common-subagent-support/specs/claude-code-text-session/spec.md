@@ -78,8 +78,8 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 
 #### Scenario: Background task notification resumes Claude
 - **WHEN** Claude consumes a task notification after the requested Host Turn has completed and generates a follow-up Root answer
-- **THEN** Claude Transport SHALL preserve the full continuation until its native Result
-- **AND** Claude Adapter SHALL emit it as one autonomous Host Turn with stable native identity
+- **THEN** Claude Transport SHALL parse its stable `task-id`, preserve the full continuation until its native Result, and report that Subagent's terminal state
+- **AND** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion and one autonomous Host Turn with stable native identity
 
 ### Requirement: Claude exposes read-only Subagent history
 Claude Adapter SHALL implement the common Subagent transcript capability using the official `getSubagentMessages()` API and SHALL map supported User and Assistant content into deterministic Child Host Thread history without persisting another transcript.

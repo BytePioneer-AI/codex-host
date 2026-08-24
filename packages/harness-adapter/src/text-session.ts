@@ -400,6 +400,13 @@ export interface SessionUsageChangedEvent {
   observedForTurnId?: HostTurnId;
 }
 
+export interface SubagentStateChangedEvent {
+  type: "subagent.state.changed";
+  nativeSubagentId: string;
+  status: HostSubagentStatus;
+  resultSummary?: string;
+}
+
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
@@ -452,6 +459,7 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | SubagentStateChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
   | ItemStartedEvent

@@ -29,3 +29,4 @@
 - [x] 5.4 Map Claude `SendMessage` to the existing Agent without treating send success as Agent completion.
 - [x] 5.5 Preserve Claude autonomous Root continuations after background task notifications as follow-up Host Turns.
 - [x] 5.6 Add regressions for Child Thread detail, SendMessage running state, and background continuation output.
+- [x] 5.7 Project Child Host Thread active/idle status across SendMessage and correlated background task completion.

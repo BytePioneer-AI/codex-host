@@ -322,23 +322,45 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const session = adapter.sessions[0];
     if (!session) throw new Error("Fake Session was not opened");
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const childStartedPromise = fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+    );
     const itemId = session.startSubagentDelegation({
       subagentId: "agent-call",
       nativeSubagentId: "native-agent-1",
       description: "Analyze files",
       background: false,
-      status: "completed",
+      status: "running",
     });
+    const childStarted = await childStartedPromise;
+    expect(messageParams(childStarted).thread).toMatchObject({
+      status: { type: "active" },
+      canAcceptDirectInput: false,
+    });
+    const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
     session.completeItem(itemId, { status: "succeeded" });
     session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    session.emitSubagentState("native-agent-1", "completed", "Analysis complete");
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/status/changed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).status as JsonObject | undefined)?.type === "idle",
+      ),
+    ).resolves.toBeTruthy();
     const completed = await fixture.collector.waitFor(
       (message) =>
         method(message, "item/completed") &&
         (messageParams(message).item as JsonObject | undefined)?.type === "collabAgentToolCall",
     );
-    const childThreadId = (
+    const completedChildThreadId = (
       (messageParams(completed).item as JsonObject).receiverThreadIds as string[]
     )[0];
+    expect(completedChildThreadId).toBe(childThreadId);
     expect(childThreadId).toBeTruthy();
     expect(childThreadId).not.toBe("agent-call");
     if (!childThreadId) throw new Error("Projected Subagent has no Child Thread ID");

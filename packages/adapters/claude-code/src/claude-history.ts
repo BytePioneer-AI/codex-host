@@ -250,8 +250,10 @@ export function mapClaudeSubagentSnapshot(
   );
   const turns: HostThreadSnapshot["turns"] = [];
   for (let index = 0; index < messages.length;) {
-    const user = messages[index];
-    if (!user || !isHumanUser(user)) {
+    const first = messages[index];
+    if (!first) break;
+    const user = isHumanUser(first) ? first : null;
+    if (!user && turns.length > 0) {
       index += 1;
       continue;
     }
@@ -349,7 +351,10 @@ export function mapClaudeSubagentSnapshot(
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
         nativeSessionId: parentSessionId,
-        nativeTurnKey: `subagent-turn-${user.uuid}`,
+        nativeTurnKey:
+          turns.length === 0
+            ? `subagent-${nativeSubagentId}-initial`
+            : `subagent-turn-${user?.uuid ?? index}`,
         formatVersion: 1,
       }),
       ...(checkpointMessage
@@ -362,7 +367,7 @@ export function mapClaudeSubagentSnapshot(
             }),
           }
         : {}),
-      input: visibleUserTextParts(user).map((text) => ({ type: "text", text })),
+      input: user ? visibleUserTextParts(user).map((text) => ({ type: "text", text })) : [],
       items,
       outcome,
     });

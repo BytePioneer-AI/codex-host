@@ -32,3 +32,4 @@
 - [x] 5.7 Project Child Host Thread active/idle status across SendMessage and correlated background task completion.
 - [x] 5.8 Report Agent delegation as running from Tool Use, project live state replacements, and preserve Child Command/Tool history.
 - [x] 5.9 Refresh already-open Child Threads from correlated nested Claude transcript changes and terminal history.
+- [x] 5.10 Preserve stable Child history when Claude's official Subagent API omits the initial prompt or returns a partial transcript view.

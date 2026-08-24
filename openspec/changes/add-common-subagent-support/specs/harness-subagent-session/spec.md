@@ -53,6 +53,7 @@ When a supporting Harness provides a stable native Subagent identity and transcr
 - **AND** paginated Turn and Item history SHALL be reconstructed from the Adapter's Subagent transcript operation
 - **AND** supported intermediate Assistant, Reasoning, Command, Tool, and Tool Result evidence SHALL remain visible in full Child history while remaining hidden from the Parent Thread
 - **AND** when the Harness reports that a running Subagent transcript changed, an already-open Child Thread SHALL receive the newly available Items without requiring close and reopen
+- **AND** a later partial or temporarily empty transcript read SHALL NOT remove previously observed Child Turns, User input, or Items
 
 #### Scenario: Child Agent work starts and finishes
 

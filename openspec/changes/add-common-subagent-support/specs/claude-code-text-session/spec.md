@@ -89,6 +89,7 @@ Claude Adapter SHALL implement the common Subagent transcript capability using t
 - **THEN** Claude Adapter SHALL read that Subagent's official transcript under the Parent Native Session
 - **AND** Bash executions SHALL be represented as Command Items while other supported native tools SHALL be represented as Tool Items with their available results
 - **AND** nested Subagent Assistant and Tool evidence SHALL invalidate the correlated Child transcript after stable `task_id` association while remaining excluded from the Root transcript
+- **AND** when the official Subagent history omits the initial User prompt, the Adapter SHALL still project the returned Assistant and Tool evidence under the same stable initial Child Turn identity used when that prompt is present
 - **AND** repeated reads SHALL return deterministic ordered Child Turn identities and visible content
 
 #### Scenario: Subagent history is unavailable

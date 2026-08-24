@@ -280,50 +280,56 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 describe("AppServerHost HarnessAdapter projection", () => {
   it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
     const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    let subagentPhase: "started" | "working" | "completed" = "started";
+    let subagentPhase: "started" | "temporarily-empty" | "working" | "completed" = "started";
     const adapter = Object.assign(base, {
       subagents: {
         readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => {
           const subagentSnapshot: HostThreadSnapshot = {
-            turns: [
-              {
-                nativeTurnRef: {
-                  harnessId: harnessIdSchema.parse("pi"),
-                  nativeSessionId: input.parent.nativeSessionId,
-                  nativeTurnKey: "native-subagent-turn",
-                  formatVersion: 1,
-                },
-                input: [{ type: "text", text: "Analyze files" }],
-                items:
-                  subagentPhase === "started"
-                    ? []
-                    : [
-                        {
-                          item: {
-                            type: "commandExecution",
-                            itemId: hostItemIdSchema.parse("subagent-command"),
-                            command: "pwd",
-                            output: "/synthetic",
-                            exitCode: 0,
-                          },
-                          outcome: { status: "succeeded" },
-                        },
-                        ...(subagentPhase === "completed"
-                          ? [
+            turns:
+              subagentPhase === "temporarily-empty"
+                ? []
+                : [
+                    {
+                      nativeTurnRef: {
+                        harnessId: harnessIdSchema.parse("pi"),
+                        nativeSessionId: input.parent.nativeSessionId,
+                        nativeTurnKey: "native-subagent-turn",
+                        formatVersion: 1,
+                      },
+                      input:
+                        subagentPhase === "started"
+                          ? [{ type: "text", text: "Analyze files" }]
+                          : [],
+                      items:
+                        subagentPhase === "started"
+                          ? []
+                          : [
                               {
                                 item: {
-                                  type: "agentMessage" as const,
-                                  itemId: hostItemIdSchema.parse("subagent-answer"),
-                                  text: "Analysis complete",
+                                  type: "commandExecution",
+                                  itemId: hostItemIdSchema.parse("subagent-command"),
+                                  command: "pwd",
+                                  output: "/synthetic",
+                                  exitCode: 0,
                                 },
-                                outcome: { status: "succeeded" as const },
+                                outcome: { status: "succeeded" },
                               },
-                            ]
-                          : []),
-                      ],
-                outcome: { status: "unknown", reason: "Synthetic history" },
-              },
-            ],
+                              ...(subagentPhase === "completed"
+                                ? [
+                                    {
+                                      item: {
+                                        type: "agentMessage" as const,
+                                        itemId: hostItemIdSchema.parse("subagent-answer"),
+                                        text: "Analysis complete",
+                                      },
+                                      outcome: { status: "succeeded" as const },
+                                    },
+                                  ]
+                                : []),
+                            ],
+                      outcome: { status: "unknown", reason: "Synthetic history" },
+                    },
+                  ],
           };
           return { ok: true as const, value: subagentSnapshot };
         }),
@@ -368,6 +374,18 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
     });
 
+    subagentPhase = "temporarily-empty";
+    session.emitSubagentTranscriptChanged("native-agent-1");
+    writeRequest(fixture.desktopInput, {
+      id: 97,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
+    });
+    const retainedHistory = await fixture.collector.waitFor((message) => requestId(message, 97));
+    expect(retainedHistory).toMatchObject({
+      result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
+    });
+
     subagentPhase = "working";
     session.emitSubagentTranscriptChanged("native-agent-1");
     await expect(
@@ -379,6 +397,27 @@ describe("AppServerHost HarnessAdapter projection", () => {
           (messageParams(message).item as JsonObject | undefined)?.command === "pwd",
       ),
     ).resolves.toBeTruthy();
+    writeRequest(fixture.desktopInput, {
+      id: 96,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
+    });
+    const mergedHistory = await fixture.collector.waitFor((message) => requestId(message, 96));
+    expect(mergedHistory).toMatchObject({
+      result: {
+        data: [
+          {
+            items: expect.arrayContaining([
+              expect.objectContaining({
+                type: "userMessage",
+                content: [expect.objectContaining({ text: "Analyze files" })],
+              }),
+              expect.objectContaining({ type: "commandExecution", command: "pwd" }),
+            ]),
+          },
+        ],
+      },
+    });
 
     subagentPhase = "completed";
     session.replaceSubagents(itemId, [

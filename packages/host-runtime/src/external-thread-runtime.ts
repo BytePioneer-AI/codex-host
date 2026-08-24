@@ -79,6 +79,51 @@ export type ExternalThreadResolution =
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
+function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
+  const ref = turn.nativeTurnRef;
+  return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
+}
+
+function mergeReadonlySnapshot(
+  previous: HostThreadSnapshot,
+  next: HostThreadSnapshot,
+): HostThreadSnapshot {
+  const nextByTurn = new Map(next.turns.map((turn) => [nativeTurnKey(turn), turn] as const));
+  const retainedKeys = new Set<string>();
+  const turns = previous.turns.map((turn) => {
+    const key = nativeTurnKey(turn);
+    retainedKeys.add(key);
+    const update = nextByTurn.get(key);
+    if (!update) return turn;
+    const itemsById = new Map(update.items.map((item) => [item.item.itemId, item] as const));
+    const retainedItemIds = new Set<string>();
+    const items = turn.items.map((item) => {
+      retainedItemIds.add(item.item.itemId);
+      return itemsById.get(item.item.itemId) ?? item;
+    });
+    for (const item of update.items) {
+      if (!retainedItemIds.has(item.item.itemId)) items.push(item);
+    }
+    return {
+      ...turn,
+      ...update,
+      input: update.input.length > 0 ? update.input : turn.input,
+      items,
+      ...((update.checkpoint ?? turn.checkpoint)
+        ? { checkpoint: update.checkpoint ?? turn.checkpoint }
+        : {}),
+      ...((update.model ?? turn.model) ? { model: update.model ?? turn.model } : {}),
+    };
+  });
+  for (const turn of next.turns) {
+    if (!retainedKeys.has(nativeTurnKey(turn))) turns.push(turn);
+  }
+  return {
+    turns,
+    ...((next.state ?? previous.state) ? { state: next.state ?? previous.state } : {}),
+  };
+}
+
 class ReadonlySnapshotSession implements HarnessSession {
   readonly capabilities = {
     configuration: {
@@ -94,19 +139,25 @@ class ReadonlySnapshotSession implements HarnessSession {
   readonly outputs: AsyncIterable<never>;
   readonly #channel = new HarnessOutputChannel<never>();
   readonly #readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>;
+  #lastSnapshot: HostThreadSnapshot;
 
   constructor(
     readonly harnessId: HarnessId,
     nativeRef: NativeSessionRef,
+    initialSnapshot: HostThreadSnapshot,
     readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>,
   ) {
     this.initialState = { nativeRef };
+    this.#lastSnapshot = initialSnapshot;
     this.#readSnapshot = readSnapshot;
     this.outputs = this.#channel.outputs;
   }
 
-  readSnapshot() {
-    return this.#readSnapshot();
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    if (!result.ok) return result;
+    this.#lastSnapshot = mergeReadonlySnapshot(this.#lastSnapshot, result.value);
+    return { ok: true, value: this.#lastSnapshot };
   }
 
   async execute(): Promise<never> {
@@ -384,6 +435,7 @@ export class ExternalThreadRuntime {
       const session = new ReadonlySnapshotSession(
         record.harnessId,
         record.nativeSessionRef as NativeSessionRef,
+        snapshot.value,
         () =>
           subagents.readSnapshot({
             parent,

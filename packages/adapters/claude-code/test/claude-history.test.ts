@@ -222,6 +222,66 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("projects official Subagent history when the SDK omits the initial User prompt", () => {
+    const history = [
+      message("assistant", "subagent-thinking", [
+        { type: "thinking", thinking: "check directory", signature: "ignored" },
+      ]),
+      message("assistant", "subagent-tool", [
+        {
+          type: "tool_use",
+          id: "bash-1",
+          name: "Bash",
+          input: { command: "pwd", description: "Print working directory" },
+        },
+      ]),
+      message("user", "subagent-tool-result", [
+        {
+          type: "tool_result",
+          tool_use_id: "bash-1",
+          content: "/work/project",
+          is_error: false,
+        },
+      ]),
+      message("assistant", "subagent-final", [{ type: "text", text: "Inspection complete." }]),
+    ];
+
+    const withPrompt = mapClaudeSubagentSnapshot(
+      [message("user", "subagent-user", "inspect files"), ...history],
+      sessionId,
+      "native-agent-1",
+    );
+    const first = mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1");
+    const repeated = mapClaudeSubagentSnapshot(
+      structuredClone(history),
+      sessionId,
+      "native-agent-1",
+    );
+
+    expect(withPrompt.turns[0]?.nativeTurnRef).toEqual(first.turns[0]?.nativeTurnRef);
+    expect(repeated).toEqual(first);
+    expect(first).toMatchObject({
+      turns: [
+        {
+          nativeTurnRef: { nativeTurnKey: "subagent-native-agent-1-initial" },
+          input: [],
+          items: [
+            { item: { type: "reasoning", text: "check directory" } },
+            {
+              item: {
+                type: "commandExecution",
+                command: "pwd",
+                output: "/work/project",
+                exitCode: 0,
+              },
+            },
+            { item: { type: "agentMessage", text: "Inspection complete." } },
+          ],
+        },
+      ],
+    });
+  });
+
   it("projects Subagent command executions and intermediate Assistant output", () => {
     const history = [
       message("user", "subagent-user", "inspect files"),

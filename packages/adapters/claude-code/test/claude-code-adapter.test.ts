@@ -1163,23 +1163,40 @@ describe("Claude Code HarnessAdapter", () => {
             description: "Inspect implementation",
             role: "Explore",
             background: true,
-            status: "pending",
+            status: "running",
           },
         ],
       },
     });
+    transport.event({ type: "subagent.transcript.changed", callId: "agent-1" });
     transport.event({
       type: "subagent.updated",
       callId: "agent-1",
       status: "running",
+      nativeSubagentId: "native-agent-1",
       resultSummary: "Reading files",
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.updated",
       update: {
         type: "subagents.replace",
-        subagents: [{ status: "running", resultSummary: "Reading files" }],
+        subagents: [
+          {
+            status: "running",
+            nativeSubagentId: "native-agent-1",
+            resultSummary: "Reading files",
+          },
+        ],
       },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: "native-agent-1",
+    });
+    transport.event({ type: "subagent.transcript.changed", callId: "agent-1" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: "native-agent-1",
     });
     transport.event({
       type: "subagent.completed",

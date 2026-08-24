@@ -6,6 +6,7 @@ import type {
 import {
   harnessIdSchema,
   hostItemIdSchema,
+  jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
@@ -215,6 +216,29 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
   return { turns };
 }
 
+function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
+  const results = new Map<string, Record<string, unknown>>();
+  for (const message of messages) {
+    if (message.type !== "user" || !Array.isArray(message.message.content)) continue;
+    for (const block of message.message.content) {
+      if (
+        isRecord(block) &&
+        block.type === "tool_result" &&
+        typeof block.tool_use_id === "string"
+      ) {
+        results.set(block.tool_use_id, block);
+      }
+    }
+  }
+  return results;
+}
+
+function toolResultOutput(block: Record<string, unknown> | undefined): string | undefined {
+  if (!block) return undefined;
+  const text = textParts(block.content).join("");
+  return text.length > 0 ? text : undefined;
+}
+
 export function mapClaudeSubagentSnapshot(
   values: unknown[],
   parentSessionId: string,
@@ -225,85 +249,123 @@ export function mapClaudeSubagentSnapshot(
     parentSessionId,
   );
   const turns: HostThreadSnapshot["turns"] = [];
-  let pendingInput: HostThreadSnapshot["turns"][number]["input"] = [];
-  let ordinal = 0;
   for (let index = 0; index < messages.length;) {
-    const message = messages[index];
-    if (!message) break;
-    if (message.type === "user") {
-      pendingInput = visibleUserTextParts(message).map((text) => ({ type: "text", text }));
+    const user = messages[index];
+    if (!user || !isHumanUser(user)) {
       index += 1;
       continue;
     }
-    const assistantId =
-      isRecord(message.message) && typeof message.message.id === "string"
-        ? message.message.id
-        : message.uuid;
     let end = index + 1;
-    while (
-      end < messages.length &&
-      messages[end]?.type === "assistant" &&
-      ((isRecord(messages[end]?.message) && messages[end]?.message.id === assistantId) ||
-        messages[end]?.uuid === message.uuid)
-    ) {
-      end += 1;
-    }
-    const group = messages.slice(index, end);
-    const content = group.flatMap((entry) =>
-      Array.isArray(entry.message.content) ? entry.message.content : [],
-    );
-    const text = textParts(content).join("");
-    const reasoning = thinkingParts(content).join("");
-    if (text.length > 0 || reasoning.length > 0) {
-      ordinal += 1;
-      const outcome: HistoricalTurnOutcome = {
-        status: "unknown",
-        reason: "Claude Subagent history does not include complete Result terminal evidence",
-      };
-      const items = [];
-      if (reasoning.length > 0) {
+    while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
+    const turnMessages = messages.slice(index, end);
+    const results = toolResultBlocks(turnMessages);
+    const outcome: HistoricalTurnOutcome = {
+      status: "unknown",
+      reason: "Claude Subagent history does not include complete Result terminal evidence",
+    };
+    const items: HostThreadSnapshot["turns"][number]["items"] = [];
+    for (const message of turnMessages) {
+      if (message.type !== "assistant") continue;
+      const content = Array.isArray(message.message.content)
+        ? message.message.content
+        : [{ type: "text", text: message.message.content }];
+      for (let blockIndex = 0; blockIndex < content.length; blockIndex += 1) {
+        const block = content[blockIndex];
+        if (!isRecord(block)) continue;
+        const itemId = hostItemIdSchema.parse(
+          `claude-subagent-item-v2-${nativeSubagentId}-${message.uuid}-${blockIndex}`,
+        );
+        if (block.type === "thinking" && typeof block.thinking === "string") {
+          if (block.thinking.length > 0) {
+            items.push({
+              item: { type: "reasoning", itemId, text: block.thinking },
+              outcome: itemOutcome(outcome),
+            });
+          }
+          continue;
+        }
+        if (block.type === "text" && typeof block.text === "string") {
+          if (block.text.length > 0) {
+            items.push({
+              item: { type: "agentMessage", itemId, text: block.text },
+              outcome: itemOutcome(outcome),
+            });
+          }
+          continue;
+        }
+        if (
+          block.type !== "tool_use" ||
+          typeof block.id !== "string" ||
+          typeof block.name !== "string"
+        ) {
+          continue;
+        }
+        const result = results.get(block.id);
+        if (!result) continue;
+        const output = toolResultOutput(result);
+        const failed = result.is_error === true;
+        const toolOutcome: HostItemOutcome = failed
+          ? {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: `${block.name} failed`,
+                retryable: false,
+              },
+            }
+          : { status: "succeeded" };
+        if (
+          block.name === "Bash" &&
+          isRecord(block.input) &&
+          typeof block.input.command === "string"
+        ) {
+          items.push({
+            item: {
+              type: "commandExecution",
+              itemId,
+              command: block.input.command,
+              ...(output ? { output } : {}),
+              exitCode: result ? (failed ? 1 : 0) : null,
+            },
+            outcome: toolOutcome,
+          });
+          continue;
+        }
+        const argumentsResult = jsonValueSchema.safeParse(block.input);
         items.push({
           item: {
-            type: "reasoning" as const,
-            itemId: hostItemIdSchema.parse(
-              `claude-subagent-item-v1-${nativeSubagentId}-${ordinal}-reasoning`,
-            ),
-            text: reasoning,
+            type: "toolExecution",
+            itemId,
+            toolName: block.name,
+            arguments: argumentsResult.success ? argumentsResult.data : null,
+            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
           },
-          outcome: itemOutcome(outcome),
+          outcome: toolOutcome,
         });
       }
-      if (text.length > 0) {
-        items.push({
-          item: {
-            type: "agentMessage" as const,
-            itemId: hostItemIdSchema.parse(
-              `claude-subagent-item-v1-${nativeSubagentId}-${ordinal}`,
-            ),
-            text,
-          },
-          outcome: itemOutcome(outcome),
-        });
-      }
-      turns.push({
-        nativeTurnRef: nativeTurnRefSchema.parse({
-          harnessId: claudeCodeHarnessId,
-          nativeSessionId: parentSessionId,
-          nativeTurnKey: `subagent-turn-${ordinal}-${assistantId}`,
-          formatVersion: 1,
-        }),
-        checkpoint: nativeCheckpointRefSchema.parse({
-          harnessId: claudeCodeHarnessId,
-          nativeSessionId: parentSessionId,
-          checkpointId: group.at(-1)?.uuid ?? message.uuid,
-          formatVersion: 1,
-        }),
-        input: pendingInput,
-        items,
-        outcome,
-      });
-      pendingInput = [];
     }
+    const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
+    turns.push({
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: claudeCodeHarnessId,
+        nativeSessionId: parentSessionId,
+        nativeTurnKey: `subagent-turn-${user.uuid}`,
+        formatVersion: 1,
+      }),
+      ...(checkpointMessage
+        ? {
+            checkpoint: nativeCheckpointRefSchema.parse({
+              harnessId: claudeCodeHarnessId,
+              nativeSessionId: parentSessionId,
+              checkpointId: checkpointMessage.uuid,
+              formatVersion: 1,
+            }),
+          }
+        : {}),
+      input: visibleUserTextParts(user).map((text) => ({ type: "text", text })),
+      items,
+      outcome,
+    });
     index = end;
   }
   return { turns };

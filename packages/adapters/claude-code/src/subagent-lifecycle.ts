@@ -40,6 +40,10 @@ export class ClaudeSubagentLifecycle {
     return this.#delegations.size;
   }
 
+  nativeSubagentId(callId: string): string | undefined {
+    return this.#delegations.get(callId)?.item.subagents[0]?.nativeSubagentId;
+  }
+
   start(turnId: HostTurnId, event: Extract<ClaudeTurnEvent, { type: "subagent.started" }>): void {
     if (this.#delegations.has(event.callId)) {
       throw new Error("Claude Code Subagent delegation started more than once");
@@ -50,7 +54,7 @@ export class ClaudeSubagentLifecycle {
       description: event.description,
       ...(event.role ? { role: event.role } : {}),
       background: event.background,
-      status: "pending",
+      status: "running",
     };
     const item: HostSubagentDelegationItem = {
       type: "subagentDelegation",
@@ -70,6 +74,7 @@ export class ClaudeSubagentLifecycle {
     const subagent: HostSubagentState = {
       ...current,
       status: event.status,
+      ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       ...(event.description ? { description: event.description } : {}),
       ...(event.role ? { role: event.role } : {}),
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),

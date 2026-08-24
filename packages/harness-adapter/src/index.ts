@@ -82,6 +82,7 @@ export type {
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
+  SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,

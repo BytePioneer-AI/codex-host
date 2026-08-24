@@ -474,6 +474,17 @@ export class CodexTurnProjector {
       });
     } else if (event.update.type === "fileChanges.replace") {
       messages.push(...this.#fileChangeUpdates(event.itemId, event.update.changes));
+    } else if (event.update.type === "subagents.replace") {
+      messages.push({
+        method: "item/started",
+        emittedAtMs,
+        params: {
+          threadId: this.#threadId,
+          turnId: this.#turnId,
+          startedAtMs: this.#startedAtMs,
+          item: projectItem(next, null, this.#cwd, true, this.#threadId),
+        },
+      });
     }
     return { messages };
   }

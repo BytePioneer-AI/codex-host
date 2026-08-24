@@ -51,11 +51,15 @@ When a supporting Harness provides a stable native Subagent identity and transcr
 - **WHEN** Codex Desktop requests a receiver Child Thread from a projected Subagent delegation
 - **THEN** Host Runtime SHALL return metadata with the correct Parent Thread relationship and read-only input capability
 - **AND** paginated Turn and Item history SHALL be reconstructed from the Adapter's Subagent transcript operation
+- **AND** supported intermediate Assistant, Reasoning, Command, Tool, and Tool Result evidence SHALL remain visible in full Child history while remaining hidden from the Parent Thread
+- **AND** when the Harness reports that a running Subagent transcript changed, an already-open Child Thread SHALL receive the newly available Items without requiring close and reopen
 
 #### Scenario: Child Agent work starts and finishes
 
 - **WHEN** a native Subagent starts or resumes work
-- **THEN** Host Runtime SHALL publish the Child Host Thread as active
+- **THEN** the delegation SHALL immediately report that Subagent as running rather than waiting for stable Child identity or native completion
+- **AND** Host Runtime SHALL publish a materialized Child Host Thread as active
+- **AND** subsequent Subagent state replacements SHALL be projected to the native collaboration Item while it remains active
 - **AND** when the Harness reports that native Subagent completed, failed, or was interrupted, Host Runtime SHALL publish the Child Host Thread as idle
 
 #### Scenario: Host restarts before Child detail is opened

@@ -268,6 +268,27 @@ describe("Codex UI projector", () => {
     ]);
     const startedSubagent = startedItem.subagents[0];
     if (!startedSubagent) throw new Error("Test delegation has no Subagent");
+    const runningSubagent = { ...startedSubagent, status: "running" as const };
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: delegationId,
+        update: { type: "subagents.replace", subagents: [runningSubagent] },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            agentsStates: {
+              "claude-agent-1": { status: "running", message: null },
+            },
+          },
+        },
+      },
+    ]);
     const completedItem: HostSubagentDelegationItem = {
       ...startedItem,
       subagents: [
@@ -285,7 +306,19 @@ describe("Codex UI projector", () => {
         itemId: delegationId,
         update: { type: "subagents.replace", subagents: completedItem.subagents },
       }).messages,
-    ).toEqual([]);
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            agentsStates: {
+              "claude-agent-1": { status: "completed", message: "Inspection complete" },
+            },
+          },
+        },
+      },
+    ]);
     expect(
       value.project({
         type: "item.completed",

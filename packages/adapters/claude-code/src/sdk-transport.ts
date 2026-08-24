@@ -403,6 +403,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,
+        forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
           ...this.#environment,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,

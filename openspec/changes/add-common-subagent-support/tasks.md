@@ -30,3 +30,5 @@
 - [x] 5.5 Preserve Claude autonomous Root continuations after background task notifications as follow-up Host Turns.
 - [x] 5.6 Add regressions for Child Thread detail, SendMessage running state, and background continuation output.
 - [x] 5.7 Project Child Host Thread active/idle status across SendMessage and correlated background task completion.
+- [x] 5.8 Report Agent delegation as running from Tool Use, project live state replacements, and preserve Child Command/Tool history.
+- [x] 5.9 Refresh already-open Child Threads from correlated nested Claude transcript changes and terminal history.

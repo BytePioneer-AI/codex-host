@@ -280,6 +280,7 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 describe("AppServerHost HarnessAdapter projection", () => {
   it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
     const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    let subagentPhase: "started" | "working" | "completed" = "started";
     const adapter = Object.assign(base, {
       subagents: {
         readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => {
@@ -293,16 +294,33 @@ describe("AppServerHost HarnessAdapter projection", () => {
                   formatVersion: 1,
                 },
                 input: [{ type: "text", text: "Analyze files" }],
-                items: [
-                  {
-                    item: {
-                      type: "agentMessage",
-                      itemId: hostItemIdSchema.parse("subagent-answer"),
-                      text: "Analysis complete",
-                    },
-                    outcome: { status: "succeeded" },
-                  },
-                ],
+                items:
+                  subagentPhase === "started"
+                    ? []
+                    : [
+                        {
+                          item: {
+                            type: "commandExecution",
+                            itemId: hostItemIdSchema.parse("subagent-command"),
+                            command: "pwd",
+                            output: "/synthetic",
+                            exitCode: 0,
+                          },
+                          outcome: { status: "succeeded" },
+                        },
+                        ...(subagentPhase === "completed"
+                          ? [
+                              {
+                                item: {
+                                  type: "agentMessage" as const,
+                                  itemId: hostItemIdSchema.parse("subagent-answer"),
+                                  text: "Analysis complete",
+                                },
+                                outcome: { status: "succeeded" as const },
+                              },
+                            ]
+                          : []),
+                      ],
                 outcome: { status: "unknown", reason: "Synthetic history" },
               },
             ],
@@ -340,10 +358,65 @@ describe("AppServerHost HarnessAdapter projection", () => {
       canAcceptDirectInput: false,
     });
     const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
+    writeRequest(fixture.desktopInput, {
+      id: 98,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
+    });
+    const initialHistory = await fixture.collector.waitFor((message) => requestId(message, 98));
+    expect(initialHistory).toMatchObject({
+      result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
+    });
+
+    subagentPhase = "working";
+    session.emitSubagentTranscriptChanged("native-agent-1");
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution" &&
+          (messageParams(message).item as JsonObject | undefined)?.command === "pwd",
+      ),
+    ).resolves.toBeTruthy();
+
+    subagentPhase = "completed";
+    session.replaceSubagents(itemId, [
+      {
+        subagentId: "agent-call",
+        nativeSubagentId: "native-agent-1",
+        description: "Analyze files",
+        background: false,
+        status: "completed",
+        resultSummary: "Analysis complete",
+      },
+    ]);
     session.completeItem(itemId, { status: "succeeded" });
     session.succeedTurn();
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    session.emitSubagentState("native-agent-1", "completed", "Analysis complete");
+    expect(
+      fixture.collector.messages.filter(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "agentMessage" &&
+          (messageParams(message).item as JsonObject | undefined)?.text === "Analysis complete",
+      ),
+    ).resolves.toBeTruthy();
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") && messageParams(message).threadId === childThreadId,
+      ),
+    ).resolves.toBeTruthy();
     await expect(
       fixture.collector.waitFor(
         (message) =>
@@ -368,7 +441,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 99,
       method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20 },
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
     });
     const history = await fixture.collector.waitFor((message) => requestId(message, 99));
     expect(history).toMatchObject({
@@ -376,6 +449,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
         data: [
           {
             items: expect.arrayContaining([
+              expect.objectContaining({
+                type: "commandExecution",
+                command: "pwd",
+                aggregatedOutput: "/synthetic",
+              }),
               expect.objectContaining({ type: "agentMessage", text: "Analysis complete" }),
             ]),
           },

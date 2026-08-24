@@ -2291,6 +2291,16 @@ export class AppServerHost {
       if (turnId) await this.#writeExternalUsage(thread, turnId);
       return;
     }
+    if (event.type === "subagent.transcript.changed") {
+      const nativeSubagentId = event.nativeSubagentId;
+      const record = (await this.#repository.list()).find(
+        (candidate) =>
+          candidate.subagent?.parentHostThreadId === thread.id &&
+          candidate.subagent.nativeSubagentId === nativeSubagentId,
+      );
+      if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
+      return;
+    }
     if (event.type === "subagent.state.changed") {
       const nativeSubagentId = event.nativeSubagentId;
       const record = (await this.#repository.list()).find(
@@ -2438,8 +2448,84 @@ export class AppServerHost {
     return { ...subagent, subagentId: record.hostThreadId };
   }
 
+  async #refreshOpenSubagentThread(threadId: string, terminal = true): Promise<void> {
+    const child = this.#externalRuntime.get(threadId);
+    if (!child) return;
+    const previousItems = new Map(
+      child.turns.flatMap((turn) =>
+        Array.isArray(turn.items)
+          ? turn.items.flatMap((item) =>
+              isRecord(item) && typeof item.id === "string"
+                ? ([[item.id, JSON.stringify(item)]] as const)
+                : [],
+            )
+          : [],
+      ),
+    );
+    const refreshed = await this.#refreshExternalThread(child);
+    if (refreshed) {
+      this.#diagnose(refreshed.message);
+      return;
+    }
+    const emittedAtMs = Date.now();
+    for (const turn of child.turns) {
+      if (typeof turn.id !== "string" || !Array.isArray(turn.items)) continue;
+      for (const item of turn.items) {
+        if (
+          !isRecord(item) ||
+          typeof item.id !== "string" ||
+          previousItems.get(item.id) === JSON.stringify(item)
+        ) {
+          continue;
+        }
+        await this.#writer.json({
+          method: "item/started",
+          emittedAtMs,
+          params: {
+            threadId,
+            turnId: turn.id,
+            startedAtMs: emittedAtMs,
+            item,
+          },
+        });
+        await this.#writer.json({
+          method: "item/completed",
+          emittedAtMs,
+          params: {
+            threadId,
+            turnId: turn.id,
+            completedAtMs: emittedAtMs,
+            item,
+          },
+        });
+      }
+      if (terminal) {
+        await this.#writer.json({
+          method: "turn/completed",
+          emittedAtMs,
+          params: { threadId, turn },
+        });
+      }
+    }
+  }
+
   async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
-    if (this.#subagentThreadStatuses.get(threadId) === status) return;
+    const previousStatus = this.#subagentThreadStatuses.get(threadId);
+    const child = this.#externalRuntime.get(threadId);
+    if (child) {
+      child.running = status === "active";
+      if (status === "idle") child.historyHydrated = false;
+      child.thread = externalThreadValue({
+        record: child.record,
+        turns: child.turns,
+        sessionId: child.sessionId,
+        running: child.running,
+      });
+    }
+    if (status === "idle" && previousStatus === "active") {
+      await this.#refreshOpenSubagentThread(threadId);
+    }
+    if (previousStatus === status) return;
     this.#subagentThreadStatuses.set(threadId, status);
     await this.#writer.json({
       method: "thread/status/changed",

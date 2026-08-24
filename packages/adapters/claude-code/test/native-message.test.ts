@@ -195,6 +195,12 @@ describe("Claude native Turn interpretation", () => {
   it("isolates nested Subagent streams and Tools from the Root response", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
+    turn.consume(
+      toolUse("Agent", "agent-call", {
+        description: "Inspect implementation",
+        subagent_type: "Explore",
+      }),
+    );
     expect(turn.consume(partial("root before", "root-1")).events).toEqual([
       { type: "text.delta", messageId: "root-1", delta: "root before" },
     ]);
@@ -207,7 +213,7 @@ describe("Claude native Turn interpretation", () => {
           "agent-call",
         ),
       ).events,
-    ).toEqual([]);
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
     expect(
       turn.consume({
         type: "assistant",
@@ -218,16 +224,24 @@ describe("Claude native Turn interpretation", () => {
           content: [{ type: "tool_use", id: "nested-read", name: "Read", input: {} }],
         },
       }).events,
-    ).toEqual([]);
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
     expect(
       turn.consume({
         ...toolResult("nested-read", { content: "contents" }),
         parent_tool_use_id: "agent-call",
       }).events,
-    ).toEqual([]);
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
     expect(turn.consume(assistant("root before and after", undefined, "root-1")).events).toEqual([
       { type: "text.delta", messageId: "root-1", delta: " and after" },
       { type: "message.completed", messageId: "root-1", checkpointId: "root-1" },
+    ]);
+    expect(turn.consume(toolResult("agent-call", { content: "Agent completed" })).events).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-call",
+        isError: false,
+        resultSummary: "Agent completed",
+      },
     ]);
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
@@ -263,6 +277,7 @@ describe("Claude native Turn interpretation", () => {
       turn.consume({
         type: "system",
         subtype: "task_started",
+        task_id: "native-agent-1",
         tool_use_id: "agent-1",
         description: "Inspect implementation",
         subagent_type: "Explore",
@@ -274,6 +289,7 @@ describe("Claude native Turn interpretation", () => {
         status: "running",
         description: "Inspect implementation",
         role: "Explore",
+        nativeSubagentId: "native-agent-1",
       },
     ]);
     expect(

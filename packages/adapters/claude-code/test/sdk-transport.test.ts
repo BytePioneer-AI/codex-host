@@ -419,6 +419,7 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
   it("publishes Agent delegation while hiding nested Subagent execution", async () => {
     const value = fixture();
     await value.transport.start();
+    expect(options(value).forwardSubagentText).toBe(true);
     const events: ClaudeTurnEvent[] = [];
     const turn = value.transport.runTurn(
       "delegate",
@@ -528,7 +529,11 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
         status: "running",
         description: "Inspect implementation",
         role: "Explore",
+        nativeSubagentId: "task-1",
       },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
       {
         type: "subagent.completed",
         callId: "agent-1",

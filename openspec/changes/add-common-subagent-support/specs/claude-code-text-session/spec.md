@@ -82,11 +82,13 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **AND** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion and one autonomous Host Turn with stable native identity
 
 ### Requirement: Claude exposes read-only Subagent history
-Claude Adapter SHALL implement the common Subagent transcript capability using the official `getSubagentMessages()` API and SHALL map supported User and Assistant content into deterministic Child Host Thread history without persisting another transcript.
+Claude Adapter SHALL implement the common Subagent transcript capability using the official `getSubagentMessages()` API and SHALL map supported User, Assistant, Reasoning, Tool Use, and Tool Result content into deterministic Child Host Thread history without persisting another transcript.
 
 #### Scenario: Child Thread is opened
 - **WHEN** Host Runtime requests history for a stable Claude `agentId`
 - **THEN** Claude Adapter SHALL read that Subagent's official transcript under the Parent Native Session
+- **AND** Bash executions SHALL be represented as Command Items while other supported native tools SHALL be represented as Tool Items with their available results
+- **AND** nested Subagent Assistant and Tool evidence SHALL invalidate the correlated Child transcript after stable `task_id` association while remaining excluded from the Root transcript
 - **AND** repeated reads SHALL return deterministic ordered Child Turn identities and visible content
 
 #### Scenario: Subagent history is unavailable

@@ -502,6 +502,13 @@ export class FakeHarnessSession implements HarnessSession {
     this.#updateItem(itemId, { type: "subagents.replace", subagents });
   }
 
+  emitSubagentTranscriptChanged(nativeSubagentId: string): void {
+    this.#channel.emit({
+      kind: "event",
+      event: { type: "subagent.transcript.changed", nativeSubagentId },
+    });
+  }
+
   emitSubagentState(
     nativeSubagentId: string,
     status: HostSubagentState["status"],

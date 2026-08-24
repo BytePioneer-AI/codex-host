@@ -127,6 +127,7 @@ interface ActiveTurn {
   item: HostAgentMessageItem | null;
   assistantMessageId: string | null;
   reasoningItems: Map<string, HostReasoningItem>;
+  pendingSubagentTranscriptCalls: Set<string>;
   subagents: ClaudeSubagentLifecycle;
   tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -427,6 +428,7 @@ class ClaudeHarnessSession implements HarnessSession {
       item,
       assistantMessageId: null,
       reasoningItems: new Map(),
+      pendingSubagentTranscriptCalls: new Set(),
       subagents: new ClaudeSubagentLifecycle({
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
@@ -895,10 +897,25 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "subagent.updated":
         active.subagents.update(active.command.turnId, event);
+        if (active.pendingSubagentTranscriptCalls.delete(event.callId)) {
+          const nativeSubagentId = active.subagents.nativeSubagentId(event.callId);
+          if (nativeSubagentId) {
+            this.#event({ type: "subagent.transcript.changed", nativeSubagentId });
+          }
+        }
         return;
       case "subagent.completed":
         active.subagents.complete(active.command.turnId, event, active.cancellationRequested);
         return;
+      case "subagent.transcript.changed": {
+        const nativeSubagentId = active.subagents.nativeSubagentId(event.callId);
+        if (nativeSubagentId) {
+          this.#event({ type: "subagent.transcript.changed", nativeSubagentId });
+        } else {
+          active.pendingSubagentTranscriptCalls.add(event.callId);
+        }
+        return;
+      }
       case "interaction.requested":
         this.#startInteraction(active, event.request);
         return;
@@ -1135,6 +1152,7 @@ class ClaudeHarnessSession implements HarnessSession {
       item,
       assistantMessageId: null,
       reasoningItems: new Map(),
+      pendingSubagentTranscriptCalls: new Set(),
       subagents: new ClaudeSubagentLifecycle({
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),

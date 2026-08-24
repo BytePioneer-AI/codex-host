@@ -204,7 +204,15 @@ export class ClaudeNativeTurnAccumulator {
     const events: ClaudeNativeEvent[] = [];
 
     this.#consumeTaskLifecycle(message, events);
-    const nested = parentToolUseId(message) !== null;
+    const parentCallId = parentToolUseId(message);
+    const nested = parentCallId !== null;
+    if (
+      parentCallId &&
+      this.#tools.get(parentCallId)?.subagent === true &&
+      (message.type === "assistant" || message.type === "user")
+    ) {
+      events.push({ type: "subagent.transcript.changed", callId: parentCallId });
+    }
     if (!nested) this.#consumeCompaction(message, events);
 
     if (message.type === "stream_event" && isRecord(message.event)) {
@@ -286,12 +294,14 @@ export class ClaudeNativeTurnAccumulator {
     if (message.subtype === "task_started") {
       const description = boundedString(message.description, SUBAGENT_DESCRIPTION_LIMIT);
       const role = boundedString(message.subagent_type, SUBAGENT_DESCRIPTION_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
         callId,
         status: "running",
         ...(description ? { description } : {}),
         ...(role ? { role } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
       });
       return;
     }
@@ -299,12 +309,14 @@ export class ClaudeNativeTurnAccumulator {
       const description = boundedString(message.description, SUBAGENT_DESCRIPTION_LIMIT);
       const role = boundedString(message.subagent_type, SUBAGENT_DESCRIPTION_LIMIT);
       const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
         callId,
         status: "running",
         ...(description ? { description } : {}),
         ...(role ? { role } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
       });
       return;
@@ -314,11 +326,13 @@ export class ClaudeNativeTurnAccumulator {
       if (!status) return;
       const description = boundedString(message.patch.description, SUBAGENT_DESCRIPTION_LIMIT);
       const resultSummary = boundedString(message.patch.error, SUBAGENT_SUMMARY_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
         callId,
         status,
         ...(description ? { description } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
       });
       return;
@@ -327,10 +341,12 @@ export class ClaudeNativeTurnAccumulator {
       const status = taskStatus(message.status);
       if (!status) return;
       const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
         callId,
         status,
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
       });
     }

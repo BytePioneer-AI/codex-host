@@ -1,6 +1,7 @@
 import type {
   HarnessAdapter,
   HarnessModelRef,
+  HarnessResult,
   HarnessSession,
   HarnessSessionState,
   HostThreadSnapshot,
@@ -92,20 +93,20 @@ class ReadonlySnapshotSession implements HarnessSession {
   readonly initialUsage = null;
   readonly outputs: AsyncIterable<never>;
   readonly #channel = new HarnessOutputChannel<never>();
-  readonly #snapshot: HostThreadSnapshot;
+  readonly #readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>;
 
   constructor(
     readonly harnessId: HarnessId,
     nativeRef: NativeSessionRef,
-    snapshot: HostThreadSnapshot,
+    readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>,
   ) {
     this.initialState = { nativeRef };
-    this.#snapshot = snapshot;
+    this.#readSnapshot = readSnapshot;
     this.outputs = this.#channel.outputs;
   }
 
-  async readSnapshot() {
-    return { ok: true as const, value: this.#snapshot };
+  readSnapshot() {
+    return this.#readSnapshot();
   }
 
   async execute(): Promise<never> {
@@ -363,15 +364,18 @@ export class ExternalThreadRuntime {
       });
     }
     if (record.subagent) {
-      if (!adapter.subagents) {
+      const subagents = adapter.subagents;
+      if (!subagents) {
         throw new ExternalThreadOpenError({
           code: -32077,
           message: "External Harness Subagent history is unavailable",
         });
       }
-      const snapshot = await adapter.subagents.readSnapshot({
-        parent: record.nativeSessionRef as NativeSessionRef,
-        nativeSubagentId: record.subagent.nativeSubagentId,
+      const subagent = record.subagent;
+      const parent = record.nativeSessionRef as NativeSessionRef;
+      const snapshot = await subagents.readSnapshot({
+        parent,
+        nativeSubagentId: subagent.nativeSubagentId,
         cwd: record.cwd,
       });
       if (!snapshot.ok) {
@@ -380,7 +384,12 @@ export class ExternalThreadRuntime {
       const session = new ReadonlySnapshotSession(
         record.harnessId,
         record.nativeSessionRef as NativeSessionRef,
-        snapshot.value,
+        () =>
+          subagents.readSnapshot({
+            parent,
+            nativeSubagentId: subagent.nativeSubagentId,
+            cwd: record.cwd,
+          }),
       );
       const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const sessionId = await this.#repository.sessionTreeId(aligned.record);

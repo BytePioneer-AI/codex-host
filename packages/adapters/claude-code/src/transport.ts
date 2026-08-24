@@ -93,6 +93,7 @@ export type ClaudeTurnEvent =
       nativeSubagentId?: string;
       resultSummary?: string;
     }
+  | { type: "subagent.transcript.changed"; callId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

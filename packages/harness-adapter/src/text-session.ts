@@ -407,6 +407,11 @@ export interface SubagentStateChangedEvent {
   resultSummary?: string;
 }
 
+export interface SubagentTranscriptChangedEvent {
+  type: "subagent.transcript.changed";
+  nativeSubagentId: string;
+}
+
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
@@ -460,6 +465,7 @@ export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
   | SubagentStateChangedEvent
+  | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
   | ItemStartedEvent

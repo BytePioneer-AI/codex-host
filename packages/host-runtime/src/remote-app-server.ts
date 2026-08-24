@@ -10,12 +10,7 @@ import { withRemoteAppServerSocketInitializationLock } from "./remote-socket-loc
 
 export { withRemoteAppServerSocketInitializationLock } from "./remote-socket-lock.js";
 
-const APP_SERVER_VALUE_OPTIONS = new Set([
-  "-c",
-  "--config",
-  "--enable",
-  "--disable",
-  "--listen",
+const APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS = new Set([
   "--ws-auth",
   "--ws-token-file",
   "--ws-token-sha256",
@@ -23,6 +18,14 @@ const APP_SERVER_VALUE_OPTIONS = new Set([
   "--ws-issuer",
   "--ws-audience",
   "--ws-max-clock-skew-seconds",
+]);
+const APP_SERVER_VALUE_OPTIONS = new Set([
+  "-c",
+  "--config",
+  "--enable",
+  "--disable",
+  "--listen",
+  ...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS,
 ]);
 const APP_SERVER_FLAG_OPTIONS = new Set([
   "--strict-config",
@@ -183,21 +186,43 @@ export function officialListenerArgumentsForRemoteListener(
   if (remoteUnixListenerUrl(arguments_) === null) {
     throw new Error("Expected a Unix listener app-server invocation");
   }
-  const result = [...arguments_];
-  const appServerIndex = appServerSubcommandIndex(result);
+  const appServerIndex = appServerSubcommandIndex(arguments_);
   if (appServerIndex === null) throw new Error("Expected an app-server invocation");
+  const result = arguments_.slice(0, appServerIndex + 1);
   const listenUrl = `unix://${socketPath}`;
-  for (let index = appServerIndex + 1; index < result.length; index += 1) {
-    const argument = result[index];
+  let listenerRewritten = false;
+  for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument && APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS.has(argument)) {
+      // The public listener already authenticated the remote Desktop client.
+      // This second listener is an internal hop bound to a current-user-only
+      // socket, so retaining public WebSocket auth would reject Host's private
+      // connection unless it replayed the caller's secret.
+      index += 1;
+      continue;
+    }
+    if (
+      argument &&
+      [...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS].some((option) =>
+        argument.startsWith(`${option}=`),
+      )
+    ) {
+      continue;
+    }
     if (argument === "--listen") {
-      result.splice(index, 2, "--listen", listenUrl);
-      return result;
+      result.push("--listen", listenUrl);
+      listenerRewritten = true;
+      index += 1;
+      continue;
     }
     if (argument?.startsWith("--listen=")) {
-      result.splice(index, 1, `--listen=${listenUrl}`);
-      return result;
+      result.push(`--listen=${listenUrl}`);
+      listenerRewritten = true;
+      continue;
     }
+    if (argument) result.push(argument);
   }
+  if (listenerRewritten) return result;
   throw new Error("Unix listener invocation omitted --listen");
 }
 

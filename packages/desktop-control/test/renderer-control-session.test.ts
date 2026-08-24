@@ -57,6 +57,13 @@ describe("Renderer Control Session", () => {
     expect(selectRendererWebContents([renderer(17, "primary", 0)])).toBeNull();
   });
 
+  it("keeps the owned Renderer when another live window becomes larger", () => {
+    const owned = renderer(17, "primary", 1);
+    const larger = renderer(19, "primary", 10_000);
+
+    expect(selectRendererWebContents([larger, owned], 17)).toBe(owned);
+  });
+
   it("waits for the loopback Node Inspector target", async () => {
     await expect(
       waitForInspectorTarget("http://127.0.0.1:43123", {
@@ -173,6 +180,7 @@ describe("Renderer Control Session", () => {
     const calls: string[] = [];
     let binding: unknown = null;
     let selected = renderer(17, "primary", 100);
+    let inventory = [selected];
     const inspector = {
       command: vi.fn(),
       evaluate: vi.fn().mockResolvedValue(1),
@@ -181,7 +189,7 @@ describe("Renderer Control Session", () => {
     const operations = {
       async inspect() {
         calls.push("inspect");
-        return [selected];
+        return inventory;
       },
       async installTitlePolicy(_inspector: unknown, rendererId: number) {
         calls.push(`title:${rendererId}`);
@@ -259,8 +267,14 @@ describe("Renderer Control Session", () => {
     expect(calls).toEqual(["inspect", "read-binding", "prewarm:17"]);
 
     calls.length = 0;
+    inventory = [renderer(17, "primary", 1), renderer(19, "primary", 10_000)];
+    await expect(session.ensureInstalled()).resolves.toMatchObject({ renderer: { id: 17 } });
+    expect(calls).toEqual(["inspect", "read-binding", "prewarm:17"]);
+
+    calls.length = 0;
     binding = null;
     selected = renderer(19, "primary", 120);
+    inventory = [selected];
     await expect(session.ensureInstalled()).resolves.toMatchObject({ renderer: { id: 19 } });
     expect(calls).toEqual([
       "inspect",
@@ -272,6 +286,61 @@ describe("Renderer Control Session", () => {
     ]);
     session.close();
     expect(inspector.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the initial Renderer through the post-reload handoff", async () => {
+    const owned = renderer(17, "primary", 100);
+    let inventory = [owned];
+    const markedRendererIds: number[] = [];
+    const inspector = {
+      command: vi.fn(),
+      evaluate: vi.fn().mockResolvedValue(1),
+      close: vi.fn(),
+    };
+    const operations = {
+      async inspect() {
+        return inventory;
+      },
+      async installTitlePolicy() {
+        return {
+          state: "ready" as const,
+          reason: "ready" as const,
+          requiresRendererReload: true as const,
+        };
+      },
+      async markTitlePolicyReady(_inspector: unknown, rendererId: number) {
+        markedRendererIds.push(rendererId);
+        return { state: "ready" as const, reason: "owned-metadata-service" as const };
+      },
+      async installDraftPrewarmPolicy() {
+        return { state: "ready" as const, reason: "owned-request-bridge" as const };
+      },
+      async reload() {
+        inventory = [renderer(19, "primary", 10_000), owned];
+      },
+      async execute() {
+        return null;
+      },
+      async readBinding() {
+        return readyBinding();
+      },
+      async readTitlePolicyCounters() {
+        return null;
+      },
+    };
+
+    const session = await createRendererControlSession({
+      inspector,
+      inspectorEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations,
+    });
+
+    expect(session.snapshot.renderer.id).toBe(17);
+    expect(markedRendererIds).toEqual([17]);
+    session.close();
   });
 
   it("waits for an installing Renderer Adapter", async () => {

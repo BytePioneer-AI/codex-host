@@ -68,6 +68,31 @@ export type ClaudeTurnEvent =
       isError: boolean;
       fileChange?: ClaudeNativeFileChange;
     }
+  | {
+      type: "subagent.started";
+      callId: string;
+      operation: "spawn" | "send";
+      description: string;
+      role?: string;
+      background: boolean;
+      nativeSubagentId?: string;
+    }
+  | {
+      type: "subagent.updated";
+      callId: string;
+      status: "pending" | "running" | "completed" | "failed" | "interrupted";
+      description?: string;
+      role?: string;
+      nativeSubagentId?: string;
+      resultSummary?: string;
+    }
+  | {
+      type: "subagent.completed";
+      callId: string;
+      isError: boolean;
+      nativeSubagentId?: string;
+      resultSummary?: string;
+    }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";
@@ -81,8 +106,15 @@ export interface ClaudeTransportContextUsage {
   model: string;
 }
 
+export interface ClaudeAutonomousTurn {
+  nativeTurnKey: string;
+  events: ClaudeTurnEvent[];
+  result: ClaudeTransportTurnResult;
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
+  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   getPermissionMode(): ClaudePermissionMode;
@@ -132,5 +164,10 @@ export interface ClaudeAdapterDependencies {
   getSessionInfo(input: { sessionId: string }): Promise<{ cwd?: string } | undefined>;
   inspectInstallation(): void;
   readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  readSubagentMessages(input: {
+    cwd: string;
+    sessionId: string;
+    nativeSubagentId: string;
+  }): Promise<unknown[]>;
   randomUUID(): string;
 }

@@ -3,6 +3,7 @@ import type {
   HostCommandExecutionItem,
   HostFileChangeItem,
   HostQuestionInteraction,
+  HostSubagentDelegationItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
@@ -67,6 +68,23 @@ describe("Codex UI projector", () => {
           },
           outcome: { status: "succeeded" },
         },
+        {
+          item: {
+            type: "subagentDelegation",
+            itemId: itemId("historical-subagent"),
+            operation: "spawn",
+            subagents: [
+              {
+                subagentId: "historical-agent-1",
+                description: "Inspect history",
+                background: false,
+                status: "completed",
+                resultSummary: "Done",
+              },
+            ],
+          },
+          outcome: { status: "succeeded" },
+        },
       ],
       outcome: { status: "succeeded" },
     };
@@ -99,6 +117,12 @@ describe("Codex UI projector", () => {
           type: "dynamicToolCall",
           status: "completed",
           success: true,
+        }),
+        expect.objectContaining({
+          id: "historical-subagent",
+          type: "collabAgentToolCall",
+          status: "completed",
+          receiverThreadIds: ["historical-agent-1"],
         }),
       ],
       error: null,
@@ -201,6 +225,87 @@ describe("Codex UI projector", () => {
       durationMs: 1_500,
       items: [{ type: "agentMessage", text: "done" }],
     });
+  });
+
+  it("projects Subagent delegation through native collaboration Items", () => {
+    const value = projector();
+    const delegationId = itemId("delegation-1");
+    const startedItem: HostSubagentDelegationItem = {
+      type: "subagentDelegation",
+      itemId: delegationId,
+      operation: "spawn",
+      subagents: [
+        {
+          subagentId: "claude-agent-1",
+          description: "Inspect implementation",
+          role: "Explore",
+          background: true,
+          status: "pending",
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+
+    expect(
+      value.project({ type: "item.started", turnId, item: startedItem }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: "delegation-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["claude-agent-1"],
+            agentsStates: {
+              "claude-agent-1": { status: "pendingInit", message: null },
+            },
+          },
+        },
+      },
+    ]);
+    const startedSubagent = startedItem.subagents[0];
+    if (!startedSubagent) throw new Error("Test delegation has no Subagent");
+    const completedItem: HostSubagentDelegationItem = {
+      ...startedItem,
+      subagents: [
+        {
+          ...startedSubagent,
+          status: "completed",
+          resultSummary: "Inspection complete",
+        },
+      ],
+    };
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: delegationId,
+        update: { type: "subagents.replace", subagents: completedItem.subagents },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: completedItem, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            status: "completed",
+            agentsStates: {
+              "claude-agent-1": { status: "completed", message: "Inspection complete" },
+            },
+          },
+        },
+      },
+    ]);
   });
 
   it("projects native context compaction before the continued Agent reply", () => {

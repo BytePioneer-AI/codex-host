@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 
-function partial(text: string, uuid = "assistant-1") {
+function partial(text: string, uuid = "assistant-1", parentToolUseId: string | null = null) {
   return {
     type: "stream_event",
     uuid,
+    parent_tool_use_id: parentToolUseId,
     event: { type: "content_block_delta", delta: { type: "text_delta", text } },
   };
 }
@@ -25,20 +26,28 @@ function assistant(text: string, error?: string, uuid = "assistant-1") {
   return assistantBlocks([{ type: "text", text }], uuid, error);
 }
 
-function assistantBlocks(content: unknown[], uuid: string, error?: string) {
+function assistantBlocks(
+  content: unknown[],
+  uuid: string,
+  error?: string,
+  parentToolUseId: string | null = null,
+) {
   return {
     type: "assistant",
     uuid,
-    message: { content },
+    parent_tool_use_id: parentToolUseId,
+    message: { id: uuid, content },
     ...(error ? { error } : {}),
   };
 }
 
 function toolUse(name: string, id = "synthetic-tool", input: unknown = {}) {
+  const uuid = `assistant-${id}`;
   return {
     type: "assistant",
-    uuid: `assistant-${id}`,
-    message: { content: [{ type: "tool_use", name, id, input }] },
+    uuid,
+    parent_tool_use_id: null,
+    message: { id: uuid, content: [{ type: "tool_use", name, id, input }] },
   };
 }
 
@@ -46,7 +55,9 @@ function toolUses(...blocks: Array<{ id: string; name: string; input: unknown }>
   return {
     type: "assistant",
     uuid: "assistant-tools",
+    parent_tool_use_id: null,
     message: {
+      id: "assistant-tools",
       content: blocks.map(({ id, name, input }) => ({ type: "tool_use", id, name, input })),
     },
   };
@@ -179,6 +190,147 @@ describe("Claude native Turn interpretation", () => {
       ],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("isolates nested Subagent streams and Tools from the Root response", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(turn.consume(partial("root before", "root-1")).events).toEqual([
+      { type: "text.delta", messageId: "root-1", delta: "root before" },
+    ]);
+    expect(
+      turn.consume(
+        assistantBlocks(
+          [{ type: "text", text: "nested answer" }],
+          "nested-1",
+          undefined,
+          "agent-call",
+        ),
+      ).events,
+    ).toEqual([]);
+    expect(
+      turn.consume({
+        type: "assistant",
+        uuid: "nested-tools",
+        parent_tool_use_id: "agent-call",
+        message: {
+          id: "nested-tools",
+          content: [{ type: "tool_use", id: "nested-read", name: "Read", input: {} }],
+        },
+      }).events,
+    ).toEqual([]);
+    expect(
+      turn.consume({
+        ...toolResult("nested-read", { content: "contents" }),
+        parent_tool_use_id: "agent-call",
+      }).events,
+    ).toEqual([]);
+    expect(turn.consume(assistant("root before and after", undefined, "root-1")).events).toEqual([
+      { type: "text.delta", messageId: "root-1", delta: " and after" },
+      { type: "message.completed", messageId: "root-1", checkpointId: "root-1" },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("maps Root Agent delegation without exposing nested Tool events", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume(
+        toolUse("Agent", "agent-1", {
+          description: "Inspect implementation",
+          subagent_type: "Explore",
+          run_in_background: true,
+          prompt: "private prompt",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "spawn",
+        callId: "agent-1",
+        description: "Inspect implementation",
+        role: "Explore",
+        background: true,
+      },
+      {
+        type: "message.completed",
+        messageId: "assistant-agent-1",
+        checkpointId: "assistant-agent-1",
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "task_started",
+        tool_use_id: "agent-1",
+        description: "Inspect implementation",
+        subagent_type: "Explore",
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.updated",
+        callId: "agent-1",
+        status: "running",
+        description: "Inspect implementation",
+        role: "Explore",
+      },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("agent-1", {
+          content: "Agent launched successfully",
+          nativeResult: { agentId: "native-agent-1", status: "completed" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        nativeSubagentId: "native-agent-1",
+        resultSummary: "Agent launched successfully",
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("maps SendMessage to an existing native Subagent without marking the Agent complete", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume(
+        toolUse("SendMessage", "send-1", {
+          to: "native-agent-1",
+          summary: "Analyze current directory",
+          message: "Analyze files and report back",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "send",
+        callId: "send-1",
+        nativeSubagentId: "native-agent-1",
+        description: "Analyze current directory",
+        background: true,
+      },
+      {
+        type: "message.completed",
+        messageId: "assistant-send-1",
+        checkpointId: "assistant-send-1",
+      },
+    ]);
+    expect(
+      turn.consume(toolResult("send-1", { content: "Message sent successfully" })).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "send-1",
+        isError: false,
+        resultSummary: "Message sent successfully",
+      },
+    ]);
   });
 
   it("correlates interleaved Tool results and preserves native file evidence", () => {

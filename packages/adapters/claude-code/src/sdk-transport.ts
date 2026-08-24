@@ -20,6 +20,7 @@ import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thin
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
+  ClaudeAutonomousTurn,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
@@ -328,6 +329,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #queryFactory: typeof query;
   #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
+  #autonomous: {
+    accumulator: ClaudeNativeTurnAccumulator;
+    events: ClaudeTurnEvent[];
+    nativeTurnKey: string | null;
+  } | null = null;
+  #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
@@ -348,6 +355,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#permissionMode = options.permissionMode;
     this.#queryFactory = options.queryFactory ?? query;
     this.#thinkingOptionId = parseClaudeThinkingOptionId(options.thinkingOptionId);
+  }
+
+  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+    this.#autonomousTurnHandler = handler;
   }
 
   async start(): Promise<void> {
@@ -658,6 +669,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#query = null;
     const active = this.#active;
     this.#active = null;
+    this.#autonomous = null;
     active?.reject(new Error("Claude SDK transport closed"));
   }
 
@@ -670,13 +682,44 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           this.#onPermissionModeChanged(permissionMode);
         }
         const active = this.#active;
-        if (!active) continue;
-        const interpreted = active.accumulator.consume(message);
-        for (const event of interpreted.events) active.onEvent(event);
+        if (active) {
+          const interpreted = active.accumulator.consume(message);
+          for (const event of interpreted.events) active.onEvent(event);
+          if (interpreted.terminal) {
+            this.#closeInteractions(active, "superseded");
+            this.#active = null;
+            active.resolve(interpreted.terminal);
+          }
+          continue;
+        }
+        if (!this.#autonomousTurnHandler) continue;
+        const autonomous =
+          this.#autonomous ??
+          (this.#autonomous = {
+            accumulator: new ClaudeNativeTurnAccumulator(),
+            events: [],
+            nativeTurnKey: null,
+          });
+        if (
+          autonomous.nativeTurnKey === null &&
+          isRecord(message) &&
+          message.type === "user" &&
+          (message.parent_tool_use_id === null || message.parent_tool_use_id === undefined) &&
+          typeof message.uuid === "string" &&
+          message.uuid.length > 0
+        ) {
+          autonomous.nativeTurnKey = message.uuid;
+        }
+        const interpreted = autonomous.accumulator.consume(message);
+        autonomous.events.push(...interpreted.events);
         if (interpreted.terminal) {
-          this.#closeInteractions(active, "superseded");
-          this.#active = null;
-          active.resolve(interpreted.terminal);
+          this.#autonomous = null;
+          const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;
+          this.#autonomousTurnHandler({
+            nativeTurnKey,
+            events: autonomous.events,
+            result: interpreted.terminal,
+          });
         }
       }
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");

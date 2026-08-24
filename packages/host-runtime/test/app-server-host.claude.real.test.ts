@@ -147,11 +147,13 @@ describe("AppServerHost hermetic Claude projection", () => {
           },
         ];
       },
+      readSubagentMessages: async () => [],
       createTransport: (input) => {
         nativeSessionId = input.sessionId;
         let permissionMode = input.permissionMode;
         return {
           sessionId: input.sessionId,
+          setAutonomousTurnHandler: () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,

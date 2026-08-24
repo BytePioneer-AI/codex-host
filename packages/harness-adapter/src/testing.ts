@@ -49,6 +49,7 @@ import type {
   HostQuestion,
   HostQuestionInteraction,
   HostReasoningItem,
+  HostSubagentState,
   HostThreadSnapshot,
   HostToolExecutionItem,
   HostToolOutput,
@@ -218,6 +219,7 @@ export class FakeHarnessSession implements HarnessSession {
         forkAcrossCwd: supportsForkAcrossCwd,
         rollbackLastTurn: supportsRollbackLastTurn,
       },
+      subagents: { observe: false, readTranscript: false },
     };
     this.cwd = cwd;
     this.#catalog = catalog;
@@ -477,6 +479,27 @@ export class FakeHarnessSession implements HarnessSession {
     };
     this.#startItem(item);
     return item.itemId;
+  }
+
+  startSubagentDelegation(subagent: HostSubagentState): HostItemId {
+    const item = {
+      type: "subagentDelegation" as const,
+      itemId: this.#nextItemId(),
+      operation: "spawn" as const,
+      subagents: [subagent],
+    };
+    this.#startItem(item);
+    return item.itemId;
+  }
+
+  replaceSubagents(itemId: HostItemId, subagents: HostSubagentState[]): void {
+    const active = this.#requireActive();
+    const item = active.items.get(itemId);
+    if (item?.type !== "subagentDelegation") {
+      throw new Error("Fake Harness Item is not a Subagent delegation");
+    }
+    active.items.set(itemId, { ...item, subagents });
+    this.#updateItem(itemId, { type: "subagents.replace", subagents });
   }
 
   replaceToolOutput(itemId: HostItemId, output: HostToolOutput): void {
@@ -965,6 +988,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           forkAcrossCwd: this.supportsForkAcrossCwd,
           rollbackLastTurn: this.supportsRollbackLastTurn,
         },
+        subagents: { observe: false, readTranscript: false },
       },
     };
   }

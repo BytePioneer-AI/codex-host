@@ -420,6 +420,7 @@ export function createExternalThreadRecordInput(input: {
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
   forkSource?: CreateProvisionalThreadInput["forkSource"];
+  subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
   return {
     hostThreadId: input.hostThreadId ?? hostThreadIdSchema.parse(randomUUID()),
@@ -431,6 +432,7 @@ export function createExternalThreadRecordInput(input: {
     ephemeral: input.ephemeral,
     historyMode: input.historyMode,
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+    ...(input.subagent ? { subagent: input.subagent } : {}),
   };
 }
 
@@ -474,8 +476,20 @@ export function externalThreadValue(input: {
     sessionId: input.sessionId,
     path: null,
     cwd: record.cwd,
-    source: "vscode",
-    threadSource: null,
+    source: record.subagent
+      ? {
+          subAgent: {
+            thread_spawn: {
+              parent_thread_id: record.subagent.parentHostThreadId,
+              depth: 1,
+              agent_path: null,
+              agent_nickname: record.title || null,
+              agent_role: record.subagent.role ?? null,
+            },
+          },
+        }
+      : "vscode",
+    threadSource: record.subagent ? "subAgentThreadSpawn" : null,
     modelProvider: "codexhost",
     cliVersion: "codexhost",
     createdAt,
@@ -492,13 +506,13 @@ export function externalThreadValue(input: {
     name: record.title || null,
     gitInfo: null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
-    parentThreadId: null,
+    parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
-    canAcceptDirectInput: input.loaded === false ? null : true,
+    canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
-    agentNickname: null,
-    agentRole: null,
+    agentNickname: record.subagent ? record.title || null : null,
+    agentRole: record.subagent?.role ?? null,
     extra: null,
   };
 }

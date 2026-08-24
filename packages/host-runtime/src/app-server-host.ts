@@ -7,6 +7,7 @@ import type {
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
+  HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
@@ -2211,6 +2212,48 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "item.started" && event.item.type === "subagentDelegation") {
+      event = {
+        ...event,
+        item: {
+          ...event.item,
+          subagents: await Promise.all(
+            event.item.subagents.map((subagent) =>
+              this.#materializeSubagent(thread, subagent).catch(() => subagent),
+            ),
+          ),
+        },
+      };
+    }
+    if (event.type === "item.updated" && event.update.type === "subagents.replace") {
+      event = {
+        ...event,
+        update: {
+          ...event.update,
+          subagents: await Promise.all(
+            event.update.subagents.map((subagent) =>
+              this.#materializeSubagent(thread, subagent).catch(() => subagent),
+            ),
+          ),
+        },
+      };
+    }
+    if (event.type === "item.completed" && event.snapshot.item.type === "subagentDelegation") {
+      event = {
+        ...event,
+        snapshot: {
+          ...event.snapshot,
+          item: {
+            ...event.snapshot.item,
+            subagents: await Promise.all(
+              event.snapshot.item.subagents.map((subagent) =>
+                this.#materializeSubagent(thread, subagent).catch(() => subagent),
+              ),
+            ),
+          },
+        },
+      };
+    }
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {
@@ -2250,6 +2293,28 @@ export class AppServerHost {
     if (event.type === "session.faulted") {
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      return;
+    }
+
+    if (event.type === "turn.autonomous.started") {
+      if (thread.running || thread.activeTurnId) {
+        throw new Error("External autonomous Turn started while another Turn is active");
+      }
+      const projection: ProjectedTurn = {
+        projector: new CodexTurnProjector({
+          threadId: thread.id,
+          turnId: event.turnId,
+          cwd: thread.cwd,
+          startedAtMs: Date.now(),
+        }),
+      };
+      thread.running = true;
+      thread.activeTurnId = event.turnId;
+      thread.projectedTurns.set(event.turnId, projection);
+      thread.responseGates.set(event.turnId, {
+        promise: Promise.resolve(),
+        resolve: () => undefined,
+      });
       return;
     }
 
@@ -2308,6 +2373,50 @@ export class AppServerHost {
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(thread, { type: "idle" });
     }
+  }
+
+  async #materializeSubagent(
+    parent: ExternalThread,
+    subagent: HostSubagentState,
+  ): Promise<HostSubagentState> {
+    if (!subagent.nativeSubagentId || !parent.record.nativeSessionRef) return subagent;
+    const records = await this.#repository.list();
+    const existing = records.find(
+      (record) =>
+        record.subagent?.parentHostThreadId === parent.id &&
+        record.subagent.nativeSubagentId === subagent.nativeSubagentId,
+    );
+    if (existing) return { ...subagent, subagentId: existing.hostThreadId };
+    const recordInput = createExternalThreadRecordInput({
+      harnessId: parent.record.harnessId,
+      cwd: parent.cwd,
+      title: subagent.description,
+      transportModelId: parent.transportModelId,
+      ephemeral: false,
+      historyMode: "paginated",
+      subagent: {
+        parentHostThreadId: parent.id,
+        nativeSubagentId: subagent.nativeSubagentId,
+        ...(subagent.role ? { role: subagent.role } : {}),
+      },
+    });
+    let record = await this.#repository.createProvisional(recordInput);
+    record = await this.#repository.commitNative(
+      record.hostThreadId,
+      parent.record.nativeSessionRef,
+    );
+    const thread = externalThreadValue({
+      record,
+      turns: [],
+      sessionId: parent.sessionId,
+      loaded: false,
+    });
+    await this.#writer.json({
+      method: "thread/started",
+      emittedAtMs: Date.now(),
+      params: { thread },
+    });
+    return { ...subagent, subagentId: record.hostThreadId };
   }
 
   async #projectApproval(

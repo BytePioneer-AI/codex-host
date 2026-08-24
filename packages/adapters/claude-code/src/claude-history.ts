@@ -214,3 +214,97 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
   }
   return { turns };
 }
+
+export function mapClaudeSubagentSnapshot(
+  values: unknown[],
+  parentSessionId: string,
+  nativeSubagentId: string,
+): HostThreadSnapshot {
+  const messages = conversationMessages(
+    values.map((value) => (isRecord(value) ? { ...value, session_id: parentSessionId } : value)),
+    parentSessionId,
+  );
+  const turns: HostThreadSnapshot["turns"] = [];
+  let pendingInput: HostThreadSnapshot["turns"][number]["input"] = [];
+  let ordinal = 0;
+  for (let index = 0; index < messages.length;) {
+    const message = messages[index];
+    if (!message) break;
+    if (message.type === "user") {
+      pendingInput = visibleUserTextParts(message).map((text) => ({ type: "text", text }));
+      index += 1;
+      continue;
+    }
+    const assistantId =
+      isRecord(message.message) && typeof message.message.id === "string"
+        ? message.message.id
+        : message.uuid;
+    let end = index + 1;
+    while (
+      end < messages.length &&
+      messages[end]?.type === "assistant" &&
+      ((isRecord(messages[end]?.message) && messages[end]?.message.id === assistantId) ||
+        messages[end]?.uuid === message.uuid)
+    ) {
+      end += 1;
+    }
+    const group = messages.slice(index, end);
+    const content = group.flatMap((entry) =>
+      Array.isArray(entry.message.content) ? entry.message.content : [],
+    );
+    const text = textParts(content).join("");
+    const reasoning = thinkingParts(content).join("");
+    if (text.length > 0 || reasoning.length > 0) {
+      ordinal += 1;
+      const outcome: HistoricalTurnOutcome = {
+        status: "unknown",
+        reason: "Claude Subagent history does not include complete Result terminal evidence",
+      };
+      const items = [];
+      if (reasoning.length > 0) {
+        items.push({
+          item: {
+            type: "reasoning" as const,
+            itemId: hostItemIdSchema.parse(
+              `claude-subagent-item-v1-${nativeSubagentId}-${ordinal}-reasoning`,
+            ),
+            text: reasoning,
+          },
+          outcome: itemOutcome(outcome),
+        });
+      }
+      if (text.length > 0) {
+        items.push({
+          item: {
+            type: "agentMessage" as const,
+            itemId: hostItemIdSchema.parse(
+              `claude-subagent-item-v1-${nativeSubagentId}-${ordinal}`,
+            ),
+            text,
+          },
+          outcome: itemOutcome(outcome),
+        });
+      }
+      turns.push({
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: claudeCodeHarnessId,
+          nativeSessionId: parentSessionId,
+          nativeTurnKey: `subagent-turn-${ordinal}-${assistantId}`,
+          formatVersion: 1,
+        }),
+        checkpoint: nativeCheckpointRefSchema.parse({
+          harnessId: claudeCodeHarnessId,
+          nativeSessionId: parentSessionId,
+          checkpointId: group.at(-1)?.uuid ?? message.uuid,
+          formatVersion: 1,
+        }),
+        input: pendingInput,
+        items,
+        outcome,
+      });
+      pendingInput = [];
+    }
+    index = end;
+  }
+  return { turns };
+}

@@ -6,7 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
-import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
@@ -278,6 +278,96 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
+    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const adapter = Object.assign(base, {
+      subagents: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => {
+          const subagentSnapshot: HostThreadSnapshot = {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: harnessIdSchema.parse("pi"),
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "native-subagent-turn",
+                  formatVersion: 1,
+                },
+                input: [{ type: "text", text: "Analyze files" }],
+                items: [
+                  {
+                    item: {
+                      type: "agentMessage",
+                      itemId: hostItemIdSchema.parse("subagent-answer"),
+                      text: "Analysis complete",
+                    },
+                    outcome: { status: "succeeded" },
+                  },
+                ],
+                outcome: { status: "unknown", reason: "Synthetic history" },
+              },
+            ],
+          };
+          return { ok: true as const, value: subagentSnapshot };
+        }),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const itemId = session.startSubagentDelegation({
+      subagentId: "agent-call",
+      nativeSubagentId: "native-agent-1",
+      description: "Analyze files",
+      background: false,
+      status: "completed",
+    });
+    session.completeItem(itemId, { status: "succeeded" });
+    session.succeedTurn();
+    const completed = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        (messageParams(message).item as JsonObject | undefined)?.type === "collabAgentToolCall",
+    );
+    const childThreadId = (
+      (messageParams(completed).item as JsonObject).receiverThreadIds as string[]
+    )[0];
+    expect(childThreadId).toBeTruthy();
+    expect(childThreadId).not.toBe("agent-call");
+    if (!childThreadId) throw new Error("Projected Subagent has no Child Thread ID");
+
+    writeRequest(fixture.desktopInput, {
+      id: 99,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20 },
+    });
+    const history = await fixture.collector.waitFor((message) => requestId(message, 99));
+    expect(history).toMatchObject({
+      result: {
+        data: [
+          {
+            items: expect.arrayContaining([
+              expect.objectContaining({ type: "agentMessage", text: "Analysis complete" }),
+            ]),
+          },
+        ],
+      },
+    });
+    expect(adapter.subagents.readSnapshot).toHaveBeenCalledWith({
+      parent: expect.objectContaining({ nativeSessionId: expect.any(String) }),
+      nativeSubagentId: "native-agent-1",
+      cwd: "/synthetic",
+    });
+    await stopFixture(fixture);
+  });
+
   it("terminates the official app-server when its Host session closes", async () => {
     const fixture = createFixture();
     fixture.official.kill.mockImplementationOnce(() => {

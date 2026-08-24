@@ -3,6 +3,7 @@ import type {
   HarnessModelRef,
   HarnessSession,
   HarnessSessionState,
+  HostThreadSnapshot,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -15,7 +16,9 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
+import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import type {
+  HarnessId,
   HarnessPermissionModeId,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -74,6 +77,45 @@ export type ExternalThreadResolution =
   | { kind: "official" }
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
+
+class ReadonlySnapshotSession implements HarnessSession {
+  readonly capabilities = {
+    configuration: {
+      selectModel: false,
+      selectThinkingOption: false,
+      selectPermissionMode: false,
+    },
+    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    subagents: { observe: false, readTranscript: false },
+  };
+  readonly initialState;
+  readonly initialUsage = null;
+  readonly outputs: AsyncIterable<never>;
+  readonly #channel = new HarnessOutputChannel<never>();
+  readonly #snapshot: HostThreadSnapshot;
+
+  constructor(
+    readonly harnessId: HarnessId,
+    nativeRef: NativeSessionRef,
+    snapshot: HostThreadSnapshot,
+  ) {
+    this.initialState = { nativeRef };
+    this.#snapshot = snapshot;
+    this.outputs = this.#channel.outputs;
+  }
+
+  async readSnapshot() {
+    return { ok: true as const, value: this.#snapshot };
+  }
+
+  async execute(): Promise<never> {
+    throw new Error("Readonly Subagent Thread cannot execute commands");
+  }
+
+  async close(): Promise<void> {
+    this.#channel.end();
+  }
+}
 
 class ExternalThreadOpenError extends Error {
   constructor(readonly rpcError: ExternalThreadRpcError) {
@@ -318,6 +360,37 @@ export class ExternalThreadRuntime {
       throw new ExternalThreadOpenError({
         code: -32077,
         message: "External Harness is unavailable",
+      });
+    }
+    if (record.subagent) {
+      if (!adapter.subagents) {
+        throw new ExternalThreadOpenError({
+          code: -32077,
+          message: "External Harness Subagent history is unavailable",
+        });
+      }
+      const snapshot = await adapter.subagents.readSnapshot({
+        parent: record.nativeSessionRef as NativeSessionRef,
+        nativeSubagentId: record.subagent.nativeSubagentId,
+        cwd: record.cwd,
+      });
+      if (!snapshot.ok) {
+        throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
+      }
+      const session = new ReadonlySnapshotSession(
+        record.harnessId,
+        record.nativeSessionRef as NativeSessionRef,
+        snapshot.value,
+      );
+      const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
+      const sessionId = await this.#repository.sessionTreeId(aligned.record);
+      return this.register({
+        record: aligned.record,
+        session,
+        sessionId,
+        thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
+        turns: aligned.turns,
+        ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
     const opened = await adapter.open({

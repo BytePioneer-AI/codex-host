@@ -556,6 +556,7 @@ describe("minimal Harness text Session", () => {
           selectPermissionMode: false,
         },
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        subagents: { observe: false, readTranscript: false },
       },
     });
     expect(adapter.inspectionCalls).toBe(1);

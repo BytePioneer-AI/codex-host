@@ -17,6 +17,7 @@ import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
+  ClaudeAutonomousTurn,
   ClaudeInteractionResponse,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
@@ -27,6 +28,10 @@ import type {
 
 class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
+  autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+    this.autonomousTurnHandler = handler;
+  }
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
@@ -169,6 +174,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     forkSession: vi.fn(async () => ({ sessionId: "derived-session" })),
     getSessionInfo: vi.fn(async () => ({ cwd: "/synthetic" })),
     readSessionMessages: vi.fn(async () => structuredClone(history)),
+    readSubagentMessages: vi.fn(async () => []),
     createTransport: vi.fn((input) => {
       const transport = new FakeClaudeTransport(
         input.sessionId,
@@ -289,6 +295,7 @@ describe("Claude Code HarnessAdapter", () => {
           selectPermissionMode: true,
         },
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+        subagents: { observe: true, readTranscript: true },
       },
     });
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toEqual(first);
@@ -308,6 +315,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectPermissionMode: true,
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      subagents: { observe: true, readTranscript: true },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
     await expect(
@@ -1114,6 +1122,194 @@ describe("Claude Code HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toMatchObject({
       type: "turn.completed",
       outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("projects Claude Agent delegation as one common Subagent Item", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("delegate"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.delta("delegating", "assistant-before-agent");
+    await nextEvent(iterator);
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect implementation",
+      role: "Explore",
+      background: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "delegating" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "subagentDelegation",
+        operation: "spawn",
+        subagents: [
+          {
+            subagentId: "agent-1",
+            description: "Inspect implementation",
+            role: "Explore",
+            background: true,
+            status: "pending",
+          },
+        ],
+      },
+    });
+    transport.event({
+      type: "subagent.updated",
+      callId: "agent-1",
+      status: "running",
+      resultSummary: "Reading files",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ status: "running", resultSummary: "Reading files" }],
+      },
+    });
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      resultSummary: "Agent launched successfully",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ status: "completed", resultSummary: "Agent launched successfully" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", subagents: [{ status: "completed" }] },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("keeps an existing Agent running when SendMessage returns", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("send"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "send",
+      callId: "send-1",
+      nativeSubagentId: "native-agent-1",
+      description: "Analyze directory",
+      background: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "subagentDelegation", operation: "send" },
+    });
+    transport.event({
+      type: "subagent.completed",
+      callId: "send-1",
+      isError: false,
+      resultSummary: "Message sent successfully",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "subagents.replace", subagents: [{ status: "running" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", subagents: [{ status: "running" }] },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    await session.close();
+  });
+
+  it("publishes an autonomous Root Turn after background task completion", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Background task launched");
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.autonomousTurnHandler?.({
+      nativeTurnKey: "task-notification-1",
+      events: [
+        {
+          type: "text.delta",
+          messageId: "autonomous-assistant",
+          delta: "Background analysis result",
+        },
+        {
+          type: "message.completed",
+          messageId: "autonomous-assistant",
+          checkpointId: "autonomous-checkpoint",
+        },
+      ],
+      result: { status: "succeeded" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.autonomous.started", input: [] });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "agentMessage", text: "" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Background analysis result" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Background analysis result" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+      nativeTurnRef: { nativeTurnKey: "task-notification-1" },
     });
     await session.close();
   });
@@ -2279,8 +2475,10 @@ describe("Claude Code HarnessAdapter", () => {
       forkSession: async () => ({ sessionId: "derived-session" }),
       getSessionInfo: async () => ({ cwd: "/synthetic" }),
       readSessionMessages: async () => [],
+      readSubagentMessages: async () => [],
       createTransport: () => ({
         sessionId: "claude-id",
+        setAutonomousTurnHandler: () => undefined,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },

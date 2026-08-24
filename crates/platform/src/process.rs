@@ -327,29 +327,54 @@ impl ObservedProcessTree {
 
     pub(crate) fn observe(&mut self) -> Result<Vec<ProcessSnapshot>, PlatformError> {
         let snapshots = process_snapshots()?;
-        for expected in &mut self.known {
-            if let Some(current) = snapshots.iter().find(|process| process.id == expected.id) {
-                if !same_process_instance(expected, current) {
+        self.observe_snapshots(&snapshots)
+    }
+
+    fn observe_snapshots(
+        &mut self,
+        snapshots: &[ProcessSnapshot],
+    ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+        let current_root = snapshots.iter().find(|process| process.id == self.root.id);
+        if let Some(current) = current_root {
+            if !same_process_instance(&self.root, current) {
+                return Err(PlatformError::Invalid(format!(
+                    "PID {} was reused while observing the process tree",
+                    self.root.id
+                )));
+            }
+            if current.executable != self.root.executable {
+                if matches!(self.root_executable_policy, RootExecutablePolicy::Fixed) {
                     return Err(PlatformError::Invalid(format!(
-                        "PID {} was reused while observing the process tree",
-                        expected.id
+                        "Desktop root PID {} changed executable identity",
+                        self.root.id
                     )));
                 }
-                if expected.id == self.root.id && current.executable != self.root.executable {
-                    if matches!(self.root_executable_policy, RootExecutablePolicy::Fixed) {
-                        return Err(PlatformError::Invalid(format!(
-                            "Desktop root PID {} changed executable identity",
-                            expected.id
-                        )));
-                    }
-                    // A supervised root may legitimately exec into another executable while
-                    // retaining the same PID and start identity. Preserve the strict
-                    // process-instance check above, then follow that exact root across exec.
-                    self.root.executable = current.executable.clone();
-                }
-                *expected = current.clone();
+                // A supervised root may legitimately exec into another executable while
+                // retaining the same PID and start identity. Preserve the strict
+                // process-instance check above, then follow that exact root across exec.
+                self.root.executable = current.executable.clone();
             }
         }
+
+        // `known` is an ownership ledger for live descendants, not a permanent PID history.
+        // Once a descendant exits, a later unrelated process may legitimately receive the
+        // same PID. Forget retired or replaced descendants here; lineage discovery below may
+        // re-adopt a new process only when it is still attributable to the live owned tree.
+        // The root remains strict because it anchors the entire ownership boundary.
+        let mut refreshed = Vec::with_capacity(self.known.len());
+        for expected in std::mem::take(&mut self.known) {
+            if expected.id == self.root.id {
+                refreshed.push(current_root.cloned().unwrap_or(expected));
+                continue;
+            }
+            if let Some(current) = snapshots
+                .iter()
+                .find(|process| same_process_instance(&expected, process))
+            {
+                refreshed.push(current.clone());
+            }
+        }
+        self.known = refreshed;
         let known_ids = self
             .known
             .iter()
@@ -374,7 +399,7 @@ impl ObservedProcessTree {
         // lifecycle signal can reach it.
         #[cfg(target_os = "linux")]
         if self.process_group_id.is_some() {
-            let permitted = descendant_snapshots(&known_ids, &snapshots);
+            let permitted = descendant_snapshots(&known_ids, snapshots);
             if let Some(foreign) = observed.iter().find(|process| {
                 !self
                     .known
@@ -390,7 +415,7 @@ impl ObservedProcessTree {
                 )));
             }
         }
-        observed.extend(descendant_snapshots(&known_ids, &snapshots));
+        observed.extend(descendant_snapshots(&known_ids, snapshots));
         for process in observed {
             if !self.known.iter().any(|known| known.id == process.id) {
                 self.known.push(process);
@@ -855,11 +880,9 @@ mod windows_tests {
 mod tests {
     use std::path::Path;
 
-    #[cfg(target_os = "linux")]
-    use super::ObservedProcessTree;
     use super::{
-        ProcessSnapshot, desktop_process_tree_from_snapshots, desktop_root_snapshots,
-        process_snapshot, same_process_instance,
+        ObservedProcessTree, ProcessSnapshot, desktop_process_tree_from_snapshots,
+        desktop_root_snapshots, process_snapshot, same_process_instance,
     };
 
     fn snapshot(
@@ -923,6 +946,79 @@ mod tests {
         let reused = snapshot(10, 1, "/tmp/helper", 101);
         assert!(same_process_instance(&original, &execed));
         assert!(!same_process_instance(&original, &reused));
+    }
+
+    #[test]
+    fn forgets_a_retired_descendant_when_its_pid_is_reused() {
+        let mut root = snapshot(10, 1, "/tmp/root", 100);
+        root.process_group_id = 10;
+        let mut retired = snapshot(20, 10, "/tmp/transient-helper", 101);
+        retired.process_group_id = 10;
+        let mut tree = ObservedProcessTree::new_with_owned_processes(
+            root.clone(),
+            Some(10),
+            Some(100),
+            vec![retired],
+        );
+
+        let reused = snapshot(20, 1, "/tmp/unrelated", 200);
+        let observed = tree
+            .observe_snapshots(&[root, reused])
+            .expect("a reused retired descendant PID is no longer owned");
+
+        assert_eq!(
+            observed
+                .iter()
+                .map(|process| process.id)
+                .collect::<Vec<_>>(),
+            [10]
+        );
+        assert_eq!(
+            tree.known
+                .iter()
+                .map(|process| process.id)
+                .collect::<Vec<_>>(),
+            [10]
+        );
+    }
+
+    #[test]
+    fn still_rejects_reuse_of_the_owned_root_pid() {
+        let root = snapshot(10, 1, "/tmp/root", 100);
+        let mut tree = ObservedProcessTree::new(root);
+        let reused_root = snapshot(10, 1, "/tmp/unrelated", 200);
+
+        let error = tree
+            .observe_snapshots(&[reused_root])
+            .expect_err("the ownership root must retain its process identity");
+
+        assert!(error.to_string().contains("PID 10 was reused"));
+    }
+
+    #[test]
+    fn readopts_a_reused_descendant_pid_only_through_current_lineage() {
+        let mut root = snapshot(10, 1, "/tmp/root", 100);
+        root.process_group_id = 10;
+        let mut retired = snapshot(20, 10, "/tmp/old-helper", 101);
+        retired.process_group_id = 10;
+        let mut replacement = snapshot(20, 10, "/tmp/new-helper", 200);
+        replacement.process_group_id = 10;
+        let mut tree = ObservedProcessTree::new_with_owned_processes(
+            root.clone(),
+            Some(10),
+            Some(100),
+            vec![retired],
+        );
+
+        let observed = tree
+            .observe_snapshots(&[root, replacement.clone()])
+            .expect("a current descendant may reuse a retired descendant PID");
+
+        assert!(
+            observed
+                .iter()
+                .any(|process| same_process_instance(process, &replacement))
+        );
     }
 
     #[cfg(target_os = "linux")]

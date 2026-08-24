@@ -2470,14 +2470,28 @@ export class AppServerHost {
     const emittedAtMs = Date.now();
     for (const turn of child.turns) {
       if (typeof turn.id !== "string" || !Array.isArray(turn.items)) continue;
-      for (const item of turn.items) {
-        if (
-          !isRecord(item) ||
-          typeof item.id !== "string" ||
-          previousItems.get(item.id) === JSON.stringify(item)
-        ) {
-          continue;
-        }
+      const changedItems = turn.items.filter(
+        (item): item is JsonObject =>
+          isRecord(item) &&
+          typeof item.id === "string" &&
+          previousItems.get(item.id) !== JSON.stringify(item),
+      );
+      if (changedItems.length > 0) {
+        await this.#writer.json({
+          method: "turn/started",
+          emittedAtMs,
+          params: {
+            threadId,
+            turn: {
+              ...turn,
+              status: "inProgress",
+              completedAt: null,
+              durationMs: null,
+            },
+          },
+        });
+      }
+      for (const item of changedItems) {
         await this.#writer.json({
           method: "item/started",
           emittedAtMs,

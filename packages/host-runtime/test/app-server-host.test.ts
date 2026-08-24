@@ -388,15 +388,24 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     subagentPhase = "working";
     session.emitSubagentTranscriptChanged("native-agent-1");
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/completed") &&
-          messageParams(message).threadId === childThreadId &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution" &&
-          (messageParams(message).item as JsonObject | undefined)?.command === "pwd",
-      ),
-    ).resolves.toBeTruthy();
+    const childTurnStarted = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/started") &&
+        messageParams(message).threadId === childThreadId &&
+        ((messageParams(message).turn as JsonObject | undefined)?.status as string | undefined) ===
+          "inProgress",
+    );
+    const childTurnStartedIndex = fixture.collector.messages.indexOf(childTurnStarted);
+    const childCommandCompleted = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        messageParams(message).threadId === childThreadId &&
+        (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution" &&
+        (messageParams(message).item as JsonObject | undefined)?.command === "pwd",
+    );
+    expect(childTurnStartedIndex).toBeLessThan(
+      fixture.collector.messages.indexOf(childCommandCompleted),
+    );
     writeRequest(fixture.desktopInput, {
       id: 96,
       method: "thread/turns/list",

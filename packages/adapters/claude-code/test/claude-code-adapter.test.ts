@@ -450,6 +450,77 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
+  it("restores a Subagent prompt from Parent history when native Child history omits it", async () => {
+    const { adapter, dependencies, history } = fixture();
+    history.push(
+      {
+        type: "assistant",
+        uuid: "root-agent",
+        session_id: "source-session",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "agent-call",
+              name: "Agent",
+              input: { prompt: "inspect files", description: "Inspect files" },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "root-agent-result",
+        session_id: "source-session",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "agent-call",
+              content: "done\nagentId: native-agent-1 (use SendMessage to continue)",
+            },
+          ],
+        },
+      },
+    );
+    vi.mocked(dependencies.readSubagentMessages).mockResolvedValueOnce([
+      {
+        type: "assistant",
+        uuid: "subagent-answer",
+        session_id: "source-session",
+        message: { role: "assistant", content: [{ type: "text", text: "Inspection done" }] },
+      },
+    ]);
+
+    await expect(
+      adapter.subagents.readSnapshot({
+        parent: nativeSessionRefSchema.parse({
+          harnessId: "claude-code",
+          nativeSessionId: "source-session",
+          formatVersion: 1,
+        }),
+        nativeSubagentId: "native-agent-1",
+        cwd: "/synthetic",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ type: "text", text: "inspect files" }],
+            items: [{ item: { type: "agentMessage", text: "Inspection done" } }],
+          },
+        ],
+      },
+    });
+    expect(dependencies.readSessionMessages).toHaveBeenCalledWith({
+      cwd: "/synthetic",
+      sessionId: "source-session",
+    });
+  });
+
   it("reads and resumes Native history without starting a Transport until the next Turn", async () => {
     const { adapter, dependencies, history, transports } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({

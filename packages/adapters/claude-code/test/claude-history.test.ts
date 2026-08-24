@@ -251,11 +251,29 @@ describe("Claude history mapping", () => {
       sessionId,
       "native-agent-1",
     );
-    const first = mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1");
+    const parentHistory = [
+      message("assistant", "root-agent", [
+        {
+          type: "tool_use",
+          id: "agent-call",
+          name: "Agent",
+          input: { prompt: "inspect files", description: "Inspect files" },
+        },
+      ]),
+      message("user", "root-agent-result", [
+        {
+          type: "tool_result",
+          tool_use_id: "agent-call",
+          content: "done\nagentId: native-agent-1 (use SendMessage to continue)",
+        },
+      ]),
+    ];
+    const first = mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1", parentHistory);
     const repeated = mapClaudeSubagentSnapshot(
       structuredClone(history),
       sessionId,
       "native-agent-1",
+      structuredClone(parentHistory),
     );
 
     expect(withPrompt.turns[0]?.nativeTurnRef).toEqual(first.turns[0]?.nativeTurnRef);
@@ -264,7 +282,7 @@ describe("Claude history mapping", () => {
       turns: [
         {
           nativeTurnRef: { nativeTurnKey: "subagent-native-agent-1-initial" },
-          input: [],
+          input: [{ type: "text", text: "inspect files" }],
           items: [
             { item: { type: "reasoning", text: "check directory" } },
             {

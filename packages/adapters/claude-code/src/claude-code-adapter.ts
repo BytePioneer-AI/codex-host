@@ -1323,17 +1323,24 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
       try {
-        const messages = await this.#dependencies.readSubagentMessages({
-          cwd: input.cwd,
-          sessionId: input.parent.nativeSessionId,
-          nativeSubagentId: input.nativeSubagentId,
-        });
+        const [messages, parentMessages] = await Promise.all([
+          this.#dependencies.readSubagentMessages({
+            cwd: input.cwd,
+            sessionId: input.parent.nativeSessionId,
+            nativeSubagentId: input.nativeSubagentId,
+          }),
+          this.#dependencies.readSessionMessages({
+            cwd: input.cwd,
+            sessionId: input.parent.nativeSessionId,
+          }),
+        ]);
         return {
           ok: true,
           value: mapClaudeSubagentSnapshot(
             messages,
             input.parent.nativeSessionId,
             input.nativeSubagentId,
+            parentMessages,
           ),
         };
       } catch {

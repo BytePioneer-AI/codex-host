@@ -239,10 +239,52 @@ function toolResultOutput(block: Record<string, unknown> | undefined): string | 
   return text.length > 0 ? text : undefined;
 }
 
+function resultSubagentId(
+  value: Record<string, unknown>,
+  block: Record<string, unknown>,
+): string | undefined {
+  const nativeResult = value.tool_use_result;
+  if (isRecord(nativeResult)) {
+    const structured = nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id;
+    if (typeof structured === "string" && structured.length > 0) return structured;
+  }
+  const match = /agentId:\s*([A-Za-z0-9_-]+)/u.exec(textParts(block.content).join(""));
+  return match?.[1];
+}
+
+function subagentPrompt(values: unknown[], nativeSubagentId: string): string | undefined {
+  const toolUses = new Map<string, string>();
+  for (const value of values) {
+    if (!isRecord(value) || !isRecord(value.message) || !Array.isArray(value.message.content)) {
+      continue;
+    }
+    for (const block of value.message.content) {
+      if (!isRecord(block)) continue;
+      if (
+        block.type === "tool_use" &&
+        typeof block.id === "string" &&
+        (block.name === "Agent" || block.name === "Task") &&
+        isRecord(block.input) &&
+        typeof block.input.prompt === "string" &&
+        block.input.prompt.length > 0
+      ) {
+        toolUses.set(block.id, block.input.prompt);
+        continue;
+      }
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      if (resultSubagentId(value, block) === nativeSubagentId) {
+        return toolUses.get(block.tool_use_id);
+      }
+    }
+  }
+  return undefined;
+}
+
 export function mapClaudeSubagentSnapshot(
   values: unknown[],
   parentSessionId: string,
   nativeSubagentId: string,
+  parentValues: unknown[] = [],
 ): HostThreadSnapshot {
   const messages = conversationMessages(
     values.map((value) => (isRecord(value) ? { ...value, session_id: parentSessionId } : value)),
@@ -367,7 +409,13 @@ export function mapClaudeSubagentSnapshot(
             }),
           }
         : {}),
-      input: user ? visibleUserTextParts(user).map((text) => ({ type: "text", text })) : [],
+      input: user
+        ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
+        : turns.length === 0
+          ? [subagentPrompt(parentValues, nativeSubagentId)]
+              .filter((text): text is string => text !== undefined)
+              .map((text) => ({ type: "text", text }))
+          : [],
       items,
       outcome,
     });

@@ -45,6 +45,7 @@ function thinkingParts(value: unknown): string[] {
 }
 
 const localCommandRecordPattern = /^\s*<(local-command-(?:stdout|caveat))>[\s\S]*<\/\1>\s*$/u;
+const taskNotificationRecordPattern = /^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/u;
 const commandEnvelopePattern = /^\s*(?:<(command-(?:message|name|args))>[\s\S]*?<\/\1>\s*)+$/u;
 const modelCommandNamePattern = /<command-name>\s*\/model\s*<\/command-name>/u;
 
@@ -52,15 +53,23 @@ function isLocalCommandRecord(text: string): boolean {
   return localCommandRecordPattern.test(text);
 }
 
+function isTaskNotificationRecord(text: string): boolean {
+  return taskNotificationRecordPattern.test(text);
+}
+
 function isModelCommandEnvelope(text: string): boolean {
   return commandEnvelopePattern.test(text) && modelCommandNamePattern.test(text);
+}
+
+function isTaskNotificationOrigin(value: Record<string, unknown>): boolean {
+  return isRecord(value.origin) && value.origin.kind === "task-notification";
 }
 
 function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   if (message.type !== "user" || message.syntheticUser) return [];
   const parts = textParts(message.message.content);
   if (parts.some(isModelCommandEnvelope)) return [];
-  return parts.filter((part) => !isLocalCommandRecord(part));
+  return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
 }
 
 function conversationMessages(values: unknown[], sessionId: string): ClaudeHistoryMessage[] {
@@ -89,6 +98,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
         value.type === "user" &&
         (value.isSynthetic === true ||
           value.isMeta === true ||
+          isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
     });
   }
@@ -144,6 +154,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
+    const results = toolResultBlocks(turnMessages);
     const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
@@ -188,10 +199,10 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
               ]
             : [];
         }
-        const items = [];
+        const items: HostThreadSnapshot["turns"][number]["items"] = [];
         let projectedReasoning = false;
         let projectedText = false;
-        for (const block of content) {
+        for (const [blockIndex, block] of content.entries()) {
           if (!isRecord(block)) continue;
           if (block.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
             items.push({
@@ -203,7 +214,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
               outcome: itemOutcome(outcome),
             });
             projectedReasoning = true;
-          } else if (block.type === "text" && !projectedText && text.length > 0) {
+            continue;
+          }
+          if (block.type === "text" && !projectedText && text.length > 0) {
             items.push({
               item: {
                 type: "agentMessage" as const,
@@ -217,7 +230,59 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
               outcome: itemOutcome(outcome),
             });
             projectedText = true;
+            continue;
           }
+          if (
+            block.type !== "tool_use" ||
+            typeof block.id !== "string" ||
+            typeof block.name !== "string"
+          ) {
+            continue;
+          }
+          const result = results.get(block.id);
+          if (!result) continue;
+          const output = toolResultOutput(result);
+          const failed = result.is_error === true;
+          const toolOutcome: HostItemOutcome = failed
+            ? {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: `${block.name} failed`,
+                  retryable: false,
+                },
+              }
+            : { status: "succeeded" };
+          const itemId = hostItemIdSchema.parse(
+            `claude-item-v1-${message.uuid}-tool-${blockIndex}`,
+          );
+          if (
+            block.name === "Bash" &&
+            isRecord(block.input) &&
+            typeof block.input.command === "string"
+          ) {
+            items.push({
+              item: {
+                type: "commandExecution",
+                itemId,
+                command: block.input.command,
+                ...(output ? { output } : {}),
+              },
+              outcome: toolOutcome,
+            });
+            continue;
+          }
+          const argumentsResult = jsonValueSchema.safeParse(block.input);
+          items.push({
+            item: {
+              type: "toolExecution",
+              itemId,
+              toolName: block.name,
+              arguments: argumentsResult.success ? argumentsResult.data : null,
+              ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
+            },
+            outcome: toolOutcome,
+          });
         }
         return items;
       }),

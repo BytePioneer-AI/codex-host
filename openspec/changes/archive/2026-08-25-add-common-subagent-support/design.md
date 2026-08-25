@@ -55,6 +55,8 @@ A Claude Root `result` or Assistant `message.completed` only means the current n
 
 When Claude emits a complete Result while no requested Host Turn is active, the Transport buffers that native continuation and delivers one autonomous Turn to the Adapter instead of dropping it.
 
+Native history recovery uses the same classification: `origin.kind = task-notification` User records and complete `<task-notification>` wrappers are control-plane noise, not human Turns. After restart, their Root continuations remain on the preceding human Turn, and the XML is not projected as User input.
+
 The Adapter publishes bounded description, role, background flag, normalized state, and the bounded user-authored prompt supplied to `Agent`, `Task`, or `SendMessage`. Claude internal launch metadata, transcript paths, and SDK task records remain private. The public prompt lets the native collaboration UI explain what work was delegated without exposing Child execution details in the Parent transcript.
 
 ## Risks / Trade-offs

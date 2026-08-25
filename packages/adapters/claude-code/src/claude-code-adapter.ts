@@ -5,7 +5,6 @@ import {
   deleteSession as deleteClaudeSession,
   forkSession as forkClaudeNativeSession,
   getSessionInfo as getClaudeSessionInfo,
-  getSessionMessages,
   getSubagentMessages,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -68,6 +67,7 @@ import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./comman
 import { forkClaudeSession } from "./claude-fork.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
+import { readClaudeTranscript } from "./claude-transcript.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
   decodeClaudeModelRef,
@@ -1295,29 +1295,14 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#active = active;
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
-    this.#applyCompletedSubagents(turn.completedSubagents);
     this.#event({ type: "item.started", turnId, item });
     for (const event of turn.events) this.#handleTurnEvent(active, event);
     this.#finishResult(active, turn.result);
   }
 
   #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    this.#applyCompletedSubagents(turn.completedSubagents);
     for (const event of turn.events) this.#handleTurnEvent(active, event);
     this.#finishResult(active, turn.result);
-  }
-
-  #applyCompletedSubagents(
-    completed: ClaudeAutonomousTurn["completedSubagents"] | undefined,
-  ): void {
-    for (const subagent of completed ?? []) {
-      this.#settleBackgroundSubagent(
-        "completed",
-        subagent.nativeSubagentId,
-        subagent.callId,
-        subagent.resultSummary,
-      );
-    }
   }
 
   #settleBackgroundSubagent(
@@ -1600,7 +1585,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         if (!info) return undefined;
         return info.cwd ? { cwd: info.cwd } : {};
       },
-      readSessionMessages: ({ cwd, sessionId }) => getSessionMessages(sessionId, { dir: cwd }),
+      readSessionMessages: async ({ cwd, sessionId }) => {
+        const transcript = await readClaudeTranscript({
+          cwd,
+          environment: options.environment ?? process.env,
+          sessionId,
+        });
+        return transcript ?? [];
+      },
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
     };

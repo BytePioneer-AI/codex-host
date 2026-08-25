@@ -43,6 +43,7 @@ function thinkingParts(value: unknown): string[] {
 }
 
 const localCommandRecordPattern = /^\s*<(local-command-(?:stdout|caveat))>[\s\S]*<\/\1>\s*$/u;
+const taskNotificationRecordPattern = /^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/u;
 const commandEnvelopePattern = /^\s*(?:<(command-(?:message|name|args))>[\s\S]*?<\/\1>\s*)+$/u;
 const modelCommandNamePattern = /<command-name>\s*\/model\s*<\/command-name>/u;
 
@@ -50,15 +51,23 @@ function isLocalCommandRecord(text: string): boolean {
   return localCommandRecordPattern.test(text);
 }
 
+function isTaskNotificationRecord(text: string): boolean {
+  return taskNotificationRecordPattern.test(text);
+}
+
 function isModelCommandEnvelope(text: string): boolean {
   return commandEnvelopePattern.test(text) && modelCommandNamePattern.test(text);
+}
+
+function isTaskNotificationOrigin(value: Record<string, unknown>): boolean {
+  return isRecord(value.origin) && value.origin.kind === "task-notification";
 }
 
 function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   if (message.type !== "user" || message.syntheticUser) return [];
   const parts = textParts(message.message.content);
   if (parts.some(isModelCommandEnvelope)) return [];
-  return parts.filter((part) => !isLocalCommandRecord(part));
+  return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
 }
 
 function conversationMessages(values: unknown[], sessionId: string): ClaudeHistoryMessage[] {
@@ -87,6 +96,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
         value.type === "user" &&
         (value.isSynthetic === true ||
           value.isMeta === true ||
+          isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
     });
   }

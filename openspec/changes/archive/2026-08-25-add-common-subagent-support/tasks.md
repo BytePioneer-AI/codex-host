@@ -40,3 +40,4 @@
 - [x] 5.15 Occupy background spawns at Tool Use, settle by `callId` or `agentId`, and emit `turn.completed` only after a Root Segment ends with empty occupancy.
 - [x] 5.16 Keep a settled background Subagent occupying the user task until the native Session stops opening Segments, and observe Claude's live background task level.
 - [x] 5.17 Cancel continuation quiescence on Root text, reasoning, and Tool Use, not only on Segment start.
+- [x] 5.18 Omit Claude background `task-notification` User records from historical Host Turns and keep their Root continuations on the preceding human Turn.

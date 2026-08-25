@@ -585,11 +585,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) => requestId(message, 95));
     session.completeItem(itemId, { status: "succeeded" });
     session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(
-      fixture.collector.messages.some((message) => turnEvent(message, "turn/completed", turnId)),
-    ).toBe(false);
     expect(
       fixture.collector.messages.some((message) => threadStatus(message, threadId, "idle")),
     ).toBe(false);
@@ -610,9 +608,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
           (messageParams(message).item as JsonObject | undefined)?.type === "agentMessage" &&
           (messageParams(message).item as JsonObject | undefined)?.text === "Inspection complete",
       ),
-    ).resolves.toBeTruthy();
-    await expect(
-      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
     ).resolves.toBeTruthy();
     await expect(
       fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle")),

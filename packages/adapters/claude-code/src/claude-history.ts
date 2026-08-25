@@ -5,6 +5,8 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  hostItemIdSchema,
+  jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
@@ -219,6 +221,214 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
         }
         return items;
       }),
+      outcome,
+    });
+    index = end;
+  }
+  return { turns };
+}
+
+function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
+  const results = new Map<string, Record<string, unknown>>();
+  for (const message of messages) {
+    if (message.type !== "user" || !Array.isArray(message.message.content)) continue;
+    for (const block of message.message.content) {
+      if (
+        isRecord(block) &&
+        block.type === "tool_result" &&
+        typeof block.tool_use_id === "string"
+      ) {
+        results.set(block.tool_use_id, block);
+      }
+    }
+  }
+  return results;
+}
+
+function toolResultOutput(block: Record<string, unknown> | undefined): string | undefined {
+  if (!block) return undefined;
+  const text = textParts(block.content).join("");
+  return text.length > 0 ? text : undefined;
+}
+
+function resultSubagentId(
+  value: Record<string, unknown>,
+  block: Record<string, unknown>,
+): string | undefined {
+  const nativeResult = value.tool_use_result;
+  if (isRecord(nativeResult)) {
+    const structured = nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id;
+    if (typeof structured === "string" && structured.length > 0) return structured;
+  }
+  const match = /agentId:\s*([A-Za-z0-9_-]+)/u.exec(textParts(block.content).join(""));
+  return match?.[1];
+}
+
+function subagentPrompt(values: unknown[], nativeSubagentId: string): string | undefined {
+  const toolUses = new Map<string, string>();
+  for (const value of values) {
+    if (!isRecord(value) || !isRecord(value.message) || !Array.isArray(value.message.content)) {
+      continue;
+    }
+    for (const block of value.message.content) {
+      if (!isRecord(block)) continue;
+      if (
+        block.type === "tool_use" &&
+        typeof block.id === "string" &&
+        (block.name === "Agent" || block.name === "Task") &&
+        isRecord(block.input) &&
+        typeof block.input.prompt === "string" &&
+        block.input.prompt.length > 0
+      ) {
+        toolUses.set(block.id, block.input.prompt);
+        continue;
+      }
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      if (resultSubagentId(value, block) === nativeSubagentId) {
+        return toolUses.get(block.tool_use_id);
+      }
+    }
+  }
+  return undefined;
+}
+
+export function mapClaudeSubagentSnapshot(
+  values: unknown[],
+  parentSessionId: string,
+  nativeSubagentId: string,
+  parentValues: unknown[] = [],
+): HostThreadSnapshot {
+  const messages = conversationMessages(
+    values.map((value) => (isRecord(value) ? { ...value, session_id: parentSessionId } : value)),
+    parentSessionId,
+  );
+  const turns: HostThreadSnapshot["turns"] = [];
+  for (let index = 0; index < messages.length;) {
+    const first = messages[index];
+    if (!first) break;
+    const user = isHumanUser(first) ? first : null;
+    if (!user && turns.length > 0) {
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
+    const turnMessages = messages.slice(index, end);
+    const results = toolResultBlocks(turnMessages);
+    const outcome: HistoricalTurnOutcome = {
+      status: "unknown",
+      reason: "Claude Subagent history does not include complete Result terminal evidence",
+    };
+    const items: HostThreadSnapshot["turns"][number]["items"] = [];
+    for (const message of turnMessages) {
+      if (message.type !== "assistant") continue;
+      const content = Array.isArray(message.message.content)
+        ? message.message.content
+        : [{ type: "text", text: message.message.content }];
+      for (let blockIndex = 0; blockIndex < content.length; blockIndex += 1) {
+        const block = content[blockIndex];
+        if (!isRecord(block)) continue;
+        const itemId = hostItemIdSchema.parse(
+          `claude-subagent-item-v2-${nativeSubagentId}-${message.uuid}-${blockIndex}`,
+        );
+        if (block.type === "thinking" && typeof block.thinking === "string") {
+          if (block.thinking.length > 0) {
+            items.push({
+              item: { type: "reasoning", itemId, text: block.thinking },
+              outcome: itemOutcome(outcome),
+            });
+          }
+          continue;
+        }
+        if (block.type === "text" && typeof block.text === "string") {
+          if (block.text.length > 0) {
+            items.push({
+              item: { type: "agentMessage", itemId, text: block.text },
+              outcome: itemOutcome(outcome),
+            });
+          }
+          continue;
+        }
+        if (
+          block.type !== "tool_use" ||
+          typeof block.id !== "string" ||
+          typeof block.name !== "string"
+        ) {
+          continue;
+        }
+        const result = results.get(block.id);
+        if (!result) continue;
+        const output = toolResultOutput(result);
+        const failed = result.is_error === true;
+        const toolOutcome: HostItemOutcome = failed
+          ? {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: `${block.name} failed`,
+                retryable: false,
+              },
+            }
+          : { status: "succeeded" };
+        if (
+          block.name === "Bash" &&
+          isRecord(block.input) &&
+          typeof block.input.command === "string"
+        ) {
+          items.push({
+            item: {
+              type: "commandExecution",
+              itemId,
+              command: block.input.command,
+              ...(output ? { output } : {}),
+              exitCode: result ? (failed ? 1 : 0) : null,
+            },
+            outcome: toolOutcome,
+          });
+          continue;
+        }
+        const argumentsResult = jsonValueSchema.safeParse(block.input);
+        items.push({
+          item: {
+            type: "toolExecution",
+            itemId,
+            toolName: block.name,
+            arguments: argumentsResult.success ? argumentsResult.data : null,
+            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
+          },
+          outcome: toolOutcome,
+        });
+      }
+    }
+    const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
+    turns.push({
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: claudeCodeHarnessId,
+        nativeSessionId: parentSessionId,
+        nativeTurnKey:
+          turns.length === 0
+            ? `subagent-${nativeSubagentId}-initial`
+            : `subagent-turn-${user?.uuid ?? index}`,
+        formatVersion: 1,
+      }),
+      ...(checkpointMessage
+        ? {
+            checkpoint: nativeCheckpointRefSchema.parse({
+              harnessId: claudeCodeHarnessId,
+              nativeSessionId: parentSessionId,
+              checkpointId: checkpointMessage.uuid,
+              formatVersion: 1,
+            }),
+          }
+        : {}),
+      input: user
+        ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
+        : turns.length === 0
+          ? [subagentPrompt(parentValues, nativeSubagentId)]
+              .filter((text): text is string => text !== undefined)
+              .map((text) => ({ type: "text", text }))
+          : [],
+      items,
       outcome,
     });
     index = end;

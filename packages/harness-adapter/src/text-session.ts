@@ -317,19 +317,41 @@ export interface HostFileChangeItem {
   changes: HostFileChange[];
 }
 
+export type HostSubagentStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
+
+export interface HostSubagentState {
+  subagentId: string;
+  nativeSubagentId?: string;
+  description: string;
+  role?: string;
+  background: boolean;
+  status: HostSubagentStatus;
+  resultSummary?: string;
+}
+
+export interface HostSubagentDelegationItem {
+  type: "subagentDelegation";
+  itemId: HostItemId;
+  operation: "spawn" | "send";
+  prompt?: string;
+  subagents: HostSubagentState[];
+}
+
 export type HostItem =
   | HostAgentMessageItem
   | HostReasoningItem
   | HostContextCompactionItem
   | HostCommandExecutionItem
   | HostToolExecutionItem
-  | HostFileChangeItem;
+  | HostFileChangeItem
+  | HostSubagentDelegationItem;
 
 export type HostItemUpdate =
   | { type: "text.append"; text: string }
   | { type: "output.append"; text: string }
   | { type: "output.replace"; output: HostToolOutput }
-  | { type: "fileChanges.replace"; changes: HostFileChange[] };
+  | { type: "fileChanges.replace"; changes: HostFileChange[] }
+  | { type: "subagents.replace"; subagents: HostSubagentState[] };
 
 export type HostItemOutcome =
   | { status: "succeeded" }
@@ -378,9 +400,27 @@ export interface SessionUsageChangedEvent {
   observedForTurnId?: HostTurnId;
 }
 
+export interface SubagentStateChangedEvent {
+  type: "subagent.state.changed";
+  nativeSubagentId: string;
+  status: HostSubagentStatus;
+  resultSummary?: string;
+}
+
+export interface SubagentTranscriptChangedEvent {
+  type: "subagent.transcript.changed";
+  nativeSubagentId: string;
+}
+
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
+}
+
+export interface AutonomousTurnStartedEvent {
+  type: "turn.autonomous.started";
+  turnId: HostTurnId;
+  input: HostTextInput[];
 }
 
 export interface ItemStartedEvent {
@@ -424,7 +464,10 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | SubagentStateChangedEvent
+  | SubagentTranscriptChangedEvent
   | TurnStartedEvent
+  | AutonomousTurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
@@ -455,8 +498,17 @@ export interface HarnessSession {
   close(): Promise<void>;
 }
 
+export interface HarnessSubagentCapability {
+  readSnapshot(input: {
+    parent: NativeSessionRef;
+    nativeSubagentId: string;
+    cwd: string;
+  }): Promise<HarnessResult<HostThreadSnapshot>>;
+}
+
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  readonly subagents?: HarnessSubagentCapability;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

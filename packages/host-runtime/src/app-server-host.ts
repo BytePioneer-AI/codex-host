@@ -7,6 +7,7 @@ import type {
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
+  HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
@@ -72,6 +73,12 @@ import {
   type OfficialAppServerConnection,
 } from "./official-app-server-connection.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+
+const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -380,6 +387,8 @@ export class AppServerHost {
   #officialRequestBroker: OfficialRequestBroker;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
+  #subagentThreadStatuses = new Map<string, "active" | "idle">();
+  #runningSubagentsByParent = new Map<string, Set<string>>();
   #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
@@ -2226,6 +2235,48 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "item.started" && event.item.type === "subagentDelegation") {
+      event = {
+        ...event,
+        item: {
+          ...event.item,
+          subagents: await Promise.all(
+            event.item.subagents.map((subagent) =>
+              this.#materializeSubagent(thread, subagent).catch(() => subagent),
+            ),
+          ),
+        },
+      };
+    }
+    if (event.type === "item.updated" && event.update.type === "subagents.replace") {
+      event = {
+        ...event,
+        update: {
+          ...event.update,
+          subagents: await Promise.all(
+            event.update.subagents.map((subagent) =>
+              this.#materializeSubagent(thread, subagent).catch(() => subagent),
+            ),
+          ),
+        },
+      };
+    }
+    if (event.type === "item.completed" && event.snapshot.item.type === "subagentDelegation") {
+      event = {
+        ...event,
+        snapshot: {
+          ...event.snapshot,
+          item: {
+            ...event.snapshot.item,
+            subagents: await Promise.all(
+              event.snapshot.item.subagents.map((subagent) =>
+                this.#materializeSubagent(thread, subagent).catch(() => subagent),
+              ),
+            ),
+          },
+        },
+      };
+    }
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {
@@ -2262,9 +2313,57 @@ export class AppServerHost {
       if (turnId) await this.#writeExternalUsage(thread, turnId);
       return;
     }
+    if (event.type === "subagent.transcript.changed") {
+      const nativeSubagentId = event.nativeSubagentId;
+      const record = (await this.#repository.list()).find(
+        (candidate) =>
+          candidate.subagent?.parentHostThreadId === thread.id &&
+          candidate.subagent.nativeSubagentId === nativeSubagentId,
+      );
+      if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
+      return;
+    }
+    if (event.type === "subagent.state.changed") {
+      const nativeSubagentId = event.nativeSubagentId;
+      const record = (await this.#repository.list()).find(
+        (candidate) =>
+          candidate.subagent?.parentHostThreadId === thread.id &&
+          candidate.subagent.nativeSubagentId === nativeSubagentId,
+      );
+      if (!record) return;
+      const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
+      this.#trackRunningSubagent(thread.id, record.hostThreadId, status);
+      await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
+        await this.#setThreadStatus(thread, { type: "idle" });
+      }
+      return;
+    }
     if (event.type === "session.faulted") {
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      return;
+    }
+
+    if (event.type === "turn.autonomous.started") {
+      if (thread.running || thread.activeTurnId) {
+        throw new Error("External autonomous Turn started while another Turn is active");
+      }
+      const projection: ProjectedTurn = {
+        projector: new CodexTurnProjector({
+          threadId: thread.id,
+          turnId: event.turnId,
+          cwd: thread.cwd,
+          startedAtMs: Date.now(),
+        }),
+      };
+      thread.running = true;
+      thread.activeTurnId = event.turnId;
+      thread.projectedTurns.set(event.turnId, projection);
+      thread.responseGates.set(event.turnId, {
+        promise: Promise.resolve(),
+        resolve: () => undefined,
+      });
       return;
     }
 
@@ -2321,8 +2420,197 @@ export class AppServerHost {
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {
-      await this.#setThreadStatus(thread, { type: "idle" });
+      await this.#setThreadStatus(
+        thread,
+        this.#hasRunningSubagents(thread.id)
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" },
+      );
     }
+  }
+
+  async #materializeSubagent(
+    parent: ExternalThread,
+    subagent: HostSubagentState,
+  ): Promise<HostSubagentState> {
+    if (!subagent.nativeSubagentId || !parent.record.nativeSessionRef) return subagent;
+    const status =
+      subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
+    const records = await this.#repository.list();
+    const existing = records.find(
+      (record) =>
+        record.subagent?.parentHostThreadId === parent.id &&
+        record.subagent.nativeSubagentId === subagent.nativeSubagentId,
+    );
+    if (existing) {
+      this.#trackRunningSubagent(parent.id, existing.hostThreadId, status);
+      await this.#setSubagentThreadStatus(existing.hostThreadId, status);
+      return { ...subagent, subagentId: existing.hostThreadId };
+    }
+    const recordInput = createExternalThreadRecordInput({
+      harnessId: parent.record.harnessId,
+      cwd: parent.cwd,
+      title: subagent.description,
+      transportModelId: parent.transportModelId,
+      ephemeral: false,
+      historyMode: "paginated",
+      subagent: {
+        parentHostThreadId: parent.id,
+        nativeSubagentId: subagent.nativeSubagentId,
+        ...(subagent.role ? { role: subagent.role } : {}),
+      },
+    });
+    let record = await this.#repository.createProvisional(recordInput);
+    record = await this.#repository.commitNative(
+      record.hostThreadId,
+      parent.record.nativeSessionRef,
+    );
+    const thread = externalThreadValue({
+      record,
+      turns: [],
+      sessionId: parent.sessionId,
+      running: status === "active",
+    });
+    this.#subagentThreadStatuses.set(record.hostThreadId, status);
+    this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
+    await this.#writer.json({
+      method: "thread/started",
+      emittedAtMs: Date.now(),
+      params: { thread },
+    });
+    return { ...subagent, subagentId: record.hostThreadId };
+  }
+
+  async #refreshOpenSubagentThread(threadId: string, terminal = true): Promise<void> {
+    const child = this.#externalRuntime.get(threadId);
+    if (!child) return;
+    const previousItems = new Map(
+      child.turns.flatMap((turn) =>
+        Array.isArray(turn.items)
+          ? turn.items.flatMap((item) =>
+              isRecord(item) && typeof item.id === "string"
+                ? ([[item.id, JSON.stringify(item)]] as const)
+                : [],
+            )
+          : [],
+      ),
+    );
+    const refreshed = await this.#refreshExternalThread(child);
+    if (refreshed) {
+      this.#diagnose(refreshed.message);
+      return;
+    }
+    const emittedAtMs = Date.now();
+    for (const turn of child.turns) {
+      if (typeof turn.id !== "string" || !Array.isArray(turn.items)) continue;
+      const changedItems = turn.items.filter(
+        (item): item is JsonObject =>
+          isRecord(item) &&
+          typeof item.id === "string" &&
+          previousItems.get(item.id) !== JSON.stringify(item),
+      );
+      if (changedItems.length > 0) {
+        await this.#writer.json({
+          method: "turn/started",
+          emittedAtMs,
+          params: {
+            threadId,
+            turn: {
+              ...turn,
+              status: "inProgress",
+              completedAt: null,
+              durationMs: null,
+            },
+          },
+        });
+      }
+      for (const item of changedItems) {
+        await this.#writer.json({
+          method: "item/started",
+          emittedAtMs,
+          params: {
+            threadId,
+            turnId: turn.id,
+            startedAtMs: emittedAtMs,
+            item,
+          },
+        });
+        await this.#writer.json({
+          method: "item/completed",
+          emittedAtMs,
+          params: {
+            threadId,
+            turnId: turn.id,
+            completedAtMs: emittedAtMs,
+            item,
+          },
+        });
+      }
+      if (terminal) {
+        await this.#writer.json({
+          method: "turn/completed",
+          emittedAtMs,
+          params: { threadId, turn },
+        });
+      }
+    }
+  }
+
+  #trackRunningSubagent(
+    parentThreadId: string,
+    childThreadId: string,
+    status: "active" | "idle",
+  ): void {
+    let running = this.#runningSubagentsByParent.get(parentThreadId);
+    if (status === "active") {
+      if (!running) {
+        running = new Set();
+        this.#runningSubagentsByParent.set(parentThreadId, running);
+      }
+      running.add(childThreadId);
+      return;
+    }
+    if (!running) return;
+    running.delete(childThreadId);
+    if (running.size === 0) this.#runningSubagentsByParent.delete(parentThreadId);
+  }
+
+  #hasRunningSubagents(parentThreadId: string): boolean {
+    return (this.#runningSubagentsByParent.get(parentThreadId)?.size ?? 0) > 0;
+  }
+
+  async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
+    const previousStatus = this.#subagentThreadStatuses.get(threadId);
+    const child = this.#externalRuntime.get(threadId);
+    if (child) {
+      child.running = status === "active";
+      if (status === "idle") child.historyHydrated = false;
+      child.thread = externalThreadValue({
+        record: child.record,
+        turns: child.turns,
+        sessionId: child.sessionId,
+        running: child.running,
+      });
+    }
+    if (status === "idle" && previousStatus === "active") {
+      for (const [index, waitMs] of SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.entries()) {
+        if (waitMs > 0) await delay(waitMs);
+        await this.#refreshOpenSubagentThread(
+          threadId,
+          index === SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.length - 1,
+        );
+      }
+    }
+    if (previousStatus === status) return;
+    this.#subagentThreadStatuses.set(threadId, status);
+    await this.#writer.json({
+      method: "thread/status/changed",
+      emittedAtMs: Date.now(),
+      params: {
+        threadId,
+        status: status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" },
+      },
+    });
   }
 
   async #projectApproval(

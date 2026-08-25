@@ -14,12 +14,14 @@ import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
-import { ClaudeNativeTurnAccumulator } from "./native-message.js";
+import { ClaudeNativeTurnAccumulator, parseClaudeTaskNotification } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
+  ClaudeAutonomousTurn,
+  ClaudeIdleTurnHandler,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
@@ -109,6 +111,20 @@ export interface ClaudeSdkModelInspectorOptions {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function taskNotificationSubagent(message: unknown): {
+  nativeSubagentId: string;
+  callId?: string;
+  resultSummary?: string;
+} | null {
+  const settled = parseClaudeTaskNotification(message);
+  if (!settled) return null;
+  return {
+    nativeSubagentId: settled.nativeSubagentId,
+    ...(settled.callId ? { callId: settled.callId } : {}),
+    ...(settled.resultSummary ? { resultSummary: settled.resultSummary } : {}),
+  };
 }
 
 export function allowsDangerouslySkipPermissions(
@@ -328,6 +344,20 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #queryFactory: typeof query;
   #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
+  #autonomous: {
+    accumulator: ClaudeNativeTurnAccumulator;
+    events: ClaudeTurnEvent[];
+    nativeTurnKey: string | null;
+    completedSubagents: Array<{
+      nativeSubagentId: string;
+      callId?: string;
+      resultSummary?: string;
+    }>;
+  } | null = null;
+  #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  #idleHandler: ClaudeIdleTurnHandler | null = null;
+  #idleLive = false;
+  #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
@@ -348,6 +378,19 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#permissionMode = options.permissionMode;
     this.#queryFactory = options.queryFactory ?? query;
     this.#thinkingOptionId = parseClaudeThinkingOptionId(options.thinkingOptionId);
+  }
+
+  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+    this.#autonomousTurnHandler = handler;
+  }
+
+  setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
+    this.#idleHandler = handler;
+  }
+
+  setIdleLive(live: boolean): void {
+    this.#idleLive = live;
+    if (!live) this.#idleAccumulator = null;
   }
 
   async start(): Promise<void> {
@@ -375,6 +418,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,
+        forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
           ...this.#environment,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
@@ -658,6 +702,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#query = null;
     const active = this.#active;
     this.#active = null;
+    this.#autonomous = null;
+    this.#idleAccumulator = null;
+    this.#idleLive = false;
     active?.reject(new Error("Claude SDK transport closed"));
   }
 
@@ -670,13 +717,73 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           this.#onPermissionModeChanged(permissionMode);
         }
         const active = this.#active;
-        if (!active) continue;
-        const interpreted = active.accumulator.consume(message);
-        for (const event of interpreted.events) active.onEvent(event);
+        if (active) {
+          const interpreted = active.accumulator.consume(message);
+          for (const event of interpreted.events) active.onEvent(event);
+          if (interpreted.terminal) {
+            this.#closeInteractions(active, "superseded");
+            this.#active = null;
+            active.resolve(interpreted.terminal);
+          }
+          continue;
+        }
+        if (this.#idleLive && this.#idleHandler) {
+          const idle =
+            this.#idleAccumulator ?? (this.#idleAccumulator = new ClaudeNativeTurnAccumulator());
+          const completedSubagent = taskNotificationSubagent(message);
+          if (completedSubagent) {
+            this.#idleHandler.onEvent({
+              type: "subagent.settled",
+              nativeSubagentId: completedSubagent.nativeSubagentId,
+              status: "completed",
+              ...(completedSubagent.callId ? { callId: completedSubagent.callId } : {}),
+              ...(completedSubagent.resultSummary
+                ? { resultSummary: completedSubagent.resultSummary }
+                : {}),
+            });
+          }
+          const interpreted = idle.consume(message);
+          for (const event of interpreted.events) this.#idleHandler.onEvent(event);
+          if (interpreted.terminal) {
+            this.#idleAccumulator = null;
+            this.#idleHandler.onTerminal(interpreted.terminal);
+          }
+          continue;
+        }
+        if (!this.#autonomousTurnHandler) continue;
+        const autonomous =
+          this.#autonomous ??
+          (this.#autonomous = {
+            accumulator: new ClaudeNativeTurnAccumulator(),
+            events: [],
+            nativeTurnKey: null,
+            completedSubagents: [],
+          });
+        if (
+          autonomous.nativeTurnKey === null &&
+          isRecord(message) &&
+          message.type === "user" &&
+          (message.parent_tool_use_id === null || message.parent_tool_use_id === undefined) &&
+          typeof message.uuid === "string" &&
+          message.uuid.length > 0
+        ) {
+          autonomous.nativeTurnKey = message.uuid;
+        }
+        const completedSubagent = taskNotificationSubagent(message);
+        if (completedSubagent) autonomous.completedSubagents.push(completedSubagent);
+        const interpreted = autonomous.accumulator.consume(message);
+        autonomous.events.push(...interpreted.events);
         if (interpreted.terminal) {
-          this.#closeInteractions(active, "superseded");
-          this.#active = null;
-          active.resolve(interpreted.terminal);
+          this.#autonomous = null;
+          const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;
+          this.#autonomousTurnHandler({
+            nativeTurnKey,
+            events: autonomous.events,
+            result: interpreted.terminal,
+            ...(autonomous.completedSubagents.length > 0
+              ? { completedSubagents: autonomous.completedSubagents }
+              : {}),
+          });
         }
       }
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");

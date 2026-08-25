@@ -310,6 +310,7 @@ export class MappingStore {
       ephemeral: input.ephemeral,
       historyMode: input.historyMode,
       ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+      ...(input.subagent ? { subagent: input.subagent } : {}),
       turnMappings: [],
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -672,7 +673,7 @@ export class MappingStore {
     if (duplicateCreate && duplicateCreate !== replacing) {
       throw new MappingStoreError("DUPLICATE_CREATE_REQUEST", "Create request is already stored");
     }
-    if (record.nativeSessionRef) {
+    if (record.nativeSessionRef && !record.subagent) {
       const duplicateSession = this.#nativeSessions.get(nativeSessionKey(record.nativeSessionRef));
       if (duplicateSession && duplicateSession !== replacing) {
         throw new MappingStoreError("DUPLICATE_NATIVE_SESSION", "Native Session is already mapped");
@@ -698,7 +699,7 @@ export class MappingStore {
     for (const record of this.#records.values()) {
       this.#validateGlobal(record, record.hostThreadId);
       this.#createRequests.set(record.createRequestId, record.hostThreadId);
-      if (record.nativeSessionRef) {
+      if (record.nativeSessionRef && !record.subagent) {
         this.#nativeSessions.set(nativeSessionKey(record.nativeSessionRef), record.hostThreadId);
       }
       for (const mapping of record.turnMappings) {

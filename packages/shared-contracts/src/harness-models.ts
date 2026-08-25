@@ -156,6 +156,19 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict(),
     history: harnessHistoryCapabilitiesSchema,
+    subagents: z
+      .object({
+        observe: z.boolean(),
+        readTranscript: z.boolean(),
+      })
+      .strict()
+      .optional(),
+    autonomousTurns: z
+      .object({
+        observe: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

@@ -10,7 +10,7 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
-import type { ClaudeTurnEvent } from "../src/transport.js";
+import type { ClaudeAutonomousTurn, ClaudeTurnEvent } from "../src/transport.js";
 
 class FakeQuery {
   readonly initializationResult = vi.fn(async () => ({
@@ -413,6 +413,221 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
       },
     ]);
     expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+
+  it("publishes Agent delegation while hiding nested Subagent execution", async () => {
+    const value = fixture();
+    await value.transport.start();
+    expect(options(value).forwardSubagentText).toBe(true);
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "delegate",
+      "00000000-0000-4000-8000-000000000034",
+      (event) => events.push(event),
+    );
+
+    value.fakeQuery.push({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000035",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      message: {
+        id: "root-agent-message",
+        content: [
+          {
+            type: "tool_use",
+            id: "agent-1",
+            name: "Agent",
+            input: {
+              description: "Inspect implementation",
+              subagent_type: "Explore",
+              run_in_background: true,
+              prompt: "private prompt",
+            },
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-1",
+      tool_use_id: "agent-1",
+      description: "Inspect implementation",
+      subagent_type: "Explore",
+      uuid: "00000000-0000-4000-8000-000000000036",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000037",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: "agent-1",
+      message: {
+        id: "nested-message",
+        content: [
+          { type: "text", text: "nested text" },
+          { type: "tool_use", id: "nested-read", name: "Read", input: {} },
+        ],
+      },
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000038",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: "agent-1",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "nested-read",
+            content: "nested contents",
+            is_error: false,
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000039",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: "agent-1",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "agent-1",
+            content: "Agent launched successfully",
+            is_error: false,
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    expect(events).toEqual([
+      {
+        type: "subagent.started",
+        operation: "spawn",
+        callId: "agent-1",
+        description: "Inspect implementation",
+        prompt: "private prompt",
+        role: "Explore",
+        background: true,
+      },
+      {
+        type: "message.completed",
+        messageId: "root-agent-message",
+        checkpointId: "00000000-0000-4000-8000-000000000035",
+      },
+      {
+        type: "subagent.updated",
+        callId: "agent-1",
+        status: "running",
+        description: "Inspect implementation",
+        role: "Explore",
+        nativeSubagentId: "task-1",
+      },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
+      { type: "subagent.transcript.changed", callId: "agent-1" },
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        resultSummary: "Agent launched successfully",
+      },
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport autonomous task continuation", () => {
+  it("publishes Root output produced after a background task notification", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    await value.transport.start();
+
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000040",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content:
+          "<task-notification><task-id>native-agent-1</task-id><tool-use-id>send-1</tool-use-id><summary>Analysis complete</summary></task-notification>",
+      },
+    } as unknown as SDKMessage);
+    pushPartialText(
+      value.fakeQuery,
+      "Background analysis result",
+      "00000000-0000-4000-8000-000000000041",
+    );
+    pushAssistantText(
+      value.fakeQuery,
+      "Background analysis result",
+      "00000000-0000-4000-8000-000000000042",
+    );
+    completeTurn(value.fakeQuery);
+
+    await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    expect(autonomous[0]).toMatchObject({
+      nativeTurnKey: "00000000-0000-4000-8000-000000000040",
+      result: { status: "succeeded" },
+      completedSubagents: [
+        { nativeSubagentId: "native-agent-1", resultSummary: "Analysis complete" },
+      ],
+      events: [
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "native-agent-1",
+          status: "completed",
+          resultSummary: "Analysis complete",
+        },
+        { type: "text.delta", delta: "Background analysis result" },
+        { type: "message.completed" },
+      ],
+    });
+    await value.transport.close();
+  });
+
+  it("parses a task-notification whose user content is text blocks", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    await value.transport.start();
+
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000050",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<task-notification><task-id>a78414260bd2f9554</task-id><status>completed</status><summary>Agent finished</summary></task-notification>",
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    pushAssistantText(value.fakeQuery, "Continuation", "00000000-0000-4000-8000-000000000051");
+    completeTurn(value.fakeQuery);
+
+    await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    expect(autonomous[0]?.completedSubagents).toEqual([
+      { nativeSubagentId: "a78414260bd2f9554", resultSummary: "Agent finished" },
+    ]);
     await value.transport.close();
   });
 });

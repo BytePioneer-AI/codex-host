@@ -90,6 +90,7 @@ function includesExternalRecord(
   query: DecodedThreadListRequest,
 ): boolean {
   if (record.state !== "ready" || !record.nativeSessionRef) return false;
+  if (record.subagent) return false;
   if (record.archived !== query.archived) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;
   if (

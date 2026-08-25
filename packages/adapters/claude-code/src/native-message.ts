@@ -9,6 +9,9 @@ import type {
 
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
+const SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
+const SUBAGENT_DESCRIPTION_LIMIT = 500;
+const SUBAGENT_SUMMARY_LIMIT = 2_000;
 
 type ClaudeNativeEvent = Exclude<
   ClaudeTurnEvent,
@@ -21,12 +24,30 @@ interface AssistantMessageState {
   text: string;
 }
 
+interface ActiveNativeTool {
+  name: string;
+  subagent: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nativeUuid(message: Record<string, unknown>): string | null {
   return typeof message.uuid === "string" && message.uuid.length > 0 ? message.uuid : null;
+}
+
+function parentToolUseId(message: Record<string, unknown>): string | null {
+  return typeof message.parent_tool_use_id === "string" && message.parent_tool_use_id.length > 0
+    ? message.parent_tool_use_id
+    : null;
+}
+
+function assistantNativeMessageId(message: Record<string, unknown>): string | null {
+  if (!isRecord(message.message)) return null;
+  return typeof message.message.id === "string" && message.message.id.length > 0
+    ? message.message.id
+    : null;
 }
 
 function assistantContent(message: Record<string, unknown>): unknown[] | null {
@@ -52,6 +73,48 @@ function assistantError(message: unknown): string | null {
     : null;
 }
 
+function boundedString(value: unknown, limit: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.slice(0, limit);
+}
+
+function subagentDescription(argumentsValue: unknown, toolName: string): string {
+  if (!isRecord(argumentsValue)) return `${toolName} delegation`;
+  return (
+    boundedString(argumentsValue.description, SUBAGENT_DESCRIPTION_LIMIT) ??
+    boundedString(argumentsValue.summary, SUBAGENT_DESCRIPTION_LIMIT) ??
+    boundedString(argumentsValue.name, SUBAGENT_DESCRIPTION_LIMIT) ??
+    `${toolName} delegation`
+  );
+}
+
+function subagentPrompt(argumentsValue: unknown): string | undefined {
+  if (!isRecord(argumentsValue)) return undefined;
+  return boundedString(argumentsValue.prompt ?? argumentsValue.message, SUBAGENT_SUMMARY_LIMIT);
+}
+
+function subagentRole(argumentsValue: unknown): string | undefined {
+  if (!isRecord(argumentsValue)) return undefined;
+  return boundedString(
+    argumentsValue.subagent_type ?? argumentsValue.agent_type,
+    SUBAGENT_DESCRIPTION_LIMIT,
+  );
+}
+
+function subagentBackground(argumentsValue: unknown): boolean {
+  return isRecord(argumentsValue) && argumentsValue.run_in_background === true;
+}
+
+function targetedSubagentId(argumentsValue: unknown): string | undefined {
+  if (!isRecord(argumentsValue)) return undefined;
+  return boundedString(
+    argumentsValue.to ?? argumentsValue.recipient ?? argumentsValue.agentId,
+    SUBAGENT_DESCRIPTION_LIMIT,
+  );
+}
+
 function includesAuthenticationFailure(
   message: Record<string, unknown>,
   errors: string[],
@@ -68,6 +131,34 @@ function includesAuthenticationFailure(
 
 function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
   return { status: "failed", kind };
+}
+
+function nativeSubagentId(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): string | undefined {
+  if (isRecord(nativeResult)) {
+    const structured = boundedString(
+      nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id,
+      SUBAGENT_DESCRIPTION_LIMIT,
+    );
+    if (structured) return structured;
+  }
+  return boundedString(
+    /agentId:\s*([A-Za-z0-9_-]+)/u.exec(outputText ?? "")?.[1],
+    SUBAGENT_DESCRIPTION_LIMIT,
+  );
+}
+
+function subagentContinuesInBackground(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): boolean {
+  if (isRecord(nativeResult)) {
+    if (nativeResult.isAsync === true || nativeResult.is_async === true) return true;
+    if (nativeResult.status === "async_launched") return true;
+  }
+  return outputText?.includes("The agent is working in the background.") ?? false;
 }
 
 function resultText(content: unknown, nativeResult: unknown): string | undefined {
@@ -91,13 +182,69 @@ function resultText(content: unknown, nativeResult: unknown): string | undefined
   return combined.length > 0 ? combined : undefined;
 }
 
+function userMessageText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .flatMap((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("");
+  return text.length > 0 ? text : null;
+}
+
+export function parseClaudeTaskNotification(
+  message: unknown,
+): Extract<ClaudeTurnEvent, { type: "subagent.settled" }> | null {
+  if (!isRecord(message) || message.type !== "user" || !isRecord(message.message)) return null;
+  if (isRecord(message.origin) && message.origin.kind !== "task-notification") return null;
+  const content = userMessageText(message.message.content);
+  if (!content || !content.includes("<task-notification>")) return null;
+  const taskId = content.match(/<task-id>([^<]+)<\/task-id>/u)?.[1]?.trim();
+  if (!taskId) return null;
+  const xmlStatus = content.match(/<status>([^<]+)<\/status>/u)?.[1]?.trim();
+  const status = taskStatus(xmlStatus ?? "completed");
+  if (status !== "completed" && status !== "failed" && status !== "interrupted") return null;
+  const summary = content.match(/<summary>([\s\S]*?)<\/summary>/u)?.[1]?.trim();
+  const callId = content.match(/<tool-use-id>([^<]+)<\/tool-use-id>/u)?.[1]?.trim();
+  return {
+    type: "subagent.settled",
+    nativeSubagentId: taskId,
+    status,
+    ...(callId ? { callId } : {}),
+    ...(summary ? { resultSummary: summary.slice(0, SUBAGENT_SUMMARY_LIMIT) } : {}),
+  };
+}
+
+function taskStatus(
+  value: unknown,
+): Extract<ClaudeNativeEvent, { type: "subagent.updated" }>["status"] | null {
+  switch (value) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "killed":
+    case "stopped":
+      return "interrupted";
+    default:
+      return null;
+  }
+}
+
 export interface ClaudeNativeMessageResult {
   events: ClaudeNativeEvent[];
   terminal?: ClaudeTransportTurnResult;
 }
 
 export class ClaudeNativeTurnAccumulator {
-  #activeStreamMessageId: string | null = null;
+  #activeRootStreamMessageId: string | null = null;
   #assistantErrors: string[] = [];
   #cancelRequested = false;
   #compactionState: "idle" | "active" | "settled" = "idle";
@@ -107,7 +254,7 @@ export class ClaudeNativeTurnAccumulator {
   #messages = new Map<string, AssistantMessageState>();
   #protocolConflict = false;
   #textConflict = false;
-  #tools = new Map<string, string>();
+  #tools = new Map<string, ActiveNativeTool>();
 
   requestCancel(): void {
     this.#cancelRequested = true;
@@ -117,20 +264,35 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#completed || !isRecord(message)) return { events: [] };
     const events: ClaudeNativeEvent[] = [];
 
-    this.#consumeCompaction(message, events);
+    this.#consumeSegmentLevel(message, events);
+    this.#consumeTaskLifecycle(message, events);
+    const parentCallId = parentToolUseId(message);
+    const nested = parentCallId !== null;
+    if (
+      parentCallId &&
+      this.#tools.get(parentCallId)?.subagent === true &&
+      (message.type === "assistant" || message.type === "user")
+    ) {
+      events.push({ type: "subagent.transcript.changed", callId: parentCallId });
+    }
+    if (!nested) this.#consumeCompaction(message, events);
+
     if (message.type === "stream_event" && isRecord(message.event)) {
-      this.#consumeStreamEvent(message, events);
+      if (!nested) this.#consumeStreamEvent(message, events);
     } else if (message.type === "tool_progress") {
       this.#consumeToolProgress(message, events);
     }
 
-    const error = assistantError(message);
-    if (error !== null) this.#assistantErrors.push(error);
+    if (!nested) {
+      const error = assistantError(message);
+      if (error !== null) this.#assistantErrors.push(error);
+    }
 
     if (message.type === "assistant") {
-      this.#consumeAssistantMessage(message, events);
+      if (!nested) this.#consumeAssistantMessage(message, events);
     } else if (message.type === "user") {
-      this.#consumeToolResults(message, events);
+      this.#consumeTaskNotification(message, events);
+      this.#consumeToolResults(message, events, nested);
     }
 
     if (message.type !== "result") return { events };
@@ -187,12 +349,112 @@ export class ClaudeNativeTurnAccumulator {
     events.push({ type: "compaction.completed", outcome: "succeeded" });
   }
 
+  /**
+   * Claude opens one native Segment per Root execution and reports its live
+   * background tasks as a level whose membership replaces the previous set.
+   */
+  #consumeSegmentLevel(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system") return;
+    if (message.subtype === "init") {
+      events.push({ type: "segment.started" });
+      return;
+    }
+    if (message.subtype !== "background_tasks_changed" || !Array.isArray(message.tasks)) return;
+    const nativeSubagentIds = message.tasks.flatMap((task) => {
+      if (!isRecord(task)) return [];
+      const taskId = boundedString(task.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      return taskId ? [taskId] : [];
+    });
+    events.push({ type: "subagents.live", nativeSubagentIds });
+  }
+
+  #consumeTaskLifecycle(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system") return;
+    if (message.subtype === "task_notification") {
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      const status = taskStatus(message.status);
+      if (!agentId || (status !== "completed" && status !== "failed" && status !== "interrupted")) {
+        return;
+      }
+      const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
+      const callId = boundedString(message.tool_use_id, SUBAGENT_DESCRIPTION_LIMIT);
+      events.push({
+        type: "subagent.settled",
+        nativeSubagentId: agentId,
+        status,
+        ...(callId ? { callId } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+      return;
+    }
+    const callId = typeof message.tool_use_id === "string" ? message.tool_use_id : null;
+    if (!callId || !this.#tools.get(callId)?.subagent) return;
+
+    if (message.subtype === "task_started") {
+      const description = boundedString(message.description, SUBAGENT_DESCRIPTION_LIMIT);
+      const role = boundedString(message.subagent_type, SUBAGENT_DESCRIPTION_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      events.push({
+        type: "subagent.updated",
+        callId,
+        status: "running",
+        ...(description ? { description } : {}),
+        ...(role ? { role } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
+      });
+      return;
+    }
+    if (message.subtype === "task_progress") {
+      const description = boundedString(message.description, SUBAGENT_DESCRIPTION_LIMIT);
+      const role = boundedString(message.subagent_type, SUBAGENT_DESCRIPTION_LIMIT);
+      const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      events.push({
+        type: "subagent.updated",
+        callId,
+        status: "running",
+        ...(description ? { description } : {}),
+        ...(role ? { role } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+      return;
+    }
+    if (message.subtype === "task_updated" && isRecord(message.patch)) {
+      const status = taskStatus(message.patch.status);
+      if (!status) return;
+      const description = boundedString(message.patch.description, SUBAGENT_DESCRIPTION_LIMIT);
+      const resultSummary = boundedString(message.patch.error, SUBAGENT_SUMMARY_LIMIT);
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      events.push({
+        type: "subagent.updated",
+        callId,
+        status,
+        ...(description ? { description } : {}),
+        ...(agentId ? { nativeSubagentId: agentId } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+    }
+  }
+
   #consumeStreamEvent(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     const event = message.event;
     if (!isRecord(event)) return;
-    const messageId = this.#streamMessageId(message, event);
-    const state = this.#messageState(messageId);
+    if (
+      event.type === "message_start" &&
+      isRecord(event.message) &&
+      typeof event.message.id === "string" &&
+      event.message.id.length > 0
+    ) {
+      this.#activeRootStreamMessageId = event.message.id;
+      this.#messageState(event.message.id);
+      return;
+    }
     if (event.type !== "content_block_delta" || !isRecord(event.delta)) return;
+    const messageId =
+      this.#activeRootStreamMessageId ?? nativeUuid(message) ?? this.#nextMessageId();
+    if (!this.#activeRootStreamMessageId) this.#activeRootStreamMessageId = messageId;
+    const state = this.#messageState(messageId);
     if (state.completed) {
       if (event.delta.type === "text_delta") this.#textConflict = true;
       return;
@@ -212,9 +474,14 @@ export class ClaudeNativeTurnAccumulator {
 
   #consumeAssistantMessage(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     const checkpointId = nativeUuid(message);
-    const messageId = this.#activeStreamMessageId ?? checkpointId ?? this.#nextMessageId();
+    const nativeMessageId = assistantNativeMessageId(message);
+    const messageId =
+      this.#activeRootStreamMessageId ?? nativeMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
-    if (state.completed) return;
+    if (state.completed) {
+      this.#consumeToolUseBlocks(message, events, true);
+      return;
+    }
 
     if (state.reasoning.length > 0) {
       events.push({ type: "reasoning.completed", messageId });
@@ -233,29 +500,7 @@ export class ClaudeNativeTurnAccumulator {
       }
     }
 
-    for (const block of assistantContent(message) ?? []) {
-      if (!isRecord(block) || block.type !== "tool_use") continue;
-      const argumentsResult = jsonValueSchema.safeParse(block.input);
-      if (
-        typeof block.id !== "string" ||
-        block.id.length === 0 ||
-        typeof block.name !== "string" ||
-        block.name.length === 0 ||
-        !argumentsResult.success ||
-        this.#tools.has(block.id) ||
-        this.#completedToolIds.has(block.id)
-      ) {
-        this.#protocolConflict = true;
-        continue;
-      }
-      this.#tools.set(block.id, block.name);
-      events.push({
-        type: "tool.started",
-        callId: block.id,
-        toolName: block.name,
-        arguments: argumentsResult.data,
-      });
-    }
+    this.#consumeToolUseBlocks(message, events, false);
 
     if (!this.#protocolConflict && !this.#textConflict) {
       events.push({
@@ -265,7 +510,56 @@ export class ClaudeNativeTurnAccumulator {
       });
     }
     state.completed = true;
-    if (this.#activeStreamMessageId === messageId) this.#activeStreamMessageId = null;
+    if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
+  }
+
+  #consumeToolUseBlocks(
+    message: Record<string, unknown>,
+    events: ClaudeNativeEvent[],
+    ignoreKnownIds: boolean,
+  ): void {
+    for (const block of assistantContent(message) ?? []) {
+      if (!isRecord(block) || block.type !== "tool_use") continue;
+      const argumentsResult = jsonValueSchema.safeParse(block.input);
+      if (
+        typeof block.id !== "string" ||
+        block.id.length === 0 ||
+        typeof block.name !== "string" ||
+        block.name.length === 0 ||
+        !argumentsResult.success
+      ) {
+        this.#protocolConflict = true;
+        continue;
+      }
+      if (this.#tools.has(block.id) || this.#completedToolIds.has(block.id)) {
+        if (!ignoreKnownIds) this.#protocolConflict = true;
+        continue;
+      }
+      const subagent = SUBAGENT_TOOLS.has(block.name);
+      this.#tools.set(block.id, { name: block.name, subagent });
+      if (subagent) {
+        const prompt = subagentPrompt(argumentsResult.data);
+        const role = subagentRole(argumentsResult.data);
+        const agentId = targetedSubagentId(argumentsResult.data);
+        events.push({
+          type: "subagent.started",
+          callId: block.id,
+          operation: block.name === "SendMessage" ? "send" : "spawn",
+          description: subagentDescription(argumentsResult.data, block.name),
+          ...(prompt ? { prompt } : {}),
+          ...(role ? { role } : {}),
+          background: block.name === "SendMessage" || subagentBackground(argumentsResult.data),
+          ...(agentId ? { nativeSubagentId: agentId } : {}),
+        });
+      } else {
+        events.push({
+          type: "tool.started",
+          callId: block.id,
+          toolName: block.name,
+          arguments: argumentsResult.data,
+        });
+      }
+    }
   }
 
   #consumeToolProgress(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
@@ -273,7 +567,7 @@ export class ClaudeNativeTurnAccumulator {
     const elapsedSeconds = message.elapsed_time_seconds;
     if (
       typeof callId !== "string" ||
-      !this.#tools.has(callId) ||
+      this.#tools.get(callId)?.subagent !== false ||
       typeof elapsedSeconds !== "number" ||
       !Number.isFinite(elapsedSeconds) ||
       elapsedSeconds < 0
@@ -283,7 +577,16 @@ export class ClaudeNativeTurnAccumulator {
     events.push({ type: "tool.progress", callId, elapsedMs: Math.round(elapsedSeconds * 1_000) });
   }
 
-  #consumeToolResults(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+  #consumeTaskNotification(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    const settled = parseClaudeTaskNotification(message);
+    if (settled) events.push(settled);
+  }
+
+  #consumeToolResults(
+    message: Record<string, unknown>,
+    events: ClaudeNativeEvent[],
+    ignoreUnknown: boolean,
+  ): void {
     if (!isRecord(message.message) || !Array.isArray(message.message.content)) return;
     const resultBlocks = message.message.content.filter(
       (block): block is Record<string, unknown> => isRecord(block) && block.type === "tool_result",
@@ -298,9 +601,9 @@ export class ClaudeNativeTurnAccumulator {
         this.#protocolConflict = true;
         continue;
       }
-      const toolName = this.#tools.get(callId);
-      if (!toolName || this.#completedToolIds.has(callId)) {
-        this.#protocolConflict = true;
+      const tool = this.#tools.get(callId);
+      if (!tool || this.#completedToolIds.has(callId)) {
+        if (!ignoreUnknown) this.#protocolConflict = true;
         continue;
       }
       if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
@@ -310,33 +613,34 @@ export class ClaudeNativeTurnAccumulator {
       this.#tools.delete(callId);
       this.#completedToolIds.add(callId);
       const isError = block.is_error === true;
-      const nativeResult = resultBlocks.length === 1 ? message.tool_use_result : undefined;
+      const nativeResult =
+        resultBlocks.length === 1 ? (message.tool_use_result ?? message.toolUseResult) : undefined;
       const outputText = resultText(block.content, nativeResult);
-      const fileChange = isError ? null : parseClaudeNativeFileChange(toolName, nativeResult);
+      if (tool.subagent) {
+        const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
+        const agentId = nativeSubagentId(nativeResult, outputText);
+        events.push({
+          type: "subagent.completed",
+          callId,
+          isError,
+          ...(subagentContinuesInBackground(nativeResult, outputText)
+            ? { continuesInBackground: true }
+            : {}),
+          ...(agentId ? { nativeSubagentId: agentId } : {}),
+          ...(resultSummary ? { resultSummary } : {}),
+        });
+        continue;
+      }
+      const fileChange = isError ? null : parseClaudeNativeFileChange(tool.name, nativeResult);
       events.push({
         type: "tool.completed",
         callId,
-        toolName,
+        toolName: tool.name,
         ...(outputText ? { outputText } : {}),
         isError,
         ...(fileChange ? { fileChange } : {}),
       });
     }
-  }
-
-  #streamMessageId(message: Record<string, unknown>, event: Record<string, unknown>): string {
-    if (this.#activeStreamMessageId) return this.#activeStreamMessageId;
-    if (
-      event.type === "message_start" &&
-      isRecord(event.message) &&
-      typeof event.message.id === "string" &&
-      event.message.id.length > 0
-    ) {
-      this.#activeStreamMessageId = event.message.id;
-      return event.message.id;
-    }
-    this.#activeStreamMessageId = nativeUuid(message) ?? this.#nextMessageId();
-    return this.#activeStreamMessageId;
   }
 
   #messageState(messageId: string): AssistantMessageState {

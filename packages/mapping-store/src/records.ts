@@ -55,6 +55,14 @@ export const storedThreadRecordV1Schema = z
       })
       .strict()
       .optional(),
+    subagent: z
+      .object({
+        parentHostThreadId: hostThreadIdSchema,
+        nativeSubagentId: nonBlankTextSchema.max(1_024),
+        role: z.string().max(1_024).optional(),
+      })
+      .strict()
+      .optional(),
     turnMappings: z.array(storedTurnMappingV1Schema),
     createdAt: isoDateSchema,
     updatedAt: isoDateSchema,
@@ -133,6 +141,11 @@ export interface CreateProvisionalThreadInput {
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
+  subagent?: {
+    parentHostThreadId: HostThreadId;
+    nativeSubagentId: string;
+    role?: string;
+  };
 }
 
 export interface CommitReadyThreadInput {

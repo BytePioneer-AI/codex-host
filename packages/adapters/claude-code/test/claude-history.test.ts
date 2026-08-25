@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapClaudeSnapshot } from "../src/claude-history.js";
+import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "../src/claude-history.js";
 
 const sessionId = "claude-session";
 
@@ -217,6 +217,140 @@ describe("Claude history mapping", () => {
           checkpoint: { checkpointId: "assistant-reasoning" },
           items: [{ item: { type: "reasoning", text: "visible but not terminal" } }],
           outcome: { status: "unknown" },
+        },
+      ],
+    });
+  });
+
+  it("projects official Subagent history when the SDK omits the initial User prompt", () => {
+    const history = [
+      message("assistant", "subagent-thinking", [
+        { type: "thinking", thinking: "check directory", signature: "ignored" },
+      ]),
+      message("assistant", "subagent-tool", [
+        {
+          type: "tool_use",
+          id: "bash-1",
+          name: "Bash",
+          input: { command: "pwd", description: "Print working directory" },
+        },
+      ]),
+      message("user", "subagent-tool-result", [
+        {
+          type: "tool_result",
+          tool_use_id: "bash-1",
+          content: "/work/project",
+          is_error: false,
+        },
+      ]),
+      message("assistant", "subagent-final", [{ type: "text", text: "Inspection complete." }]),
+    ];
+
+    const withPrompt = mapClaudeSubagentSnapshot(
+      [message("user", "subagent-user", "inspect files"), ...history],
+      sessionId,
+      "native-agent-1",
+    );
+    const parentHistory = [
+      message("assistant", "root-agent", [
+        {
+          type: "tool_use",
+          id: "agent-call",
+          name: "Agent",
+          input: { prompt: "inspect files", description: "Inspect files" },
+        },
+      ]),
+      message("user", "root-agent-result", [
+        {
+          type: "tool_result",
+          tool_use_id: "agent-call",
+          content: "done\nagentId: native-agent-1 (use SendMessage to continue)",
+        },
+      ]),
+    ];
+    const first = mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1", parentHistory);
+    const repeated = mapClaudeSubagentSnapshot(
+      structuredClone(history),
+      sessionId,
+      "native-agent-1",
+      structuredClone(parentHistory),
+    );
+
+    expect(withPrompt.turns[0]?.nativeTurnRef).toEqual(first.turns[0]?.nativeTurnRef);
+    expect(repeated).toEqual(first);
+    expect(first).toMatchObject({
+      turns: [
+        {
+          nativeTurnRef: { nativeTurnKey: "subagent-native-agent-1-initial" },
+          input: [{ type: "text", text: "inspect files" }],
+          items: [
+            { item: { type: "reasoning", text: "check directory" } },
+            {
+              item: {
+                type: "commandExecution",
+                command: "pwd",
+                output: "/work/project",
+                exitCode: 0,
+              },
+            },
+            { item: { type: "agentMessage", text: "Inspection complete." } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("projects Subagent command executions and intermediate Assistant output", () => {
+    const history = [
+      message("user", "subagent-user", "inspect files"),
+      message("assistant", "subagent-thinking", [
+        { type: "thinking", thinking: "check directory", signature: "ignored" },
+      ]),
+      message("assistant", "subagent-pending-tool", [
+        {
+          type: "tool_use",
+          id: "bash-pending",
+          name: "Bash",
+          input: { command: "sleep 1", description: "Pending command" },
+        },
+      ]),
+      message("assistant", "subagent-tool", [
+        {
+          type: "tool_use",
+          id: "bash-1",
+          name: "Bash",
+          input: { command: "pwd", description: "Print working directory" },
+        },
+      ]),
+      message("user", "subagent-tool-result", [
+        {
+          type: "tool_result",
+          tool_use_id: "bash-1",
+          content: "/work/project",
+          is_error: false,
+        },
+      ]),
+      message("assistant", "subagent-intermediate", [{ type: "text", text: "Directory checked." }]),
+      message("assistant", "subagent-final", [{ type: "text", text: "Inspection complete." }]),
+    ];
+
+    expect(mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1")).toMatchObject({
+      turns: [
+        {
+          input: [{ type: "text", text: "inspect files" }],
+          items: [
+            { item: { type: "reasoning", text: "check directory" } },
+            {
+              item: {
+                type: "commandExecution",
+                command: "pwd",
+                output: "/work/project",
+                exitCode: 0,
+              },
+            },
+            { item: { type: "agentMessage", text: "Directory checked." } },
+            { item: { type: "agentMessage", text: "Inspection complete." } },
+          ],
         },
       ],
     });

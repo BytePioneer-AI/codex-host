@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 
-function partial(text: string, uuid = "assistant-1") {
+function partial(text: string, uuid = "assistant-1", parentToolUseId: string | null = null) {
   return {
     type: "stream_event",
     uuid,
+    parent_tool_use_id: parentToolUseId,
     event: { type: "content_block_delta", delta: { type: "text_delta", text } },
   };
 }
@@ -25,20 +26,28 @@ function assistant(text: string, error?: string, uuid = "assistant-1") {
   return assistantBlocks([{ type: "text", text }], uuid, error);
 }
 
-function assistantBlocks(content: unknown[], uuid: string, error?: string) {
+function assistantBlocks(
+  content: unknown[],
+  uuid: string,
+  error?: string,
+  parentToolUseId: string | null = null,
+) {
   return {
     type: "assistant",
     uuid,
-    message: { content },
+    parent_tool_use_id: parentToolUseId,
+    message: { id: uuid, content },
     ...(error ? { error } : {}),
   };
 }
 
 function toolUse(name: string, id = "synthetic-tool", input: unknown = {}) {
+  const uuid = `assistant-${id}`;
   return {
     type: "assistant",
-    uuid: `assistant-${id}`,
-    message: { content: [{ type: "tool_use", name, id, input }] },
+    uuid,
+    parent_tool_use_id: null,
+    message: { id: uuid, content: [{ type: "tool_use", name, id, input }] },
   };
 }
 
@@ -46,7 +55,9 @@ function toolUses(...blocks: Array<{ id: string; name: string; input: unknown }>
   return {
     type: "assistant",
     uuid: "assistant-tools",
+    parent_tool_use_id: null,
     message: {
+      id: "assistant-tools",
       content: blocks.map(({ id, name, input }) => ({ type: "tool_use", id, name, input })),
     },
   };
@@ -179,6 +190,350 @@ describe("Claude native Turn interpretation", () => {
       ],
     });
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("isolates nested Subagent streams and Tools from the Root response", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    turn.consume(
+      toolUse("Agent", "agent-call", {
+        description: "Inspect implementation",
+        subagent_type: "Explore",
+      }),
+    );
+    expect(turn.consume(partial("root before", "root-1")).events).toEqual([
+      { type: "text.delta", messageId: "root-1", delta: "root before" },
+    ]);
+    expect(
+      turn.consume(
+        assistantBlocks(
+          [{ type: "text", text: "nested answer" }],
+          "nested-1",
+          undefined,
+          "agent-call",
+        ),
+      ).events,
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
+    expect(
+      turn.consume({
+        type: "assistant",
+        uuid: "nested-tools",
+        parent_tool_use_id: "agent-call",
+        message: {
+          id: "nested-tools",
+          content: [{ type: "tool_use", id: "nested-read", name: "Read", input: {} }],
+        },
+      }).events,
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
+    expect(
+      turn.consume({
+        ...toolResult("nested-read", { content: "contents" }),
+        parent_tool_use_id: "agent-call",
+      }).events,
+    ).toEqual([{ type: "subagent.transcript.changed", callId: "agent-call" }]);
+    expect(turn.consume(assistant("root before and after", undefined, "root-1")).events).toEqual([
+      { type: "text.delta", messageId: "root-1", delta: " and after" },
+      { type: "message.completed", messageId: "root-1", checkpointId: "root-1" },
+    ]);
+    expect(turn.consume(toolResult("agent-call", { content: "Agent completed" })).events).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-call",
+        isError: false,
+        resultSummary: "Agent completed",
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("maps Root Agent delegation without exposing nested Tool events", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume(
+        toolUse("Agent", "agent-1", {
+          description: "Inspect implementation",
+          subagent_type: "Explore",
+          run_in_background: true,
+          prompt: "private prompt",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "spawn",
+        callId: "agent-1",
+        description: "Inspect implementation",
+        prompt: "private prompt",
+        role: "Explore",
+        background: true,
+      },
+      {
+        type: "message.completed",
+        messageId: "assistant-agent-1",
+        checkpointId: "assistant-agent-1",
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "task_started",
+        task_id: "native-agent-1",
+        tool_use_id: "agent-1",
+        description: "Inspect implementation",
+        subagent_type: "Explore",
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.updated",
+        callId: "agent-1",
+        status: "running",
+        description: "Inspect implementation",
+        role: "Explore",
+        nativeSubagentId: "native-agent-1",
+      },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("agent-1", {
+          content: "Agent launched successfully",
+          nativeResult: { agentId: "native-agent-1", status: "completed" },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        nativeSubagentId: "native-agent-1",
+        resultSummary: "Agent launched successfully",
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("keeps an async Agent spawn running when its launch Tool Result returns", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    turn.consume(
+      toolUse("Agent", "agent-1", {
+        description: "Inspect implementation",
+        run_in_background: true,
+        prompt: "Inspect files",
+      }),
+    );
+    expect(
+      turn.consume(
+        toolResult("agent-1", {
+          content:
+            "Async agent launched successfully.\nagentId: native-agent-1\nThe agent is working in the background.",
+          nativeResult: {
+            isAsync: true,
+            status: "async_launched",
+            agentId: "native-agent-1",
+          },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        continuesInBackground: true,
+        nativeSubagentId: "native-agent-1",
+        resultSummary:
+          "Async agent launched successfully.\nagentId: native-agent-1\nThe agent is working in the background.",
+      },
+    ]);
+
+    const textOnlyTurn = new ClaudeNativeTurnAccumulator();
+    textOnlyTurn.consume(
+      toolUse("Agent", "agent-text-only", {
+        description: "Inspect implementation",
+        run_in_background: true,
+        prompt: "Inspect files",
+      }),
+    );
+    expect(
+      textOnlyTurn.consume(
+        toolResult("agent-text-only", {
+          content:
+            "Async agent launched successfully.\nagentId: native-agent-2\nThe agent is working in the background.",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-text-only",
+        isError: false,
+        continuesInBackground: true,
+        nativeSubagentId: "native-agent-2",
+        resultSummary:
+          "Async agent launched successfully.\nagentId: native-agent-2\nThe agent is working in the background.",
+      },
+    ]);
+  });
+
+  it("settles a background Agent from a user task-notification on the same Root Turn", () => {
+    const notification = `<task-notification>
+<task-id>a78414260bd2f9554</task-id>
+<tool-use-id>call_02_1AO3OGlePFNFW4Nn9edX9246</tool-use-id>
+<status>completed</status>
+<summary>Agent "只读检查-按类型区分" finished</summary>
+</task-notification>`;
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(
+      toolUse("Agent", "agent-1", {
+        description: "只读检查-按类型区分",
+        prompt: "Inspect files",
+      }),
+    );
+    turn.consume(
+      toolResult("agent-1", {
+        content:
+          "Async agent launched successfully.\nagentId: a78414260bd2f9554\nThe agent is working in the background.",
+      }),
+    );
+
+    expect(
+      turn.consume({
+        type: "user",
+        origin: { kind: "task-notification" },
+        message: { role: "user", content: notification },
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "a78414260bd2f9554",
+        callId: "call_02_1AO3OGlePFNFW4Nn9edX9246",
+        status: "completed",
+        resultSummary: 'Agent "只读检查-按类型区分" finished',
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "user",
+        origin: { kind: "task-notification" },
+        message: {
+          role: "user",
+          content: [{ type: "text", text: notification }],
+        },
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "a78414260bd2f9554",
+        callId: "call_02_1AO3OGlePFNFW4Nn9edX9246",
+        status: "completed",
+        resultSummary: 'Agent "只读检查-按类型区分" finished',
+      },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("settles background Agents from live SDK task_notification after the Tool is gone", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    turn.consume(
+      toolUse("Agent", "agent-1", {
+        description: "只读检查当前目录",
+        run_in_background: true,
+        prompt: "Inspect files",
+      }),
+    );
+    turn.consume(
+      toolResult("agent-1", {
+        content:
+          "Async agent launched successfully.\nagentId: a08c4ffa3d980cff8\nThe agent is working in the background.",
+      }),
+    );
+
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "a08c4ffa3d980cff8",
+        tool_use_id: "agent-1",
+        status: "completed",
+        summary: "Agent finished",
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "a08c4ffa3d980cff8",
+        callId: "agent-1",
+        status: "completed",
+        resultSummary: "Agent finished",
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      }).events,
+    ).toEqual([{ type: "subagents.live", nativeSubagentIds: [] }]);
+  });
+
+  it("reports the live background Subagent level and each Segment start", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "a08c4ffa3d980cff8", task_type: "local_agent", description: "Inspect" },
+          { task_id: "a1b2c3d4e5f607182", task_type: "local_agent", description: "Review" },
+        ],
+      }).events,
+    ).toEqual([
+      {
+        type: "subagents.live",
+        nativeSubagentIds: ["a08c4ffa3d980cff8", "a1b2c3d4e5f607182"],
+      },
+    ]);
+    expect(turn.consume({ type: "system", subtype: "init", cwd: "/tmp" }).events).toEqual([
+      { type: "segment.started" },
+    ]);
+  });
+
+  it("maps SendMessage to an existing native Subagent without marking the Agent complete", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    expect(
+      turn.consume(
+        toolUse("SendMessage", "send-1", {
+          to: "native-agent-1",
+          summary: "Analyze current directory",
+          message: "Analyze files and report back",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "send",
+        callId: "send-1",
+        nativeSubagentId: "native-agent-1",
+        description: "Analyze current directory",
+        prompt: "Analyze files and report back",
+        background: true,
+      },
+      {
+        type: "message.completed",
+        messageId: "assistant-send-1",
+        checkpointId: "assistant-send-1",
+      },
+    ]);
+    expect(
+      turn.consume(toolResult("send-1", { content: "Message sent successfully" })).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "send-1",
+        isError: false,
+        resultSummary: "Message sent successfully",
+      },
+    ]);
   });
 
   it("correlates interleaved Tool results and preserves native file evidence", () => {
@@ -511,6 +866,95 @@ describe("Claude native Turn interpretation", () => {
   it("ignores unknown messages", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     expect(turn.consume({ type: "future_event", native: true })).toEqual({ events: [] });
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("starts later Agent Tools from split Assistant records that share message.id", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const messageId = "resp_shared";
+    turn.consume({
+      type: "assistant",
+      uuid: "thinking-uuid",
+      parent_tool_use_id: null,
+      message: {
+        id: messageId,
+        content: [{ type: "thinking", thinking: "plan" }],
+      },
+    });
+    expect(
+      turn.consume({
+        type: "assistant",
+        uuid: "agent-a-uuid",
+        parent_tool_use_id: null,
+        message: {
+          id: messageId,
+          content: [
+            {
+              type: "tool_use",
+              name: "Agent",
+              id: "call-a",
+              input: { description: "Inspect A", prompt: "A", run_in_background: true },
+            },
+          ],
+        },
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "spawn",
+        callId: "call-a",
+        description: "Inspect A",
+        prompt: "A",
+        background: true,
+      },
+    ]);
+    expect(
+      turn.consume({
+        type: "assistant",
+        uuid: "agent-b-uuid",
+        parent_tool_use_id: null,
+        message: {
+          id: messageId,
+          content: [
+            {
+              type: "tool_use",
+              name: "Agent",
+              id: "call-b",
+              input: { description: "Inspect B", prompt: "B", run_in_background: true },
+            },
+          ],
+        },
+      }).events,
+    ).toEqual([
+      {
+        type: "subagent.started",
+        operation: "spawn",
+        callId: "call-b",
+        description: "Inspect B",
+        prompt: "B",
+        background: true,
+      },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("call-a", {
+          content:
+            "Async agent launched successfully.\nagentId: agent-a\nThe agent is working in the background.",
+        }),
+      ).events,
+    ).toMatchObject([
+      { type: "subagent.completed", callId: "call-a", continuesInBackground: true },
+    ]);
+    expect(
+      turn.consume(
+        toolResult("call-b", {
+          content:
+            "Async agent launched successfully.\nagentId: agent-b\nThe agent is working in the background.",
+        }),
+      ).events,
+    ).toMatchObject([
+      { type: "subagent.completed", callId: "call-b", continuesInBackground: true },
+    ]);
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 });

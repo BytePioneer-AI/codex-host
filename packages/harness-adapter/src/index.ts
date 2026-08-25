@@ -8,6 +8,7 @@ export { validateHostQuestionResponse } from "./question.js";
 export { parseHostUsage } from "./usage.js";
 export type { HostUsage } from "./usage.js";
 export type {
+  AutonomousTurnStartedEvent,
   CreateSessionInput,
   ForkSessionInput,
   HarnessAdapter,
@@ -27,6 +28,7 @@ export type {
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
+  HarnessSubagentCapability,
   HarnessSessionState,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -53,6 +55,9 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostSubagentDelegationItem,
+  HostSubagentState,
+  HostSubagentStatus,
   HostThreadSnapshot,
   HostTextInput,
   HostTextQuestion,
@@ -76,6 +81,8 @@ export type {
   SessionFaultedEvent,
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
+  SubagentStateChangedEvent,
+  SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,

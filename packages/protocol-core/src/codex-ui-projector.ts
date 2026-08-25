@@ -87,11 +87,29 @@ function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): J
   );
 }
 
+function collabAgentStatus(
+  status: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number]["status"],
+): string {
+  switch (status) {
+    case "pending":
+      return "pendingInit";
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "errored";
+    case "interrupted":
+      return "interrupted";
+  }
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
   defaultCwd: string,
   includeCommandOutput = true,
+  senderThreadId?: string,
 ): JsonObject {
   switch (item.type) {
     case "agentMessage":
@@ -150,6 +168,24 @@ function projectItem(
         })),
         status: itemStatus(outcome),
       };
+    case "subagentDelegation":
+      return {
+        id: item.itemId,
+        type: "collabAgentToolCall",
+        tool: item.operation === "spawn" ? "spawnAgent" : "sendInput",
+        status: itemStatus(outcome),
+        senderThreadId: senderThreadId ?? "",
+        receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
+        prompt: item.prompt ?? null,
+        model: null,
+        reasoningEffort: null,
+        agentsStates: Object.fromEntries(
+          item.subagents.map(({ subagentId, status, resultSummary }) => [
+            subagentId,
+            { status: collabAgentStatus(status), message: resultSummary ?? null },
+          ]),
+        ),
+      };
   }
 }
 
@@ -197,7 +233,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         clientId: null,
         content: snapshot.input.map(({ text }) => ({ type: "text", text })),
       },
-      ...snapshot.items.map(({ item, outcome }) => projectItem(item, outcome, cwd)),
+      ...snapshot.items.map(({ item, outcome }) => projectItem(item, outcome, cwd, true, "")),
     ],
     error,
     startedAt: null,
@@ -222,6 +258,9 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
   }
   if (item.type === "fileChange" && update.type === "fileChanges.replace") {
     return { ...item, changes: update.changes };
+  }
+  if (item.type === "subagentDelegation" && update.type === "subagents.replace") {
+    return { ...item, subagents: update.subagents };
   }
   throw new Error(`Host Item '${item.type}' cannot apply update '${update.type}'`);
 }
@@ -435,6 +474,17 @@ export class CodexTurnProjector {
       });
     } else if (event.update.type === "fileChanges.replace") {
       messages.push(...this.#fileChangeUpdates(event.itemId, event.update.changes));
+    } else if (event.update.type === "subagents.replace") {
+      messages.push({
+        method: "item/started",
+        emittedAtMs,
+        params: {
+          threadId: this.#threadId,
+          turnId: this.#turnId,
+          startedAtMs: this.#startedAtMs,
+          item: projectItem(next, null, this.#cwd, true, this.#threadId),
+        },
+      });
     }
     return { messages };
   }
@@ -478,6 +528,7 @@ export class CodexTurnProjector {
               projected.outcome,
               this.#cwd,
               !projected.streamedCommandOutput,
+              this.#threadId,
             ),
           },
         },
@@ -571,7 +622,7 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs: this.#startedAtMs,
-        item: projectItem(item, null, this.#cwd),
+        item: projectItem(item, null, this.#cwd, true, this.#threadId),
       },
     };
   }

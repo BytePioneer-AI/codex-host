@@ -1,8 +1,10 @@
 import type {
   HarnessAdapter,
   HarnessModelRef,
+  HarnessResult,
   HarnessSession,
   HarnessSessionState,
+  HostThreadSnapshot,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -15,7 +17,9 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
+import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import type {
+  HarnessId,
   HarnessPermissionModeId,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -74,6 +78,96 @@ export type ExternalThreadResolution =
   | { kind: "official" }
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
+
+function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
+  const ref = turn.nativeTurnRef;
+  return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
+}
+
+function mergeReadonlySnapshot(
+  previous: HostThreadSnapshot,
+  next: HostThreadSnapshot,
+): HostThreadSnapshot {
+  const nextByTurn = new Map(next.turns.map((turn) => [nativeTurnKey(turn), turn] as const));
+  const retainedKeys = new Set<string>();
+  const turns = previous.turns.map((turn) => {
+    const key = nativeTurnKey(turn);
+    retainedKeys.add(key);
+    const update = nextByTurn.get(key);
+    if (!update) return turn;
+    const itemsById = new Map(update.items.map((item) => [item.item.itemId, item] as const));
+    const retainedItemIds = new Set<string>();
+    const items = turn.items.map((item) => {
+      retainedItemIds.add(item.item.itemId);
+      return itemsById.get(item.item.itemId) ?? item;
+    });
+    for (const item of update.items) {
+      if (!retainedItemIds.has(item.item.itemId)) items.push(item);
+    }
+    return {
+      ...turn,
+      ...update,
+      input: update.input.length > 0 ? update.input : turn.input,
+      items,
+      ...((update.checkpoint ?? turn.checkpoint)
+        ? { checkpoint: update.checkpoint ?? turn.checkpoint }
+        : {}),
+      ...((update.model ?? turn.model) ? { model: update.model ?? turn.model } : {}),
+    };
+  });
+  for (const turn of next.turns) {
+    if (!retainedKeys.has(nativeTurnKey(turn))) turns.push(turn);
+  }
+  return {
+    turns,
+    ...((next.state ?? previous.state) ? { state: next.state ?? previous.state } : {}),
+  };
+}
+
+class ReadonlySnapshotSession implements HarnessSession {
+  readonly capabilities = {
+    configuration: {
+      selectModel: false,
+      selectThinkingOption: false,
+      selectPermissionMode: false,
+    },
+    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    subagents: { observe: false, readTranscript: false },
+  };
+  readonly initialState;
+  readonly initialUsage = null;
+  readonly outputs: AsyncIterable<never>;
+  readonly #channel = new HarnessOutputChannel<never>();
+  readonly #readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>;
+  #lastSnapshot: HostThreadSnapshot;
+
+  constructor(
+    readonly harnessId: HarnessId,
+    nativeRef: NativeSessionRef,
+    initialSnapshot: HostThreadSnapshot,
+    readSnapshot: () => Promise<HarnessResult<HostThreadSnapshot>>,
+  ) {
+    this.initialState = { nativeRef };
+    this.#lastSnapshot = initialSnapshot;
+    this.#readSnapshot = readSnapshot;
+    this.outputs = this.#channel.outputs;
+  }
+
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    if (!result.ok) return result;
+    this.#lastSnapshot = mergeReadonlySnapshot(this.#lastSnapshot, result.value);
+    return { ok: true, value: this.#lastSnapshot };
+  }
+
+  async execute(): Promise<never> {
+    throw new Error("Readonly Subagent Thread cannot execute commands");
+  }
+
+  async close(): Promise<void> {
+    this.#channel.end();
+  }
+}
 
 class ExternalThreadOpenError extends Error {
   constructor(readonly rpcError: ExternalThreadRpcError) {
@@ -318,6 +412,46 @@ export class ExternalThreadRuntime {
       throw new ExternalThreadOpenError({
         code: -32077,
         message: "External Harness is unavailable",
+      });
+    }
+    if (record.subagent) {
+      const subagents = adapter.subagents;
+      if (!subagents) {
+        throw new ExternalThreadOpenError({
+          code: -32077,
+          message: "External Harness Subagent history is unavailable",
+        });
+      }
+      const subagent = record.subagent;
+      const parent = record.nativeSessionRef as NativeSessionRef;
+      const snapshot = await subagents.readSnapshot({
+        parent,
+        nativeSubagentId: subagent.nativeSubagentId,
+        cwd: record.cwd,
+      });
+      if (!snapshot.ok) {
+        throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
+      }
+      const session = new ReadonlySnapshotSession(
+        record.harnessId,
+        record.nativeSessionRef as NativeSessionRef,
+        snapshot.value,
+        () =>
+          subagents.readSnapshot({
+            parent,
+            nativeSubagentId: subagent.nativeSubagentId,
+            cwd: record.cwd,
+          }),
+      );
+      const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
+      const sessionId = await this.#repository.sessionTreeId(aligned.record);
+      return this.register({
+        record: aligned.record,
+        session,
+        sessionId,
+        thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
+        turns: aligned.turns,
+        ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
     const opened = await adapter.open({

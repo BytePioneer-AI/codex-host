@@ -90,10 +90,20 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+
+export function retryableHarnessAvailabilityAgents(
+  availability: HarnessAvailability,
+  errors: HarnessAvailabilityErrors,
+): ExternalRendererAgent[] {
+  return externalAgents.filter(
+    (agent) => availability[agent] === "error" && errors[agent]?.retryable === true,
+  );
+}
 
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
-  errors: Record<ExternalRendererAgent, CodexhostError | undefined>;
+  errors: HarnessAvailabilityErrors;
   requestGeneration: number;
   request: { client: RendererModelClient; promise: Promise<void> } | null;
   retryTimer: number | null;
@@ -1578,12 +1588,18 @@ export function installRendererBindingProbe(
       return Promise.resolve();
     }
     if (state.request?.client === client) return state.request.promise;
-    state.availability = Object.fromEntries(
-      externalAgents.map((agent) => [
-        agent,
-        state.availability[agent] === "ready" ? "ready" : "checking",
-      ]),
-    ) as HarnessAvailability;
+    const agentsToInspect = retry
+      ? retryableHarnessAvailabilityAgents(state.availability, state.errors)
+      : externalAgents;
+    if (agentsToInspect.length === 0) {
+      resetHarnessAvailabilityRetry(hostId);
+      return Promise.resolve();
+    }
+    const nextAvailability = { ...state.availability };
+    for (const agent of agentsToInspect) {
+      if (nextAvailability[agent] !== "ready") nextAvailability[agent] = "checking";
+    }
+    state.availability = nextAvailability;
     if (hostId === activeAvailabilityHostId) {
       publishConnectionStatus();
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
@@ -1591,7 +1607,7 @@ export function installRendererBindingProbe(
     const generation = ++state.requestGeneration;
     const promise = (async () => {
       await Promise.all(
-        externalAgents.map(async (agent) => {
+        agentsToInspect.map(async (agent) => {
           let status: RendererAgentAvailability = "error";
           let nextError: CodexhostError | undefined;
           try {
@@ -1658,7 +1674,7 @@ export function installRendererBindingProbe(
         }),
       );
       if (generation !== state.requestGeneration || disposed) return;
-      if (externalAgents.every((agent) => state.availability[agent] === "ready")) {
+      if (retryableHarnessAvailabilityAgents(state.availability, state.errors).length === 0) {
         resetHarnessAvailabilityRetry(hostId);
       } else {
         scheduleHarnessAvailabilityRetry(hostId);

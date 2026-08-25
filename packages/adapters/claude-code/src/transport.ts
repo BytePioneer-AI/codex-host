@@ -144,6 +144,8 @@ export interface ClaudeTurnTransport {
     customInstructions: string | undefined,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult>;
+  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult>;
   runTurn(
     text: string,
     userMessageId: string,

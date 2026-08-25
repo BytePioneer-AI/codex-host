@@ -99,6 +99,12 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **THEN** that native control record SHALL NOT create a Host Turn
 - **AND** the surrounding human Turns SHALL retain their Native Turn identities and order
 
+#### Scenario: Native history contains init or recap command records
+- **WHEN** Claude history contains a `/init` command envelope followed by Assistant text, or a `/recap` command envelope followed by `<local-command-stdout>`
+- **THEN** those records SHALL create Host Turns
+- **AND** the User input SHALL be `/init` or `/recap`
+- **AND** recap stdout SHALL project as the Agent Message rather than a human Turn
+
 #### Scenario: Native history contains background task-notification records
 - **WHEN** Claude history contains a User record whose origin is `task-notification` or whose text is a complete `<task-notification>` wrapper
 - **THEN** that native control record SHALL NOT create a Host Turn or appear as User input
@@ -318,6 +324,36 @@ The Claude Code Adapter MUST publish `claude.compact` in the Session command cat
 - **WHEN** `claude.compact` is executed while a Claude Turn is running
 - **THEN** the Adapter rejects the request as session busy
 - **AND** the running Turn is left unchanged
+
+### Requirement: Claude exposes init and recap as registered Harness commands
+
+The Claude Code Adapter MUST publish `claude.init` (`/init`) and `claude.recap` (`/recap`) with argument mode `none`. Execution MUST use dedicated Transport operations rather than a Host text Turn. `/init` MUST run as an Agent Turn that can write `CLAUDE.md`. `/recap` MUST project native local-command output as an Agent Message. Native `/init` and `/recap` command envelopes SHALL remain eligible for history projection; recap local-command stdout SHALL become the recap Agent Message rather than a human Turn.
+
+#### Scenario: Catalog lists init and recap
+
+- **WHEN** a Claude Session lists commands
+- **THEN** the catalog contains `claude.init` and `claude.recap`
+- **AND** both commands declare argument mode `none`
+
+#### Scenario: Init generates CLAUDE.md without a Host text Turn
+
+- **WHEN** `claude.init` is executed
+- **THEN** the Adapter starts a command Turn
+- **AND** the Transport receives init rather than a Host text Turn
+- **AND** Assistant text and Tool work use the existing Item projection
+- **AND** the Turn completes without a Native Turn identity
+
+#### Scenario: Recap projects a one-line session summary
+
+- **WHEN** `claude.recap` is executed and Claude emits local command output
+- **THEN** the Adapter projects that output as an Agent Message
+- **AND** it does not submit `/recap` as a Host text Turn
+
+#### Scenario: Init and recap reject arguments
+
+- **WHEN** `claude.init` or `claude.recap` is executed with any argument object
+- **THEN** the Adapter rejects the request as invalid
+- **AND** no native command is started
 
 ### Requirement: Claude Catalog uses official runtime data without configuration parsing
 Claude Adapter SHALL derive selectable identity from official SDK `ModelInfo.value`, optional initial resolved display from structured SDK fields, and current actual display from stable structured current-context Model readback. It MUST NOT read `settings.json`, maintain a static first-party manifest, parse human descriptions, or advertise Models absent from the runtime Catalog.

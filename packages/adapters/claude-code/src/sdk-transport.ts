@@ -468,6 +468,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     );
   }
 
+  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    return this.runTurn("/init", randomUUID(), onEvent);
+  }
+
+  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    return this.runTurn("/recap", randomUUID(), onEvent);
+  }
+
   runTurn(
     text: string,
     userMessageId: string,

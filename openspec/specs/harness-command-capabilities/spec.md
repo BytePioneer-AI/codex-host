@@ -22,6 +22,12 @@ A Harness Adapter MUST publish a command catalog containing stable command IDs, 
 - **THEN** the catalog contains the registered `claude.compact` command
 - **AND** the command declares `/compact` and its supported argument mode
 
+#### Scenario: Claude Code exposes init and recap
+
+- **WHEN** the Claude Code Adapter lists commands
+- **THEN** the catalog contains the registered `claude.init` and `claude.recap` commands
+- **AND** both commands declare their invocations and argument mode `none`
+
 ### Requirement: Host validates and routes registered commands
 
 The Host MUST obtain the current Harness command catalog before execution, MUST reject unknown command IDs, and MUST validate arguments at the command boundary. The Host MUST NOT provide an arbitrary native RPC passthrough.
@@ -47,6 +53,12 @@ The Adapter MUST translate a registered command into the Harness-native operatio
 - **WHEN** `claude.compact` is executed
 - **THEN** the Claude Adapter calls the dedicated compact transport
 - **AND** it does not submit `/compact` as a Host text Turn
+
+#### Scenario: Claude init and recap use dedicated command transport
+
+- **WHEN** `claude.init` or `claude.recap` is executed
+- **THEN** the Claude Adapter calls the dedicated init or recap transport
+- **AND** it does not submit those invocations as Host text Turns
 
 ### Requirement: Command UI and lifecycle follow Host contracts
 

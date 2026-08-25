@@ -265,6 +265,54 @@ describe("Claude history mapping", () => {
     ]);
   });
 
+  it("projects init and recap command envelopes without treating them as control records", () => {
+    const history = [
+      message("user", "user-1", "first"),
+      message("assistant", "assistant-1", "answer", "end_turn"),
+      message(
+        "user",
+        "init-command",
+        "<command-name>/init</command-name>\n<command-message>init</command-message>\n<command-args></command-args>",
+      ),
+      message("assistant", "assistant-init", "Created CLAUDE.md", "end_turn"),
+      message(
+        "user",
+        "recap-command",
+        "<command-name>/recap</command-name>\n<command-message>recap</command-message>\n<command-args></command-args>",
+      ),
+      message(
+        "user",
+        "recap-output",
+        "<local-command-stdout>Built compact command and subagent projection.</local-command-stdout>",
+      ),
+      message("user", "user-2", "next"),
+      message("assistant", "assistant-2", "ok", "end_turn"),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId).turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        input: [{ type: "text", text: "first" }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "init-command" },
+        input: [{ type: "text", text: "/init" }],
+        items: [{ item: { type: "agentMessage", text: "Created CLAUDE.md" } }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "recap-command" },
+        input: [{ type: "text", text: "/recap" }],
+        items: [
+          { item: { type: "agentMessage", text: "Built compact command and subagent projection." } },
+        ],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "user-2" },
+        input: [{ type: "text", text: "next" }],
+      },
+    ]);
+  });
+
   it("omits Claude background task-notification records without hiding later human Turns", () => {
     const notification = `<task-notification>
 <task-id>a7b2e1021a9dc42e0</task-id>

@@ -854,6 +854,29 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("projects local command output as Assistant text", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "local_command_output",
+        content: "Built compact command and subagent projection.",
+        uuid: "recap-output",
+      }).events,
+    ).toEqual([
+      {
+        type: "text.delta",
+        messageId: "recap-output",
+        delta: "Built compact command and subagent projection.",
+      },
+      {
+        type: "message.completed",
+        messageId: "recap-output",
+        checkpointId: "recap-output",
+      },
+    ]);
+  });
+
   it("synthesizes a complete Compaction lifecycle when only a boundary is available", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

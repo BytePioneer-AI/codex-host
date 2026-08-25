@@ -64,6 +64,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   });
   readonly start = vi.fn(async () => undefined);
   readonly compactCalls: Array<string | undefined> = [];
+  initCalls = 0;
+  recapCalls = 0;
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
   #assistantMessageId: string | null = null;
   #active:
@@ -94,6 +96,22 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
     this.compactCalls.push(customInstructions);
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    this.initCalls += 1;
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    this.recapCalls += 1;
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  #beginCommandTurn(
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
     this.#assistantMessageId = null;
     return new Promise((resolve, reject) => {
       this.#active = { onEvent, resolve, reject };
@@ -966,7 +984,13 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(commands.list()).resolves.toMatchObject({
       ok: true,
-      value: { commands: [{ id: "claude.compact", invocation: "/compact" }] },
+      value: {
+        commands: [
+          { id: "claude.compact", invocation: "/compact" },
+          { id: "claude.init", invocation: "/init", argumentMode: "none" },
+          { id: "claude.recap", invocation: "/recap", argumentMode: "none" },
+        ],
+      },
     });
     await expect(
       commands.execute({
@@ -1040,6 +1064,13 @@ describe("Claude Code HarnessAdapter", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     await expect(
       commands.execute({
+        turnId: hostTurnIdSchema.parse("init-with-args"),
+        commandId: "claude.init",
+        arguments: { text: "nope" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      commands.execute({
         turnId: hostTurnIdSchema.parse("unknown-command"),
         commandId: "claude.unknown",
       }),
@@ -1096,6 +1127,90 @@ describe("Claude Code HarnessAdapter", () => {
       outcome: { status: "cancelled" },
     });
     expect(transport.abort).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("runs Claude init as a command Turn that writes through native tools", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const turnId = hostTurnIdSchema.parse("manual-init");
+
+    await expect(commands.execute({ turnId, commandId: "claude.init" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", text: "" },
+    });
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Created CLAUDE.md", "init-assistant");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Created CLAUDE.md" },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Created CLAUDE.md" } },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.initCalls).toBe(1);
+    expect(transport.turns).toEqual([]);
+    expect(transport.compactCalls).toEqual([]);
+    await session.close();
+  });
+
+  it("projects Claude recap local output as a one-line Agent Message", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const turnId = hostTurnIdSchema.parse("manual-recap");
+
+    await expect(commands.execute({ turnId, commandId: "claude.recap" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Built compact command and subagent projection.", "recap-assistant");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Built compact command and subagent projection." },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "agentMessage",
+          text: "Built compact command and subagent projection.",
+        },
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.recapCalls).toBe(1);
+    expect(transport.turns).toEqual([]);
     await session.close();
   });
 
@@ -3585,6 +3700,8 @@ describe("Claude Code HarnessAdapter", () => {
         setThinkingOption: async () => undefined,
         setPermissionMode: async () => undefined,
         compact: async () => ({ status: "succeeded" }),
+        init: async () => ({ status: "succeeded" }),
+        recap: async () => ({ status: "succeeded" }),
         runTurn: async () => ({ status: "succeeded" }),
         respondToInteraction: async () => undefined,
         abort: async () => undefined,

@@ -356,6 +356,54 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
+
+  it("sends init and recap as slash commands on the SDK input stream", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("SDK command prompt stream was not configured");
+    }
+    const iterator = prompt[Symbol.asyncIterator]();
+
+    const init = value.transport.init(() => undefined);
+    expect((await iterator.next()).value).toMatchObject({
+      type: "user",
+      message: { role: "user", content: "/init" },
+    });
+    completeTurn(value.fakeQuery);
+    await expect(init).resolves.toEqual({ status: "succeeded" });
+
+    const recapEvents: ClaudeTurnEvent[] = [];
+    const recap = value.transport.recap((event) => recapEvents.push(event));
+    expect((await iterator.next()).value).toMatchObject({
+      type: "user",
+      message: { role: "user", content: "/recap" },
+    });
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "local_command_output",
+      content: "Built compact command and subagent projection.",
+      uuid: "00000000-0000-4000-8000-000000000042",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+    await expect(recap).resolves.toEqual({ status: "succeeded" });
+    expect(recapEvents).toEqual([
+      {
+        type: "text.delta",
+        messageId: "00000000-0000-4000-8000-000000000042",
+        delta: "Built compact command and subagent projection.",
+      },
+      {
+        type: "message.completed",
+        messageId: "00000000-0000-4000-8000-000000000042",
+        checkpointId: "00000000-0000-4000-8000-000000000042",
+      },
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
 });
 
 describe("ClaudeSdkTransport Tool interpretation", () => {

@@ -58,6 +58,14 @@ const { outputFiles } = await build({
           renderRendererUsageControl(usage, { cacheHitRatePercent: 99.3, totalCostUsd: 0.822 });
           renderRendererCreditsControl(credits, { usedPercent: 47, periodType: "weekly" });
         };
+        globalThis.updateRendererUsagePlanWindow = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 99,
+            totalCostUsd: 1.373,
+            planFiveHourUsedPercent: 45,
+            planFiveHourResetsAtUnix: 1_756_130_400,
+          });
+        };
       };
     `,
     resolveDir: repositoryRoot,
@@ -192,4 +200,30 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("Weekly limit");
   await expect(popover).toContainText("47%");
+});
+
+test("shows a Claude.ai five-hour plan window only in the Usage popover", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsagePlanWindow");
+    if (typeof update !== "function") throw new Error("Plan window update is unavailable");
+    update();
+  });
+
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage).toBeVisible();
+  await expect(usage).toHaveText("CH 99% · $1.373");
+  await expect(usage).not.toContainText("5-hour");
+  await expect(usage).not.toContainText("45%");
+
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="Thread Usage details"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("5-hour limit");
+  await expect(popover).toContainText("45%");
+  await expect(popover).not.toContainText("7-day limit");
 });

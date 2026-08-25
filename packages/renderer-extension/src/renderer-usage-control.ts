@@ -40,6 +40,24 @@ export function formatRendererCreditsPercent(value: number): string {
   return `${decimal(value, 1)}%`;
 }
 
+export function formatRendererPlanReset(unixSeconds: number): string {
+  const date = new Date(unixSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function formatRendererPlanWindow(usedPercent: number, resetsAtUnix?: number): string {
+  const percent = formatRendererCreditsPercent(usedPercent);
+  if (resetsAtUnix === undefined) return percent;
+  const reset = formatRendererPlanReset(resetsAtUnix);
+  return reset.length > 0 ? `${percent} · ${reset}` : percent;
+}
+
 export function rendererUsageTriggerMaxWidth(): string {
   return "min(180px, 30vw)";
 }
@@ -106,6 +124,20 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | nul
       popover,
       "Input / output",
       `${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
+    );
+  }
+  if (usage?.planFiveHourUsedPercent !== undefined) {
+    addDetailRow(
+      popover,
+      "5-hour limit",
+      formatRendererPlanWindow(usage.planFiveHourUsedPercent, usage.planFiveHourResetsAtUnix),
+    );
+  }
+  if (usage?.planSevenDayUsedPercent !== undefined) {
+    addDetailRow(
+      popover,
+      "7-day limit",
+      formatRendererPlanWindow(usage.planSevenDayUsedPercent, usage.planSevenDayResetsAtUnix),
     );
   }
   if (usage?.totalCostUsd !== undefined) {

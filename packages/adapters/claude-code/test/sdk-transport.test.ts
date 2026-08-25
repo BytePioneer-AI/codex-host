@@ -28,11 +28,18 @@ class FakeQuery {
     ],
   }));
   readonly interrupt = vi.fn(async () => undefined);
-  readonly getContextUsage = vi.fn(async () => ({
-    totalTokens: 40,
-    maxTokens: 200,
-    model: "runtime-model",
-  }));
+  readonly getContextUsage = vi.fn(
+    async (): Promise<{
+      totalTokens: number;
+      maxTokens: number;
+      model: string;
+      apiUsage?: unknown;
+    }> => ({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+    }),
+  );
   readonly setModel = vi.fn(async () => undefined);
   readonly applyFlagSettings = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
@@ -80,6 +87,7 @@ function fixture(
   });
   const onFault = vi.fn();
   const onPermissionModeChanged = vi.fn();
+  const onPlanLimit = vi.fn();
   const transport = new ClaudeSdkTransport({
     command: process.execPath,
     ...(environment ? { environment } : {}),
@@ -91,12 +99,14 @@ function fixture(
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
+    onPlanLimit,
     queryFactory,
   });
   return {
     fakeQuery,
     onFault,
     onPermissionModeChanged,
+    onPlanLimit,
     queryFactory,
     queryInput: () => {
       if (!queryInput) throw new Error("SDK query was not created");
@@ -192,6 +202,108 @@ describe("ClaudeSdkTransport context Usage", () => {
 
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
+    await value.transport.close();
+  });
+
+  it("includes valid apiUsage and omits it when malformed", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: {
+        input_tokens: 10,
+        output_tokens: 45,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 990,
+      },
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: {
+        inputTokens: 10,
+        outputTokens: 45,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 990,
+      },
+    });
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: { input_tokens: -1, output_tokens: 45 },
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+    });
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: null,
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+    });
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport plan-limit forwarding", () => {
+  it("forwards a tracked rate-limit event regardless of active Turn state", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.push({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        rateLimitType: "five_hour",
+        unifiedWindows: {
+          five_hour: { utilization: 0.45, resetsAt: 1_787_674_200 },
+          seven_day: { utilization: 0.1, resetsAt: 1_787_940_000 },
+        },
+      },
+      uuid: "00000000-0000-4000-8000-000000000099",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledOnce());
+    expect(value.onPlanLimit).toHaveBeenCalledWith({
+      fiveHour: { utilizationPercent: 45, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 10, resetsAtUnix: 1_787_940_000 },
+    });
+    await value.transport.close();
+  });
+
+  it("does not forward an untracked rate-limit type", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000023",
+      (event) => events.push(event),
+    );
+    value.fakeQuery.push({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", rateLimitType: "overage", utilization: 45 },
+      uuid: "00000000-0000-4000-8000-000000000099",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+    await turn;
+    expect(value.onPlanLimit).not.toHaveBeenCalled();
     await value.transport.close();
   });
 });
@@ -902,6 +1014,7 @@ describe("ClaudeSdkTransport Model control", () => {
       closeTimeoutMs: 100,
       onPermissionModeChanged: value.onPermissionModeChanged,
       onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
       queryFactory: value.queryFactory,
     });
 

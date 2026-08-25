@@ -19,6 +19,10 @@ export const threadUsageSnapshotSchema = z
     cacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     contextWindowTokens: nonNegativeSafeIntegerSchema.optional(),
     contextUsedTokens: nonNegativeSafeIntegerSchema.optional(),
+    planFiveHourUsedPercent: cacheHitRatePercentSchema.optional(),
+    planFiveHourResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
+    planSevenDayUsedPercent: cacheHitRatePercentSchema.optional(),
+    planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
   })
   .strict()
   .superRefine((usage, context) => {
@@ -39,6 +43,20 @@ export const threadUsageSnapshotSchema = z
         code: "custom",
         message: "Thread Usage contextWindowTokens must be greater than zero",
         path: ["contextWindowTokens"],
+      });
+    }
+    if (usage.planFiveHourResetsAtUnix !== undefined && usage.planFiveHourUsedPercent === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage planFiveHourResetsAtUnix must be provided with planFiveHourUsedPercent",
+        path: ["planFiveHourResetsAtUnix"],
+      });
+    }
+    if (usage.planSevenDayResetsAtUnix !== undefined && usage.planSevenDayUsedPercent === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage planSevenDayResetsAtUnix must be provided with planSevenDayUsedPercent",
+        path: ["planSevenDayResetsAtUnix"],
       });
     }
   });

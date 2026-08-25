@@ -33,6 +33,7 @@ import {
   type HostItemOutcome,
   type HostQuestionInteraction,
   type HostReasoningItem,
+  type HostUsage,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -99,6 +100,7 @@ import type {
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
+  ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
@@ -307,6 +309,21 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/**
+ * Cache hit rate for the latest request only, never a Session cumulative value.
+ * Every addend must be present; the denominator must be positive.
+ */
+function claudeCacheHitRatePercent(usage: {
+  inputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}): number | undefined {
+  const denominator =
+    usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
+  if (denominator <= 0) return undefined;
+  return Math.min(100, Math.max(0, (usage.cacheReadInputTokens / denominator) * 100));
+}
+
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
@@ -347,6 +364,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #statePublished = false;
   #transport: ClaudeTurnTransport | null = null;
   #usageGeneration = 0;
+  #latestUsage: HostUsage | null = null;
   #autonomousOrdinal = 0;
   #occupancy = new ClaudeBackgroundOccupancy();
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -1029,6 +1047,7 @@ class ClaudeHarnessSession implements HarnessSession {
       permissionMode,
       onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
       onFault: () => this.#fault(faultError()),
+      onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
     });
     transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
     transport.setIdleTurnHandler({
@@ -1208,6 +1227,9 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "interaction.closed":
         this.#closeInteraction(active, event.requestId, event.reason);
+        return;
+      case "usage.result":
+        this.#applyResultUsage(active, event);
         return;
     }
   }
@@ -1562,16 +1584,89 @@ class ClaudeHarnessSession implements HarnessSession {
           return;
         }
         if (context === null) continue;
-        const usage = parseHostUsage({
-          contextUsedTokens: context.usedTokens,
-          contextWindowTokens: context.maxTokens,
-        });
-        this.#event({ type: "session.usage.changed", observedForTurnId: turnId, usage });
+        const cacheHitRatePercent = context.apiUsage
+          ? claudeCacheHitRatePercent(context.apiUsage)
+          : undefined;
+        this.#mergeAndPublishUsage(
+          {
+            contextUsedTokens: context.usedTokens,
+            contextWindowTokens: context.maxTokens,
+            ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
+          },
+          turnId,
+        );
         return;
       } catch {
         // Context Usage is an independent, best-effort projection.
       }
     }
+  }
+
+  #applyResultUsage(
+    active: ActiveTurn,
+    event: Extract<ClaudeTurnEvent, { type: "usage.result" }>,
+  ): void {
+    const delta: Partial<HostUsage> = {};
+    if (event.totalCostUsd !== undefined) delta.totalCostUsd = event.totalCostUsd;
+    if (event.modelUsage !== undefined) {
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const model of event.modelUsage) {
+        inputTokens += model.inputTokens;
+        outputTokens += model.outputTokens;
+      }
+      if (Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)) {
+        delta.inputTokens = inputTokens;
+        delta.outputTokens = outputTokens;
+      }
+    }
+    if (event.lastRequestUsage) {
+      const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
+      if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
+    }
+    this.#mergeAndPublishUsage(delta, active.command.turnId);
+  }
+
+  #handlePlanLimit(planLimit: ClaudePlanLimitEvent): void {
+    if (this.#phase !== "open") return;
+    const delta: Partial<HostUsage> = {};
+    if (planLimit.fiveHour) {
+      delta.planFiveHourUsedPercent = planLimit.fiveHour.utilizationPercent;
+      if (planLimit.fiveHour.resetsAtUnix !== undefined) {
+        delta.planFiveHourResetsAtUnix = planLimit.fiveHour.resetsAtUnix;
+      }
+    }
+    if (planLimit.sevenDay) {
+      delta.planSevenDayUsedPercent = planLimit.sevenDay.utilizationPercent;
+      if (planLimit.sevenDay.resetsAtUnix !== undefined) {
+        delta.planSevenDayResetsAtUnix = planLimit.sevenDay.resetsAtUnix;
+      }
+    }
+    this.#mergeAndPublishUsage(delta, this.#active?.command.turnId);
+  }
+
+  /**
+   * Every Usage observation replaces `#latestUsage` in full: unaffected fields
+   * from the prior snapshot are carried forward, never cleared by an
+   * incomplete new observation.
+   */
+  #mergeAndPublishUsage(
+    delta: Partial<HostUsage>,
+    turnId: TurnStartCommand["turnId"] | undefined,
+  ): void {
+    if (Object.keys(delta).length === 0) return;
+    let usage: HostUsage;
+    try {
+      usage = parseHostUsage({ ...(this.#latestUsage ?? {}), ...delta });
+    } catch {
+      return;
+    }
+    this.#latestUsage = usage;
+    this.#event({
+      type: "session.usage.changed",
+      ...(turnId !== undefined ? { observedForTurnId: turnId } : {}),
+      usage,
+    });
   }
 
   #finishFailed(active: ActiveTurn, error: HarnessError): void {

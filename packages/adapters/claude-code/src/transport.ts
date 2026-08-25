@@ -110,12 +110,45 @@ export type ClaudeTurnEvent =
       type: "interaction.closed";
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
+    }
+  | {
+      type: "usage.result";
+      totalCostUsd?: number;
+      modelUsage?: Array<{ inputTokens: number; outputTokens: number }>;
+      lastRequestUsage?: {
+        inputTokens: number;
+        cacheCreationInputTokens: number;
+        cacheReadInputTokens: number;
+      };
     };
 
 export interface ClaudeTransportContextUsage {
   usedTokens: number;
   maxTokens: number;
   model: string;
+  apiUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  };
+}
+
+export interface ClaudePlanLimitWindow {
+  utilizationPercent: number;
+  resetsAtUnix?: number;
+}
+
+/**
+ * Claude.ai subscription plan-window utilization, forwarded from `rate_limit_event`
+ * regardless of whether a Turn is active on the transport. One native event can
+ * report both windows at once (Claude Code sends them together under
+ * `rate_limit_info.unifiedWindows`), so both are optional on the same event
+ * rather than modeled as one event per window.
+ */
+export interface ClaudePlanLimitEvent {
+  fiveHour?: ClaudePlanLimitWindow;
+  sevenDay?: ClaudePlanLimitWindow;
 }
 
 export interface ClaudeAutonomousTurn {
@@ -172,6 +205,7 @@ export interface ClaudeTransportFactoryInput {
   permissionMode: ClaudePermissionMode;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
+  onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
 }
 
 export interface ClaudeModelInspector {

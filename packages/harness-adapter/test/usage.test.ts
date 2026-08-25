@@ -38,4 +38,33 @@ describe("Harness Usage", () => {
   ])("rejects invalid snapshots %#", (input) => {
     expect(() => parseHostUsage(input)).toThrow();
   });
+
+  it("accepts optional Claude.ai plan windows alongside cache hit rate and cost", () => {
+    const input = {
+      cacheHitRatePercent: 99,
+      totalCostUsd: 1.373,
+      planFiveHourUsedPercent: 45,
+      planFiveHourResetsAtUnix: 1_756_130_400,
+      planSevenDayUsedPercent: 12.5,
+    };
+    expect(parseHostUsage(input)).toEqual(input);
+  });
+
+  it("accepts a plan used percent with no reset", () => {
+    expect(parseHostUsage({ planFiveHourUsedPercent: 45 })).toEqual({
+      planFiveHourUsedPercent: 45,
+    });
+  });
+
+  it.each([
+    { planFiveHourResetsAtUnix: 1_756_130_400 },
+    { planSevenDayResetsAtUnix: 1_756_130_400 },
+    { planFiveHourUsedPercent: -0.1 },
+    { planFiveHourUsedPercent: 100.1 },
+    { planSevenDayUsedPercent: Number.NaN },
+    { planFiveHourResetsAtUnix: -1, planFiveHourUsedPercent: 45 },
+    { planFiveHourResetsAtUnix: 1.5, planFiveHourUsedPercent: 45 },
+  ])("rejects invalid plan-window snapshots %#", (input) => {
+    expect(() => parseHostUsage(input)).toThrow();
+  });
 });

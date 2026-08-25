@@ -71,7 +71,7 @@ git diff --check
 
 For native RPC changes, also verify the request and event sequence against the real Harness when available.
 
-## Current examples: Pi and Grok `/compact`
+## Current examples: Pi, Grok, and Claude `/compact`
 
 ```text
 Renderer command catalog
@@ -79,14 +79,16 @@ Renderer command catalog
   -> independent command popover
   -> Host command/execute
   -> owning Adapter
-       Pi:   native { type: "compact" }
-       Grok: x.ai/compact_conversation { sessionId, userContext? }
+       Pi:     native { type: "compact" }
+       Grok:   x.ai/compact_conversation { sessionId, userContext? }
+       Claude: dedicated compact transport (`/compact` on the SDK stream)
   -> standard contextCompaction projection
   -> temporary Turn cleanup
 ```
 
-Grok maps optional trailing text to native `userContext`. Both commands invoke
-Harness-native operations and must not be sent as normal Prompts.
+Grok maps optional trailing text to native `userContext`. Claude maps it to
+`/compact` custom summarization instructions. These commands invoke
+Harness-native operations and must not be submitted as Host text Turns.
 
 ## Boundaries
 

@@ -140,6 +140,10 @@ export interface ClaudeTurnTransport {
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
   setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
+  compact(
+    customInstructions: string | undefined,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult>;
   runTurn(
     text: string,
     userMessageId: string,

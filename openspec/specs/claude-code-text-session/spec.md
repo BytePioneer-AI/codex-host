@@ -77,7 +77,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** each caller-assigned User UUID is submitted once
 
 ### Requirement: Claude Native history maps deterministically
-`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
+`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
 
 #### Scenario: Completed Claude history is read repeatedly
 - **WHEN** a Claude Session containing completed text Turns and visible Assistant thinking is read more than once
@@ -94,6 +94,11 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **THEN** those native control records SHALL NOT create Host Turns
 - **AND** the surrounding human Turns SHALL retain their Native Turn identities and order
 
+#### Scenario: Native history contains compact-command records
+- **WHEN** Claude history contains a `/compact` command envelope adjacent to human conversation
+- **THEN** that native control record SHALL NOT create a Host Turn
+- **AND** the surrounding human Turns SHALL retain their Native Turn identities and order
+
 #### Scenario: Native history contains background task-notification records
 - **WHEN** Claude history contains a User record whose origin is `task-notification` or whose text is a complete `<task-notification>` wrapper
 - **THEN** that native control record SHALL NOT create a Host Turn or appear as User input
@@ -101,7 +106,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** ordinary human text that only mentions these tags SHALL remain eligible for projection
 
 #### Scenario: Native history contains another human slash command
-- **WHEN** a human User record contains a supported slash-command envelope other than the native Model-selection control record
+- **WHEN** a human User record contains a supported slash-command envelope other than the native Model-selection or Compact control record
 - **THEN** the command prompt SHALL remain eligible to create a Host Turn
 - **AND** transcript tags SHALL NOT cause unrelated human text to be discarded
 
@@ -282,6 +287,37 @@ The Claude Code Adapter MUST read current context Usage only from the active off
 - **WHEN** a context read started for an earlier Turn completes after another Turn starts, Session close begins, or the Session faults
 - **THEN** the Adapter MUST discard that stale result
 - **AND** it MUST NOT replace Usage owned by the newer Session boundary
+
+### Requirement: Claude exposes compact as a registered Harness command
+
+The Claude Code Adapter MUST publish `claude.compact` in the Session command catalog with invocation `/compact` and argument mode `text`. Execution MUST use the Adapter's dedicated compact transport, MUST project native compaction start and terminal outcomes as the standard Context Compaction Item on a temporary Turn, and MUST NOT assign a persisted Native Turn identity. The Adapter MUST reject unknown command IDs, invalid arguments, and busy Sessions.
+
+#### Scenario: Catalog lists claude.compact
+
+- **WHEN** a Claude Session lists commands
+- **THEN** the catalog contains `claude.compact`
+- **AND** the command declares `/compact` and argument mode `text`
+
+#### Scenario: Manual compact uses native compact rather than a Host text Turn
+
+- **WHEN** `claude.compact` is executed with optional text `Keep implementation details`
+- **THEN** the Adapter starts a temporary Turn
+- **AND** the Transport receives compact with that custom instruction
+- **AND** it does not submit a Host text Turn
+- **AND** Codex projects `contextCompaction` started and succeeded
+- **AND** the Turn completes without a Native Turn identity
+
+#### Scenario: Unknown or invalid compact is rejected
+
+- **WHEN** command execution references an ID other than `claude.compact`, a non-string `text` argument, or an unknown argument key
+- **THEN** the Adapter rejects the request
+- **AND** no compact operation is started
+
+#### Scenario: Compact is rejected during an active Turn
+
+- **WHEN** `claude.compact` is executed while a Claude Turn is running
+- **THEN** the Adapter rejects the request as session busy
+- **AND** the running Turn is left unchanged
 
 ### Requirement: Claude Catalog uses official runtime data without configuration parsing
 Claude Adapter SHALL derive selectable identity from official SDK `ModelInfo.value`, optional initial resolved display from structured SDK fields, and current actual display from stable structured current-context Model readback. It MUST NOT read `settings.json`, maintain a static first-party manifest, parse human descriptions, or advertise Models absent from the runtime Catalog.

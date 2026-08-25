@@ -313,6 +313,49 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
+
+  it("sends compact as /compact on the SDK input stream", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const compact = value.transport.compact("Keep implementation details", (event) =>
+      events.push(event),
+    );
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("SDK compact prompt stream was not configured");
+    }
+    const submitted = await prompt[Symbol.asyncIterator]().next();
+    expect(submitted.value).toMatchObject({
+      type: "user",
+      message: { role: "user", content: "/compact Keep implementation details" },
+    });
+
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: "compacting",
+      uuid: "00000000-0000-4000-8000-000000000040",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: null,
+      compact_result: "success",
+      uuid: "00000000-0000-4000-8000-000000000041",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    completeTurn(value.fakeQuery);
+
+    await expect(compact).resolves.toEqual({ status: "succeeded" });
+    expect(events).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "succeeded" },
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
 });
 
 describe("ClaudeSdkTransport Tool interpretation", () => {

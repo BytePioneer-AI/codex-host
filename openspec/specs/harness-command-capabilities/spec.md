@@ -16,6 +16,12 @@ A Harness Adapter MUST publish a command catalog containing stable command IDs, 
 - **THEN** the catalog contains the registered `pi.compact` command
 - **AND** the command declares `/compact` and its supported argument mode
 
+#### Scenario: Claude Code exposes compact
+
+- **WHEN** the Claude Code Adapter lists commands
+- **THEN** the catalog contains the registered `claude.compact` command
+- **AND** the command declares `/compact` and its supported argument mode
+
 ### Requirement: Host validates and routes registered commands
 
 The Host MUST obtain the current Harness command catalog before execution, MUST reject unknown command IDs, and MUST validate arguments at the command boundary. The Host MUST NOT provide an arbitrary native RPC passthrough.
@@ -36,13 +42,19 @@ The Adapter MUST translate a registered command into the Harness-native operatio
 - **THEN** the Pi Adapter sends Pi's native `compact` request
 - **AND** it does not send `/compact` as a normal Prompt
 
+#### Scenario: Claude compact uses dedicated compact transport
+
+- **WHEN** `claude.compact` is executed
+- **THEN** the Claude Adapter calls the dedicated compact transport
+- **AND** it does not submit `/compact` as a Host text Turn
+
 ### Requirement: Command UI and lifecycle follow Host contracts
 
 A command MAY be discovered by the Renderer through the Host command catalog. The Renderer SHALL present discovered commands through an independent Composer Harness Commands control rather than mutating the Codex-native Slash command list. Its popover SHALL own its layout, scrolling, focus, and keyboard navigation. If execution produces visible lifecycle events, those events MUST use existing Host projection contracts. Temporary command projection Turns MUST NOT be persisted as ordinary conversation history unless the command explicitly requires persistence.
 
 #### Scenario: Manual compaction is projected without a user Turn
 
-- **WHEN** Pi emits native compaction start and end events for `pi.compact`
+- **WHEN** Pi or Claude Code emits native compaction start and end events for their compact command
 - **THEN** codexhost projects the standard context-compaction UI lifecycle
 - **AND** the temporary command Turn is not added to ordinary Thread history
 

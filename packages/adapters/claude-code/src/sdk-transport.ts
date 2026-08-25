@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import {
   query,
@@ -454,6 +455,17 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     await activeQuery.setPermissionMode(permissionMode);
     this.#permissionMode = permissionMode;
+  }
+
+  compact(
+    customInstructions: string | undefined,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
+    return this.runTurn(
+      customInstructions ? `/compact ${customInstructions}` : "/compact",
+      randomUUID(),
+      onEvent,
+    );
   }
 
   runTurn(

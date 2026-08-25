@@ -231,6 +231,11 @@ describe("Claude history mapping", () => {
       toolResult,
       message(
         "user",
+        "compact-command",
+        "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>Keep implementation details</command-args>",
+      ),
+      message(
+        "user",
         "diagnose-command",
         "<command-message>diagnose</command-message>\n<command-name>/diagnose</command-name>\n<command-args>auth</command-args>",
       ),

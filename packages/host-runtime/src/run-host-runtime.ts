@@ -16,12 +16,14 @@ import {
 import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
+  officialLoopbackListenerArguments,
   officialListenerArgumentsForRemoteListener,
   prepareRemoteAppServerSocketDirectory,
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
 import {
+  createLoopbackOfficialAppServerListener,
   createRemoteOfficialAppServerListener,
   remoteOfficialAppServerSocketPath,
   type RemoteOfficialAppServerExit,
@@ -45,6 +47,12 @@ export function createRemoteOfficialAppServerPlan(
     socketPath,
     listenerArguments: officialListenerArgumentsForRemoteListener(arguments_, socketPath),
   };
+}
+
+export function createRemoteControlOfficialAppServerPlan(arguments_: readonly string[]): {
+  listenerArguments: string[];
+} {
+  return { listenerArguments: officialLoopbackListenerArguments(arguments_) };
 }
 
 export function hasLauncherManagedUpdateRuntime(
@@ -110,6 +118,20 @@ export async function runHostRuntime(input: {
       return host.run();
     }
 
+    const officialPlan = createRemoteControlOfficialAppServerPlan(
+      remoteControlPlan.officialArguments,
+    );
+    const officialListener = createLoopbackOfficialAppServerListener({
+      stockCodexPath,
+      arguments: officialPlan.listenerArguments,
+      environment: officialEnvironment(environment),
+      diagnosticOutput: process.stderr,
+    });
+    let officialEndpoint: string | null = null;
+    const createOfficialConnection = () => {
+      if (!officialEndpoint) throw new Error("Shared official app-server endpoint is unavailable");
+      return createRemoteOfficialAppServerConnection(officialEndpoint);
+    };
     const mappingStore = createProductionExternalThreadStore(environment);
     await mappingStore.initialize();
     const externalAdapters = createExternalHarnessAdapters(environment);
@@ -121,6 +143,7 @@ export async function runHostRuntime(input: {
       externalAdapters,
       mappingStore,
       closeMappingStoreOnExit: false,
+      createOfficialConnection,
       ...(updateCoordinator ? { updateCoordinator } : {}),
     });
     const listener = createRemoteAppServerWebSocketListener({
@@ -131,11 +154,7 @@ export async function runHostRuntime(input: {
         void prefetchClaudeCodeModelCatalog(sessionAdapters);
         return new AppServerHost({
           stockCodexPath,
-          // Unlike the Unix listener, this Windows session does not connect to
-          // a shared native listener. Preserve the original app-server argv so
-          // the per-connection official child starts in protocol mode instead
-          // of entering the interactive TUI with an unusable stdio transport.
-          arguments: remoteControlPlan.officialArguments,
+          arguments: [],
           defaultAgent,
           environment,
           desktopInput,
@@ -144,6 +163,7 @@ export async function runHostRuntime(input: {
           externalAdapters: sessionAdapters,
           mappingStore,
           closeMappingStoreOnExit: false,
+          createOfficialConnection,
           ...(updateCoordinator ? { updateCoordinator } : {}),
         });
       },
@@ -151,6 +171,7 @@ export async function runHostRuntime(input: {
     void prefetchClaudeCodeModelCatalog(externalAdapters);
     let hostStarted = false;
     try {
+      officialEndpoint = await officialListener.listen();
       await listener.listen();
       await publishRemoteControlAppServerDescriptor(remoteControlPlan);
       hostStarted = true;
@@ -164,7 +185,11 @@ export async function runHostRuntime(input: {
       try {
         await listener.close();
       } finally {
-        await mappingStore.close();
+        try {
+          await officialListener.close();
+        } finally {
+          await mappingStore.close();
+        }
       }
     }
   }

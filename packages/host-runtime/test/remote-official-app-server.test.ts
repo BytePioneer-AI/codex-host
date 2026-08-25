@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createLoopbackOfficialAppServerListener,
   createRemoteOfficialAppServerListener,
   remoteOfficialAppServerSocketPath,
 } from "../src/remote-official-app-server.js";
@@ -109,5 +110,39 @@ describe("shared remote official app-server", () => {
 
     expect(child.kill.mock.calls.map(([signal]) => signal)).toEqual(["SIGTERM", "SIGKILL"]);
     await expect(listener.closed).resolves.toEqual({ code: null, signal: "SIGKILL" });
+  });
+
+  it("discovers one dynamic loopback listener and reuses it for every client", async () => {
+    const child = new FakeOfficialListenerProcess();
+    const spawnOfficial = vi.fn(
+      () => child as unknown as ReturnType<typeof spawn> & ChildProcess,
+    ) as unknown as typeof spawn;
+    const listener = createLoopbackOfficialAppServerListener({
+      stockCodexPath: "C:\\synthetic\\codex.exe",
+      arguments: ["app-server", "--listen", "ws://127.0.0.1:0"],
+      environment: { PATH: "C:\\Windows\\System32" },
+      diagnosticOutput: new PassThrough(),
+      spawnOfficial,
+    });
+
+    const first = listener.listen();
+    child.stderr.write("codex app-server (WebSockets)\n");
+    child.stderr.write("  listening on: ws://127.0.0.1:43821\n");
+
+    await expect(first).resolves.toBe("ws://127.0.0.1:43821");
+    await expect(listener.listen()).resolves.toBe("ws://127.0.0.1:43821");
+    expect(spawnOfficial).toHaveBeenCalledTimes(1);
+    expect(spawnOfficial).toHaveBeenCalledWith(
+      "C:\\synthetic\\codex.exe",
+      ["app-server", "--listen", "ws://127.0.0.1:0"],
+      expect.objectContaining({
+        env: { PATH: "C:\\Windows\\System32" },
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      }),
+    );
+
+    await listener.close();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 });

@@ -24,6 +24,7 @@ const APP_SERVER_VALUE_OPTIONS = new Set([
   "--config",
   "--enable",
   "--disable",
+  "--code-mode-host",
   "--listen",
   ...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS,
 ]);
@@ -224,6 +225,46 @@ export function officialListenerArgumentsForRemoteListener(
   }
   if (listenerRewritten) return result;
   throw new Error("Unix listener invocation omitted --listen");
+}
+
+export function officialLoopbackListenerArguments(arguments_: readonly string[]): string[] {
+  const appServerIndex = appServerSubcommandIndex(arguments_);
+  if (appServerIndex === null) throw new Error("Expected an app-server invocation");
+  const result = [...arguments_.slice(0, appServerIndex + 1), "--listen", "ws://127.0.0.1:0"];
+  for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (!argument) throw new Error("Expected an app-server option");
+    if (argument === "--listen" || APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS.has(argument)) {
+      index += 1;
+      if (index >= arguments_.length) throw new Error(`${argument} requires a value`);
+      continue;
+    }
+    if (
+      argument.startsWith("--listen=") ||
+      [...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS].some((option) =>
+        argument.startsWith(`${option}=`),
+      ) ||
+      argument === "--stdio"
+    ) {
+      continue;
+    }
+    if (APP_SERVER_VALUE_OPTIONS.has(argument)) {
+      const value = arguments_[index + 1];
+      if (!value) throw new Error(`${argument} requires a value`);
+      result.push(argument, value);
+      index += 1;
+      continue;
+    }
+    if (
+      [...APP_SERVER_VALUE_OPTIONS].some((option) => argument.startsWith(`${option}=`)) ||
+      APP_SERVER_FLAG_OPTIONS.has(argument)
+    ) {
+      result.push(argument);
+      continue;
+    }
+    throw new Error(`Unsupported app-server argument for a shared listener: ${argument}`);
+  }
+  return result;
 }
 
 function rawDataBuffer(data: RawData): Buffer {

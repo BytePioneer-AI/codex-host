@@ -466,6 +466,7 @@ describe("Renderer draft prewarm policy", () => {
     const manager = requestManagerFixture();
     const originalNotification = manager.onNotification as ReturnType<typeof vi.fn>;
     const originalServerRequest = manager.onRequest as ReturnType<typeof vi.fn>;
+    const originalServerResponse = manager.dispatchAppServerResponse as ReturnType<typeof vi.fn>;
     const { bridge, directSend } = remoteRequestBridgeFixture();
     const notifications = remoteNotificationTargetFixture();
     const target = notifications.target;
@@ -557,13 +558,29 @@ describe("Renderer draft prewarm policy", () => {
       method: "item/commandExecution/requestApproval",
       params: { threadId: "external-1" },
     });
-    expect(originalServerRequest).toHaveBeenCalledWith({
-      id: -71,
+    const bridgedServerRequest = originalServerRequest.mock.lastCall?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(bridgedServerRequest).toMatchObject({
       method: "item/commandExecution/requestApproval",
       params: { threadId: "external-1" },
     });
+    expect(bridgedServerRequest.id).toEqual(expect.any(String));
+    expect(bridgedServerRequest.id).not.toBe(-71);
+
     manager.dispatchAppServerResponse("item/commandExecution/requestApproval", {
       id: -71,
+      result: { decision: "decline" },
+    });
+    expect(originalServerResponse).toHaveBeenCalledWith("item/commandExecution/requestApproval", {
+      id: -71,
+      result: { decision: "decline" },
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(4);
+
+    manager.dispatchAppServerResponse("item/commandExecution/requestApproval", {
+      id: bridgedServerRequest.id,
       result: { decision: "accept" },
     });
     await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(5));

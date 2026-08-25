@@ -16,6 +16,12 @@ export interface RemoteOfficialAppServerListener {
   close(): Promise<void>;
 }
 
+export interface LoopbackOfficialAppServerListener {
+  readonly closed: Promise<RemoteOfficialAppServerExit>;
+  listen(): Promise<string>;
+  close(): Promise<void>;
+}
+
 interface UnixFileIdentity {
   dev: number;
   ino: number;
@@ -27,6 +33,7 @@ type WaitUntilReady = (
 ) => Promise<void>;
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+const DEFAULT_LISTEN_TIMEOUT_MS = 10_000;
 
 export function remoteOfficialAppServerSocketPath(
   desktopControlSocketPath: string,
@@ -203,6 +210,133 @@ export function createRemoteOfficialAppServerListener(input: {
           return;
         }
         if (await terminate(child)) await removeOwnedSocket();
+      })();
+      return closing;
+    },
+  };
+}
+
+function loopbackEndpointFromStderrLine(line: string): string | null {
+  const match = /^\s*listening on:\s+(ws:\/\/127\.0\.0\.1:(\d+))\s*$/u.exec(line);
+  if (!match?.[1] || !match[2]) return null;
+  const port = Number.parseInt(match[2], 10);
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? match[1] : null;
+}
+
+export function createLoopbackOfficialAppServerListener(input: {
+  stockCodexPath: string;
+  arguments: string[];
+  environment: NodeJS.ProcessEnv;
+  diagnosticOutput: Writable;
+  spawnOfficial?: typeof spawn;
+  closeTimeoutMs?: number;
+  listenTimeoutMs?: number;
+}): LoopbackOfficialAppServerListener {
+  const spawnOfficial = input.spawnOfficial ?? spawn;
+  const closeTimeoutMs = input.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+  const listenTimeoutMs = input.listenTimeoutMs ?? DEFAULT_LISTEN_TIMEOUT_MS;
+  const closed = Promise.withResolvers<RemoteOfficialAppServerExit>();
+  let child: ChildProcess | null = null;
+  let listening: Promise<string> | null = null;
+  let closing: Promise<void> | null = null;
+  let closeRequested = false;
+  let exitResult: RemoteOfficialAppServerExit | null = null;
+
+  const settleExit = (result: RemoteOfficialAppServerExit): void => {
+    if (exitResult !== null) return;
+    exitResult = result;
+    closed.resolve(result);
+  };
+
+  const terminate = async (spawned: ChildProcess): Promise<boolean> => {
+    if (exitResult !== null) return true;
+    spawned.kill("SIGTERM");
+    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
+    spawned.kill("SIGKILL");
+    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
+    input.diagnosticOutput.write(
+      "codexhost shared loopback official app-server did not exit after SIGKILL\n",
+    );
+    return false;
+  };
+
+  return {
+    closed: closed.promise,
+    listen() {
+      if (listening) return listening;
+      listening = (async () => {
+        if (closeRequested) throw new Error("Shared official app-server is already closed");
+        const ready = Promise.withResolvers<string>();
+        let readySettled = false;
+        let pendingStderr = "";
+        const settleReady = (endpoint: string): void => {
+          if (readySettled) return;
+          readySettled = true;
+          ready.resolve(endpoint);
+        };
+        const failReady = (error: Error): void => {
+          if (readySettled) return;
+          readySettled = true;
+          ready.reject(error);
+        };
+        const spawned = spawnOfficial(input.stockCodexPath, input.arguments, {
+          env: input.environment,
+          stdio: ["ignore", "ignore", "pipe"],
+          windowsHide: true,
+        });
+        child = spawned;
+        spawned.stderr?.on("data", (chunk: Buffer | string) => {
+          input.diagnosticOutput.write(chunk);
+          pendingStderr += chunk.toString();
+          while (true) {
+            const newline = pendingStderr.indexOf("\n");
+            if (newline < 0) break;
+            const line = pendingStderr.slice(0, newline).replace(/\r$/u, "");
+            pendingStderr = pendingStderr.slice(newline + 1);
+            const endpoint = loopbackEndpointFromStderrLine(line);
+            if (endpoint) settleReady(endpoint);
+          }
+        });
+        spawned.once("error", (error) => {
+          settleExit({ code: null, signal: null, error });
+          failReady(error);
+        });
+        spawned.once("exit", (code, signal) => {
+          settleExit({ code, signal });
+          failReady(
+            new Error(
+              `Shared official app-server exited before its endpoint was ready (code=${String(code)}, signal=${String(signal)})`,
+            ),
+          );
+        });
+        let timer: NodeJS.Timeout | null = null;
+        try {
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`loopback endpoint was not ready after ${listenTimeoutMs}ms`)),
+              listenTimeoutMs,
+            );
+            timer.unref();
+          });
+          return await Promise.race([ready.promise, timeout]);
+        } catch (error) {
+          await terminate(spawned);
+          throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      })();
+      return listening;
+    },
+    close() {
+      if (closing) return closing;
+      closeRequested = true;
+      closing = (async () => {
+        if (!child) {
+          settleExit({ code: 0, signal: null });
+          return;
+        }
+        await terminate(child);
       })();
       return closing;
     },

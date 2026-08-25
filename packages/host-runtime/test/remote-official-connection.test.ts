@@ -31,6 +31,42 @@ async function readFrame(stream: Readable): Promise<string> {
 }
 
 describe("remote official app-server connection", () => {
+  it("connects multiple LF-JSON clients to one loopback WebSocket listener", async () => {
+    const server = createServer();
+    const webSockets = new WebSocketServer({ server });
+    webSockets.on("connection", (webSocket) => {
+      webSocket.on("message", (data) => webSocket.send(data, { binary: false }));
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+      const endpoint = `ws://127.0.0.1:${address.port}`;
+      const first = await createRemoteOfficialAppServerConnection(endpoint);
+      const second = await createRemoteOfficialAppServerConnection(endpoint);
+      const firstFrame = readFrame(first.stdout);
+      const secondFrame = readFrame(second.stdout);
+
+      first.stdin.write('{"id":1,"method":"initialize"}\n');
+      second.stdin.write('{"id":2,"method":"thread/resume"}\n');
+
+      await expect(firstFrame).resolves.toBe('{"id":1,"method":"initialize"}');
+      await expect(secondFrame).resolves.toBe('{"id":2,"method":"thread/resume"}');
+      expect(webSockets.clients.size).toBe(2);
+      first.close();
+      second.close();
+      await Promise.all([first.closed, second.closed]);
+    } finally {
+      for (const webSocket of webSockets.clients) webSocket.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("matches the native client handshake without offering permessage-deflate", async () => {
     const socketPath = testSocketPath();
     const server = createServer();

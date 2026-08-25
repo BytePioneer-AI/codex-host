@@ -26,7 +26,7 @@ function errorMessage(error: unknown): string {
  * assign native owner and observer roles.
  */
 export async function createRemoteOfficialAppServerConnection(
-  socketPath: string,
+  endpoint: string,
 ): Promise<OfficialAppServerConnection> {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -36,13 +36,29 @@ export async function createRemoteOfficialAppServerConnection(
   let pending = Buffer.alloc(0);
   let outputPaused = false;
 
-  const socket = new WebSocket("ws://localhost/", {
-    createConnection: () => net.createConnection(socketPath),
+  const webSocketOptions = {
     maxPayload: 128 * 1024 * 1024,
     // The native Codex daemon client uses tokio-tungstenite without offering
-    // permessage-deflate. Keep the same handshake for the control socket.
+    // permessage-deflate. Keep the same handshake for every private listener.
     perMessageDeflate: false,
-  });
+  } as const;
+  let socket: WebSocket;
+  if (endpoint.startsWith("ws://")) {
+    const url = new URL(endpoint);
+    if (
+      url.protocol !== "ws:" ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      !url.port
+    ) {
+      throw new Error("Shared official app-server URL must use a loopback WebSocket endpoint");
+    }
+    socket = new WebSocket(endpoint, webSocketOptions);
+  } else {
+    socket = new WebSocket("ws://localhost/", {
+      ...webSocketOptions,
+      createConnection: () => net.createConnection(endpoint),
+    });
+  }
 
   const finish = (result: OfficialAppServerExit): void => {
     if (settled) return;

@@ -242,9 +242,23 @@ describe("Remote Control app-server bridge", () => {
         stderr += chunk;
       });
       try {
-        await vi.waitFor(() => expect(stdout).toContain('"codexhost/remote-control-bridge/ready"'));
+        await vi.waitFor(
+          () =>
+            expect({ stdout, stderr, exitCode: child.exitCode }).toMatchObject({
+              stdout: expect.stringContaining('"codexhost/remote-control-bridge/ready"'),
+              exitCode: null,
+            }),
+          { timeout: 10_000 },
+        );
         child.stdin.write('{"id":7,"method":"fixture/echo"}\n');
-        await vi.waitFor(() => expect(stdout).toContain('{"id":7,"method":"fixture/echo"}'));
+        await vi.waitFor(
+          () =>
+            expect({ stdout, stderr, exitCode: child.exitCode }).toMatchObject({
+              stdout: expect.stringContaining('{"id":7,"method":"fixture/echo"}'),
+              exitCode: null,
+            }),
+          { timeout: 10_000 },
+        );
         child.stdin.end();
         const exitCode = await new Promise<number | null>((resolve, reject) => {
           child.once("error", reject);

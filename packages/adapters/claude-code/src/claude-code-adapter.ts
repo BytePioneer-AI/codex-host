@@ -1277,29 +1277,14 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#active = active;
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
-    this.#applyCompletedSubagents(turn.completedSubagents);
     this.#event({ type: "item.started", turnId, item });
     for (const event of turn.events) this.#handleTurnEvent(active, event);
     this.#finishResult(active, turn.result);
   }
 
   #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    this.#applyCompletedSubagents(turn.completedSubagents);
     for (const event of turn.events) this.#handleTurnEvent(active, event);
     this.#finishResult(active, turn.result);
-  }
-
-  #applyCompletedSubagents(
-    completed: ClaudeAutonomousTurn["completedSubagents"] | undefined,
-  ): void {
-    for (const subagent of completed ?? []) {
-      this.#settleBackgroundSubagent(
-        "completed",
-        subagent.nativeSubagentId,
-        subagent.callId,
-        subagent.resultSummary,
-      );
-    }
   }
 
   #settleBackgroundSubagent(

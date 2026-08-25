@@ -582,9 +582,6 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
-      completedSubagents: [
-        { nativeSubagentId: "native-agent-1", resultSummary: "Analysis complete" },
-      ],
       events: [
         {
           type: "subagent.settled",
@@ -599,7 +596,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     await value.transport.close();
   });
 
-  it("parses a task-notification whose user content is text blocks", async () => {
+  it("preserves a failed task-notification whose user content is text blocks", async () => {
     const value = fixture();
     const autonomous: ClaudeAutonomousTurn[] = [];
     value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
@@ -616,7 +613,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
         content: [
           {
             type: "text",
-            text: "<task-notification><task-id>a78414260bd2f9554</task-id><status>completed</status><summary>Agent finished</summary></task-notification>",
+            text: "<task-notification><task-id>a78414260bd2f9554</task-id><status>failed</status><summary>Agent failed</summary></task-notification>",
           },
         ],
       },
@@ -625,8 +622,55 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
-    expect(autonomous[0]?.completedSubagents).toEqual([
-      { nativeSubagentId: "a78414260bd2f9554", resultSummary: "Agent finished" },
+    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "a78414260bd2f9554",
+        status: "failed",
+        resultSummary: "Agent failed",
+      },
+    ]);
+    await value.transport.close();
+  });
+
+  it("publishes a held task-notification exactly once with its native status", async () => {
+    const value = fixture();
+    const events: ClaudeTurnEvent[] = [];
+    const terminals: ClaudeTransportTurnResult[] = [];
+    value.transport.setIdleTurnHandler({
+      onEvent: (event) => events.push(event),
+      onTerminal: (result) => terminals.push(result),
+    });
+    await value.transport.start();
+    value.transport.setIdleLive(true);
+
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000070",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content:
+          "<task-notification><task-id>native-agent-interrupted</task-id><status>stopped</status><summary>Agent stopped</summary></task-notification>",
+      },
+    } as unknown as SDKMessage);
+    pushAssistantText(
+      value.fakeQuery,
+      "Interruption reported",
+      "00000000-0000-4000-8000-000000000071",
+    );
+    completeTurn(value.fakeQuery);
+
+    await vi.waitFor(() => expect(terminals).toEqual([{ status: "succeeded" }]));
+    expect(events.filter((event) => event.type === "subagent.settled")).toEqual([
+      {
+        type: "subagent.settled",
+        nativeSubagentId: "native-agent-interrupted",
+        status: "interrupted",
+        resultSummary: "Agent stopped",
+      },
     ]);
     await value.transport.close();
   });

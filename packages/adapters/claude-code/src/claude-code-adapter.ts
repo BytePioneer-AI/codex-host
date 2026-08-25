@@ -890,7 +890,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "segment.started":
-        this.#clearContinuationQuiescence();
+        this.#observeRootOutput();
         return;
       case "subagents.live":
         this.#occupancy.observeLive(event.nativeSubagentIds);
@@ -902,9 +902,11 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeCompaction(active, event.outcome);
         return;
       case "text.delta":
+        if (event.delta.length > 0) this.#observeRootOutput();
         this.#appendText(active, event.messageId, event.delta);
         return;
       case "reasoning.delta":
+        if (event.delta.length > 0) this.#observeRootOutput();
         this.#activateAssistantMessage(active, event.messageId);
         this.#appendReasoning(active, event.messageId, event.delta);
         return;
@@ -925,6 +927,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeAgentItem(active, { status: "succeeded" }, false);
         return;
       case "tool.started":
+        this.#observeRootOutput();
         for (const messageId of [...active.reasoningItems.keys()]) {
           this.#completeReasoning(active, messageId, { status: "succeeded" });
         }
@@ -938,6 +941,7 @@ class ClaudeHarnessSession implements HarnessSession {
         active.tools.complete(active.command.turnId, event, active.cancellationRequested);
         return;
       case "subagent.started":
+        this.#observeRootOutput();
         for (const messageId of [...active.reasoningItems.keys()]) {
           this.#completeReasoning(active, messageId, { status: "succeeded" });
         }
@@ -1383,7 +1387,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#finish(active, { status: "failed", error });
   }
 
-  /** Waits for Claude to open another Segment before settling notified Subagents. */
+  /** Completes held work after a quiet period with no further Root output. */
   #armContinuationQuiescence(active: ActiveTurn): void {
     this.#clearContinuationQuiescence();
     if (!this.#occupancy.awaitingContinuation) return;
@@ -1402,6 +1406,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (!this.#continuationQuiescence) return;
     clearTimeout(this.#continuationQuiescence);
     this.#continuationQuiescence = null;
+  }
+
+  #observeRootOutput(): void {
+    this.#clearContinuationQuiescence();
   }
 
   #finish(active: ActiveTurn, outcome: TurnOutcome): void {

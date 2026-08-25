@@ -71,7 +71,7 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **THEN** Claude Adapter SHALL publish that Subagent's terminal state immediately
 - **AND** it SHALL keep that Subagent occupying the user task, because the Root answer it triggers runs in a later native Segment
 - **AND** occupancy SHALL be settled only when the native Session stops opening Segments for this user task, since the number of Segments Claude spends on queued notifications is not observable
-- **AND** a Segment start SHALL cancel any pending idle decision so a slow continuation cannot close the Turn early
+- **AND** Root text, reasoning, Tool Use, or a Segment start SHALL cancel any pending idle decision so a slow continuation cannot close the Turn early
 
 #### Scenario: Agent Tool result returns
 - **WHEN** the correlated Root Agent or Task Tool Result returns with a stable `agentId`

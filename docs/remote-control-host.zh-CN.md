@@ -35,6 +35,7 @@ Codex 官方把 `process/spawn` 定义为不进入 Codex 命令沙箱的独立�
 
 - `unknown variant codexhost/harness/inspect`：私有请求被直接发给了原生 app-server。升级并重启两端 codexhost，再重新连接 Remote Control 环境，让桥接策略完成注入。
 - `process/spawn` 或桥启动失败：确认 Windows Codex Desktop 是通过 codexhost 启动的、两端版本都包含 Remote Control Host 支持，并检查 `%LOCALAPPDATA%\\codexhost\\remote-control-bridge-v1.json` 中的 owner PID 仍存活、打包路径为绝对路径；重启被控端后再重新连接该环境。
+- `no active process for process handle`：被控端 Desktop 已重启，或 relay 已丢失上一条桥进程。桥写入失败后，codexhost 会立即废弃该进程标识；重试诊断或原操作会根据当前运行时描述重新启动桥。
 - Windows 重启后桥初始化超时：重试刚才失败的操作。桥如果在 15 秒内没有完成 app-server 初始化，codexhost 会放弃它；下一次请求会读取当前运行时描述并启动一条新桥。
 - 原生 Codex 可用但看不到 Harness：先在控制端运行 codexhost 连接诊断，再检查 Windows 上 Harness 的安装和登录状态。
 - `Claude inbound is disabled`：请求已经到达被控 Windows 的 codexhost，但该机关闭了 Claude Code 集成；请先在 Windows codexhost 的界面或配置中启用 Claude，再重试。

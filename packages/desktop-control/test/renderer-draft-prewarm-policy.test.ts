@@ -765,6 +765,51 @@ describe("Renderer draft prewarm policy", () => {
     policy.dispose();
   });
 
+  it("replaces a Remote Control bridge after writing to a stale process handle", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const notifications = remoteNotificationTargetFixture();
+    const target = notifications.target;
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    const first = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    const firstStart = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    const firstProcessHandle = (firstStart?.[1] as { processHandle: string }).processHandle;
+    emitRemoteBridgeOutput(notifications, firstProcessHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 1 },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(1));
+    const initialize = writtenBridgeFrames(directSend)[0];
+    emitRemoteBridgeOutput(notifications, firstProcessHandle, { id: initialize?.id, result: {} });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
+    const inspect = writtenBridgeFrames(directSend)[2];
+    emitRemoteBridgeOutput(notifications, firstProcessHandle, {
+      id: inspect?.id,
+      result: { status: "ready" },
+    });
+    await expect(first).resolves.toEqual({ status: "ready" });
+
+    directSend.mockRejectedValueOnce(
+      new Error(`no active process for process handle "${firstProcessHandle}"`),
+    );
+    const stale = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    await expect(stale).rejects.toThrow("no active process for process handle");
+
+    const retry = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    void retry.catch(() => undefined);
+    const starts = directSend.mock.calls.filter(([method]) => method === "process/spawn");
+    expect(starts).toHaveLength(2);
+    expect((starts[1]?.[1] as { processHandle: string }).processHandle).not.toBe(
+      firstProcessHandle,
+    );
+
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void };
+    policy.dispose();
+  });
+
   it("times out a stalled Remote Control initialization and permits a clean retry", async () => {
     vi.useFakeTimers();
     try {

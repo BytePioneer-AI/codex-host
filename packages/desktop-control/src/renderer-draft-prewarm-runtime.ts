@@ -376,10 +376,7 @@ export function installDraftPrewarmPolicyBridge(
   const enqueueBridgeRequest = (method: string, parameters: unknown, options?: unknown): unknown =>
     bridge.enqueueRequest(method, parameters, options, (request) => {
       bridgeRequests.set(request.id, { method, parameters });
-      void writeBridgeFrame(request).catch((error) => {
-        bridgeRequests.delete(request.id);
-        bridge.onError(request.id, error);
-      });
+      void writeBridgeFrame(request).catch((error) => failBridge(error));
     });
   const initializeBridgeProtocol = (): Promise<unknown> => {
     const initialization = enqueueBridgeRequest("initialize", {

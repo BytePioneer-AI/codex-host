@@ -2,6 +2,7 @@ import { jsonValueSchema } from "@codexhost/shared-contracts";
 
 import { parseClaudeNativeFileChange } from "./file-change.js";
 import type {
+  ClaudePlanLimitEvent,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -131,6 +132,122 @@ function includesAuthenticationFailure(
 
 function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
   return { status: "failed", kind };
+}
+
+function safeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function finiteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseResultModelUsage(
+  value: unknown,
+): Array<{ inputTokens: number; outputTokens: number }> | undefined {
+  if (!isRecord(value)) return undefined;
+  const usage: Array<{ inputTokens: number; outputTokens: number }> = [];
+  for (const entry of Object.values(value)) {
+    if (
+      !isRecord(entry) ||
+      !safeNonNegativeInteger(entry.inputTokens) ||
+      !safeNonNegativeInteger(entry.outputTokens)
+    ) {
+      return undefined;
+    }
+    usage.push({ inputTokens: entry.inputTokens, outputTokens: entry.outputTokens });
+  }
+  return usage;
+}
+
+function parseLastRequestUsage(value: unknown):
+  | {
+      inputTokens: number;
+      cacheCreationInputTokens: number;
+      cacheReadInputTokens: number;
+    }
+  | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = value.input_tokens;
+  const cacheCreationInputTokens = value.cache_creation_input_tokens;
+  const cacheReadInputTokens = value.cache_read_input_tokens;
+  if (
+    !safeNonNegativeInteger(inputTokens) ||
+    !safeNonNegativeInteger(cacheCreationInputTokens) ||
+    !safeNonNegativeInteger(cacheReadInputTokens)
+  ) {
+    return undefined;
+  }
+  return { inputTokens, cacheCreationInputTokens, cacheReadInputTokens };
+}
+
+function parseResultUsageEvent(
+  message: Record<string, unknown>,
+): Extract<ClaudeNativeEvent, { type: "usage.result" }> | null {
+  const totalCostUsd = finiteNonNegativeNumber(message.total_cost_usd)
+    ? message.total_cost_usd
+    : undefined;
+  const modelUsage = parseResultModelUsage(message.modelUsage);
+  const lastRequestUsage = parseLastRequestUsage(message.usage);
+  if (totalCostUsd === undefined && modelUsage === undefined && lastRequestUsage === undefined) {
+    return null;
+  }
+  return {
+    type: "usage.result",
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+    ...(modelUsage !== undefined ? { modelUsage } : {}),
+    ...(lastRequestUsage ? { lastRequestUsage } : {}),
+  };
+}
+
+/**
+ * Live Claude Code sends `utilization` as a 0–1 fraction (confirmed against a
+ * real `rate_limit_event` payload), not the 0–100 percent the SDK's `.d.ts`
+ * comment implies. Normalize and clamp defensively either way.
+ */
+function parsePlanLimitWindow(
+  value: unknown,
+): { utilizationPercent: number; resetsAtUnix?: number } | undefined {
+  if (!isRecord(value)) return undefined;
+  const utilization = value.utilization;
+  if (typeof utilization !== "number" || !Number.isFinite(utilization) || utilization < 0) {
+    return undefined;
+  }
+  const utilizationPercent = Math.min(100, Math.max(0, Math.round(utilization * 10_000) / 100));
+  const resetsAt = value.resetsAt;
+  const resetsAtUnix = safeNonNegativeInteger(resetsAt) ? resetsAt : undefined;
+  return { utilizationPercent, ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}) };
+}
+
+/**
+ * `rate_limit_event` is Session-level and can arrive with no Turn active on the
+ * transport, so it is parsed independently of the per-Turn accumulator.
+ *
+ * Claude Code reports both windows on one event via
+ * `rate_limit_info.unifiedWindows.{five_hour,seven_day}`. Per-model breakdowns
+ * (`seven_day_opus`, `seven_day_sonnet`, ...) and overage fields are ignored
+ * by construction — only these two keys are read. A flat top-level
+ * `rateLimitType` + `utilization` + `resetsAt` (the shape the SDK's `.d.ts`
+ * documents) is accepted as a fallback for a single primary window when
+ * `unifiedWindows` is absent.
+ */
+export function parseClaudePlanLimitEvent(message: unknown): ClaudePlanLimitEvent | null {
+  if (!isRecord(message) || message.type !== "rate_limit_event") return null;
+  const info = message.rate_limit_info;
+  if (!isRecord(info)) return null;
+  const windows = isRecord(info.unifiedWindows) ? info.unifiedWindows : undefined;
+  let fiveHour = parsePlanLimitWindow(windows?.five_hour);
+  let sevenDay = parsePlanLimitWindow(windows?.seven_day);
+  if (!fiveHour && !sevenDay) {
+    const flatWindow = parsePlanLimitWindow(info);
+    if (flatWindow && info.rateLimitType === "five_hour") fiveHour = flatWindow;
+    else if (flatWindow && info.rateLimitType === "seven_day") sevenDay = flatWindow;
+  }
+  if (!fiveHour && !sevenDay) return null;
+  return {
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(sevenDay ? { sevenDay } : {}),
+  };
 }
 
 function nativeSubagentId(
@@ -299,6 +416,8 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type !== "result") return { events };
+    const usageEvent = parseResultUsageEvent(message);
+    if (usageEvent) events.push(usageEvent);
     this.#completed = true;
     const terminalReason =
       typeof message.terminal_reason === "string" ? message.terminal_reason : "missing";

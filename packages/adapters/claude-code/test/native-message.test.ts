@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
+import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "../src/native-message.js";
 
 function partial(text: string, uuid = "assistant-1", parentToolUseId: string | null = null) {
   return {
@@ -979,5 +979,156 @@ describe("Claude native Turn interpretation", () => {
       { type: "subagent.completed", callId: "call-b", continuesInBackground: true },
     ]);
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("extracts Session cost, per-model totals, and last-request cache Usage from the Result", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const consumed = turn.consume(
+      result({
+        total_cost_usd: 1.373,
+        modelUsage: {
+          "claude-opus": { inputTokens: 100, outputTokens: 40 },
+          "claude-sonnet": { inputTokens: 20, outputTokens: 5 },
+        },
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 990,
+          output_tokens: 45,
+        },
+      }),
+    );
+    expect(consumed.events).toEqual([
+      {
+        type: "usage.result",
+        totalCostUsd: 1.373,
+        modelUsage: [
+          { inputTokens: 100, outputTokens: 40 },
+          { inputTokens: 20, outputTokens: 5 },
+        ],
+        lastRequestUsage: {
+          inputTokens: 10,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 990,
+        },
+      },
+    ]);
+    expect(consumed.terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("omits modelUsage entirely when any per-model entry is malformed", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const consumed = turn.consume(
+      result({
+        total_cost_usd: 0.2,
+        modelUsage: { "claude-opus": { inputTokens: 100, outputTokens: -1 } },
+      }),
+    );
+    expect(consumed.events).toEqual([{ type: "usage.result", totalCostUsd: 0.2 }]);
+  });
+
+  it("omits lastRequestUsage when any last-request cache field is missing", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const consumed = turn.consume(
+      result({
+        total_cost_usd: 0.2,
+        usage: { input_tokens: 10, cache_read_input_tokens: 990 },
+      }),
+    );
+    expect(consumed.events).toEqual([{ type: "usage.result", totalCostUsd: 0.2 }]);
+  });
+
+  it("does not emit a usage.result event when the Result carries no reliable Usage", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(turn.consume(result()).events).toEqual([]);
+  });
+
+  it("parses both plan windows from a real Claude Code unifiedWindows payload", () => {
+    // Captured verbatim from a live `rate_limit_event` (Claude.ai OAuth session).
+    // `utilization` is a 0-1 fraction here, not the 0-100 percent the SDK's
+    // `.d.ts` comment implies, and both windows arrive on one event.
+    expect(
+      parseClaudePlanLimitEvent({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed",
+          resetsAt: 1_787_674_200,
+          rateLimitType: "five_hour",
+          overageStatus: "rejected",
+          overageDisabledReason: "org_level_disabled",
+          isUsingOverage: false,
+          unifiedWindows: {
+            five_hour: { utilization: 0.28, resetsAt: 1_787_674_200 },
+            seven_day: { utilization: 0.1, resetsAt: 1_787_940_000 },
+          },
+        },
+        uuid: "0c8be4f7-8525-42a3-ae6c-5393a4b6861e",
+        session_id: "121c08f6-2ddf-4250-9e51-bea9c39b554b",
+      }),
+    ).toEqual({
+      fiveHour: { utilizationPercent: 28, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 10, resetsAtUnix: 1_787_940_000 },
+    });
+  });
+
+  it("parses a single unifiedWindows entry when only one window is present", () => {
+    expect(
+      parseClaudePlanLimitEvent({
+        type: "rate_limit_event",
+        rate_limit_info: { unifiedWindows: { seven_day: { utilization: 0.125 } } },
+      }),
+    ).toEqual({ sevenDay: { utilizationPercent: 12.5 } });
+  });
+
+  it("ignores per-model unifiedWindows breakdowns and overage", () => {
+    expect(
+      parseClaudePlanLimitEvent({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          unifiedWindows: {
+            seven_day_opus: { utilization: 0.9 },
+            seven_day_sonnet: { utilization: 0.4 },
+            overage: { utilization: 0.1 },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("falls back to a flat top-level window when unifiedWindows is absent", () => {
+    expect(
+      parseClaudePlanLimitEvent({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.452 },
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 45.2 } });
+  });
+
+  it.each([
+    { type: "rate_limit_event", rate_limit_info: { rateLimitType: "overage", utilization: 0.5 } },
+    { type: "rate_limit_event", rate_limit_info: { rateLimitType: "five_hour" } },
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: -0.1 },
+    },
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: Number.NaN },
+    },
+    { type: "rate_limit_event", rate_limit_info: null },
+    { type: "assistant" },
+  ])("ignores untracked or malformed plan-limit payloads %#", (message) => {
+    expect(parseClaudePlanLimitEvent(message)).toBeNull();
+  });
+
+  it("drops a plan-window reset that is not a safe non-negative integer", () => {
+    expect(
+      parseClaudePlanLimitEvent({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          unifiedWindows: { five_hour: { utilization: 0.45, resetsAt: -1 } },
+        },
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 45 } });
   });
 });

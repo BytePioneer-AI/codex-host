@@ -50,4 +50,32 @@ describe("Thread Usage contracts", () => {
       threadUsageSnapshotSchema.safeParse({ totalCostUsd: 0.1, nativeCost: 0.2 }).success,
     ).toBe(false);
   });
+
+  it("accepts optional Claude.ai plan windows and passes them through inspection", () => {
+    const usage = {
+      cacheHitRatePercent: 99,
+      totalCostUsd: 1.373,
+      planFiveHourUsedPercent: 45,
+      planFiveHourResetsAtUnix: 1_756_130_400,
+    };
+    expect(threadUsageSnapshotSchema.parse(usage)).toEqual(usage);
+    expect(threadUsageInspectionSchema.parse({ threadId: "thread-usage", usage })).toEqual({
+      threadId: "thread-usage",
+      usage,
+    });
+  });
+
+  it("accepts a seven-day window without a five-hour window", () => {
+    const usage = { planSevenDayUsedPercent: 12.5 };
+    expect(threadUsageSnapshotSchema.parse(usage)).toEqual(usage);
+  });
+
+  it.each([
+    { planFiveHourResetsAtUnix: 1_756_130_400 },
+    { planSevenDayResetsAtUnix: 1_756_130_400 },
+    { planFiveHourUsedPercent: 100.1 },
+    { planFiveHourResetsAtUnix: -1, planFiveHourUsedPercent: 45 },
+  ])("rejects invalid plan-window snapshots: %#", (usage) => {
+    expect(threadUsageSnapshotSchema.safeParse(usage).success).toBe(false);
+  });
 });

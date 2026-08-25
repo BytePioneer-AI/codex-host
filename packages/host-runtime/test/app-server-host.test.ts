@@ -2168,6 +2168,65 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("round-trips Claude.ai plan-window fields through Thread Usage inspection without writing accountCredits", async () => {
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      70,
+    );
+    const claudeTurnId = await completePiTurn(
+      { ...fixture, adapter: claudeAdapter },
+      claudeThreadId,
+      71,
+      0,
+    );
+    claudeAdapter.sessions[0]?.publishUsage(
+      {
+        cacheHitRatePercent: 99,
+        totalCostUsd: 1.373,
+        contextUsedTokens: 50,
+        contextWindowTokens: 200,
+        planFiveHourUsedPercent: 45,
+        planFiveHourResetsAtUnix: 1_756_130_400,
+      },
+      hostTurnIdSchema.parse(claudeTurnId),
+    );
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/tokenUsage/updated") &&
+        messageParams(message).threadId === claudeThreadId,
+    );
+
+    writeRequest(fixture.desktopInput, {
+      id: 72,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: claudeThreadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 72)),
+    ).resolves.toEqual({
+      id: 72,
+      result: {
+        threadId: claudeThreadId,
+        usage: {
+          cacheHitRatePercent: 99,
+          totalCostUsd: 1.373,
+          contextUsedTokens: 50,
+          contextWindowTokens: 200,
+          planFiveHourUsedPercent: 45,
+          planFiveHourResetsAtUnix: 1_756_130_400,
+        },
+      },
+    });
+    await stopFixture(fixture);
+  });
+
   it("forks external inclusive, exclusive, and tail boundaries without reusing Host Turn IDs", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

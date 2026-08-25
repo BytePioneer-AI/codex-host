@@ -1,7 +1,11 @@
 import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 import { RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES } from "./renderer-model-picker.js";
-import { formatRendererCreditsPercent } from "./renderer-usage-control.js";
+import {
+  applyRendererPopoverChrome,
+  createRendererUsageRing,
+  formatRendererCreditsPercent,
+} from "./renderer-usage-control.js";
 
 export interface RendererCreditsControl {
   root: HTMLDivElement;
@@ -21,11 +25,25 @@ export function rendererCreditsTone(usedPercent: number): RendererCreditsTone {
   return "ok";
 }
 
-export function formatRendererCreditsReset(value: string): string {
+/**
+ * A same-day reset reads as a precise time ("4:12 PM today") — the moment is
+ * imminent and worth being exact about. Every other reset — tomorrow, or a
+ * full week out — still carries its exact time alongside the date ("Aug 28,
+ * 6:00 PM"): the source data is precise to the minute for both the 5-hour
+ * and 7-day windows, so the display never throws that away.
+ */
+export function formatRendererCreditsReset(value: string, now: Date = new Date()): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (isToday) {
+    return `${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} today`;
+  }
   return date.toLocaleString(undefined, {
-    month: "long",
+    month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
@@ -35,6 +53,8 @@ export function formatRendererCreditsReset(value: string): string {
 export function creditsPeriodLabel(periodType: AccountCreditsSnapshot["periodType"]): string {
   if (periodType === "weekly") return "Weekly limit";
   if (periodType === "monthly") return "Monthly limit";
+  if (periodType === "five_hour") return "5-hour limit";
+  if (periodType === "seven_day") return "7-day limit";
   return "Account limit";
 }
 
@@ -52,41 +72,112 @@ function toneColor(tone: RendererCreditsTone): string {
   return "#3d9a64";
 }
 
-function addDetailRow(parent: HTMLElement, label: string, value: string): void {
-  const row = document.createElement("div");
-  row.style.display = "grid";
-  row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
-  row.style.gap = "20px";
-  row.style.padding = "4px 0";
-  const labelElement = document.createElement("span");
-  labelElement.textContent = label;
-  labelElement.style.color = "color-mix(in srgb, currentColor 68%, transparent)";
-  const valueElement = document.createElement("span");
-  valueElement.textContent = value;
-  valueElement.style.fontVariantNumeric = "tabular-nums";
-  valueElement.style.textAlign = "right";
-  row.append(labelElement, valueElement);
-  parent.append(row);
+function renderCreditsBar(usagePercent: number, color: string): HTMLDivElement {
+  const track = document.createElement("div");
+  track.dataset.codexhostCreditsBar = "";
+  track.style.height = "6px";
+  track.style.borderRadius = "9999px";
+  track.style.background = "color-mix(in srgb, currentColor 16%, transparent)";
+  track.style.overflow = "hidden";
+  const fill = document.createElement("span");
+  fill.style.display = "block";
+  fill.style.height = "100%";
+  fill.style.borderRadius = "9999px";
+  fill.style.width = `${Math.min(100, Math.max(0, usagePercent))}%`;
+  fill.style.background = color;
+  track.append(fill);
+  return track;
+}
+
+function renderCreditsHeader(credits: AccountCreditsSnapshot): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.style.marginBottom = "11px";
+
+  const top = document.createElement("div");
+  top.style.display = "flex";
+  top.style.alignItems = "flex-start";
+  top.style.justifyContent = "space-between";
+  top.style.gap = "12px";
+  top.style.marginBottom = "5px";
+
+  // Same left-label / right-percent column order as each tile below, so the
+  // reset line always lands under its own label instead of zig-zagging sides.
+  const left = document.createElement("div");
+  const label = document.createElement("div");
+  label.textContent = creditsPeriodLabel(credits.periodType);
+  label.style.fontSize = "12.5px";
+  label.style.fontWeight = "600";
+  left.append(label);
+  if (credits.resetsAt) {
+    const reset = document.createElement("div");
+    reset.textContent = `resets ${formatRendererCreditsReset(credits.resetsAt)}`;
+    reset.style.fontSize = "11px";
+    reset.style.color = "color-mix(in srgb, currentColor 62%, transparent)";
+    left.append(reset);
+  }
+
+  const color = toneColor(rendererCreditsTone(credits.usedPercent));
+  const percent = document.createElement("span");
+  percent.textContent = formatRendererCreditsPercent(credits.usedPercent);
+  percent.style.fontSize = "26px";
+  percent.style.fontWeight = "700";
+  percent.style.fontVariantNumeric = "tabular-nums";
+  percent.style.color = color;
+
+  top.append(left, percent);
+
+  wrapper.append(top, renderCreditsBar(credits.usedPercent, color));
+  return wrapper;
+}
+
+function renderCreditsTile(label: string, usagePercent: number, resetsAt?: string): HTMLDivElement {
+  const color = toneColor(rendererCreditsTone(usagePercent));
+
+  const tile = document.createElement("div");
+  tile.style.marginBottom = "11px";
+
+  const top = document.createElement("div");
+  top.style.display = "flex";
+  top.style.alignItems = "flex-start";
+  top.style.justifyContent = "space-between";
+  top.style.gap = "12px";
+  top.style.marginBottom = "5px";
+
+  const left = document.createElement("div");
+  const name = document.createElement("span");
+  name.textContent = label;
+  name.style.fontSize = "12px";
+  left.append(name);
+  if (resetsAt) {
+    const reset = document.createElement("div");
+    reset.textContent = `resets ${formatRendererCreditsReset(resetsAt)}`;
+    reset.style.fontSize = "10.5px";
+    reset.style.color = "color-mix(in srgb, currentColor 62%, transparent)";
+    left.append(reset);
+  }
+
+  const percent = document.createElement("span");
+  percent.textContent = formatRendererCreditsPercent(usagePercent);
+  percent.style.fontSize = "12px";
+  percent.style.fontVariantNumeric = "tabular-nums";
+  percent.style.color = color;
+  top.append(left, percent);
+
+  tile.append(top, renderCreditsBar(usagePercent, color));
+  return tile;
 }
 
 function renderDetails(popover: HTMLDivElement, credits: AccountCreditsSnapshot): void {
+  const glowColor = toneColor(rendererCreditsTone(credits.usedPercent));
+  popover.style.backgroundImage = `radial-gradient(160px 100px at 18% -10%, color-mix(in srgb, ${glowColor} 20%, transparent), transparent 70%)`;
   popover.replaceChildren();
-  const heading = document.createElement("div");
-  heading.textContent = creditsPeriodLabel(credits.periodType);
-  heading.style.fontWeight = "600";
-  heading.style.marginBottom = "6px";
-  popover.append(heading);
-  addDetailRow(popover, "Used", formatRendererCreditsPercent(credits.usedPercent));
-  if (credits.resetsAt) {
-    addDetailRow(popover, "Resets", formatRendererCreditsReset(credits.resetsAt));
-  }
-  for (const product of credits.productUsage ?? []) {
-    addDetailRow(
-      popover,
-      productLabel(product.product),
-      formatRendererCreditsPercent(product.usagePercent),
-    );
-  }
+  popover.append(renderCreditsHeader(credits));
+  const tiles = (credits.productUsage ?? []).map((product) =>
+    renderCreditsTile(productLabel(product.product), product.usagePercent, product.resetsAt),
+  );
+  const lastTile = tiles.at(-1);
+  if (lastTile) lastTile.style.marginBottom = "0";
+  popover.append(...tiles);
 }
 
 function popoverIsOpen(popover: HTMLDivElement): boolean {
@@ -164,14 +255,10 @@ export function mountRendererCreditsControl(
   trigger.style.whiteSpace = "nowrap";
   trigger.style.cursor = "pointer";
 
-  const dot = document.createElement("span");
-  dot.dataset.codexhostCreditsDot = "";
-  dot.setAttribute("aria-hidden", "true");
-  dot.style.display = "inline-block";
-  dot.style.width = "7px";
-  dot.style.height = "7px";
-  dot.style.borderRadius = "9999px";
-  dot.style.flex = "0 0 auto";
+  const ringSlot = document.createElement("span");
+  ringSlot.dataset.codexhostCreditsRing = "";
+  ringSlot.style.display = "inline-flex";
+  ringSlot.style.flex = "0 0 auto";
 
   const label = document.createElement("span");
   label.dataset.codexhostCreditsLabel = "";
@@ -180,7 +267,7 @@ export function mountRendererCreditsControl(
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
-  trigger.append(dot, label);
+  trigger.append(ringSlot, label);
 
   const popover = document.createElement("div");
   popover.id = `${composerId}-credits-popover`;
@@ -193,11 +280,7 @@ export function mountRendererCreditsControl(
   popover.style.width = "240px";
   popover.style.maxWidth = "min(280px, calc(100vw - 24px))";
   popover.style.padding = "10px 12px";
-  popover.style.border = "1px solid rgba(127, 127, 127, 0.35)";
-  popover.style.borderRadius = "6px";
-  popover.style.background = "Canvas";
-  popover.style.color = "CanvasText";
-  popover.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.28)";
+  applyRendererPopoverChrome(popover);
   popover.style.font = "13px/1.35 system-ui, sans-serif";
   popover.style.letterSpacing = "0";
   popover.style.zIndex = "2147483647";
@@ -284,9 +367,17 @@ export function renderRendererCreditsControl(
   const percent = formatRendererCreditsPercent(accountCredits.usedPercent);
   const title = `${creditsPeriodLabel(accountCredits.periodType)} ${percent}`;
   const tone = rendererCreditsTone(accountCredits.usedPercent);
-  const dot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-dot]");
+  const ringSlot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-ring]");
   const label = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-label]");
-  if (dot) dot.style.background = toneColor(tone);
+  if (ringSlot) {
+    ringSlot.replaceChildren(
+      createRendererUsageRing(accountCredits.usedPercent, {
+        size: 14,
+        strokeWidth: 2.4,
+        color: toneColor(tone),
+      }),
+    );
+  }
   if (label) label.textContent = percent;
   control.root.style.display = "inline-flex";
   control.trigger.setAttribute("aria-label", title);

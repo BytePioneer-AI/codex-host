@@ -69,6 +69,7 @@ export const accountCreditsProductUsageSchema = z
   .object({
     product: z.string().min(1),
     usagePercent: usagePercentSchema,
+    resetsAt: z.string().min(1).optional(),
   })
   .strict();
 
@@ -76,7 +77,7 @@ export const accountCreditsSnapshotSchema = z
   .object({
     usedPercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
-    periodType: z.enum(["weekly", "monthly", "unknown"]),
+    periodType: z.enum(["weekly", "monthly", "five_hour", "seven_day", "unknown"]),
     productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
   })
   .strict();

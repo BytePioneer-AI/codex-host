@@ -4,6 +4,7 @@
 /.pi/
 /downloads/
 /.codexhost/
+/.claude/
 
 # Environment and secrets
 .env

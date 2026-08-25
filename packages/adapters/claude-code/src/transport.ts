@@ -140,11 +140,12 @@ export interface ClaudePlanLimitWindow {
 }
 
 /**
- * Claude.ai subscription plan-window utilization, forwarded from `rate_limit_event`
- * regardless of whether a Turn is active on the transport. One native event can
- * report both windows at once (Claude Code sends them together under
- * `rate_limit_info.unifiedWindows`), so both are optional on the same event
- * rather than modeled as one event per window.
+ * Claude.ai subscription plan-window utilization. Arrives two ways: pushed via
+ * `rate_limit_event` whenever the CLI makes a real API call (regardless of
+ * whether a Turn is active on the transport), or pulled on demand through
+ * `getPlanLimit()`. Either source can report both windows at once (Claude Code
+ * groups them under `rate_limit_info.unifiedWindows` / `rate_limits`), so both
+ * are optional on the same event rather than modeled as one event per window.
  */
 export interface ClaudePlanLimitEvent {
   fiveHour?: ClaudePlanLimitWindow;
@@ -169,6 +170,14 @@ export interface ClaudeTurnTransport {
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  /**
+   * Asks the CLI's `/usage` control channel for the plan-window utilization
+   * right now, instead of waiting for the next `rate_limit_event` to arrive on
+   * its own. Uses an Anthropic SDK API explicitly marked experimental — `null`
+   * on anything short of a clean, available answer (not started, API-key
+   * Session, control-channel error, or a future SDK that drops the method).
+   */
+  getPlanLimit(): Promise<ClaudePlanLimitEvent | null>;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;

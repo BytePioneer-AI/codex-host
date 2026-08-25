@@ -40,6 +40,60 @@ export function formatRendererCreditsPercent(value: number): string {
   return `${decimal(value, 1)}%`;
 }
 
+export interface RendererUsageRingOptions {
+  size: number;
+  strokeWidth: number;
+  color: string;
+  trackColor?: string;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** A small radial progress ring (0-100), used by the credits/plan-usage pills and popovers. */
+export function createRendererUsageRing(
+  percent: number,
+  options: RendererUsageRingOptions,
+): SVGSVGElement {
+  const { size, strokeWidth, color } = options;
+  const trackColor = options.trackColor ?? "color-mix(in srgb, currentColor 18%, transparent)";
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.min(100, Math.max(0, percent));
+  const offset = circumference * (1 - clamped / 100);
+  const center = size / 2;
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.display = "block";
+  svg.style.flex = "0 0 auto";
+  svg.style.transform = "rotate(-90deg)";
+
+  const track = document.createElementNS(SVG_NS, "circle");
+  track.setAttribute("cx", String(center));
+  track.setAttribute("cy", String(center));
+  track.setAttribute("r", String(radius));
+  track.setAttribute("fill", "none");
+  track.setAttribute("stroke", trackColor);
+  track.setAttribute("stroke-width", String(strokeWidth));
+
+  const fill = document.createElementNS(SVG_NS, "circle");
+  fill.setAttribute("cx", String(center));
+  fill.setAttribute("cy", String(center));
+  fill.setAttribute("r", String(radius));
+  fill.setAttribute("fill", "none");
+  fill.setAttribute("stroke", color);
+  fill.setAttribute("stroke-width", String(strokeWidth));
+  fill.setAttribute("stroke-linecap", "round");
+  fill.setAttribute("stroke-dasharray", String(circumference));
+  fill.setAttribute("stroke-dashoffset", String(offset));
+
+  svg.append(track, fill);
+  return svg;
+}
+
 export function formatRendererPlanReset(unixSeconds: number): string {
   const date = new Date(unixSeconds * 1000);
   if (Number.isNaN(date.getTime())) return "";
@@ -60,6 +114,23 @@ export function formatRendererPlanWindow(usedPercent: number, resetsAtUnix?: num
 
 export function rendererUsageTriggerMaxWidth(): string {
   return "min(180px, 30vw)";
+}
+
+/**
+ * Shared chrome for the Usage/Credits popovers: a raised card rather than a
+ * flat system-color panel. `Canvas`/`CanvasText` still anchor the palette (so
+ * this reads correctly regardless of the host page's own light/dark theme),
+ * but `color-mix` lifts the surface a touch off the background and the
+ * border, so the popover reads as an elevated card instead of the browser's
+ * bare default panel.
+ */
+export function applyRendererPopoverChrome(popover: HTMLElement): void {
+  popover.style.border = "1px solid color-mix(in srgb, CanvasText 14%, transparent)";
+  popover.style.borderRadius = "14px";
+  popover.style.backgroundColor = "color-mix(in srgb, Canvas 92%, CanvasText 8%)";
+  popover.style.color = "CanvasText";
+  popover.style.boxShadow =
+    "0 20px 45px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.22)";
 }
 
 function addDetailRow(parent: HTMLElement, label: string, value: string): void {
@@ -238,11 +309,7 @@ export function mountRendererUsageControl(
   popover.style.width = "260px";
   popover.style.maxWidth = "min(320px, calc(100vw - 24px))";
   popover.style.padding = "10px 12px";
-  popover.style.border = "1px solid rgba(127, 127, 127, 0.35)";
-  popover.style.borderRadius = "6px";
-  popover.style.background = "Canvas";
-  popover.style.color = "CanvasText";
-  popover.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.28)";
+  applyRendererPopoverChrome(popover);
   popover.style.font = "13px/1.35 system-ui, sans-serif";
   popover.style.letterSpacing = "0";
   popover.style.zIndex = "2147483647";

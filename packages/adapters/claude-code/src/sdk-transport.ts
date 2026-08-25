@@ -26,6 +26,7 @@ import type {
   ClaudeInteractionResponse,
   ClaudeModelInspector,
   ClaudePlanLimitEvent,
+  ClaudePlanLimitWindow,
   ClaudeQuestion,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
@@ -183,6 +184,35 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   }
   const apiUsage = parseContextApiUsage(value.apiUsage);
   return { usedTokens, maxTokens, model, ...(apiUsage ? { apiUsage } : {}) };
+}
+
+function parseUsageQueryWindow(value: unknown): ClaudePlanLimitWindow | undefined {
+  if (!isRecord(value)) return undefined;
+  const utilization = value.utilization;
+  if (typeof utilization !== "number" || !Number.isFinite(utilization) || utilization < 0) {
+    return undefined;
+  }
+  const utilizationPercent = Math.min(100, Math.max(0, utilization));
+  const resetsAt = value.resets_at;
+  const resetsAtMs = typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
+  const resetsAtUnix = Number.isFinite(resetsAtMs) ? Math.floor(resetsAtMs / 1000) : undefined;
+  return { utilizationPercent, ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}) };
+}
+
+/**
+ * Parses the response from `Query#usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` —
+ * the on-demand pull counterpart to the `rate_limit_event` push in native-message.ts. Utilization
+ * here already arrives as a 0-100 percent (unlike the 0-1 fraction on the native event), and
+ * `resets_at` is an ISO 8601 string rather than a Unix-seconds number.
+ */
+function parseUsageQueryPlanLimit(value: unknown): ClaudePlanLimitEvent | null {
+  if (!isRecord(value) || value.rate_limits_available !== true) return null;
+  const rateLimits = value.rate_limits;
+  if (!isRecord(rateLimits)) return null;
+  const fiveHour = parseUsageQueryWindow(rateLimits.five_hour);
+  const sevenDay = parseUsageQueryWindow(rateLimits.seven_day);
+  if (!fiveHour && !sevenDay) return null;
+  return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -449,6 +479,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage());
+  }
+
+  async getPlanLimit(): Promise<ClaudePlanLimitEvent | null> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) return null;
+    return parseUsageQueryPlanLimit(
+      await activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+    );
   }
 
   getPermissionMode(): ClaudePermissionMode {

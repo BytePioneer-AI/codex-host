@@ -10,7 +10,11 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
-import type { ClaudeAutonomousTurn, ClaudeTurnEvent } from "../src/transport.js";
+import type {
+  ClaudeAutonomousTurn,
+  ClaudeTransportTurnResult,
+  ClaudeTurnEvent,
+} from "../src/transport.js";
 
 class FakeQuery {
   readonly initializationResult = vi.fn(async () => ({

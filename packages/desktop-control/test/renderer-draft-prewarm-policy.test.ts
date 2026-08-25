@@ -573,6 +573,98 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
+  it("resolves an unknown external Thread before routing its first request", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const notifications = remoteNotificationTargetFixture();
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      notifications.target,
+      { discardAllPrewarmedThreads: vi.fn() },
+    );
+
+    const read = bridge.sendRequest("thread/read", {
+      threadId: "external-after-reload",
+    }) as Promise<unknown>;
+    const spawn = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    expect(spawn).toBeDefined();
+    const processHandle = (spawn?.[1] as { processHandle: string }).processHandle;
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 1 },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(1));
+    const initialize = writtenBridgeFrames(directSend)[0];
+    emitRemoteBridgeOutput(notifications, processHandle, { id: initialize?.id, result: {} });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
+    const inspection = writtenBridgeFrames(directSend)[2];
+    expect(inspection).toMatchObject({
+      method: "codexhost/thread/inspect",
+      params: { threadId: "external-after-reload" },
+    });
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: inspection?.id,
+      result: { owner: "external" },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(4));
+    const bridgedRead = writtenBridgeFrames(directSend)[3];
+    expect(bridgedRead).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "external-after-reload" },
+    });
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: bridgedRead?.id,
+      result: { thread: { id: "external-after-reload" } },
+    });
+
+    await expect(read).resolves.toEqual({ thread: { id: "external-after-reload" } });
+    expect(directSend).not.toHaveBeenCalledWith("thread/read", expect.anything());
+  });
+
+  it("keeps an unknown official Thread on the stock Remote Control app-server", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const notifications = remoteNotificationTargetFixture();
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      notifications.target,
+      { discardAllPrewarmedThreads: vi.fn() },
+    );
+
+    const read = bridge.sendRequest("thread/read", {
+      threadId: "official-after-reload",
+    }) as Promise<unknown>;
+    const spawn = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    const processHandle = (spawn?.[1] as { processHandle: string }).processHandle;
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 1 },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(1));
+    const initialize = writtenBridgeFrames(directSend)[0];
+    emitRemoteBridgeOutput(notifications, processHandle, { id: initialize?.id, result: {} });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
+    const inspection = writtenBridgeFrames(directSend)[2];
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: inspection?.id,
+      result: { owner: "codex" },
+    });
+
+    await expect(read).resolves.toEqual({});
+    expect(directSend).toHaveBeenCalledWith("thread/read", {
+      threadId: "official-after-reload",
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(3);
+
+    await bridge.sendRequest("thread/read", { threadId: "official-after-reload" });
+    expect(directSend).toHaveBeenCalledTimes(6);
+    expect(writtenBridgeFrames(directSend)).toHaveLength(3);
+  });
+
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();

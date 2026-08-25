@@ -76,6 +76,8 @@ export function installDraftPrewarmPolicyBridge(
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isRemoteControlHost = hostId.startsWith("remote-control:");
   const knownExternalThreadIds = new Set<string>();
+  const knownOfficialThreadIds = new Set<string>();
+  const threadOwnershipResolutions = new Map<string, Promise<"external" | "codex">>();
   const createBridgeProcessHandle = (): string =>
     `codexhost-${
       typeof crypto?.randomUUID === "function"
@@ -161,6 +163,7 @@ export function installDraftPrewarmPolicyBridge(
     if (!isRecord(value) || typeof value.id !== "string") return;
     if (value.modelProvider === "codexhost" || value.cliVersion === "codexhost") {
       knownExternalThreadIds.add(value.id);
+      knownOfficialThreadIds.delete(value.id);
     }
   };
   const observeBridgeResult = (
@@ -182,11 +185,17 @@ export function installDraftPrewarmPolicyBridge(
     }
     if (
       request.method === "codexhost/thread/inspect" &&
-      result.owner === "external" &&
       isRecord(request.parameters) &&
       typeof request.parameters.threadId === "string"
     ) {
-      knownExternalThreadIds.add(request.parameters.threadId);
+      if (result.owner === "external") {
+        knownExternalThreadIds.add(request.parameters.threadId);
+        knownOfficialThreadIds.delete(request.parameters.threadId);
+      } else if (result.owner === "codex") {
+        knownOfficialThreadIds.add(request.parameters.threadId);
+        knownExternalThreadIds.delete(request.parameters.threadId);
+      }
+      return;
     }
     if (
       request.method === "thread/delete" &&
@@ -194,6 +203,7 @@ export function installDraftPrewarmPolicyBridge(
       typeof request.parameters.threadId === "string"
     ) {
       knownExternalThreadIds.delete(request.parameters.threadId);
+      knownOfficialThreadIds.delete(request.parameters.threadId);
     }
   };
   const handleBridgeFrame = (value: unknown): void => {
@@ -414,6 +424,49 @@ export function installDraftPrewarmPolicyBridge(
     const value = parameters.threadId ?? parameters.conversationId;
     return typeof value === "string" ? value : null;
   };
+  const isThreadScopedMethod = (method: string): boolean =>
+    method.startsWith("thread/") || method.startsWith("turn/") || method.startsWith("review/");
+  const resolveThreadOwnership = (threadId: string): Promise<"external" | "codex"> => {
+    if (knownExternalThreadIds.has(threadId)) return Promise.resolve("external");
+    if (knownOfficialThreadIds.has(threadId)) return Promise.resolve("codex");
+    const pending = threadOwnershipResolutions.get(threadId);
+    if (pending) return pending;
+    const resolution = initializeBridge()
+      .then(
+        () => enqueueBridgeRequest("codexhost/thread/inspect", { threadId }) as Promise<unknown>,
+      )
+      .then((value) => {
+        if (!isRecord(value) || (value.owner !== "external" && value.owner !== "codex")) {
+          throw transportError("Thread ownership inspection returned an invalid result");
+        }
+        if (value.owner === "external") {
+          knownExternalThreadIds.add(threadId);
+          knownOfficialThreadIds.delete(threadId);
+          return "external" as const;
+        }
+        knownOfficialThreadIds.add(threadId);
+        knownExternalThreadIds.delete(threadId);
+        return "codex" as const;
+      });
+    threadOwnershipResolutions.set(threadId, resolution);
+    const clearResolution = (): void => {
+      if (threadOwnershipResolutions.get(threadId) === resolution) {
+        threadOwnershipResolutions.delete(threadId);
+      }
+    };
+    void resolution.then(clearResolution, clearResolution);
+    return resolution;
+  };
+  const shouldResolveThreadOwnership = (method: string, parameters: unknown): string | null => {
+    if (!isRemoteControlHost || method.startsWith("codexhost/") || !isThreadScopedMethod(method)) {
+      return null;
+    }
+    const threadId = threadIdFromParameters(parameters);
+    if (!threadId || knownExternalThreadIds.has(threadId) || knownOfficialThreadIds.has(threadId)) {
+      return null;
+    }
+    return threadId;
+  };
   const shouldUseBridge = (method: string, parameters: unknown): boolean => {
     if (!isRemoteControlHost) return false;
     if (method.startsWith("codexhost/")) return true;
@@ -427,6 +480,7 @@ export function installDraftPrewarmPolicyBridge(
     }
     const threadId = threadIdFromParameters(parameters);
     if (threadId && knownExternalThreadIds.has(threadId)) return true;
+    if (threadId && knownOfficialThreadIds.has(threadId)) return false;
     return (
       selectedModel !== null &&
       (method.startsWith("thread/") || method.startsWith("turn/") || method.startsWith("review/"))
@@ -440,12 +494,21 @@ export function installDraftPrewarmPolicyBridge(
   };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
-    if (shouldUseBridge(method, routedParameters)) {
-      return initializeBridge().then(() => enqueueBridgeRequest(method, routedParameters, options));
+    const sendBridged = (): Promise<unknown> =>
+      initializeBridge().then(
+        () => enqueueBridgeRequest(method, routedParameters, options) as Promise<unknown>,
+      );
+    const sendDirect = (): unknown =>
+      options === undefined
+        ? originalSend.call(bridge, method, routedParameters)
+        : originalSend.call(bridge, method, routedParameters, options);
+    const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
+    if (unresolvedThreadId) {
+      return resolveThreadOwnership(unresolvedThreadId).then((owner) =>
+        owner === "external" ? sendBridged() : sendDirect(),
+      );
     }
-    return options === undefined
-      ? originalSend.call(bridge, method, routedParameters)
-      : originalSend.call(bridge, method, routedParameters, options);
+    return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();
   };
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
     const routedParameters = routeThreadStart(parameters);
@@ -549,6 +612,8 @@ export function installDraftPrewarmPolicyBridge(
       bridgeRequests.clear();
       bridgeServerRequestIds.clear();
       knownExternalThreadIds.clear();
+      knownOfficialThreadIds.clear();
+      threadOwnershipResolutions.clear();
       selectedModel = null;
     },
   });

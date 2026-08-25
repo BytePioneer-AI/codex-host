@@ -14,13 +14,14 @@ import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
-import { ClaudeNativeTurnAccumulator } from "./native-message.js";
+import { ClaudeNativeTurnAccumulator, parseClaudeTaskNotification } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
   ClaudeAutonomousTurn,
+  ClaudeIdleTurnHandler,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
@@ -114,17 +115,15 @@ function delay(milliseconds: number): Promise<void> {
 
 function taskNotificationSubagent(message: unknown): {
   nativeSubagentId: string;
+  callId?: string;
   resultSummary?: string;
 } | null {
-  if (!isRecord(message) || message.type !== "user" || !isRecord(message.origin)) return null;
-  if (message.origin.kind !== "task-notification" || !isRecord(message.message)) return null;
-  if (typeof message.message.content !== "string") return null;
-  const taskId = message.message.content.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
-  if (!taskId) return null;
-  const summary = message.message.content.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
+  const settled = parseClaudeTaskNotification(message);
+  if (!settled) return null;
   return {
-    nativeSubagentId: taskId,
-    ...(summary ? { resultSummary: summary.slice(0, 2_000) } : {}),
+    nativeSubagentId: settled.nativeSubagentId,
+    ...(settled.callId ? { callId: settled.callId } : {}),
+    ...(settled.resultSummary ? { resultSummary: settled.resultSummary } : {}),
   };
 }
 
@@ -349,9 +348,16 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     accumulator: ClaudeNativeTurnAccumulator;
     events: ClaudeTurnEvent[];
     nativeTurnKey: string | null;
-    completedSubagents: Array<{ nativeSubagentId: string; resultSummary?: string }>;
+    completedSubagents: Array<{
+      nativeSubagentId: string;
+      callId?: string;
+      resultSummary?: string;
+    }>;
   } | null = null;
   #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  #idleHandler: ClaudeIdleTurnHandler | null = null;
+  #idleLive = false;
+  #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
@@ -376,6 +382,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
     this.#autonomousTurnHandler = handler;
+  }
+
+  setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
+    this.#idleHandler = handler;
+  }
+
+  setIdleLive(live: boolean): void {
+    this.#idleLive = live;
+    if (!live) this.#idleAccumulator = null;
   }
 
   async start(): Promise<void> {
@@ -688,6 +703,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const active = this.#active;
     this.#active = null;
     this.#autonomous = null;
+    this.#idleAccumulator = null;
+    this.#idleLive = false;
     active?.reject(new Error("Claude SDK transport closed"));
   }
 
@@ -707,6 +724,29 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
             this.#closeInteractions(active, "superseded");
             this.#active = null;
             active.resolve(interpreted.terminal);
+          }
+          continue;
+        }
+        if (this.#idleLive && this.#idleHandler) {
+          const idle =
+            this.#idleAccumulator ?? (this.#idleAccumulator = new ClaudeNativeTurnAccumulator());
+          const completedSubagent = taskNotificationSubagent(message);
+          if (completedSubagent) {
+            this.#idleHandler.onEvent({
+              type: "subagent.settled",
+              nativeSubagentId: completedSubagent.nativeSubagentId,
+              status: "completed",
+              ...(completedSubagent.callId ? { callId: completedSubagent.callId } : {}),
+              ...(completedSubagent.resultSummary
+                ? { resultSummary: completedSubagent.resultSummary }
+                : {}),
+            });
+          }
+          const interpreted = idle.consume(message);
+          for (const event of interpreted.events) this.#idleHandler.onEvent(event);
+          if (interpreted.terminal) {
+            this.#idleAccumulator = null;
+            this.#idleHandler.onTerminal(interpreted.terminal);
           }
           continue;
         }

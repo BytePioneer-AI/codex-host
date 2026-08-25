@@ -154,6 +154,8 @@ describe("AppServerHost hermetic Claude projection", () => {
         return {
           sessionId: input.sessionId,
           setAutonomousTurnHandler: () => undefined,
+          setIdleTurnHandler: () => undefined,
+          setIdleLive: () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,

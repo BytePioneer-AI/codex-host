@@ -66,11 +66,21 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **THEN** Claude Adapter SHALL update only that delegation's normalized state
 - **AND** it SHALL tolerate absent optional task messages without failing the Root Turn
 
+#### Scenario: A background Subagent settles before Claude answers for it
+- **WHEN** Claude reports a background Subagent as settled through a task notification or by dropping it from the live background task level
+- **THEN** Claude Adapter SHALL publish that Subagent's terminal state immediately
+- **AND** it SHALL keep that Subagent occupying the user task, because the Root answer it triggers runs in a later native Segment
+- **AND** occupancy SHALL be settled only when the native Session stops opening Segments for this user task, since the number of Segments Claude spends on queued notifications is not observable
+- **AND** a Segment start SHALL cancel any pending idle decision so a slow continuation cannot close the Turn early
+
 #### Scenario: Agent Tool result returns
 - **WHEN** the correlated Root Agent or Task Tool Result returns with a stable `agentId`
 - **THEN** Claude Adapter SHALL preserve that native identity for Child Host Thread registration and complete the spawn operation according to the Tool Result outcome
-- **AND** a successful background launch SHALL keep the native Subagent running while allowing the Root Turn to finish without waiting for later background completion
+- **AND** a successful background launch SHALL keep the native Subagent running
 - **AND** Claude Adapter SHALL distinguish an asynchronous launch acknowledgement from the delegated Agent's terminal result
+- **AND** that launch acknowledgement SHALL NOT emit `turn.completed` while the native Subagent remains running
+- **AND** occupancy SHALL start at the `run_in_background` Tool Use, keyed by `callId` until `agentId` is bound
+- **AND** a later Root `result` or Assistant `message.completed` SHALL NOT emit `turn.completed` while any occupied background spawn from this user task remains unsettled
 
 #### Scenario: Root sends more work to an existing Agent
 - **WHEN** Claude invokes `SendMessage` with an existing native Agent recipient
@@ -78,9 +88,15 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **AND** successful message delivery SHALL leave the Agent running rather than report the Agent completed
 
 #### Scenario: Background task notification resumes Claude
-- **WHEN** Claude consumes a task notification after the requested Host Turn has completed and generates a follow-up Root answer
+- **WHEN** Claude consumes a task notification while the requested Host Turn is still held for running background Subagents and generates a follow-up Root answer
 - **THEN** Claude Transport SHALL parse its stable `task-id`, preserve the full continuation until its native Result, and report that Subagent's terminal state
-- **AND** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion and one autonomous Host Turn with stable native identity
+- **AND** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion on the same Host Turn
+- **AND** it SHALL NOT emit `turn.completed` until no Root Segment, background Subagent, or continuation is executing, including a Subagent settled during an earlier Segment of the same user task
+- **AND** Assistant `message.completed` SHALL close the current Root Agent Message Item without emitting `turn.completed`
+
+#### Scenario: Background task notification resumes Claude after the requested Turn completed
+- **WHEN** Claude consumes a task notification after the requested Host Turn has completed and generates a follow-up Root answer
+- **THEN** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion and one autonomous Host Turn with stable native identity
 
 ### Requirement: Claude exposes read-only Subagent history
 Claude Adapter SHALL implement the common Subagent transcript capability using the official `getSubagentMessages()` API and SHALL map supported User, Assistant, Reasoning, Tool Use, and Tool Result content into deterministic Child Host Thread history without persisting another transcript.

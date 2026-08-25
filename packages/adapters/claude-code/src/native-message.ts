@@ -182,6 +182,42 @@ function resultText(content: unknown, nativeResult: unknown): string | undefined
   return combined.length > 0 ? combined : undefined;
 }
 
+function userMessageText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .flatMap((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("");
+  return text.length > 0 ? text : null;
+}
+
+export function parseClaudeTaskNotification(
+  message: unknown,
+): Extract<ClaudeTurnEvent, { type: "subagent.settled" }> | null {
+  if (!isRecord(message) || message.type !== "user" || !isRecord(message.message)) return null;
+  if (isRecord(message.origin) && message.origin.kind !== "task-notification") return null;
+  const content = userMessageText(message.message.content);
+  if (!content || !content.includes("<task-notification>")) return null;
+  const taskId = content.match(/<task-id>([^<]+)<\/task-id>/u)?.[1]?.trim();
+  if (!taskId) return null;
+  const xmlStatus = content.match(/<status>([^<]+)<\/status>/u)?.[1]?.trim();
+  const status = taskStatus(xmlStatus ?? "completed");
+  if (status !== "completed" && status !== "failed" && status !== "interrupted") return null;
+  const summary = content.match(/<summary>([\s\S]*?)<\/summary>/u)?.[1]?.trim();
+  const callId = content.match(/<tool-use-id>([^<]+)<\/tool-use-id>/u)?.[1]?.trim();
+  return {
+    type: "subagent.settled",
+    nativeSubagentId: taskId,
+    status,
+    ...(callId ? { callId } : {}),
+    ...(summary ? { resultSummary: summary.slice(0, SUBAGENT_SUMMARY_LIMIT) } : {}),
+  };
+}
+
 function taskStatus(
   value: unknown,
 ): Extract<ClaudeNativeEvent, { type: "subagent.updated" }>["status"] | null {
@@ -228,6 +264,7 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#completed || !isRecord(message)) return { events: [] };
     const events: ClaudeNativeEvent[] = [];
 
+    this.#consumeSegmentLevel(message, events);
     this.#consumeTaskLifecycle(message, events);
     const parentCallId = parentToolUseId(message);
     const nested = parentCallId !== null;
@@ -254,6 +291,7 @@ export class ClaudeNativeTurnAccumulator {
     if (message.type === "assistant") {
       if (!nested) this.#consumeAssistantMessage(message, events);
     } else if (message.type === "user") {
+      this.#consumeTaskNotification(message, events);
       this.#consumeToolResults(message, events, nested);
     }
 
@@ -311,8 +349,44 @@ export class ClaudeNativeTurnAccumulator {
     events.push({ type: "compaction.completed", outcome: "succeeded" });
   }
 
+  /**
+   * Claude opens one native Segment per Root execution and reports its live
+   * background tasks as a level whose membership replaces the previous set.
+   */
+  #consumeSegmentLevel(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system") return;
+    if (message.subtype === "init") {
+      events.push({ type: "segment.started" });
+      return;
+    }
+    if (message.subtype !== "background_tasks_changed" || !Array.isArray(message.tasks)) return;
+    const nativeSubagentIds = message.tasks.flatMap((task) => {
+      if (!isRecord(task)) return [];
+      const taskId = boundedString(task.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      return taskId ? [taskId] : [];
+    });
+    events.push({ type: "subagents.live", nativeSubagentIds });
+  }
+
   #consumeTaskLifecycle(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     if (message.type !== "system") return;
+    if (message.subtype === "task_notification") {
+      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+      const status = taskStatus(message.status);
+      if (!agentId || (status !== "completed" && status !== "failed" && status !== "interrupted")) {
+        return;
+      }
+      const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
+      const callId = boundedString(message.tool_use_id, SUBAGENT_DESCRIPTION_LIMIT);
+      events.push({
+        type: "subagent.settled",
+        nativeSubagentId: agentId,
+        status,
+        ...(callId ? { callId } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+      return;
+    }
     const callId = typeof message.tool_use_id === "string" ? message.tool_use_id : null;
     if (!callId || !this.#tools.get(callId)?.subagent) return;
 
@@ -360,20 +434,6 @@ export class ClaudeNativeTurnAccumulator {
         ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
       });
-      return;
-    }
-    if (message.subtype === "task_notification") {
-      const status = taskStatus(message.status);
-      if (!status) return;
-      const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
-      const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
-      events.push({
-        type: "subagent.updated",
-        callId,
-        status,
-        ...(agentId ? { nativeSubagentId: agentId } : {}),
-        ...(resultSummary ? { resultSummary } : {}),
-      });
     }
   }
 
@@ -418,7 +478,10 @@ export class ClaudeNativeTurnAccumulator {
     const messageId =
       this.#activeRootStreamMessageId ?? nativeMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
-    if (state.completed) return;
+    if (state.completed) {
+      this.#consumeToolUseBlocks(message, events, true);
+      return;
+    }
 
     if (state.reasoning.length > 0) {
       events.push({ type: "reasoning.completed", messageId });
@@ -437,6 +500,24 @@ export class ClaudeNativeTurnAccumulator {
       }
     }
 
+    this.#consumeToolUseBlocks(message, events, false);
+
+    if (!this.#protocolConflict && !this.#textConflict) {
+      events.push({
+        type: "message.completed",
+        messageId,
+        ...(checkpointId ? { checkpointId } : {}),
+      });
+    }
+    state.completed = true;
+    if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
+  }
+
+  #consumeToolUseBlocks(
+    message: Record<string, unknown>,
+    events: ClaudeNativeEvent[],
+    ignoreKnownIds: boolean,
+  ): void {
     for (const block of assistantContent(message) ?? []) {
       if (!isRecord(block) || block.type !== "tool_use") continue;
       const argumentsResult = jsonValueSchema.safeParse(block.input);
@@ -445,11 +526,13 @@ export class ClaudeNativeTurnAccumulator {
         block.id.length === 0 ||
         typeof block.name !== "string" ||
         block.name.length === 0 ||
-        !argumentsResult.success ||
-        this.#tools.has(block.id) ||
-        this.#completedToolIds.has(block.id)
+        !argumentsResult.success
       ) {
         this.#protocolConflict = true;
+        continue;
+      }
+      if (this.#tools.has(block.id) || this.#completedToolIds.has(block.id)) {
+        if (!ignoreKnownIds) this.#protocolConflict = true;
         continue;
       }
       const subagent = SUBAGENT_TOOLS.has(block.name);
@@ -477,16 +560,6 @@ export class ClaudeNativeTurnAccumulator {
         });
       }
     }
-
-    if (!this.#protocolConflict && !this.#textConflict) {
-      events.push({
-        type: "message.completed",
-        messageId,
-        ...(checkpointId ? { checkpointId } : {}),
-      });
-    }
-    state.completed = true;
-    if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
   }
 
   #consumeToolProgress(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
@@ -502,6 +575,11 @@ export class ClaudeNativeTurnAccumulator {
       return;
     }
     events.push({ type: "tool.progress", callId, elapsedMs: Math.round(elapsedSeconds * 1_000) });
+  }
+
+  #consumeTaskNotification(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    const settled = parseClaudeTaskNotification(message);
+    if (settled) events.push(settled);
   }
 
   #consumeToolResults(

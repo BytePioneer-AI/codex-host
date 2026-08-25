@@ -10,7 +10,7 @@ Harnesses increasingly expose delegated Subagent work, but codexhost currently f
 - Integrate Claude Code's Agent/Task Tool calls and task lifecycle notifications with the common Subagent contract.
 - Isolate Claude Root Assistant streams and Tools from nested Subagent streams and Tools, hiding nested execution details from the Root transcript.
 - Register stable read-only Child Host Threads for Subagents so Codex Desktop can open the native right-side conversation detail and restore it from Harness-owned history.
-- Preserve Harness-generated autonomous Root continuations after background task notifications as follow-up Host Turns.
+- Preserve Harness-generated autonomous Root continuations after background task notifications on the same Host Turn while that user task is still held, and as follow-up Host Turns only after the requested Turn has already completed.
 
 ## Capabilities
 

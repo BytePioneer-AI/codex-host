@@ -93,7 +93,7 @@ export class ClaudeSubagentLifecycle {
     turnId: HostTurnId,
     event: Extract<ClaudeTurnEvent, { type: "subagent.completed" }>,
     cancellationRequested: boolean,
-  ): void {
+  ): HostSubagentState {
     const active = this.#delegations.get(event.callId);
     if (!active)
       throw new Error("Claude Code Subagent completion references an unknown delegation");
@@ -126,6 +126,7 @@ export class ClaudeSubagentLifecycle {
         ? { status: "failed", error: subagentFailure() }
         : { status: "succeeded" };
     this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
+    return subagent;
   }
 
   finalize(turnId: HostTurnId, outcome: HostItemOutcome): void {

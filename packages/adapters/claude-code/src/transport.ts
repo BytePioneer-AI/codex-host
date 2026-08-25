@@ -52,6 +52,8 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; cancelled: true };
 
 export type ClaudeTurnEvent =
+  | { type: "segment.started" }
+  | { type: "subagents.live"; nativeSubagentIds: string[] }
   | { type: "compaction.started" }
   | { type: "compaction.completed"; outcome: "succeeded" | "failed" }
   | { type: "text.delta"; messageId: string; delta: string }
@@ -95,6 +97,13 @@ export type ClaudeTurnEvent =
       nativeSubagentId?: string;
       resultSummary?: string;
     }
+  | {
+      type: "subagent.settled";
+      nativeSubagentId: string;
+      callId?: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
+    }
   | { type: "subagent.transcript.changed"; callId: string }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
@@ -113,12 +122,23 @@ export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
   events: ClaudeTurnEvent[];
   result: ClaudeTransportTurnResult;
-  completedSubagents?: Array<{ nativeSubagentId: string; resultSummary?: string }>;
+  completedSubagents?: Array<{
+    nativeSubagentId: string;
+    callId?: string;
+    resultSummary?: string;
+  }>;
+}
+
+export interface ClaudeIdleTurnHandler {
+  onEvent(event: ClaudeTurnEvent): void;
+  onTerminal(result: ClaudeTransportTurnResult): void;
 }
 
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
+  setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
+  setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   getPermissionMode(): ClaudePermissionMode;

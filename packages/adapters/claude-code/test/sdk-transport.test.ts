@@ -515,6 +515,7 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
         operation: "spawn",
         callId: "agent-1",
         description: "Inspect implementation",
+        prompt: "private prompt",
         role: "Explore",
         background: true,
       },
@@ -585,10 +586,48 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
         { nativeSubagentId: "native-agent-1", resultSummary: "Analysis complete" },
       ],
       events: [
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "native-agent-1",
+          status: "completed",
+          resultSummary: "Analysis complete",
+        },
         { type: "text.delta", delta: "Background analysis result" },
         { type: "message.completed" },
       ],
     });
+    await value.transport.close();
+  });
+
+  it("parses a task-notification whose user content is text blocks", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    await value.transport.start();
+
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000050",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<task-notification><task-id>a78414260bd2f9554</task-id><status>completed</status><summary>Agent finished</summary></task-notification>",
+          },
+        ],
+      },
+    } as unknown as SDKMessage);
+    pushAssistantText(value.fakeQuery, "Continuation", "00000000-0000-4000-8000-000000000051");
+    completeTurn(value.fakeQuery);
+
+    await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    expect(autonomous[0]?.completedSubagents).toEqual([
+      { nativeSubagentId: "a78414260bd2f9554", resultSummary: "Agent finished" },
+    ]);
     await value.transport.close();
   });
 });

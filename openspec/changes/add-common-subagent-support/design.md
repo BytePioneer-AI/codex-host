@@ -13,8 +13,8 @@ Codex app-server exposes a native `collabAgentToolCall` Item whose receiver iden
 - Present Claude `Agent`/`Task` delegation as one native Codex collaboration Item.
 - Hide nested Subagent Assistant, Reasoning, and Tool execution from the Root transcript.
 - Correlate partial and complete Claude Assistant messages by native execution scope and native Assistant message identity.
-- Preserve Root Turn completion semantics, including background Subagents that outlive the delegating Tool invocation.
-- Preserve autonomous Root continuations produced when Claude consumes a later background task notification.
+- Preserve Root Turn completion semantics: a background launch acknowledgement is not a user-task terminal, and the Host Turn stays open until no Root Segment, background Subagent, or continuation is executing.
+- Preserve autonomous Root continuations produced when Claude consumes a later background task notification, on the same Host Turn when that Turn is still held.
 
 **Non-Goals:**
 
@@ -31,7 +31,7 @@ Add `HostSubagentDelegationItem` to `HostItem`. It carries the operation (`spawn
 
 The Host Runtime replaces native Subagent identities with stable Child Host Thread IDs before Protocol Core projection. Mapping Store persists the Parent Host Thread ID, native Subagent ID, role, and Child Host Thread ID, while transcript content remains owned by the Harness. Child Thread reads call the Adapter's optional Subagent history capability.
 
-Harnesses that can resume work without a new desktop command emit `turn.autonomous.started` before the normal Turn and Item lifecycle. Host Runtime creates a projector for that Turn and persists its native identity normally.
+Harnesses that can resume work without a new desktop command emit `turn.autonomous.started` only when no Host Turn is still held for that user task. A continuation that belongs to a held Turn is projected as further Items on that Turn. Host Runtime creates a projector for a true autonomous Turn and persists its native identity normally.
 
 ### Keep capability reporting minimal
 
@@ -49,7 +49,9 @@ Root stream state is keyed by native Assistant `message.id`. Stream wrappers use
 
 ### Correlate Claude task notifications to delegation Tools
 
-Root `Agent` and `Task` Tool Uses emit a specialized spawn delegation event. Their structured Tool Result supplies the stable Claude `agentId`. An asynchronous launch acknowledgement completes the delegation Tool operation but leaves the native Agent running until its correlated task notification. `SendMessage` emits a send delegation targeting that existing native Agent and remains running after the send operation succeeds. `task_started`, `task_progress`, `task_updated`, and `task_notification` refine correlated Agent state. Host Runtime tracks running Child Threads independently from the Root Turn so the Parent Thread remains active while background work continues, without keeping the requested Turn open.
+Root `Agent` and `Task` Tool Uses emit a specialized spawn delegation event. A `run_in_background` Tool Use occupies the user task by `callId` immediately; the structured Tool Result later binds the stable Claude `agentId`. An asynchronous launch acknowledgement completes the delegation Tool operation but leaves the native Agent running until its correlated task notification, which may settle by `agentId` or `callId`. `SendMessage` occupies the targeted Agent and remains running after the send operation succeeds. `task_started`, `task_progress`, `task_updated`, and `task_notification` refine correlated Agent state.
+
+A Claude Root `result` or Assistant `message.completed` only means the current native Segment is idle. Claude answers for a settled background Subagent in a later Segment, and a task notification is therefore an edge that adds owed Root output rather than one that releases occupancy. Because the number of Segments Claude spends on the queued notifications is not observable, a notified Subagent is settled only after the native Session stops opening Segments for a bounded quiescence window; a Segment start cancels that decision. Claude's `background_tasks_changed` level replaces the running set, so a tracked Subagent missing from the payload also owes its continuation even when its notification never arrives. The Adapter emits `turn.completed` only when that Segment has ended and no occupied background spawn from this user task remains unsettled. Continuations produced while the Turn is held stay on the same Host Turn. Host Runtime still tracks running Child Threads so Child status and Parent Thread active/idle stay accurate after the Turn finally completes.
 
 When Claude emits a complete Result while no requested Host Turn is active, the Transport buffers that native continuation and delivers one autonomous Turn to the Adapter instead of dropping it.
 
@@ -58,7 +60,7 @@ The Adapter publishes bounded description, role, background flag, normalized sta
 ## Risks / Trade-offs
 
 - [Child Thread history may be unavailable after native cleanup] → Adapter history reads fail closed; Mapping Store contains identity and routing only, never transcript content.
-- [Background continuation may race a requested Turn] → Autonomous Turns are accepted only while no requested Turn is active; overlapping native execution is treated as a protocol fault.
+- [Background continuation may race a requested Turn] → Autonomous continuations attach to a held user Turn; they start a new Host Turn only when no Turn is active. Overlapping native execution during a still-running requested Root Segment is treated as a protocol fault.
 - [Claude versions vary in task notification richness] → Root Agent/Task Tool Use remains sufficient to create and complete one common delegation Item; task messages are optional refinements.
 - [Filtering nested events could hide useful diagnostics] → Native details remain within Claude history and diagnostics; the Root user-facing transcript intentionally treats Subagents as opaque delegated work.
 - [Adding a Host Item is a public union change] → Existing exhaustive projectors and test fakes are updated in the same change; unsupported Harnesses continue emitting no Subagent Items.

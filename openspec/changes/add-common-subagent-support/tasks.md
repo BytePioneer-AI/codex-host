@@ -36,3 +36,6 @@
 - [x] 5.11 Restore omitted Child prompts from correlated Parent history and reopen the stable Child Turn before live Item publication.
 - [x] 5.12 Preserve running state after asynchronous Agent launch, keep the Parent Thread active while background Children run, and refresh each Child on terminal notification.
 - [x] 5.13 Project the bounded delegated prompt and converge terminal Child history across Claude transcript visibility delay.
+- [x] 5.14 Keep the Host Turn open across background Subagents and their Root continuations until the user task is idle.
+- [x] 5.15 Occupy background spawns at Tool Use, settle by `callId` or `agentId`, and emit `turn.completed` only after a Root Segment ends with empty occupancy.
+- [x] 5.16 Keep a settled background Subagent occupying the user task until the native Session stops opening Segments, and observe Claude's live background task level.

@@ -16,11 +16,11 @@ describe("Host Runtime composition", () => {
         "fixture1234",
       ),
     ).toEqual({
-      socketPath: "/Users/developer/.codex/app-server-control/.codexhost-fixture1234.sock",
+      socketPath: "/Users/developer/.codex/app-server-control/.c-fixture1234.sock",
       listenerArguments: [
         "app-server",
         "--listen",
-        "unix:///Users/developer/.codex/app-server-control/.codexhost-fixture1234.sock",
+        "unix:///Users/developer/.codex/app-server-control/.c-fixture1234.sock",
         "--analytics-default-enabled",
       ],
     });

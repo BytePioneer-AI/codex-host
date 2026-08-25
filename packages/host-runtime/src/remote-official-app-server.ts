@@ -35,13 +35,11 @@ export function remoteOfficialAppServerSocketPath(
   if (!path.posix.isAbsolute(desktopControlSocketPath)) {
     throw new Error("Desktop control socket path must be absolute");
   }
-  if (!/^[A-Za-z0-9-]+$/u.test(token)) {
+  if (!/^[A-Za-z0-9-]+$/u.test(token) || !/[A-Za-z0-9]/u.test(token)) {
     throw new Error("Shared official app-server socket token is invalid");
   }
-  return path.posix.join(
-    path.posix.dirname(desktopControlSocketPath),
-    `.codexhost-${token.slice(0, 16)}.sock`,
-  );
+  const compactToken = token.replaceAll("-", "").slice(0, 15);
+  return path.posix.join(path.posix.dirname(desktopControlSocketPath), `.c-${compactToken}.sock`);
 }
 
 function errorMessage(error: unknown): string {

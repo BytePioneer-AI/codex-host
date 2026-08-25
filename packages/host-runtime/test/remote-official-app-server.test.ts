@@ -1,5 +1,6 @@
 import type { ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -32,7 +33,19 @@ describe("shared remote official app-server", () => {
         "/Users/developer/.codex/app-server-control/app-server-control.sock",
         "fixture1234",
       ),
-    ).toBe("/Users/developer/.codex/app-server-control/.codexhost-fixture1234.sock");
+    ).toBe("/Users/developer/.codex/app-server-control/.c-fixture1234.sock");
+  });
+
+  it("keeps the private sibling basename within the public socket path budget", () => {
+    const publicSocket = "/Users/developer/.codex/app-server-control/app-server-control.sock";
+    const privateSocket = remoteOfficialAppServerSocketPath(
+      publicSocket,
+      "12345678-1234-1234-1234-123456789abc",
+    );
+
+    expect(Buffer.byteLength(path.posix.basename(privateSocket))).toBeLessThanOrEqual(
+      Buffer.byteLength(path.posix.basename(publicSocket)),
+    );
   });
 
   it("starts one listener and keeps it alive until the remote Host closes", async () => {

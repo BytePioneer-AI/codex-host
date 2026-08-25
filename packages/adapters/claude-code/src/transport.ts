@@ -73,6 +73,7 @@ export type ClaudeTurnEvent =
       callId: string;
       operation: "spawn" | "send";
       description: string;
+      prompt?: string;
       role?: string;
       background: boolean;
       nativeSubagentId?: string;

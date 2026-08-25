@@ -90,6 +90,11 @@ function subagentDescription(argumentsValue: unknown, toolName: string): string 
   );
 }
 
+function subagentPrompt(argumentsValue: unknown): string | undefined {
+  if (!isRecord(argumentsValue)) return undefined;
+  return boundedString(argumentsValue.prompt ?? argumentsValue.message, SUBAGENT_SUMMARY_LIMIT);
+}
+
 function subagentRole(argumentsValue: unknown): string | undefined {
   if (!isRecord(argumentsValue)) return undefined;
   return boundedString(
@@ -450,6 +455,7 @@ export class ClaudeNativeTurnAccumulator {
       const subagent = SUBAGENT_TOOLS.has(block.name);
       this.#tools.set(block.id, { name: block.name, subagent });
       if (subagent) {
+        const prompt = subagentPrompt(argumentsResult.data);
         const role = subagentRole(argumentsResult.data);
         const agentId = targetedSubagentId(argumentsResult.data);
         events.push({
@@ -457,6 +463,7 @@ export class ClaudeNativeTurnAccumulator {
           callId: block.id,
           operation: block.name === "SendMessage" ? "send" : "spawn",
           description: subagentDescription(argumentsResult.data, block.name),
+          ...(prompt ? { prompt } : {}),
           ...(role ? { role } : {}),
           background: block.name === "SendMessage" || subagentBackground(argumentsResult.data),
           ...(agentId ? { nativeSubagentId: agentId } : {}),

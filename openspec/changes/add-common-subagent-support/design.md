@@ -53,7 +53,7 @@ Root `Agent` and `Task` Tool Uses emit a specialized spawn delegation event. The
 
 When Claude emits a complete Result while no requested Host Turn is active, the Transport buffers that native continuation and delivers one autonomous Turn to the Adapter instead of dropping it.
 
-The Adapter publishes only bounded description, role, background flag, and normalized state. The full delegated prompt is omitted from the default Claude projection to avoid exposing large internal instructions.
+The Adapter publishes bounded description, role, background flag, normalized state, and the bounded user-authored prompt supplied to `Agent`, `Task`, or `SendMessage`. Claude internal launch metadata, transcript paths, and SDK task records remain private. The public prompt lets the native collaboration UI explain what work was delegated without exposing Child execution details in the Parent transcript.
 
 ## Risks / Trade-offs
 

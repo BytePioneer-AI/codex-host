@@ -69,6 +69,12 @@ import {
 } from "./external-thread-runtime.js";
 import { OfficialRequestBroker } from "./official-request-broker.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+
+const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 import {
   classifyThreadPurpose,
   RequestRouteObservationTracker,
@@ -2572,7 +2578,13 @@ export class AppServerHost {
       });
     }
     if (status === "idle" && previousStatus === "active") {
-      await this.#refreshOpenSubagentThread(threadId);
+      for (const [index, waitMs] of SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.entries()) {
+        if (waitMs > 0) await delay(waitMs);
+        await this.#refreshOpenSubagentThread(
+          threadId,
+          index === SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.length - 1,
+        );
+      }
     }
     if (previousStatus === status) return;
     this.#subagentThreadStatuses.set(threadId, status);

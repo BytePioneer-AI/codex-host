@@ -54,12 +54,12 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 ## ADDED Requirements
 
 ### Requirement: Claude Code maps Agent delegation to the common Subagent contract
-Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `Task` Tool delegation plus correlated structured task notifications into Host Subagent Delegation Items. It SHALL expose only bounded common metadata and SHALL keep full internal prompts, transcript paths, SDK task records, and nested Tool activity private.
+Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `Task` Tool delegation plus correlated structured task notifications into Host Subagent Delegation Items. It SHALL expose bounded common metadata and the bounded user-authored delegated prompt while keeping Claude internal launch metadata, transcript paths, SDK task records, and nested Tool activity private.
 
 #### Scenario: Root starts an Agent Tool
 - **WHEN** a Root Assistant message contains a valid `Agent` or `Task` Tool Use
 - **THEN** Claude Adapter SHALL start one correlated Host Subagent Delegation Item instead of an ordinary Generic Tool Item
-- **AND** it SHALL derive common description, role, and background fields from validated bounded Tool arguments
+- **AND** it SHALL derive common description, role, background, and public prompt fields from validated bounded Tool arguments
 
 #### Scenario: Structured task progress is available
 - **WHEN** Claude emits correlated `task_started`, `task_progress`, `task_updated`, or `task_notification` messages while the delegation Item is active
@@ -92,6 +92,7 @@ Claude Adapter SHALL implement the common Subagent transcript capability using t
 - **AND** nested Subagent Assistant and Tool evidence SHALL invalidate the correlated Child transcript after stable `task_id` association while remaining excluded from the Root transcript
 - **AND** when the official Subagent history omits the initial User prompt, the Adapter SHALL restore that prompt from the correlated Parent Agent or Task Tool Use and project the returned Assistant and Tool evidence under the same stable initial Child Turn identity used when that prompt is present
 - **AND** repeated reads SHALL return deterministic ordered Child Turn identities and visible content
+- **AND** after terminal state is observed, Host Runtime SHALL perform bounded follow-up reads so a briefly delayed final Assistant message is published to an already-open Child Thread
 
 #### Scenario: Subagent history is unavailable
 - **WHEN** the native Subagent transcript is missing or malformed

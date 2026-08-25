@@ -264,6 +264,7 @@ describe("Claude native Turn interpretation", () => {
         operation: "spawn",
         callId: "agent-1",
         description: "Inspect implementation",
+        prompt: "private prompt",
         role: "Explore",
         background: true,
       },
@@ -391,6 +392,7 @@ describe("Claude native Turn interpretation", () => {
         callId: "send-1",
         nativeSubagentId: "native-agent-1",
         description: "Analyze current directory",
+        prompt: "Analyze files and report back",
         background: true,
       },
       {

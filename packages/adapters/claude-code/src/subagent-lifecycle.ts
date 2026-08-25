@@ -60,6 +60,7 @@ export class ClaudeSubagentLifecycle {
       type: "subagentDelegation",
       itemId: this.#newItemId(),
       operation: event.operation,
+      ...(event.prompt ? { prompt: event.prompt } : {}),
       subagents: [subagent],
     };
     this.#delegations.set(event.callId, { item });

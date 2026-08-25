@@ -88,6 +88,16 @@ describe("Claude history mapping", () => {
             },
             {
               item: {
+                type: "toolExecution",
+                itemId: "claude-item-v1-assistant-1-tool-2",
+                toolName: "Read",
+                arguments: {},
+                output: { content: [{ type: "text", text: "ignored" }] },
+              },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: {
                 type: "agentMessage",
                 itemId: "claude-item-v1-assistant-2",
                 text: "done",
@@ -128,6 +138,57 @@ describe("Claude history mapping", () => {
             status: "unknown",
             reason: "Claude history does not include complete Result terminal evidence",
           },
+        },
+      ],
+    });
+  });
+
+  it("restores root Bash calls and failed tool calls from Claude history", () => {
+    const history = [
+      message("user", "user-1", "inspect and edit"),
+      message("assistant", "assistant-1", [
+        { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "pwd" } },
+        { type: "tool_use", id: "write-1", name: "Write", input: { path: "a.txt" } },
+      ]),
+      message("user", "tool-results", [
+        { type: "tool_result", tool_use_id: "bash-1", content: "/work/project" },
+        {
+          type: "tool_result",
+          tool_use_id: "write-1",
+          content: "permission denied",
+          is_error: true,
+        },
+      ]),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId)).toMatchObject({
+      turns: [
+        {
+          nativeTurnRef: { nativeTurnKey: "user-1" },
+          items: [
+            {
+              item: {
+                type: "commandExecution",
+                itemId: "claude-item-v1-assistant-1-tool-0",
+                command: "pwd",
+                output: "/work/project",
+              },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: {
+                type: "toolExecution",
+                itemId: "claude-item-v1-assistant-1-tool-1",
+                toolName: "Write",
+                arguments: { path: "a.txt" },
+                output: { content: [{ type: "text", text: "permission denied" }] },
+              },
+              outcome: {
+                status: "failed",
+                error: { code: "nativeFailure", message: "Write failed", retryable: false },
+              },
+            },
+          ],
         },
       ],
     });

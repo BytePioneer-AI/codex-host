@@ -153,6 +153,17 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
+    // Same "keep retrying for Account Credits" carve-out Grok gets: without it, revisiting a
+    // Claude Code Thread whose Usage was already known (so the initial retry never engaged)
+    // would leave the credits pill permanently blank.
+    expect(shouldRetryExternalThreadUsage("claude-code", { totalCostUsd: 0.168 })).toBe(true);
+    expect(
+      shouldRetryExternalThreadUsage(
+        "claude-code",
+        { totalCostUsd: 0.168 },
+        { usedPercent: 62, periodType: "five_hour" },
+      ),
+    ).toBe(false);
     expect(rendererUsageRefreshDelay(0)).toBe(250);
     expect(rendererUsageRefreshDelay(1)).toBe(500);
     expect(rendererUsageRefreshDelay(99)).toBe(8000);

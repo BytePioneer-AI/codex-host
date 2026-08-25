@@ -56,7 +56,23 @@ const { outputFiles } = await build({
         };
         globalThis.updateRendererCreditsUsage = () => {
           renderRendererUsageControl(usage, { cacheHitRatePercent: 99.3, totalCostUsd: 0.822 });
-          renderRendererCreditsControl(credits, { usedPercent: 47, periodType: "weekly" });
+          renderRendererCreditsControl(credits, {
+            usedPercent: 47,
+            periodType: "weekly",
+            resetsAt: "2026-08-31T16:00:00.000Z",
+            productUsage: [
+              { product: "GrokBuild", usagePercent: 82, resetsAt: "2027-03-15T10:00:00.000Z" },
+              { product: "GrokChat", usagePercent: 45 },
+            ],
+          });
+        };
+        globalThis.updateRendererUsagePlanWindow = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 99,
+            totalCostUsd: 1.373,
+            planFiveHourUsedPercent: 45,
+            planFiveHourResetsAtUnix: 1_756_130_400,
+          });
         };
       };
     `,
@@ -168,7 +184,7 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(credits).toBeVisible();
   await expect(credits).toHaveText("47%");
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 47%");
-  await expect(credits.locator("[data-codexhost-credits-dot]")).toHaveCount(1);
+  await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
   await expect(trigger).toHaveCSS("max-width", "180px");
   await expect(credits.locator("xpath=preceding-sibling::*[1]")).toHaveAttribute(
     "aria-label",
@@ -192,4 +208,37 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("Weekly limit");
   await expect(popover).toContainText("47%");
+  await expect(popover).toContainText("Build");
+  await expect(popover).toContainText("82%");
+  await expect(popover).toContainText("Chat");
+  // The headline percent gets its own progress bar too, alongside each product's.
+  await expect(popover.locator("[data-codexhost-credits-bar]")).toHaveCount(3);
+  // One "resets" line under the headline, one under the Build tile (Chat has none).
+  await expect(popover.getByText("resets", { exact: false })).toHaveCount(2);
+});
+
+test("shows a Claude.ai five-hour plan window only in the Usage popover", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsagePlanWindow");
+    if (typeof update !== "function") throw new Error("Plan window update is unavailable");
+    update();
+  });
+
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage).toBeVisible();
+  await expect(usage).toHaveText("CH 99% · $1.373");
+  await expect(usage).not.toContainText("5-hour");
+  await expect(usage).not.toContainText("45%");
+
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="Thread Usage details"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("5-hour limit");
+  await expect(popover).toContainText("45%");
+  await expect(popover).not.toContainText("7-day limit");
 });

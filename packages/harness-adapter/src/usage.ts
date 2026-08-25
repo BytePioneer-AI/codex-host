@@ -10,6 +10,10 @@ export interface HostUsage {
   cacheHitRatePercent?: number;
   contextWindowTokens?: number;
   contextUsedTokens?: number;
+  planFiveHourUsedPercent?: number;
+  planFiveHourResetsAtUnix?: number;
+  planSevenDayUsedPercent?: number;
+  planSevenDayResetsAtUnix?: number;
 }
 
 const tokenFields = [
@@ -24,10 +28,22 @@ const tokenFields = [
   "contextUsedTokens",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
+const safeIntegerFields = [
+  "planFiveHourResetsAtUnix",
+  "planSevenDayResetsAtUnix",
+] as const satisfies ReadonlyArray<keyof HostUsage>;
+
+const percentFields = [
+  "cacheHitRatePercent",
+  "planFiveHourUsedPercent",
+  "planSevenDayUsedPercent",
+] as const satisfies ReadonlyArray<keyof HostUsage>;
+
 const usageFields = new Set<keyof HostUsage>([
   ...tokenFields,
+  ...safeIntegerFields,
+  ...percentFields,
   "totalCostUsd",
-  "cacheHitRatePercent",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +68,15 @@ export function parseHostUsage(value: unknown): HostUsage {
       throw new Error(`Harness Usage '${field}' must be a non-negative safe integer`);
     }
   }
+  for (const field of safeIntegerFields) {
+    const candidate = value[field];
+    if (
+      candidate !== undefined &&
+      (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0)
+    ) {
+      throw new Error(`Harness Usage '${field}' must be a non-negative safe integer`);
+    }
+  }
   if (
     value.outputTokensPerSecond !== undefined &&
     (typeof value.outputTokensPerSecond !== "number" ||
@@ -68,14 +93,17 @@ export function parseHostUsage(value: unknown): HostUsage {
   ) {
     throw new Error("Harness Usage 'totalCostUsd' must be a finite non-negative number");
   }
-  if (
-    value.cacheHitRatePercent !== undefined &&
-    (typeof value.cacheHitRatePercent !== "number" ||
-      !Number.isFinite(value.cacheHitRatePercent) ||
-      value.cacheHitRatePercent < 0 ||
-      value.cacheHitRatePercent > 100)
-  ) {
-    throw new Error("Harness Usage 'cacheHitRatePercent' must be between 0 and 100");
+  for (const field of percentFields) {
+    const candidate = value[field];
+    if (
+      candidate !== undefined &&
+      (typeof candidate !== "number" ||
+        !Number.isFinite(candidate) ||
+        candidate < 0 ||
+        candidate > 100)
+    ) {
+      throw new Error(`Harness Usage '${field}' must be between 0 and 100`);
+    }
   }
   const hasContextUsed = value.contextUsedTokens !== undefined;
   const hasContextWindow = value.contextWindowTokens !== undefined;
@@ -84,6 +112,22 @@ export function parseHostUsage(value: unknown): HostUsage {
   }
   if (hasContextWindow && value.contextWindowTokens === 0) {
     throw new Error("Harness Usage 'contextWindowTokens' must be greater than zero");
+  }
+  if (
+    value.planFiveHourResetsAtUnix !== undefined &&
+    value.planFiveHourUsedPercent === undefined
+  ) {
+    throw new Error(
+      "Harness Usage 'planFiveHourResetsAtUnix' must be provided with 'planFiveHourUsedPercent'",
+    );
+  }
+  if (
+    value.planSevenDayResetsAtUnix !== undefined &&
+    value.planSevenDayUsedPercent === undefined
+  ) {
+    throw new Error(
+      "Harness Usage 'planSevenDayResetsAtUnix' must be provided with 'planSevenDayUsedPercent'",
+    );
   }
   return { ...value } as HostUsage;
 }

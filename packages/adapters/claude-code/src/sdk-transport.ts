@@ -14,7 +14,7 @@ import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
-import { ClaudeNativeTurnAccumulator } from "./native-message.js";
+import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
 import type {
@@ -25,6 +25,8 @@ import type {
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
+  ClaudePlanLimitEvent,
+  ClaudePlanLimitWindow,
   ClaudeQuestion,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
@@ -98,6 +100,7 @@ export interface ClaudeSdkTransportOptions {
   closeTimeoutMs: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
+  onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
   queryFactory?: typeof query;
 }
 
@@ -140,6 +143,27 @@ function permissionModeFromMessage(value: unknown): ClaudePermissionMode | undef
   return isClaudePermissionMode(value.permissionMode) ? value.permissionMode : undefined;
 }
 
+function safeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseContextApiUsage(value: unknown): ClaudeTransportContextUsage["apiUsage"] {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = value.input_tokens;
+  const outputTokens = value.output_tokens;
+  const cacheCreationInputTokens = value.cache_creation_input_tokens;
+  const cacheReadInputTokens = value.cache_read_input_tokens;
+  if (
+    !safeNonNegativeInteger(inputTokens) ||
+    !safeNonNegativeInteger(outputTokens) ||
+    !safeNonNegativeInteger(cacheCreationInputTokens) ||
+    !safeNonNegativeInteger(cacheReadInputTokens)
+  ) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens };
+}
+
 function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   if (!isRecord(value)) throw new Error("Claude SDK context Usage is invalid");
   const usedTokens = value.totalTokens;
@@ -158,7 +182,37 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   ) {
     throw new Error("Claude SDK context Usage contains invalid values");
   }
-  return { usedTokens, maxTokens, model };
+  const apiUsage = parseContextApiUsage(value.apiUsage);
+  return { usedTokens, maxTokens, model, ...(apiUsage ? { apiUsage } : {}) };
+}
+
+function parseUsageQueryWindow(value: unknown): ClaudePlanLimitWindow | undefined {
+  if (!isRecord(value)) return undefined;
+  const utilization = value.utilization;
+  if (typeof utilization !== "number" || !Number.isFinite(utilization) || utilization < 0) {
+    return undefined;
+  }
+  const utilizationPercent = Math.min(100, Math.max(0, utilization));
+  const resetsAt = value.resets_at;
+  const resetsAtMs = typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
+  const resetsAtUnix = Number.isFinite(resetsAtMs) ? Math.floor(resetsAtMs / 1000) : undefined;
+  return { utilizationPercent, ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}) };
+}
+
+/**
+ * Parses the response from `Query#usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` —
+ * the on-demand pull counterpart to the `rate_limit_event` push in native-message.ts. Utilization
+ * here already arrives as a 0-100 percent (unlike the 0-1 fraction on the native event), and
+ * `resets_at` is an ISO 8601 string rather than a Unix-seconds number.
+ */
+function parseUsageQueryPlanLimit(value: unknown): ClaudePlanLimitEvent | null {
+  if (!isRecord(value) || value.rate_limits_available !== true) return null;
+  const rateLimits = value.rate_limits;
+  if (!isRecord(rateLimits)) return null;
+  const fiveHour = parseUsageQueryWindow(rateLimits.five_hour);
+  const sevenDay = parseUsageQueryWindow(rateLimits.seven_day);
+  if (!fiveHour && !sevenDay) return null;
+  return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -325,6 +379,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #model: string | undefined;
   readonly #onFault: (error: unknown) => void;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
+  readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
   readonly #openMode: "create" | "resume";
   #permissionMode: ClaudePermissionMode;
   readonly #queryFactory: typeof query;
@@ -355,6 +410,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#model = options.model;
     this.#onFault = options.onFault;
     this.#onPermissionModeChanged = options.onPermissionModeChanged;
+    this.#onPlanLimit = options.onPlanLimit;
     this.#openMode = options.openMode;
     this.#permissionMode = options.permissionMode;
     this.#queryFactory = options.queryFactory ?? query;
@@ -423,6 +479,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage());
+  }
+
+  async getPlanLimit(): Promise<ClaudePlanLimitEvent | null> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) return null;
+    return parseUsageQueryPlanLimit(
+      await activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+    );
   }
 
   getPermissionMode(): ClaudePermissionMode {
@@ -723,6 +787,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           this.#permissionMode = permissionMode;
           this.#onPermissionModeChanged(permissionMode);
         }
+        const planLimit = parseClaudePlanLimitEvent(message);
+        if (planLimit) this.#onPlanLimit(planLimit);
         const active = this.#active;
         if (active) {
           const interpreted = active.accumulator.consume(message);

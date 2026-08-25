@@ -19,6 +19,10 @@ export const threadUsageSnapshotSchema = z
     cacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     contextWindowTokens: nonNegativeSafeIntegerSchema.optional(),
     contextUsedTokens: nonNegativeSafeIntegerSchema.optional(),
+    planFiveHourUsedPercent: cacheHitRatePercentSchema.optional(),
+    planFiveHourResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
+    planSevenDayUsedPercent: cacheHitRatePercentSchema.optional(),
+    planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
   })
   .strict()
   .superRefine((usage, context) => {
@@ -41,6 +45,20 @@ export const threadUsageSnapshotSchema = z
         path: ["contextWindowTokens"],
       });
     }
+    if (usage.planFiveHourResetsAtUnix !== undefined && usage.planFiveHourUsedPercent === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage planFiveHourResetsAtUnix must be provided with planFiveHourUsedPercent",
+        path: ["planFiveHourResetsAtUnix"],
+      });
+    }
+    if (usage.planSevenDayResetsAtUnix !== undefined && usage.planSevenDayUsedPercent === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage planSevenDayResetsAtUnix must be provided with planSevenDayUsedPercent",
+        path: ["planSevenDayResetsAtUnix"],
+      });
+    }
   });
 
 export type ThreadUsageSnapshot = z.infer<typeof threadUsageSnapshotSchema>;
@@ -51,6 +69,7 @@ export const accountCreditsProductUsageSchema = z
   .object({
     product: z.string().min(1),
     usagePercent: usagePercentSchema,
+    resetsAt: z.string().min(1).optional(),
   })
   .strict();
 
@@ -58,7 +77,7 @@ export const accountCreditsSnapshotSchema = z
   .object({
     usedPercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
-    periodType: z.enum(["weekly", "monthly", "unknown"]),
+    periodType: z.enum(["weekly", "monthly", "five_hour", "seven_day", "unknown"]),
     productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
   })
   .strict();

@@ -11,6 +11,7 @@ import {
 
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
+import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
 import type { ClaudePermissionMode } from "../src/permission-modes.js";
@@ -20,6 +21,7 @@ import type {
   ClaudeAutonomousTurn,
   ClaudeIdleTurnHandler,
   ClaudeInteractionResponse,
+  ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
@@ -44,10 +46,14 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
+  planLimitOnDemand: ClaudePlanLimitEvent | null = null;
   permissionMode: ClaudePermissionMode;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly getContextUsage = vi.fn(
     async (): Promise<ClaudeTransportContextUsage | null> => this.contextUsage,
+  );
+  readonly getPlanLimit = vi.fn(
+    async (): Promise<ClaudePlanLimitEvent | null> => this.planLimitOnDemand,
   );
   readonly setModel = vi.fn(async () => undefined);
   readonly setThinkingOption = vi.fn(async () => undefined);
@@ -77,19 +83,27 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
       }
     | undefined;
 
+  readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
+
   constructor(
     sessionId: string,
     permissionMode: ClaudePermissionMode,
     onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void,
+    onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void,
   ) {
     this.sessionId = sessionId;
     this.permissionMode = permissionMode;
     this.#onPermissionModeChanged = onPermissionModeChanged;
+    this.#onPlanLimit = onPlanLimit;
   }
 
   changePermissionMode(permissionMode: ClaudePermissionMode): void {
     this.permissionMode = permissionMode;
     this.#onPermissionModeChanged(permissionMode);
+  }
+
+  planLimit(planLimit: ClaudePlanLimitEvent): void {
+    this.#onPlanLimit(planLimit);
   }
 
   compact(
@@ -241,6 +255,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
         input.sessionId,
         input.permissionMode,
         input.onPermissionModeChanged,
+        input.onPlanLimit,
       );
       transports.push(transport);
       return transport;
@@ -288,6 +303,52 @@ async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
   if (output.value.kind !== "interaction") throw new Error("Expected a Harness Interaction");
   return output.value.interaction;
 }
+
+describe("projectClaudePlanLimitToCredits", () => {
+  it("returns null when nothing has been observed", () => {
+    expect(projectClaudePlanLimitToCredits(null)).toBeNull();
+    expect(projectClaudePlanLimitToCredits({})).toBeNull();
+  });
+
+  it("leads with the five-hour window and folds the seven-day window into productUsage", () => {
+    expect(
+      projectClaudePlanLimitToCredits({
+        fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+        sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+      }),
+    ).toEqual({
+      usedPercent: 62,
+      periodType: "five_hour",
+      resetsAt: new Date(1_756_130_400 * 1000).toISOString(),
+      productUsage: [
+        {
+          product: "7-day window",
+          usagePercent: 18,
+          resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
+        },
+      ],
+    });
+  });
+
+  it("omits resetsAt and productUsage when neither is available", () => {
+    expect(projectClaudePlanLimitToCredits({ fiveHour: { utilizationPercent: 8 } })).toEqual({
+      usedPercent: 8,
+      periodType: "five_hour",
+    });
+  });
+
+  it("falls back to the seven-day window alone", () => {
+    expect(
+      projectClaudePlanLimitToCredits({
+        sevenDay: { utilizationPercent: 41, resetsAtUnix: 1_756_648_800 },
+      }),
+    ).toEqual({
+      usedPercent: 41,
+      periodType: "seven_day",
+      resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
+    });
+  });
+});
 
 describe("Claude Code HarnessAdapter", () => {
   it("opens and closes unused Sessions without creating a Transport", async () => {
@@ -3233,6 +3294,427 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it("merges Session cost, token totals, and latest cache hit rate from the Turn Result", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-result"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 80, maxTokens: 200, model: "runtime-default" };
+    transport.event({
+      type: "usage.result",
+      totalCostUsd: 1.373,
+      modelUsage: [
+        { inputTokens: 100, outputTokens: 40 },
+        { inputTokens: 20, outputTokens: 5 },
+      ],
+      lastRequestUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 990,
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-result",
+      usage: {
+        totalCostUsd: 1.373,
+        inputTokens: 120,
+        outputTokens: 45,
+        cacheHitRatePercent: 99,
+      },
+    });
+    transport.finish({ status: "succeeded" });
+
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-result",
+      usage: {
+        totalCostUsd: 1.373,
+        inputTokens: 120,
+        outputTokens: 45,
+        cacheHitRatePercent: 99,
+        contextUsedTokens: 80,
+        contextWindowTokens: 200,
+      },
+    });
+    await session.close();
+  });
+
+  it("omits cache hit rate when last-request cache fields are incomplete", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-incomplete-cache"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "usage.result",
+      totalCostUsd: 0.5,
+      modelUsage: [{ inputTokens: 10, outputTokens: 2 }],
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-incomplete-cache",
+      usage: { totalCostUsd: 0.5, inputTokens: 10, outputTokens: 2 },
+    });
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
+  it("publishes a Claude.ai five-hour plan window and preserves it across a later seven-day window", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("plan-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 45, resetsAtUnix: 1_756_130_400 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "plan-turn",
+      usage: { planFiveHourUsedPercent: 45, planFiveHourResetsAtUnix: 1_756_130_400 },
+    });
+
+    transport.planLimit({ sevenDay: { utilizationPercent: 12 } });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "plan-turn",
+      usage: {
+        planFiveHourUsedPercent: 45,
+        planFiveHourResetsAtUnix: 1_756_130_400,
+        planSevenDayUsedPercent: 12,
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("publishes both plan windows from a single rate-limit event", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("plan-both-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 28, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 10, resetsAtUnix: 1_787_940_000 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "plan-both-windows",
+      usage: {
+        planFiveHourUsedPercent: 28,
+        planFiveHourResetsAtUnix: 1_787_674_200,
+        planSevenDayUsedPercent: 10,
+        planSevenDayResetsAtUnix: 1_787_940_000,
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("never publishes plan-window fields for an API-key Session that receives no rate-limit event", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("api-key-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 40, maxTokens: 200, model: "runtime-default" };
+    transport.event({ type: "usage.result", totalCostUsd: 0.2 });
+    const resultUsage = await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    const contextUsage = await nextEvent(iterator);
+    for (const event of [resultUsage, contextUsage]) {
+      if (event.type !== "session.usage.changed" || event.usage === null) {
+        throw new Error("Expected a Session Usage snapshot");
+      }
+      expect(event.usage).not.toHaveProperty("planFiveHourUsedPercent");
+      expect(event.usage).not.toHaveProperty("planSevenDayUsedPercent");
+    }
+    await session.close();
+  });
+
+  it("drops a malformed plan-limit observation without touching the latest still-applicable Usage", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("plan-malformed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({ fiveHour: { utilizationPercent: 30 } });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "plan-malformed",
+      usage: { planFiveHourUsedPercent: 30 },
+    });
+
+    transport.planLimit({ fiveHour: { utilizationPercent: Number.NaN } });
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
+  it("has no plan usage on the Adapter before any rate-limit event is observed", () => {
+    const { adapter } = fixture();
+    expect(adapter.credits()).toBeNull();
+  });
+
+  it("projects the five-hour window as the primary credits pill, with the seven-day window riding along", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("credits-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+    await nextEvent(iterator);
+
+    expect(adapter.credits()).toEqual({
+      usedPercent: 62,
+      periodType: "five_hour",
+      resetsAt: new Date(1_756_130_400 * 1000).toISOString(),
+      productUsage: [
+        {
+          product: "7-day window",
+          usagePercent: 18,
+          resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
+        },
+      ],
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("falls back to the seven-day window alone when no five-hour observation has arrived", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("seven-day-only"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({ sevenDay: { utilizationPercent: 41 } });
+    await nextEvent(iterator);
+
+    expect(adapter.credits()).toEqual({ usedPercent: 41, periodType: "seven_day" });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("shares one account-wide plan-limit cache across concurrent Sessions", async () => {
+    const { adapter, transports } = fixture();
+    const sessionA = await openSession(adapter);
+    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
+    await sessionA.execute(textTurn("session-a"));
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    const transportA = transports[0];
+    if (!transportA) throw new Error("Fake Claude transport was not created");
+
+    const sessionB = await openSession(adapter);
+    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
+    await sessionB.execute(textTurn("session-b"));
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    const transportB = transports[1];
+    if (!transportB) throw new Error("Fake Claude transport was not created");
+
+    transportA.planLimit({ fiveHour: { utilizationPercent: 33 } });
+    await nextEvent(iteratorA);
+
+    // Session B never observed a rate-limit event itself, but reads the same account-wide value.
+    expect(adapter.credits()).toEqual({ usedPercent: 33, periodType: "five_hour" });
+
+    transportA.finish({ status: "succeeded" });
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    transportB.finish({ status: "succeeded" });
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await sessionA.close();
+    await sessionB.close();
+  });
+
+  it("falls back to the cached value when the live Transport has no fresher answer", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("refresh-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({ fiveHour: { utilizationPercent: 55 } });
+    await nextEvent(iterator);
+
+    // The fake Transport's on-demand pull (`planLimitOnDemand`) is unset, so this still tries a
+    // real fetch through the open Session and only falls back once that comes back empty.
+    await expect(adapter.refreshCredits()).resolves.toEqual(adapter.credits());
+    expect(transport.getPlanLimit).toHaveBeenCalledOnce();
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("pulls fresh plan usage through an open Session's live Transport and republishes the Thread's own Usage too", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("pull-turn"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.planLimitOnDemand = {
+      fiveHour: { utilizationPercent: 71, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 22 },
+    };
+
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 71,
+      periodType: "five_hour",
+      resetsAt: new Date(1_787_674_200 * 1000).toISOString(),
+      productUsage: [{ product: "7-day window", usagePercent: 22 }],
+    });
+    expect(transport.getPlanLimit).toHaveBeenCalledOnce();
+
+    // Same pull, routed through `#handlePlanLimit` like the passive push, also lands in this
+    // Thread's own Usage snapshot — not only the Adapter-wide credits() cache.
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      usage: {
+        planFiveHourUsedPercent: 71,
+        planFiveHourResetsAtUnix: 1_787_674_200,
+        planSevenDayUsedPercent: 22,
+      },
+    });
+    await session.close();
+  });
+
+  it("returns the cached value without erroring when no Session is open to pull through", async () => {
+    const { adapter } = fixture();
+    await expect(adapter.refreshCredits()).resolves.toBeNull();
+  });
+
+  it("tries each open Session in turn until one answers", async () => {
+    const { adapter, transports } = fixture();
+    const sessionA = await openSession(adapter);
+    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
+    await sessionA.execute(textTurn("session-a"));
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    const transportA = transports[0];
+    if (!transportA) throw new Error("Fake Claude transport was not created");
+    transportA.finish({ status: "succeeded" });
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+
+    const sessionB = await openSession(adapter);
+    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
+    await sessionB.execute(textTurn("session-b"));
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    const transportB = transports[1];
+    if (!transportB) throw new Error("Fake Claude transport was not created");
+    transportB.finish({ status: "succeeded" });
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+
+    // A has no answer (planLimitOnDemand unset); B does — the loop must not give up after A.
+    transportB.planLimitOnDemand = { fiveHour: { utilizationPercent: 12 } };
+
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 12,
+      periodType: "five_hour",
+    });
+    expect(transportA.getPlanLimit).toHaveBeenCalledOnce();
+    expect(transportB.getPlanLimit).toHaveBeenCalledOnce();
+
+    await nextEvent(iteratorB); // this Thread's own Usage, republished alongside the pull
+    await sessionA.close();
+    await sessionB.close();
+  });
+
   it("reuses one Transport and Native Session for sequential Turns", async () => {
     const { adapter, dependencies, transports } = fixture();
     const session = await openSession(adapter);
@@ -3784,6 +4266,7 @@ describe("Claude Code HarnessAdapter", () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
         getContextUsage: async () => null,
+        getPlanLimit: async () => null,
         getPermissionMode: () => "default",
         setModel: async () => undefined,
         setThinkingOption: async () => undefined,

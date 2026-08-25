@@ -118,6 +118,46 @@ describe("Codex Thread Usage projection", () => {
     expect(usage).not.toHaveProperty("totalTokens");
   });
 
+  it("ignores Claude.ai plan-window fields in the native context carrier", () => {
+    expect(
+      projectCodexThreadUsage({
+        threadId: "thread-plan-window",
+        turnId: hostTurnIdSchema.parse("turn-plan-window"),
+        usage: {
+          contextUsedTokens: 35,
+          contextWindowTokens: 200,
+          planFiveHourUsedPercent: 45,
+          planFiveHourResetsAtUnix: 1_756_130_400,
+        },
+      }),
+    ).toEqual({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-plan-window",
+        turnId: "turn-plan-window",
+        tokenUsage: {
+          total: {
+            totalTokens: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 35,
+            inputTokens: 35,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 200,
+        },
+      },
+    });
+  });
+
   it("omits Usage without a reliable Host Turn", () => {
     expect(
       projectCodexThreadUsage({

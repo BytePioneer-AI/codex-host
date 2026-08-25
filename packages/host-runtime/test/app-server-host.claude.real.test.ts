@@ -162,6 +162,7 @@ describe("AppServerHost hermetic Claude projection", () => {
             maxTokens: 200,
             model: "hermetic-model",
           }),
+          getPlanLimit: async () => null,
           getPermissionMode: () => permissionMode,
           setModel: async () => undefined,
           setThinkingOption: async () => undefined,

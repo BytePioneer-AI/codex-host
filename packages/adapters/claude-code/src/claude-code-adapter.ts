@@ -33,6 +33,7 @@ import {
   type HostItemOutcome,
   type HostQuestionInteraction,
   type HostReasoningItem,
+  type HostUsage,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -59,6 +60,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  type AccountCreditsSnapshot,
   type HarnessId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
@@ -99,6 +101,7 @@ import type {
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeModelInspector,
+  ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
@@ -307,6 +310,65 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/**
+ * Cache hit rate for the latest request only, never a Session cumulative value.
+ * Every addend must be present; the denominator must be positive.
+ */
+function claudeCacheHitRatePercent(usage: {
+  inputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}): number | undefined {
+  const denominator =
+    usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
+  if (denominator <= 0) return undefined;
+  return Math.min(100, Math.max(0, (usage.cacheReadInputTokens / denominator) * 100));
+}
+
+/**
+ * Projects the Adapter's cached plan-limit observation into the generic
+ * `AccountCreditsSnapshot` shape the Renderer's credits pill/popover expect.
+ * The 5-hour window leads (it's the more actionable of the two — it resets
+ * soonest); the 7-day window, when known, rides along as a secondary entry
+ * rather than a fabricated "product". Falls back to the 7-day window alone
+ * if a 5-hour observation hasn't arrived yet.
+ */
+function isoFromUnix(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toISOString();
+}
+
+export function projectClaudePlanLimitToCredits(
+  planLimit: ClaudePlanLimitEvent | null,
+): AccountCreditsSnapshot | null {
+  if (!planLimit) return null;
+  const { fiveHour, sevenDay } = planLimit;
+  if (!fiveHour && !sevenDay) return null;
+
+  const primary = fiveHour ?? sevenDay;
+  if (!primary) return null;
+  const periodType: AccountCreditsSnapshot["periodType"] = fiveHour ? "five_hour" : "seven_day";
+  const other = fiveHour && sevenDay ? sevenDay : undefined;
+
+  return {
+    usedPercent: primary.utilizationPercent,
+    periodType,
+    ...(primary.resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(primary.resetsAtUnix) } : {}),
+    ...(other
+      ? {
+          productUsage: [
+            {
+              product: "7-day window",
+              usagePercent: other.utilizationPercent,
+              ...(other.resetsAtUnix !== undefined
+                ? { resetsAt: isoFromUnix(other.resetsAtUnix) }
+                : {}),
+            },
+          ],
+        }
+      : {}),
+  };
+}
+
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
@@ -328,6 +390,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #cwd: string;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
+  readonly #onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => void;
   readonly #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
@@ -347,6 +410,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #statePublished = false;
   #transport: ClaudeTurnTransport | null = null;
   #usageGeneration = 0;
+  #latestUsage: HostUsage | null = null;
   #autonomousOrdinal = 0;
   #occupancy = new ClaudeBackgroundOccupancy();
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -356,6 +420,7 @@ class ClaudeHarnessSession implements HarnessSession {
     dependencies: ClaudeAdapterDependencies,
     closeTimeoutMs: number,
     onClosed: () => void,
+    onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => void,
     options: {
       openMode: "create" | "resume";
       sessionId: string;
@@ -372,6 +437,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#readSessionMessages = dependencies.readSessionMessages;
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
+    this.#onPlanLimitObserved = onPlanLimitObserved;
     this.#openMode = options.openMode;
     this.#requestedModel = options.requestedModel;
     this.#requestedPermissionModeId = options.requestedPermissionModeId;
@@ -1029,6 +1095,7 @@ class ClaudeHarnessSession implements HarnessSession {
       permissionMode,
       onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
       onFault: () => this.#fault(faultError()),
+      onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
     });
     transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
     transport.setIdleTurnHandler({
@@ -1208,6 +1275,9 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "interaction.closed":
         this.#closeInteraction(active, event.requestId, event.reason);
+        return;
+      case "usage.result":
+        this.#applyResultUsage(active, event);
         return;
     }
   }
@@ -1562,16 +1632,112 @@ class ClaudeHarnessSession implements HarnessSession {
           return;
         }
         if (context === null) continue;
-        const usage = parseHostUsage({
-          contextUsedTokens: context.usedTokens,
-          contextWindowTokens: context.maxTokens,
-        });
-        this.#event({ type: "session.usage.changed", observedForTurnId: turnId, usage });
+        const cacheHitRatePercent = context.apiUsage
+          ? claudeCacheHitRatePercent(context.apiUsage)
+          : undefined;
+        this.#mergeAndPublishUsage(
+          {
+            contextUsedTokens: context.usedTokens,
+            contextWindowTokens: context.maxTokens,
+            ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
+          },
+          turnId,
+        );
         return;
       } catch {
         // Context Usage is an independent, best-effort projection.
       }
     }
+  }
+
+  #applyResultUsage(
+    active: ActiveTurn,
+    event: Extract<ClaudeTurnEvent, { type: "usage.result" }>,
+  ): void {
+    const delta: Partial<HostUsage> = {};
+    if (event.totalCostUsd !== undefined) delta.totalCostUsd = event.totalCostUsd;
+    if (event.modelUsage !== undefined) {
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const model of event.modelUsage) {
+        inputTokens += model.inputTokens;
+        outputTokens += model.outputTokens;
+      }
+      if (Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)) {
+        delta.inputTokens = inputTokens;
+        delta.outputTokens = outputTokens;
+      }
+    }
+    if (event.lastRequestUsage) {
+      const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
+      if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
+    }
+    this.#mergeAndPublishUsage(delta, active.command.turnId);
+  }
+
+  /**
+   * On-demand counterpart to the passive `rate_limit_event` push: asks this
+   * Session's live Transport to pull plan usage right now (if it has one —
+   * a Session with no Turn yet has never opened a live connection to pull
+   * through). Routes any answer through the same `#handlePlanLimit` path as
+   * the push, so it updates both the Adapter's shared cache and this
+   * Thread's own Usage snapshot identically either way.
+   */
+  async refreshPlanLimit(): Promise<ClaudePlanLimitEvent | null> {
+    if (this.#phase !== "open" || !this.#transport) return null;
+    let planLimit: ClaudePlanLimitEvent | null;
+    try {
+      planLimit = await this.#transport.getPlanLimit();
+    } catch {
+      return null;
+    }
+    if (planLimit) this.#handlePlanLimit(planLimit);
+    return planLimit;
+  }
+
+  #handlePlanLimit(planLimit: ClaudePlanLimitEvent): void {
+    // Plan usage is account-wide, not Thread-scoped: forward every observation to the
+    // Adapter's shared cache regardless of this Session's own lifecycle phase.
+    this.#onPlanLimitObserved(planLimit);
+    if (this.#phase !== "open") return;
+    const delta: Partial<HostUsage> = {};
+    if (planLimit.fiveHour) {
+      delta.planFiveHourUsedPercent = planLimit.fiveHour.utilizationPercent;
+      if (planLimit.fiveHour.resetsAtUnix !== undefined) {
+        delta.planFiveHourResetsAtUnix = planLimit.fiveHour.resetsAtUnix;
+      }
+    }
+    if (planLimit.sevenDay) {
+      delta.planSevenDayUsedPercent = planLimit.sevenDay.utilizationPercent;
+      if (planLimit.sevenDay.resetsAtUnix !== undefined) {
+        delta.planSevenDayResetsAtUnix = planLimit.sevenDay.resetsAtUnix;
+      }
+    }
+    this.#mergeAndPublishUsage(delta, this.#active?.command.turnId);
+  }
+
+  /**
+   * Every Usage observation replaces `#latestUsage` in full: unaffected fields
+   * from the prior snapshot are carried forward, never cleared by an
+   * incomplete new observation.
+   */
+  #mergeAndPublishUsage(
+    delta: Partial<HostUsage>,
+    turnId: TurnStartCommand["turnId"] | undefined,
+  ): void {
+    if (Object.keys(delta).length === 0) return;
+    let usage: HostUsage;
+    try {
+      usage = parseHostUsage({ ...(this.#latestUsage ?? {}), ...delta });
+    } catch {
+      return;
+    }
+    this.#latestUsage = usage;
+    this.#event({
+      type: "session.usage.changed",
+      ...(turnId !== undefined ? { observedForTurnId: turnId } : {}),
+      usage,
+    });
   }
 
   #finishFailed(active: ActiveTurn, error: HarnessError): void {
@@ -1728,6 +1894,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
+  #latestPlanLimit: ClaudePlanLimitEvent | null = null;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
@@ -1986,6 +2153,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       this.#dependencies,
       this.#closeTimeoutMs,
       () => this.#sessions.delete(session),
+      (planLimit) => this.#recordPlanLimit(planLimit),
       {
         openMode: input.kind === "create" ? "create" : "resume",
         sessionId: forked?.ok
@@ -2002,6 +2170,44 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     );
     this.#sessions.add(session);
     return { ok: true, value: session };
+  }
+
+  /**
+   * Plan usage (`credits()`) is scoped to the Adapter, not a single Thread: the
+   * Claude.ai 5-hour / 7-day windows are account-wide and shared by every
+   * concurrent Session, so an observation from any one of them updates the
+   * value every Thread reads.
+   */
+  #recordPlanLimit(planLimit: ClaudePlanLimitEvent): void {
+    this.#latestPlanLimit = {
+      ...(this.#latestPlanLimit ?? {}),
+      ...(planLimit.fiveHour ? { fiveHour: planLimit.fiveHour } : {}),
+      ...(planLimit.sevenDay ? { sevenDay: planLimit.sevenDay } : {}),
+    };
+  }
+
+  credits(): AccountCreditsSnapshot | null {
+    return projectClaudePlanLimitToCredits(this.#latestPlanLimit);
+  }
+
+  /**
+   * Unlike the passive `rate_limit_event` push, this asks an open Session's
+   * live Transport to pull plan usage on demand (Claude Code's `/usage`
+   * control channel) — so, like Grok's credits, a refresh can actually
+   * produce a fresher value instead of only replaying what was last
+   * observed. Plan usage is account-wide, so any one open Session's answer
+   * updates the value every Thread reads; the first Session that manages to
+   * answer wins and the rest are left untried.
+   */
+  async refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    for (const session of this.#sessions) {
+      // `refreshPlanLimit` already records a non-null answer into `#latestPlanLimit`
+      // (it routes through `#handlePlanLimit`, same as the passive push) — this loop
+      // only needs to know when to stop trying further Sessions.
+      const planLimit = await session.refreshPlanLimit();
+      if (planLimit) break;
+    }
+    return this.credits();
   }
 
   close(): Promise<void> {

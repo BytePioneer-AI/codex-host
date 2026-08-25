@@ -128,6 +128,15 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
+/**
+ * Agents whose Harness Adapter implements `credits()`/`refreshCredits()` — the only ones where
+ * it's worth retrying purely to pick up Account Credits after Usage has already arrived. Every
+ * other Agent would retry forever at the backoff ceiling for a value it can never produce.
+ */
+function externalAgentHasAccountCredits(agent: RendererAgent): boolean {
+  return agent === "grok" || agent === "claude-code";
+}
+
 export function shouldRetryExternalThreadUsage(
   agent: RendererAgent,
   usage: ThreadUsageSnapshot | null,
@@ -135,7 +144,7 @@ export function shouldRetryExternalThreadUsage(
 ): boolean {
   if (agent === "codex") return false;
   if (usage === null) return true;
-  return agent === "grok" && accountCredits === null;
+  return externalAgentHasAccountCredits(agent) && accountCredits === null;
 }
 
 export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
@@ -665,7 +674,10 @@ export function installRendererBindingProbe(
       mounted.usage = result.usage;
       mounted.accountCredits = result.accountCredits ?? null;
       const agent = controller.get(mounted.composer).agent;
-      if (result.usage !== null && (agent !== "grok" || result.accountCredits)) {
+      if (
+        result.usage !== null &&
+        (!externalAgentHasAccountCredits(agent) || result.accountCredits)
+      ) {
         usageRefreshAttempts.delete(mounted.composer);
       }
       renderMounted(mounted);

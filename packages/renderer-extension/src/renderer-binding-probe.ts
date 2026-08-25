@@ -101,6 +101,17 @@ export function retryableHarnessAvailabilityAgents(
   );
 }
 
+export function passiveHarnessAvailabilityAgents(
+  availability: HarnessAvailability,
+  errors: HarnessAvailabilityErrors,
+): ExternalRendererAgent[] {
+  return externalAgents.filter(
+    (agent) =>
+      availability[agent] === "checking" ||
+      (availability[agent] === "error" && errors[agent]?.retryable === true),
+  );
+}
+
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
   errors: HarnessAvailabilityErrors;
@@ -1579,6 +1590,7 @@ export function installRendererBindingProbe(
     hostId: string,
     refresh = false,
     retry = false,
+    force = false,
   ): Promise<void> {
     const state = hostHarnessAvailabilityState(hostId);
     if (!retry) resetHarnessAvailabilityRetry(hostId);
@@ -1588,9 +1600,9 @@ export function installRendererBindingProbe(
       return Promise.resolve();
     }
     if (state.request?.client === client) return state.request.promise;
-    const agentsToInspect = retry
-      ? retryableHarnessAvailabilityAgents(state.availability, state.errors)
-      : externalAgents;
+    const agentsToInspect = force
+      ? externalAgents
+      : passiveHarnessAvailabilityAgents(state.availability, state.errors);
     if (agentsToInspect.length === 0) {
       resetHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
@@ -1765,7 +1777,7 @@ export function installRendererBindingProbe(
     },
     refresh(): Promise<void> {
       for (const hostId of harnessAvailabilityByHost.keys()) {
-        void refreshHarnessAvailabilityForHost(hostId, true);
+        void refreshHarnessAvailabilityForHost(hostId, true, false, true);
       }
       return Promise.resolve();
     },

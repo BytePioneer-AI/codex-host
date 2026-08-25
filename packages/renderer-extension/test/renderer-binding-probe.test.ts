@@ -15,6 +15,7 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lateConversationTargetResolution,
+  passiveHarnessAvailabilityAgents,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
   rendererUsageRefreshDelay,
@@ -87,6 +88,46 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toEqual(["deepseek-harness"]);
+  });
+
+  it("keeps terminal Harness availability stable across passive focus refreshes", () => {
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "checking",
+          "claude-code": "checking",
+          "deepseek-harness": "checking",
+          grok: "checking",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": undefined,
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok"]);
+
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "notInstalled",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "notInstalled",
+            message: "DeepSeek Harness is not installed",
+            retryable: false,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual([]);
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {

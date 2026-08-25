@@ -27,6 +27,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { AppServerHost, type HostUpdateCoordinator } from "../src/index.js";
+import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 
 class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -161,6 +162,8 @@ function createFixture(
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
+    createOfficialConnection?: () =>
+      OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
   } = {},
 ) {
@@ -191,6 +194,9 @@ function createFixture(
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
+    ...(options.createOfficialConnection
+      ? { createOfficialConnection: options.createOfficialConnection }
+      : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
   });
   const running = host.run();
@@ -278,6 +284,42 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("uses an injected shared listener connection without spawning a stdio app-server", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const closed = Promise.withResolvers<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>();
+    const connected = Promise.withResolvers<undefined>();
+    const close = vi.fn(() => {
+      stdin.destroy();
+      stdout.end();
+      closed.resolve({ code: 0, signal: null });
+    });
+    const createOfficialConnection = vi.fn(() => {
+      connected.resolve(undefined);
+      return { stdin, stdout, stderr, closed: closed.promise, close };
+    });
+    const fixture = createFixture({ createOfficialConnection });
+
+    try {
+      await connected.promise;
+      expect(createOfficialConnection).toHaveBeenCalledTimes(1);
+      expect(fixture.spawnOfficial).not.toHaveBeenCalled();
+
+      fixture.host.close();
+
+      await expect(fixture.running).resolves.toBe(0);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
     const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     let subagentPhase: "started" | "temporarily-empty" | "working" | "completed" = "started";

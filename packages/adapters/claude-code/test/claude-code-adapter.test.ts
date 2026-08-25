@@ -63,9 +63,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     });
   });
   readonly start = vi.fn(async () => undefined);
-  readonly compactCalls: Array<string | undefined> = [];
-  initCalls = 0;
-  recapCalls = 0;
+  readonly compactCalls: Array<{ userMessageId: string; customInstructions: string | undefined }> =
+    [];
+  readonly initCalls: string[] = [];
+  readonly recapCalls: string[] = [];
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
   #assistantMessageId: string | null = null;
   #active:
@@ -92,26 +93,31 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 
   compact(
+    userMessageId: string,
     customInstructions: string | undefined,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
-    this.compactCalls.push(customInstructions);
+    this.compactCalls.push({ userMessageId, customInstructions });
     return this.#beginCommandTurn(onEvent);
   }
 
-  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
-    this.initCalls += 1;
-    return this.#beginCommandTurn(onEvent);
-  }
-
-  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
-    this.recapCalls += 1;
-    return this.#beginCommandTurn(onEvent);
-  }
-
-  #beginCommandTurn(
+  init(
+    userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
+    this.initCalls.push(userMessageId);
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  recap(
+    userMessageId: string,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
+    this.recapCalls.push(userMessageId);
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  #beginCommandTurn(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
     this.#assistantMessageId = null;
     return new Promise((resolve, reject) => {
       this.#active = { onEvent, resolve, reject };
@@ -1037,7 +1043,12 @@ describe("Claude Code HarnessAdapter", () => {
       type: "session.usage.changed",
       observedForTurnId: "manual-compact",
     });
-    expect(transport.compactCalls).toEqual(["Keep implementation details"]);
+    expect(transport.compactCalls).toEqual([
+      {
+        userMessageId: expect.any(String),
+        customInstructions: "Keep implementation details",
+      },
+    ]);
     expect(transport.turns).toEqual([]);
     await session.close();
   });
@@ -1166,7 +1177,7 @@ describe("Claude Code HarnessAdapter", () => {
       turnId,
       outcome: { status: "succeeded" },
     });
-    expect(transport.initCalls).toBe(1);
+    expect(transport.initCalls).toEqual([expect.any(String)]);
     expect(transport.turns).toEqual([]);
     expect(transport.compactCalls).toEqual([]);
     await session.close();
@@ -1209,8 +1220,86 @@ describe("Claude Code HarnessAdapter", () => {
       turnId,
       outcome: { status: "succeeded" },
     });
-    expect(transport.recapCalls).toBe(1);
+    expect(transport.recapCalls).toEqual([expect.any(String)]);
     expect(transport.turns).toEqual([]);
+    await session.close();
+  });
+
+  it("uses one Item identity for a live response and its native history snapshot", async () => {
+    const { adapter, history, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("stable-live-history-item"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const liveStarted = await nextEvent(iterator);
+    if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+      throw new Error("Claude live Agent Message did not start");
+    }
+    const transport = transports[0];
+    const nativeTurnKey = transport?.turns[0]?.userMessageId;
+    if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+    transport.reasoning("native-message", "one thought");
+    const liveReasoningStarted = await nextEvent(iterator);
+    if (
+      liveReasoningStarted.type !== "item.started" ||
+      liveReasoningStarted.item.type !== "reasoning"
+    ) {
+      throw new Error("Claude live Reasoning did not start");
+    }
+    await nextEvent(iterator);
+    transport.completeReasoning("native-message");
+    await nextEvent(iterator);
+    transport.delta("one response", "native-message");
+    await nextEvent(iterator);
+    transport.event({
+      type: "message.completed",
+      messageId: "native-message",
+      checkpointId: "native-assistant",
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    history.push(
+      {
+        type: "user",
+        uuid: nativeTurnKey,
+        session_id: transport.sessionId,
+        message: { role: "user", content: "stable-live-history-item" },
+      },
+      {
+        type: "assistant",
+        uuid: "native-thinking",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "one thought" }],
+          stop_reason: "end_turn",
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "native-assistant",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [{ type: "text", text: "one response" }],
+          stop_reason: "end_turn",
+        },
+      },
+    );
+
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual([
+      liveReasoningStarted.item.itemId,
+      liveStarted.item.itemId,
+    ]);
     await session.close();
   });
 

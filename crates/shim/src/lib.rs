@@ -586,14 +586,14 @@ fn child_command(
                 let node_path =
                     validate_proxy_target(current_executable, &PathBuf::from(node_path))?;
                 let runtime_path = canonical_existing_file(&PathBuf::from(runtime_path))?;
-                let mut command = Command::new(node_path);
+                let mut command = Command::new(&node_path);
                 command
                     .arg(node_entrypoint_path(&runtime_path))
                     .args(arguments)
                     .env(STOCK_CODEX_PATH_ENV, stock_codex_path)
+                    .env(HOST_NODE_PATH_ENV, &node_path)
+                    .env(HOST_RUNTIME_PATH_ENV, &runtime_path)
                     .env_remove(CODEX_CLI_PATH_ENV)
-                    .env_remove(HOST_NODE_PATH_ENV)
-                    .env_remove(HOST_RUNTIME_PATH_ENV)
                     .env_remove(REMOTE_SSH_MANAGED_ENV)
                     .env_remove(REMOTE_LISTENER_CHILD_ENV);
                 if inherited_remote_profile {

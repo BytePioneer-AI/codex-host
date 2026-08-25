@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
 
 import {
   query,
@@ -458,22 +457,29 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   compact(
+    userMessageId: string,
     customInstructions: string | undefined,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
     return this.runTurn(
       customInstructions ? `/compact ${customInstructions}` : "/compact",
-      randomUUID(),
+      userMessageId,
       onEvent,
     );
   }
 
-  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
-    return this.runTurn("/init", randomUUID(), onEvent);
+  init(
+    userMessageId: string,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
+    return this.runTurn("/init", userMessageId, onEvent);
   }
 
-  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
-    return this.runTurn("/recap", randomUUID(), onEvent);
+  recap(
+    userMessageId: string,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
+    return this.runTurn("/recap", userMessageId, onEvent);
   }
 
   runTurn(

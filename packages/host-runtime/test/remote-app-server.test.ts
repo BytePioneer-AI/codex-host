@@ -66,8 +66,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
+  officialListenerArgumentsForRemoteListener,
   remoteAppServerSocketPath,
-  stdioArgumentsForRemoteListener,
   withRemoteAppServerSocketInitializationLock,
 } from "../src/remote-app-server.js";
 
@@ -162,16 +162,67 @@ describe("remote SSH app-server transport", () => {
     ).toBe(false);
   });
 
-  it("converts the remote listener invocation into a per-connection stdio app-server", () => {
+  it("routes every Host session through one shared official listener", () => {
+    const incoming = [
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--listen",
+      "unix://",
+      "--analytics-default-enabled",
+    ];
+
     expect(
-      stdioArgumentsForRemoteListener([
-        "-c",
-        "features.code_mode_host=true",
-        "app-server",
-        "--listen",
-        "unix://",
-      ]),
-    ).toEqual(["-c", "features.code_mode_host=true", "app-server", "--stdio"]);
+      officialListenerArgumentsForRemoteListener(incoming, "/tmp/codexhost-official.sock"),
+    ).toEqual([
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--listen",
+      "unix:///tmp/codexhost-official.sock",
+      "--analytics-default-enabled",
+    ]);
+  });
+
+  it("does not forward public WebSocket authentication to the private listener", () => {
+    const incoming = [
+      "app-server",
+      "--listen=unix://",
+      "--ws-auth=signed-bearer-token",
+      "--ws-token-file",
+      "/tmp/capability-token",
+      "--ws-token-sha256=deadbeef",
+      "--ws-shared-secret-file",
+      "/tmp/shared-secret",
+      "--ws-issuer=codexhost",
+      "--ws-audience",
+      "codex-app-server",
+      "--ws-max-clock-skew-seconds=30",
+      "--analytics-default-enabled",
+    ];
+
+    expect(
+      officialListenerArgumentsForRemoteListener(incoming, "/tmp/codexhost-official.sock"),
+    ).toEqual([
+      "app-server",
+      "--listen=unix:///tmp/codexhost-official.sock",
+      "--analytics-default-enabled",
+    ]);
+    expect(incoming).toEqual([
+      "app-server",
+      "--listen=unix://",
+      "--ws-auth=signed-bearer-token",
+      "--ws-token-file",
+      "/tmp/capability-token",
+      "--ws-token-sha256=deadbeef",
+      "--ws-shared-secret-file",
+      "/tmp/shared-secret",
+      "--ws-issuer=codexhost",
+      "--ws-audience",
+      "codex-app-server",
+      "--ws-max-clock-skew-seconds=30",
+      "--analytics-default-enabled",
+    ]);
   });
 
   it("uses the Codex control socket under the remote CODEX_HOME", () => {

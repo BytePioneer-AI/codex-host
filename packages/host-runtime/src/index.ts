@@ -33,6 +33,18 @@ export type {
   RemoteAppServerWebSocketListener,
 } from "./remote-app-server.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
+export {
+  REMOTE_CONTROL_BRIDGE_DESCRIPTOR_FILE,
+  createRemoteControlAppServerPlan,
+  publishRemoteControlAppServerDescriptor,
+  remoteControlBridgeDescriptorPath,
+  remoteControlBridgePipePath,
+  runRemoteControlAppServerBridge,
+} from "./remote-control-app-server.js";
+export type {
+  RemoteControlAppServerDescriptorV1,
+  RemoteControlAppServerPlan,
+} from "./remote-control-app-server.js";
 export { runRemoteHostCli } from "./remote-host-cli.js";
 export {
   inspectRemoteHostInstallation,

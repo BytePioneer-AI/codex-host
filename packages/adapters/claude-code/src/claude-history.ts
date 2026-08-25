@@ -12,6 +12,8 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
+import { claudeTranscriptItemId } from "./item-identity.js";
+
 interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
@@ -174,6 +176,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
     const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
+    let agentMessageOrdinal = 0;
+    let reasoningOrdinal = 0;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -209,7 +213,11 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             {
               item: {
                 type: "agentMessage" as const,
-                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                itemId: claudeTranscriptItemId(
+                  user.uuid,
+                  "agentMessage",
+                  (agentMessageOrdinal += 1),
+                ),
                 text: recapOutput,
               },
               outcome: itemOutcome(outcome),
@@ -226,7 +234,11 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 {
                   item: {
                     type: "agentMessage" as const,
-                    itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                    itemId: claudeTranscriptItemId(
+                      user.uuid,
+                      "agentMessage",
+                      (agentMessageOrdinal += 1),
+                    ),
                     text,
                   },
                   outcome: itemOutcome(outcome),
@@ -243,7 +255,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             items.push({
               item: {
                 type: "reasoning" as const,
-                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}-reasoning`),
+                itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
                 text: reasoning,
               },
               outcome: itemOutcome(outcome),
@@ -255,7 +267,11 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             items.push({
               item: {
                 type: "agentMessage" as const,
-                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                itemId: claudeTranscriptItemId(
+                  user.uuid,
+                  "agentMessage",
+                  (agentMessageOrdinal += 1),
+                ),
                 text,
               },
               outcome: itemOutcome(outcome),

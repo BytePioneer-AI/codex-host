@@ -64,6 +64,10 @@ describe("remote SSH Host CLI", () => {
 
   it("refuses lifecycle operations before installation", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-cli-"));
+    const expectedMessage =
+      process.platform === "win32"
+        ? "Remote Host lifecycle must run on the macOS or Linux SSH host"
+        : "Remote Host is not installed";
     try {
       for (const command of ["start", "stop"]) {
         const stdout = textSink();
@@ -77,7 +81,7 @@ describe("remote SSH Host CLI", () => {
           }),
         ).resolves.toBe(1);
         expect(stdout.text()).toBe("");
-        expect(stderr.text()).toContain("Remote Host is not installed");
+        expect(stderr.text()).toContain(expectedMessage);
       }
     } finally {
       await rm(home, { recursive: true, force: true });

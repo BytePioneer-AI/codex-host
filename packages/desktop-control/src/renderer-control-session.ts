@@ -144,6 +144,7 @@ function validateBindingStatus(
 
 export function selectRendererWebContents(
   contents: readonly ElectronRendererSummary[],
+  preferredRendererId?: number,
 ): ElectronRendererSummary | null {
   const candidates = contents
     .filter(
@@ -156,6 +157,11 @@ export function selectRendererWebContents(
     .toSorted(
       (left, right) => (right.runtime.elementCount ?? 0) - (left.runtime.elementCount ?? 0),
     );
+  const preferred = candidates.find(
+    (candidate) =>
+      candidate.id === preferredRendererId && (candidate.runtime.elementCount ?? 0) > 0,
+  );
+  if (preferred) return preferred;
   return candidates.find((candidate) => (candidate.runtime.elementCount ?? 0) > 0) ?? null;
 }
 
@@ -334,13 +340,14 @@ async function waitForRenderer(
   operations: RendererControlOperations,
   timeoutMs: number,
   pollIntervalMs: number,
+  preferredRendererId?: number,
 ): Promise<ElectronRendererSummary> {
   const deadline = Date.now() + timeoutMs;
   let candidateCount = 0;
   while (Date.now() < deadline) {
     const inventory = await operations.inspect(inspector);
     candidateCount = inventory.length;
-    const renderer = selectRendererWebContents(inventory);
+    const renderer = selectRendererWebContents(inventory, preferredRendererId);
     if (renderer) return renderer;
     await sleep(pollIntervalMs);
   }
@@ -400,6 +407,7 @@ class InstalledRendererControlSession implements RendererControlSession {
       this.operations,
       this.timeoutMs,
       this.pollIntervalMs,
+      this.#snapshot.renderer.id,
     );
     const existing = await this.operations
       .readBinding(this.inspector, selected.id)
@@ -520,7 +528,13 @@ export async function createRendererControlSession(
   startupTrace("reloading Renderer");
   await operations.reload(options.inspector, initial.id);
   startupTrace("waiting for reloaded Renderer");
-  const selected = await waitForRenderer(options.inspector, operations, timeoutMs, pollIntervalMs);
+  const selected = await waitForRenderer(
+    options.inspector,
+    operations,
+    timeoutMs,
+    pollIntervalMs,
+    initial.id,
+  );
   startupTrace("waiting for title policy readiness");
   const titlePolicyReadiness = await waitForRendererTitlePolicyReady(
     () => operations.markTitlePolicyReady(options.inspector, selected.id),

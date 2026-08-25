@@ -73,7 +73,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "reasoning",
-                itemId: "claude-item-v1-assistant-1-reasoning",
+                itemId: "claude-item-v2-user-1-reasoning-1",
                 text: "inspect first",
               },
               outcome: { status: "succeeded" },
@@ -81,7 +81,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "agentMessage",
-                itemId: "claude-item-v1-assistant-1",
+                itemId: "claude-item-v2-user-1-agentMessage-1",
                 text: "checking",
               },
               outcome: { status: "succeeded" },
@@ -99,7 +99,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "agentMessage",
-                itemId: "claude-item-v1-assistant-2",
+                itemId: "claude-item-v2-user-1-agentMessage-2",
                 text: "done",
               },
               outcome: { status: "succeeded" },
@@ -128,7 +128,7 @@ describe("Claude history mapping", () => {
             {
               item: {
                 type: "agentMessage",
-                itemId: "claude-item-v1-assistant-3",
+                itemId: "claude-item-v2-user-2-agentMessage-1",
                 text: "answer",
               },
               outcome: { status: "succeeded" },
@@ -297,13 +297,27 @@ describe("Claude history mapping", () => {
       {
         nativeTurnRef: { nativeTurnKey: "init-command" },
         input: [{ type: "text", text: "/init" }],
-        items: [{ item: { type: "agentMessage", text: "Created CLAUDE.md" } }],
+        items: [
+          {
+            item: {
+              type: "agentMessage",
+              itemId: "claude-item-v2-init-command-agentMessage-1",
+              text: "Created CLAUDE.md",
+            },
+          },
+        ],
       },
       {
         nativeTurnRef: { nativeTurnKey: "recap-command" },
         input: [{ type: "text", text: "/recap" }],
         items: [
-          { item: { type: "agentMessage", text: "Built compact command and subagent projection." } },
+          {
+            item: {
+              type: "agentMessage",
+              itemId: "claude-item-v2-recap-command-agentMessage-1",
+              text: "Built compact command and subagent projection.",
+            },
+          },
         ],
       },
       {

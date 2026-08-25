@@ -141,11 +141,18 @@ export interface ClaudeTurnTransport {
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
   setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
   compact(
+    userMessageId: string,
     customInstructions: string | undefined,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
-  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult>;
-  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult>;
+  init(
+    userMessageId: string,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult>;
+  recap(
+    userMessageId: string,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult>;
   runTurn(
     text: string,
     userMessageId: string,

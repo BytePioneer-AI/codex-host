@@ -104,13 +104,20 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   return {
     candidateCount: selected == null ? candidates.length : 1,
     hostId: selected?.hostId ?? null,
-    manager: selected?.requestClient ?? null,
+    manager: selected?.manager ?? null,
+    requestClient: selected?.requestClient ?? null,
     prewarmedThreadManager: selected?.prewarmedThreadManager ?? null,
   };
 })()`;
 
-const INSTALL_RENDERER_POLICY_FUNCTION = `function(hostId, prewarmedThreadManager) {
-  return (${installDraftPrewarmPolicyBridge.toString()})(this, hostId, window, prewarmedThreadManager);
+const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewarmedThreadManager) {
+  return (${installDraftPrewarmPolicyBridge.toString()})(
+    this,
+    requestClient,
+    hostId,
+    window,
+    prewarmedThreadManager,
+  );
 }`;
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
 const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;

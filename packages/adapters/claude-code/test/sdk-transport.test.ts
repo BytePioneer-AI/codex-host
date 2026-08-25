@@ -10,7 +10,11 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
-import type { ClaudeAutonomousTurn, ClaudeTurnEvent } from "../src/transport.js";
+import type {
+  ClaudeAutonomousTurn,
+  ClaudeTransportTurnResult,
+  ClaudeTurnEvent,
+} from "../src/transport.js";
 
 class FakeQuery {
   readonly initializationResult = vi.fn(async () => ({
@@ -318,8 +322,10 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     const value = fixture();
     await value.transport.start();
     const events: ClaudeTurnEvent[] = [];
-    const compact = value.transport.compact("Keep implementation details", (event) =>
-      events.push(event),
+    const compact = value.transport.compact(
+      "00000000-0000-4000-8000-000000000043",
+      "Keep implementation details",
+      (event) => events.push(event),
     );
     const prompt = value.queryInput().prompt;
     if (typeof prompt === "string" || prompt === undefined) {
@@ -328,6 +334,7 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     const submitted = await prompt[Symbol.asyncIterator]().next();
     expect(submitted.value).toMatchObject({
       type: "user",
+      uuid: "00000000-0000-4000-8000-000000000043",
       message: { role: "user", content: "/compact Keep implementation details" },
     });
 
@@ -366,18 +373,22 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     }
     const iterator = prompt[Symbol.asyncIterator]();
 
-    const init = value.transport.init(() => undefined);
+    const init = value.transport.init("00000000-0000-4000-8000-000000000044", () => undefined);
     expect((await iterator.next()).value).toMatchObject({
       type: "user",
+      uuid: "00000000-0000-4000-8000-000000000044",
       message: { role: "user", content: "/init" },
     });
     completeTurn(value.fakeQuery);
     await expect(init).resolves.toEqual({ status: "succeeded" });
 
     const recapEvents: ClaudeTurnEvent[] = [];
-    const recap = value.transport.recap((event) => recapEvents.push(event));
+    const recap = value.transport.recap("00000000-0000-4000-8000-000000000045", (event) =>
+      recapEvents.push(event),
+    );
     expect((await iterator.next()).value).toMatchObject({
       type: "user",
+      uuid: "00000000-0000-4000-8000-000000000045",
       message: { role: "user", content: "/recap" },
     });
     value.fakeQuery.push({

@@ -117,6 +117,14 @@ export function shouldRetryExternalThreadUsage(
   return agent === "grok" && accountCredits === null;
 }
 
+export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
+  previous: RendererAgentAvailability | undefined,
+  next: RendererAgentAvailability,
+  configurationReady: boolean,
+): boolean {
+  return previous !== next || !configurationReady;
+}
+
 export interface RendererBindingProbeStatus {
   version: 2;
   mountedComposers: number;
@@ -1614,6 +1622,7 @@ export function installRendererBindingProbe(
             };
           }
           if (generation !== state.requestGeneration || disposed) return;
+          const previousStatus = state.availability[agent];
           state.errors[agent] = nextError;
           state.availability = { ...state.availability, [agent]: status };
           if (hostId !== activeAvailabilityHostId) {
@@ -1633,7 +1642,14 @@ export function installRendererBindingProbe(
           }
           for (const mounted of mountedByComposer.values()) {
             const composerState = controller.get(mounted.composer);
-            if (composerState.agent === agent) {
+            if (
+              composerState.agent === agent &&
+              shouldReloadExternalCatalogAfterAvailabilityRefresh(
+                previousStatus,
+                status,
+                isExternalConfigurationReady(mounted),
+              )
+            ) {
               void loadExternalCatalog(mounted);
             }
             renderMounted(mounted);

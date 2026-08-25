@@ -10,12 +10,7 @@ import { withRemoteAppServerSocketInitializationLock } from "./remote-socket-loc
 
 export { withRemoteAppServerSocketInitializationLock } from "./remote-socket-lock.js";
 
-const APP_SERVER_VALUE_OPTIONS = new Set([
-  "-c",
-  "--config",
-  "--enable",
-  "--disable",
-  "--listen",
+const APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS = new Set([
   "--ws-auth",
   "--ws-token-file",
   "--ws-token-sha256",
@@ -23,6 +18,14 @@ const APP_SERVER_VALUE_OPTIONS = new Set([
   "--ws-issuer",
   "--ws-audience",
   "--ws-max-clock-skew-seconds",
+]);
+const APP_SERVER_VALUE_OPTIONS = new Set([
+  "-c",
+  "--config",
+  "--enable",
+  "--disable",
+  "--listen",
+  ...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS,
 ]);
 const APP_SERVER_FLAG_OPTIONS = new Set([
   "--strict-config",
@@ -173,6 +176,56 @@ export function stdioArgumentsForRemoteListener(arguments_: readonly string[]): 
   throw new Error("Unix listener invocation omitted --listen");
 }
 
+export function officialListenerArgumentsForRemoteListener(
+  arguments_: readonly string[],
+  socketPath: string,
+): string[] {
+  if (!path.posix.isAbsolute(socketPath)) {
+    throw new Error("Shared official app-server socket path must be absolute");
+  }
+  if (remoteUnixListenerUrl(arguments_) === null) {
+    throw new Error("Expected a Unix listener app-server invocation");
+  }
+  const appServerIndex = appServerSubcommandIndex(arguments_);
+  if (appServerIndex === null) throw new Error("Expected an app-server invocation");
+  const result = arguments_.slice(0, appServerIndex + 1);
+  const listenUrl = `unix://${socketPath}`;
+  let listenerRewritten = false;
+  for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument && APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS.has(argument)) {
+      // The public listener already authenticated the remote Desktop client.
+      // This second listener is an internal hop bound to a current-user-only
+      // socket, so retaining public WebSocket auth would reject Host's private
+      // connection unless it replayed the caller's secret.
+      index += 1;
+      continue;
+    }
+    if (
+      argument &&
+      [...APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS].some((option) =>
+        argument.startsWith(`${option}=`),
+      )
+    ) {
+      continue;
+    }
+    if (argument === "--listen") {
+      result.push("--listen", listenUrl);
+      listenerRewritten = true;
+      index += 1;
+      continue;
+    }
+    if (argument?.startsWith("--listen=")) {
+      result.push(`--listen=${listenUrl}`);
+      listenerRewritten = true;
+      continue;
+    }
+    if (argument) result.push(argument);
+  }
+  if (listenerRewritten) return result;
+  throw new Error("Unix listener invocation omitted --listen");
+}
+
 function rawDataBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data);
@@ -222,7 +275,8 @@ async function removeStaleSocket(socketPath: string): Promise<void> {
   await rm(socketPath, { force: true });
 }
 
-async function preparePrivateSocketDirectory(socketDirectory: string): Promise<void> {
+export async function prepareRemoteAppServerSocketDirectory(socketPath: string): Promise<void> {
+  const socketDirectory = path.dirname(socketPath);
   const existing = await lstat(socketDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -369,8 +423,7 @@ export function createRemoteAppServerWebSocketListener(input: {
         }
       };
       if (process.platform !== "win32") {
-        const socketDirectory = path.dirname(input.socketPath);
-        await preparePrivateSocketDirectory(socketDirectory);
+        await prepareRemoteAppServerSocketDirectory(input.socketPath);
         await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
           await removeStaleSocket(input.socketPath);
           await bind();

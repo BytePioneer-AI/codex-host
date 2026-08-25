@@ -60,6 +60,8 @@
 | 修订上一条消息 | 原生 | ✅ | 🚧 | ✅ | — |
 
 > **SSH 远程 Harness**：✅ 支持通过 Codex Desktop 原生 SSH 工作区使用远程节点上的 Harness。
+>
+> **Remote Control 远程 Harness（实验）**：🧪 支持通过官方 Remote Control relay，在控制端使用被控 Windows 上的 Harness。
 
 ## 快速使用
 
@@ -116,6 +118,14 @@ codexhost remote status
 然后通过本地 codexhost 启动 Codex Desktop，打开 SSH 工作区，在远程输入框的 Agent/Model 选择器中选择目标 Harness。
 
 [查看远程 SSH 配置、诊断与卸载文档 →](docs/remote-ssh-host.zh-CN.md)
+
+### Remote Control 远程 Harness（实验）
+
+Windows 作为被控 Host 时，可以保留 Codex Desktop 官方配对、账号认证和 relay，在另一台已配对电脑的 Codex Desktop 中使用 Windows 上安装并登录的 Harness。两端需要安装相同版本的 codexhost，并先确保官方 Remote Control 已经可以运行原生 Codex 任务。
+
+这条链路不新增公网服务或 TCP 端口；Harness 凭据仍保留在被控 Windows 上。
+
+[查看 Remote Control 配置、传输边界与诊断文档 →](docs/remote-control-host.zh-CN.md)
 
 <details>
 <summary><h3>怎么做的</h3></summary>

@@ -19,6 +19,7 @@ import {
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
+  shouldReloadExternalCatalogAfterAvailabilityRefresh,
   shouldRetryExternalThreadUsage,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
@@ -43,6 +44,13 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Composer DOM behavior", () => {
+  it("keeps a ready external Model catalog stable during repeated availability checks", () => {
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true)).toBe(false);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", false)).toBe(true);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("error", "ready", true)).toBe(true);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "error", true)).toBe(true);
+  });
+
   it("retries external Usage after an early empty inspection", () => {
     expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
     expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
@@ -68,6 +68,10 @@ import {
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
 import { OfficialRequestBroker } from "./official-request-broker.js";
+import {
+  spawnOfficialAppServerConnection,
+  type OfficialAppServerConnection,
+} from "./official-app-server-connection.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
@@ -137,6 +141,8 @@ export interface AppServerHostOptions {
   /** Defaults to true. A listener that shares one store across sessions owns closing it. */
   closeMappingStoreOnExit?: boolean;
   spawnOfficial?: typeof spawn;
+  createOfficialConnection?: () =>
+    OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
@@ -195,7 +201,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const internal = new Set([
     "CODEX_CLI_PATH",
     "CODEXHOST_HOST_NODE_PATH",
@@ -370,7 +376,7 @@ export class AppServerHost {
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
   > &
     AppServerHostOptions;
-  #official: ChildProcessWithoutNullStreams | null = null;
+  #official: OfficialAppServerConnection | null = null;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #externalRuntime: ExternalThreadRuntime;
   #repository: ExternalThreadRepository;
@@ -432,24 +438,34 @@ export class AppServerHost {
       this.#diagnose(`Mapping Store initialization failed: ${errorMessage(error)}`);
       return 1;
     }
-    const spawnOfficial = this.#options.spawnOfficial ?? spawn;
-    const official = spawnOfficial(this.#options.stockCodexPath, this.#options.arguments, {
-      env: officialEnvironment(this.#options.environment ?? process.env),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    let official: OfficialAppServerConnection;
+    try {
+      official = this.#options.createOfficialConnection
+        ? await this.#options.createOfficialConnection()
+        : spawnOfficialAppServerConnection({
+            stockCodexPath: this.#options.stockCodexPath,
+            arguments: this.#options.arguments,
+            environment: officialEnvironment(this.#options.environment ?? process.env),
+            ...(this.#options.spawnOfficial ? { spawnOfficial: this.#options.spawnOfficial } : {}),
+          });
+    } catch (error) {
+      this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
+      await Promise.allSettled(
+        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+      );
+      if (this.#options.closeMappingStoreOnExit !== false) {
+        await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
+      }
+      return 1;
+    }
     official.stderr.pipe(this.#options.diagnosticOutput, { end: false });
     this.#official = official;
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve, reject) => {
-        official.once("error", reject);
-        official.once("exit", (code, signal) => resolve({ code, signal }));
-      },
-    );
+    const exited = official.closed;
     if (this.#closeRequested) this.#terminateOfficial();
     try {
       await Promise.all([this.#forwardDesktop(), this.#forwardOfficial()]);
       const result = await exited;
+      if (result.error) throw result.error;
       if (result.signal) {
         if (this.#closeRequested) return 0;
         throw new Error(`official app-server exited by signal ${result.signal}`);
@@ -489,8 +505,7 @@ export class AppServerHost {
   #terminateOfficial(): void {
     const official = this.#official;
     if (!official) return;
-    official.stdin.destroy();
-    official.kill("SIGTERM");
+    official.close();
   }
 
   async #forwardDesktop(): Promise<void> {

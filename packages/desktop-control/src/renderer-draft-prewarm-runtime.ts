@@ -87,7 +87,9 @@ export function installDraftPrewarmPolicyBridge(
   let bridgeProcessHandle = createBridgeProcessHandle();
   const bridgeReadyMethod = "codexhost/remote-control-bridge/ready";
   const bridgeRequests = new Map<unknown, { method: string; parameters: unknown }>();
-  const bridgeServerRequestIds = new Set<unknown>();
+  const bridgeServerRequestIdPrefix = "codexhost/remote-control-bridge/server-request/";
+  const bridgeServerRequests = new Map<string, unknown>();
+  let nextBridgeServerRequestOrdinal = 1;
   let outputDecoders = {
     stdout: new TextDecoder(),
     stderr: new TextDecoder(),
@@ -156,7 +158,8 @@ export function installDraftPrewarmPolicyBridge(
     bridgeReadyReject = null;
     bridgeInitialization = null;
     writeTail = Promise.resolve();
-    bridgeServerRequestIds.clear();
+    bridgeServerRequests.clear();
+    nextBridgeServerRequestOrdinal = 1;
     bridgeState = "idle";
   };
   const rememberExternalThread = (value: unknown): void => {
@@ -232,8 +235,10 @@ export function installDraftPrewarmPolicyBridge(
       return;
     }
     if (typeof value.method === "string" && value.id !== undefined) {
-      bridgeServerRequestIds.add(value.id);
-      manager.onRequest(value);
+      const outerRequestId = `${bridgeServerRequestIdPrefix}${bridgeProcessHandle}/${nextBridgeServerRequestOrdinal}`;
+      nextBridgeServerRequestOrdinal += 1;
+      bridgeServerRequests.set(outerRequestId, value.id);
+      manager.onRequest({ ...value, id: outerRequestId });
       return;
     }
     if (value.id === undefined) {
@@ -555,10 +560,16 @@ export function installDraftPrewarmPolicyBridge(
     method: string,
     response: Record<string, unknown>,
   ): unknown => {
-    if (isRemoteControlHost && bridgeServerRequestIds.has(response.id)) {
-      bridgeServerRequestIds.delete(response.id);
-      void writeBridgeFrame(response).catch((error) => failBridge(error));
-      return undefined;
+    if (isRemoteControlHost && typeof response.id === "string") {
+      const innerRequestId = bridgeServerRequests.get(response.id);
+      if (innerRequestId !== undefined || bridgeServerRequests.has(response.id)) {
+        bridgeServerRequests.delete(response.id);
+        void writeBridgeFrame({ ...response, id: innerRequestId }).catch((error) =>
+          failBridge(error),
+        );
+        return undefined;
+      }
+      if (response.id.startsWith(bridgeServerRequestIdPrefix)) return undefined;
     }
     return originalDispatchAppServerResponse.call(manager, method, response);
   };
@@ -618,7 +629,7 @@ export function installDraftPrewarmPolicyBridge(
       bridgeReadyReject?.(disposedError);
       for (const requestId of bridgeRequests.keys()) bridge.onError(requestId, disposedError);
       bridgeRequests.clear();
-      bridgeServerRequestIds.clear();
+      bridgeServerRequests.clear();
       knownExternalThreadIds.clear();
       knownOfficialThreadIds.clear();
       threadOwnershipResolutions.clear();

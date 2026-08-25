@@ -573,7 +573,7 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
-  it("resolves an unknown external Thread before routing its first request", async () => {
+  it("routes external Thread management from persisted ownership without restoring its Harness", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();
     const notifications = remoteNotificationTargetFixture();
@@ -585,7 +585,7 @@ describe("Renderer draft prewarm policy", () => {
       { discardAllPrewarmedThreads: vi.fn() },
     );
 
-    const read = bridge.sendRequest("thread/read", {
+    const archive = bridge.sendRequest("thread/archive", {
       threadId: "external-after-reload",
     }) as Promise<unknown>;
     const spawn = directSend.mock.calls.find(([method]) => method === "process/spawn");
@@ -599,28 +599,39 @@ describe("Renderer draft prewarm policy", () => {
     const initialize = writtenBridgeFrames(directSend)[0];
     emitRemoteBridgeOutput(notifications, processHandle, { id: initialize?.id, result: {} });
     await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
-    const inspection = writtenBridgeFrames(directSend)[2];
-    expect(inspection).toMatchObject({
-      method: "codexhost/thread/inspect",
-      params: { threadId: "external-after-reload" },
+    const ownership = writtenBridgeFrames(directSend)[2];
+    expect(ownership).toMatchObject({
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["external-after-reload"] },
     });
     emitRemoteBridgeOutput(notifications, processHandle, {
-      id: inspection?.id,
-      result: { owner: "external" },
+      id: ownership?.id,
+      result: {
+        threads: [
+          {
+            threadId: "external-after-reload",
+            owner: "external",
+            harnessId: "claude-code",
+          },
+        ],
+      },
     });
     await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(4));
-    const bridgedRead = writtenBridgeFrames(directSend)[3];
-    expect(bridgedRead).toMatchObject({
-      method: "thread/read",
+    const bridgedArchive = writtenBridgeFrames(directSend)[3];
+    expect(bridgedArchive).toMatchObject({
+      method: "thread/archive",
       params: { threadId: "external-after-reload" },
     });
     emitRemoteBridgeOutput(notifications, processHandle, {
-      id: bridgedRead?.id,
-      result: { thread: { id: "external-after-reload" } },
+      id: bridgedArchive?.id,
+      result: {},
     });
 
-    await expect(read).resolves.toEqual({ thread: { id: "external-after-reload" } });
-    expect(directSend).not.toHaveBeenCalledWith("thread/read", expect.anything());
+    await expect(archive).resolves.toEqual({});
+    expect(directSend).not.toHaveBeenCalledWith("thread/archive", expect.anything());
+    expect(
+      writtenBridgeFrames(directSend).some(({ method }) => method === "codexhost/thread/inspect"),
+    ).toBe(false);
   });
 
   it("keeps an unknown official Thread on the stock Remote Control app-server", async () => {
@@ -648,10 +659,16 @@ describe("Renderer draft prewarm policy", () => {
     const initialize = writtenBridgeFrames(directSend)[0];
     emitRemoteBridgeOutput(notifications, processHandle, { id: initialize?.id, result: {} });
     await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
-    const inspection = writtenBridgeFrames(directSend)[2];
+    const ownership = writtenBridgeFrames(directSend)[2];
+    expect(ownership).toMatchObject({
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["official-after-reload"] },
+    });
     emitRemoteBridgeOutput(notifications, processHandle, {
-      id: inspection?.id,
-      result: { owner: "codex" },
+      id: ownership?.id,
+      result: {
+        threads: [{ threadId: "official-after-reload", owner: "codex" }],
+      },
     });
 
     await expect(read).resolves.toEqual({});

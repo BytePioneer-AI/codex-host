@@ -430,13 +430,24 @@ export function installDraftPrewarmPolicyBridge(
     if (pending) return pending;
     const resolution = initializeBridge()
       .then(
-        () => enqueueBridgeRequest("codexhost/thread/inspect", { threadId }) as Promise<unknown>,
+        () =>
+          enqueueBridgeRequest("codexhost/thread/ownership/list", {
+            threadIds: [threadId],
+          }) as Promise<unknown>,
       )
       .then((value) => {
-        if (!isRecord(value) || (value.owner !== "external" && value.owner !== "codex")) {
-          throw transportError("Thread ownership inspection returned an invalid result");
+        const ownerships = isRecord(value) && Array.isArray(value.threads) ? value.threads : null;
+        const ownership = ownerships?.[0];
+        if (
+          !ownerships ||
+          !isRecord(ownership) ||
+          ownerships.length !== 1 ||
+          ownership.threadId !== threadId ||
+          (ownership.owner !== "external" && ownership.owner !== "codex")
+        ) {
+          throw transportError("Thread ownership lookup returned an invalid result");
         }
-        if (value.owner === "external") {
+        if (ownership.owner === "external") {
           knownExternalThreadIds.add(threadId);
           knownOfficialThreadIds.delete(threadId);
           return "external" as const;

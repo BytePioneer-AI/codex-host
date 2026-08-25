@@ -168,6 +168,9 @@ describe("AppServerHost hermetic Claude projection", () => {
           setPermissionMode: async (mode) => {
             permissionMode = mode;
           },
+          compact: async () => ({ status: "succeeded" }),
+          init: async () => ({ status: "succeeded" }),
+          recap: async () => ({ status: "succeeded" }),
           runTurn: async (_text, userMessageId, onEvent) => {
             nativeTurnKey = userMessageId;
             onEvent({

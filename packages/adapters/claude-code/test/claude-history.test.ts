@@ -231,6 +231,11 @@ describe("Claude history mapping", () => {
       toolResult,
       message(
         "user",
+        "compact-command",
+        "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>Keep implementation details</command-args>",
+      ),
+      message(
+        "user",
         "diagnose-command",
         "<command-message>diagnose</command-message>\n<command-name>/diagnose</command-name>\n<command-args>auth</command-args>",
       ),
@@ -256,6 +261,56 @@ describe("Claude history mapping", () => {
       {
         nativeTurnRef: { nativeTurnKey: "user-2" },
         input: [{ type: "text", text: "literal <command-name>/model</command-name> example" }],
+      },
+    ]);
+  });
+
+  it("projects init and recap command envelopes without treating them as control records", () => {
+    const history = [
+      message("user", "user-1", "first"),
+      message("assistant", "assistant-1", "answer", "end_turn"),
+      message(
+        "user",
+        "init-command",
+        "<command-name>/init</command-name>\n<command-message>init</command-message>\n<command-args></command-args>",
+      ),
+      message("assistant", "assistant-init", "Created CLAUDE.md", "end_turn"),
+      message(
+        "user",
+        "recap-command",
+        "<command-name>/recap</command-name>\n<command-message>recap</command-message>\n<command-args></command-args>",
+      ),
+      message(
+        "user",
+        "recap-output",
+        "<local-command-stdout>Built compact command and subagent projection.</local-command-stdout>",
+      ),
+      message("user", "user-2", "next"),
+      message("assistant", "assistant-2", "ok", "end_turn"),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId).turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        input: [{ type: "text", text: "first" }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "init-command" },
+        input: [{ type: "text", text: "/init" }],
+        items: [{ item: { type: "agentMessage", text: "Created CLAUDE.md" } }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "recap-command" },
+        input: [{ type: "text", text: "/recap" }],
+        items: [
+          {
+            item: { type: "agentMessage", text: "Built compact command and subagent projection." },
+          },
+        ],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "user-2" },
+        input: [{ type: "text", text: "next" }],
       },
     ]);
   });

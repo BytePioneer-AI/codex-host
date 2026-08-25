@@ -47,7 +47,11 @@ function thinkingParts(value: unknown): string[] {
 const localCommandRecordPattern = /^\s*<(local-command-(?:stdout|caveat))>[\s\S]*<\/\1>\s*$/u;
 const taskNotificationRecordPattern = /^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/u;
 const commandEnvelopePattern = /^\s*(?:<(command-(?:message|name|args))>[\s\S]*?<\/\1>\s*)+$/u;
-const modelCommandNamePattern = /<command-name>\s*\/model\s*<\/command-name>/u;
+const controlCommandNamePattern = /<command-name>\s*\/(?:model|compact)\s*<\/command-name>/u;
+const recapCommandNamePattern = /<command-name>\s*\/recap\s*<\/command-name>/u;
+const initCommandNamePattern = /<command-name>\s*\/init\s*<\/command-name>/u;
+const localCommandStdoutPattern =
+  /^\s*<local-command-stdout>([\s\S]*)<\/local-command-stdout>\s*$/u;
 
 function isLocalCommandRecord(text: string): boolean {
   return localCommandRecordPattern.test(text);
@@ -57,8 +61,24 @@ function isTaskNotificationRecord(text: string): boolean {
   return taskNotificationRecordPattern.test(text);
 }
 
-function isModelCommandEnvelope(text: string): boolean {
-  return commandEnvelopePattern.test(text) && modelCommandNamePattern.test(text);
+function isControlCommandEnvelope(text: string): boolean {
+  return commandEnvelopePattern.test(text) && controlCommandNamePattern.test(text);
+}
+
+function isNamedCommandEnvelope(text: string, namePattern: RegExp): boolean {
+  return commandEnvelopePattern.test(text) && namePattern.test(text);
+}
+
+function displayedUserText(text: string): string {
+  if (isNamedCommandEnvelope(text, initCommandNamePattern)) return "/init";
+  if (isNamedCommandEnvelope(text, recapCommandNamePattern)) return "/recap";
+  return text;
+}
+
+function localCommandStdoutText(text: string): string | null {
+  const match = localCommandStdoutPattern.exec(text);
+  if (!match) return null;
+  return match[1] ?? "";
 }
 
 function isTaskNotificationOrigin(value: Record<string, unknown>): boolean {
@@ -68,7 +88,7 @@ function isTaskNotificationOrigin(value: Record<string, unknown>): boolean {
 function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   if (message.type !== "user" || message.syntheticUser) return [];
   const parts = textParts(message.message.content);
-  if (parts.some(isModelCommandEnvelope)) return [];
+  if (parts.some(isControlCommandEnvelope)) return [];
   return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
 }
 
@@ -175,8 +195,31 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             }),
           }
         : {}),
-      input: visibleUserTextParts(user).map((text) => ({ type: "text", text })),
+      input: visibleUserTextParts(user).map((text) => ({
+        type: "text",
+        text: displayedUserText(text),
+      })),
       items: turnMessages.flatMap((message) => {
+        if (message.type === "user") {
+          const recapOutput = visibleUserTextParts(user).some((text) =>
+            isNamedCommandEnvelope(text, recapCommandNamePattern),
+          )
+            ? textParts(message.message.content)
+                .map(localCommandStdoutText)
+                .find((text) => text !== null && text.length > 0)
+            : undefined;
+          if (!recapOutput) return [];
+          return [
+            {
+              item: {
+                type: "agentMessage" as const,
+                itemId: hostItemIdSchema.parse(`claude-item-v1-${message.uuid}`),
+                text: recapOutput,
+              },
+              outcome: itemOutcome(outcome),
+            },
+          ];
+        }
         if (message.type !== "assistant") return [];
         const content = message.message.content;
         const text = textParts(content).join("");

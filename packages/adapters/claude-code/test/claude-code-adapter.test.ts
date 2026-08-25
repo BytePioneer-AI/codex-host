@@ -64,6 +64,9 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     });
   });
   readonly start = vi.fn(async () => undefined);
+  readonly compactCalls: Array<string | undefined> = [];
+  initCalls = 0;
+  recapCalls = 0;
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
   #assistantMessageId: string | null = null;
   #active:
@@ -87,6 +90,31 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   changePermissionMode(permissionMode: ClaudePermissionMode): void {
     this.permissionMode = permissionMode;
     this.#onPermissionModeChanged(permissionMode);
+  }
+
+  compact(
+    customInstructions: string | undefined,
+    onEvent: (event: ClaudeTurnEvent) => void,
+  ): Promise<ClaudeTransportTurnResult> {
+    this.compactCalls.push(customInstructions);
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  init(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    this.initCalls += 1;
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  recap(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    this.recapCalls += 1;
+    return this.#beginCommandTurn(onEvent);
+  }
+
+  #beginCommandTurn(onEvent: (event: ClaudeTurnEvent) => void): Promise<ClaudeTransportTurnResult> {
+    this.#assistantMessageId = null;
+    return new Promise((resolve, reject) => {
+      this.#active = { onEvent, resolve, reject };
+    });
   }
 
   runTurn(
@@ -1021,6 +1049,245 @@ describe("Claude Code HarnessAdapter", () => {
       liveReasoningStarted.item.itemId,
       liveStarted.item.itemId,
     ]);
+    await session.close();
+  });
+
+  it("exposes Claude compact as a command whose native events drive the standard UI lifecycle", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+
+    await expect(commands.list()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        commands: [
+          { id: "claude.compact", invocation: "/compact" },
+          { id: "claude.init", invocation: "/init", argumentMode: "none" },
+          { id: "claude.recap", invocation: "/recap", argumentMode: "none" },
+        ],
+      },
+    });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-compact"),
+        commandId: "claude.compact",
+        arguments: { text: "Keep implementation details" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: "manual-compact" } });
+
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.started",
+      turnId: "manual-compact",
+    });
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 30, maxTokens: 200, model: "runtime-default" };
+    transport.event({ type: "compaction.started" });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
+      throw new Error("Manual compaction did not start a Context Compaction Item");
+    }
+    expect(started).toMatchObject({
+      type: "item.started",
+      turnId: "manual-compact",
+      item: { type: "contextCompaction" },
+    });
+    transport.event({ type: "compaction.completed", outcome: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      turnId: "manual-compact",
+      snapshot: {
+        item: { type: "contextCompaction", itemId: started.item.itemId },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId: "manual-compact",
+      outcome: { status: "succeeded" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      observedForTurnId: "manual-compact",
+    });
+    expect(transport.compactCalls).toEqual(["Keep implementation details"]);
+    expect(transport.turns).toEqual([]);
+    await session.close();
+  });
+
+  it("validates Claude compact arguments and rejects it while busy", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("invalid-compact"),
+        commandId: "claude.compact",
+        arguments: { text: 1 },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("unknown-argument"),
+        commandId: "claude.compact",
+        arguments: { text: "ok", extra: true },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("init-with-args"),
+        commandId: "claude.init",
+        arguments: { text: "nope" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("unknown-command"),
+        commandId: "claude.unknown",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("busy"));
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("rejected-compact"),
+        commandId: "claude.compact",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    transports[0]?.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await session.close();
+  });
+
+  it("cancels a running Claude compact temporary Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const turnId = hostTurnIdSchema.parse("cancel-compact");
+
+    await commands.execute({ turnId, commandId: "claude.compact" });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({ type: "compaction.started" });
+    await nextEvent(iterator);
+
+    await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "contextCompaction" },
+        outcome: { status: "cancelled" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "cancelled" },
+    });
+    expect(transport.abort).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("runs Claude init as a command Turn that writes through native tools", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const turnId = hostTurnIdSchema.parse("manual-init");
+
+    await expect(commands.execute({ turnId, commandId: "claude.init" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", text: "" },
+    });
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Created CLAUDE.md", "init-assistant");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Created CLAUDE.md" },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Created CLAUDE.md" } },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.initCalls).toBe(1);
+    expect(transport.turns).toEqual([]);
+    expect(transport.compactCalls).toEqual([]);
+    await session.close();
+  });
+
+  it("projects Claude recap local output as a one-line Agent Message", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const turnId = hostTurnIdSchema.parse("manual-recap");
+
+    await expect(commands.execute({ turnId, commandId: "claude.recap" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Built compact command and subagent projection.", "recap-assistant");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Built compact command and subagent projection." },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "agentMessage",
+          text: "Built compact command and subagent projection.",
+        },
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(transport.recapCalls).toBe(1);
+    expect(transport.turns).toEqual([]);
     await session.close();
   });
 
@@ -3519,6 +3786,9 @@ describe("Claude Code HarnessAdapter", () => {
         setModel: async () => undefined,
         setThinkingOption: async () => undefined,
         setPermissionMode: async () => undefined,
+        compact: async () => ({ status: "succeeded" }),
+        init: async () => ({ status: "succeeded" }),
+        recap: async () => ({ status: "succeeded" }),
         runTurn: async () => ({ status: "succeeded" }),
         respondToInteraction: async () => undefined,
         abort: async () => undefined,

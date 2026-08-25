@@ -275,7 +275,10 @@ export class ClaudeNativeTurnAccumulator {
     ) {
       events.push({ type: "subagent.transcript.changed", callId: parentCallId });
     }
-    if (!nested) this.#consumeCompaction(message, events);
+    if (!nested) {
+      this.#consumeCompaction(message, events);
+      this.#consumeLocalCommandOutput(message, events);
+    }
 
     if (message.type === "stream_event" && isRecord(message.event)) {
       if (!nested) this.#consumeStreamEvent(message, events);
@@ -347,6 +350,23 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#compactionState === "idle") events.push({ type: "compaction.started" });
     this.#compactionState = "settled";
     events.push({ type: "compaction.completed", outcome: "succeeded" });
+  }
+
+  #consumeLocalCommandOutput(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system" || message.subtype !== "local_command_output") return;
+    if (typeof message.content !== "string" || message.content.length === 0) return;
+    const checkpointId = nativeUuid(message);
+    const messageId = checkpointId ?? this.#nextMessageId();
+    const state = this.#messageState(messageId);
+    if (state.completed) return;
+    state.text += message.content;
+    events.push({ type: "text.delta", messageId, delta: message.content });
+    state.completed = true;
+    events.push({
+      type: "message.completed",
+      messageId,
+      ...(checkpointId ? { checkpointId } : {}),
+    });
   }
 
   /**

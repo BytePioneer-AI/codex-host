@@ -13,6 +13,9 @@ import {
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
@@ -48,6 +51,7 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  harnessCommandCatalogSchema,
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -147,6 +151,87 @@ interface ActiveTurn {
 }
 
 const claudeCodeHarnessId = harnessIdSchema.parse("claude-code");
+const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
+  commands: [
+    {
+      id: "claude.compact",
+      invocation: "/compact",
+      label: "Compact context",
+      description: "Compact the current conversation context",
+      argumentMode: "text",
+    },
+    {
+      id: "claude.init",
+      invocation: "/init",
+      label: "Initialize CLAUDE.md",
+      description: "Generate a CLAUDE.md guide for this project",
+      argumentMode: "none",
+    },
+    {
+      id: "claude.recap",
+      invocation: "/recap",
+      label: "Recap session",
+      description: "Generate a one-line session recap",
+      argumentMode: "none",
+    },
+  ],
+});
+
+type ClaudeHarnessCommand =
+  | { id: "claude.compact"; text: string | undefined }
+  | { id: "claude.init" }
+  | { id: "claude.recap" };
+
+function parseClaudeHarnessCommand(
+  command: HarnessCommandInvocation,
+): HarnessResult<ClaudeHarnessCommand> {
+  if (command.commandId === "claude.init" || command.commandId === "claude.recap") {
+    if (command.arguments && Object.keys(command.arguments).length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: `Claude Code ${command.commandId} command does not accept arguments`,
+          retryable: false,
+        },
+      };
+    }
+    return { ok: true, value: { id: command.commandId } };
+  }
+  if (command.commandId !== "claude.compact") {
+    return {
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: `Claude Code does not expose Harness command '${command.commandId}'`,
+        retryable: false,
+      },
+    };
+  }
+  const arguments_ = command.arguments;
+  const customInstructions = arguments_?.text;
+  if (customInstructions !== undefined && typeof customInstructions !== "string") {
+    return {
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "Claude Code compact command argument 'text' must be a string",
+        retryable: false,
+      },
+    };
+  }
+  if (arguments_ && Object.keys(arguments_).some((key) => key !== "text")) {
+    return {
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "Claude Code compact command has an unknown argument",
+        retryable: false,
+      },
+    };
+  }
+  return { ok: true, value: { id: "claude.compact", text: customInstructions } };
+}
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
@@ -233,6 +318,7 @@ class ClaudeHarnessSession implements HarnessSession {
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     subagents: { observe: true, readTranscript: true },
   };
+  readonly commands: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
   readonly initialUsage = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -298,6 +384,10 @@ class ClaudeHarnessSession implements HarnessSession {
       nativeSessionId: this.#sessionId,
       formatVersion: 1,
     });
+    this.commands = {
+      list: async () => ({ ok: true, value: claudeCommandCatalog }),
+      execute: (command) => this.#executeHarnessCommand(command),
+    };
     this.initialState = this.#openMode === "resume" ? { nativeRef: this.#nativeRef } : {};
     this.#state = this.initialState;
     this.#statePublished = this.#openMode === "resume";
@@ -484,6 +574,102 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
       active.nativeTurnRef = nativeTurnRef;
+      void running.then(
+        (result) => this.#finishResult(active, result),
+        () => this.#fault(faultError()),
+      );
+    } catch {
+      this.#finishFailed(active, faultError());
+    }
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Claude Code Session is not open") };
+    }
+    const parsed = parseClaudeHarnessCommand(command);
+    if (!parsed.ok) return parsed;
+    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
+    }
+
+    this.#acceptingTurn = true;
+    const startingTransport = this.#transport === null;
+    let transport: ClaudeTurnTransport;
+    try {
+      transport = await this.#ensureTransport();
+    } catch (error) {
+      this.#acceptingTurn = false;
+      return { ok: false, error: startupFailure(error) };
+    }
+    this.#acceptingTurn = false;
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Claude Code Session closed during startup") };
+    }
+    if (startingTransport) this.#publishState();
+    this.#usageGeneration += 1;
+    let resolveCompletion = (): void => undefined;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const startAgentItem = parsed.value.id !== "claude.compact";
+    const nativeTurnKey = this.#randomUUID();
+    const item: HostAgentMessageItem | null = startAgentItem
+      ? {
+          type: "agentMessage",
+          itemId: claudeTranscriptItemId(nativeTurnKey, "agentMessage", 1),
+          text: "",
+        }
+      : null;
+    const active: ActiveTurn = {
+      command: { type: "turn.start", turnId: command.turnId, input: [] },
+      compactionItem: null,
+      item,
+      agentMessageOrdinal: startAgentItem ? 1 : 0,
+      assistantMessageId: null,
+      reasoningItems: new Map(),
+      reasoningOrdinal: 0,
+      pendingSubagentTranscriptCalls: new Set(),
+      subagents: new ClaudeSubagentLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
+      tools: new ClaudeToolLifecycle({
+        cwd: this.#cwd,
+        outputLimit: this.#toolOutputLimit,
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
+      interactions: new Map(),
+      interactionByRequestId: new Map(),
+      checkpointId: null,
+      nativeTurnKey,
+      nativeTurnRef: null,
+      cancellationRequested: false,
+      held: false,
+      completion,
+      resolveCompletion,
+    };
+    this.#active = active;
+    this.#event({ type: "turn.started", turnId: command.turnId });
+    if (item) this.#event({ type: "item.started", turnId: command.turnId, item });
+    const running =
+      parsed.value.id === "claude.compact"
+        ? transport.compact(parsed.value.text, (event) => this.#handleTurnEvent(active, event))
+        : parsed.value.id === "claude.init"
+          ? transport.init((event) => this.#handleTurnEvent(active, event))
+          : transport.recap((event) => this.#handleTurnEvent(active, event));
+    try {
       void running.then(
         (result) => this.#finishResult(active, result),
         () => this.#fault(faultError()),

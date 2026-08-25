@@ -129,8 +129,7 @@ export function applyRendererPopoverChrome(popover: HTMLElement): void {
   popover.style.borderRadius = "14px";
   popover.style.backgroundColor = "color-mix(in srgb, Canvas 92%, CanvasText 8%)";
   popover.style.color = "CanvasText";
-  popover.style.boxShadow =
-    "0 20px 45px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.22)";
+  popover.style.boxShadow = "0 20px 45px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.22)";
 }
 
 function addDetailRow(parent: HTMLElement, label: string, value: string): void {

@@ -2208,9 +2208,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/thread/usage/inspect",
       params: { threadId: claudeThreadId },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 72)),
-    ).resolves.toEqual({
+    await expect(fixture.collector.waitFor((message) => requestId(message, 72))).resolves.toEqual({
       id: 72,
       result: {
         threadId: claudeThreadId,

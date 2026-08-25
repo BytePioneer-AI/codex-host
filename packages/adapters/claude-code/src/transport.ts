@@ -90,6 +90,7 @@ export type ClaudeTurnEvent =
       type: "subagent.completed";
       callId: string;
       isError: boolean;
+      continuesInBackground?: boolean;
       nativeSubagentId?: string;
       resultSummary?: string;
     }

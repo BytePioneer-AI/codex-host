@@ -49,7 +49,7 @@ Root stream state is keyed by native Assistant `message.id`. Stream wrappers use
 
 ### Correlate Claude task notifications to delegation Tools
 
-Root `Agent` and `Task` Tool Uses emit a specialized spawn delegation event. Their structured Tool Result supplies the stable Claude `agentId`. `SendMessage` emits a send delegation targeting that existing native Agent and remains running after the send operation succeeds. `task_started`, `task_progress`, `task_updated`, and `task_notification` refine correlated Agent state.
+Root `Agent` and `Task` Tool Uses emit a specialized spawn delegation event. Their structured Tool Result supplies the stable Claude `agentId`. An asynchronous launch acknowledgement completes the delegation Tool operation but leaves the native Agent running until its correlated task notification. `SendMessage` emits a send delegation targeting that existing native Agent and remains running after the send operation succeeds. `task_started`, `task_progress`, `task_updated`, and `task_notification` refine correlated Agent state. Host Runtime tracks running Child Threads independently from the Root Turn so the Parent Thread remains active while background work continues, without keeping the requested Turn open.
 
 When Claude emits a complete Result while no requested Host Turn is active, the Transport buffers that native continuation and delivers one autonomous Turn to the Adapter instead of dropping it.
 

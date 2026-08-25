@@ -1298,6 +1298,59 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("keeps an async Agent spawn running after its launch Tool Result", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("delegate in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect implementation",
+      background: true,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-agent-1",
+      resultSummary: "Async agent launched successfully",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [
+          {
+            status: "running",
+            nativeSubagentId: "native-agent-1",
+            resultSummary: "Async agent launched successfully",
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", subagents: [{ status: "running" }] },
+        outcome: { status: "succeeded" },
+      },
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    await session.close();
+  });
+
   it("keeps an existing Agent running when SendMessage returns", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -1383,14 +1436,14 @@ describe("Claude Code HarnessAdapter", () => {
       ],
       result: { status: "succeeded" },
     });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.autonomous.started", input: [] });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "subagent.state.changed",
       nativeSubagentId: "native-agent-1",
       status: "completed",
       resultSummary: "Analysis complete",
     });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.autonomous.started", input: [] });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
       item: { type: "agentMessage", text: "" },

@@ -311,6 +311,68 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("keeps an async Agent spawn running when its launch Tool Result returns", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    turn.consume(
+      toolUse("Agent", "agent-1", {
+        description: "Inspect implementation",
+        run_in_background: true,
+        prompt: "Inspect files",
+      }),
+    );
+    expect(
+      turn.consume(
+        toolResult("agent-1", {
+          content:
+            "Async agent launched successfully.\nagentId: native-agent-1\nThe agent is working in the background.",
+          nativeResult: {
+            isAsync: true,
+            status: "async_launched",
+            agentId: "native-agent-1",
+          },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-1",
+        isError: false,
+        continuesInBackground: true,
+        nativeSubagentId: "native-agent-1",
+        resultSummary:
+          "Async agent launched successfully.\nagentId: native-agent-1\nThe agent is working in the background.",
+      },
+    ]);
+
+    const textOnlyTurn = new ClaudeNativeTurnAccumulator();
+    textOnlyTurn.consume(
+      toolUse("Agent", "agent-text-only", {
+        description: "Inspect implementation",
+        run_in_background: true,
+        prompt: "Inspect files",
+      }),
+    );
+    expect(
+      textOnlyTurn.consume(
+        toolResult("agent-text-only", {
+          content:
+            "Async agent launched successfully.\nagentId: native-agent-2\nThe agent is working in the background.",
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "subagent.completed",
+        callId: "agent-text-only",
+        isError: false,
+        continuesInBackground: true,
+        nativeSubagentId: "native-agent-2",
+        resultSummary:
+          "Async agent launched successfully.\nagentId: native-agent-2\nThe agent is working in the background.",
+      },
+    ]);
+  });
+
   it("maps SendMessage to an existing native Subagent without marking the Agent complete", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

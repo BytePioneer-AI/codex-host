@@ -69,7 +69,8 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 #### Scenario: Agent Tool result returns
 - **WHEN** the correlated Root Agent or Task Tool Result returns with a stable `agentId`
 - **THEN** Claude Adapter SHALL preserve that native identity for Child Host Thread registration and complete the spawn operation according to the Tool Result outcome
-- **AND** a successful background launch SHALL not wait for later background completion before the Root Turn can finish
+- **AND** a successful background launch SHALL keep the native Subagent running while allowing the Root Turn to finish without waiting for later background completion
+- **AND** Claude Adapter SHALL distinguish an asynchronous launch acknowledgement from the delegated Agent's terminal result
 
 #### Scenario: Root sends more work to an existing Agent
 - **WHEN** Claude invokes `SendMessage` with an existing native Agent recipient

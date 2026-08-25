@@ -61,7 +61,9 @@ When a supporting Harness provides a stable native Subagent identity and transcr
 - **THEN** the delegation SHALL immediately report that Subagent as running rather than waiting for stable Child identity or native completion
 - **AND** Host Runtime SHALL publish a materialized Child Host Thread as active
 - **AND** subsequent Subagent state replacements SHALL be projected to the native collaboration Item while it remains active
-- **AND** when the Harness reports that native Subagent completed, failed, or was interrupted, Host Runtime SHALL publish the Child Host Thread as idle
+- **AND** when the owning Root Turn completes while one or more background Subagents remain running, Host Runtime SHALL keep the Parent Host Thread active without keeping that Root Turn open
+- **AND** when the Harness reports that a native Subagent completed, failed, or was interrupted, Host Runtime SHALL refresh its terminal Child transcript and publish the Child Host Thread as idle
+- **AND** after the last running background Subagent settles and no Root Turn is active, Host Runtime SHALL publish the Parent Host Thread as idle
 
 #### Scenario: Host restarts before Child detail is opened
 

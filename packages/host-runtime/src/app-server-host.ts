@@ -376,6 +376,7 @@ export class AppServerHost {
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
+  #runningSubagentsByParent = new Map<string, Set<string>>();
   #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
@@ -2310,7 +2311,11 @@ export class AppServerHost {
       );
       if (!record) return;
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
+      this.#trackRunningSubagent(thread.id, record.hostThreadId, status);
       await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
+        await this.#setThreadStatus(thread, { type: "idle" });
+      }
       return;
     }
     if (event.type === "session.faulted") {
@@ -2394,7 +2399,12 @@ export class AppServerHost {
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {
-      await this.#setThreadStatus(thread, { type: "idle" });
+      await this.#setThreadStatus(
+        thread,
+        this.#hasRunningSubagents(thread.id)
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" },
+      );
     }
   }
 
@@ -2412,6 +2422,7 @@ export class AppServerHost {
         record.subagent.nativeSubagentId === subagent.nativeSubagentId,
     );
     if (existing) {
+      this.#trackRunningSubagent(parent.id, existing.hostThreadId, status);
       await this.#setSubagentThreadStatus(existing.hostThreadId, status);
       return { ...subagent, subagentId: existing.hostThreadId };
     }
@@ -2440,6 +2451,7 @@ export class AppServerHost {
       running: status === "active",
     });
     this.#subagentThreadStatuses.set(record.hostThreadId, status);
+    this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),
@@ -2521,6 +2533,29 @@ export class AppServerHost {
         });
       }
     }
+  }
+
+  #trackRunningSubagent(
+    parentThreadId: string,
+    childThreadId: string,
+    status: "active" | "idle",
+  ): void {
+    let running = this.#runningSubagentsByParent.get(parentThreadId);
+    if (status === "active") {
+      if (!running) {
+        running = new Set();
+        this.#runningSubagentsByParent.set(parentThreadId, running);
+      }
+      running.add(childThreadId);
+      return;
+    }
+    if (!running) return;
+    running.delete(childThreadId);
+    if (running.size === 0) this.#runningSubagentsByParent.delete(parentThreadId);
+  }
+
+  #hasRunningSubagents(parentThreadId: string): boolean {
+    return (this.#runningSubagentsByParent.get(parentThreadId)?.size ?? 0) > 0;
   }
 
   async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {

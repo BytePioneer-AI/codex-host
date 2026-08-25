@@ -128,12 +128,32 @@ function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
   return { status: "failed", kind };
 }
 
-function nativeSubagentId(nativeResult: unknown): string | undefined {
-  if (!isRecord(nativeResult)) return undefined;
+function nativeSubagentId(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): string | undefined {
+  if (isRecord(nativeResult)) {
+    const structured = boundedString(
+      nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id,
+      SUBAGENT_DESCRIPTION_LIMIT,
+    );
+    if (structured) return structured;
+  }
   return boundedString(
-    nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id,
+    /agentId:\s*([A-Za-z0-9_-]+)/u.exec(outputText ?? "")?.[1],
     SUBAGENT_DESCRIPTION_LIMIT,
   );
+}
+
+function subagentContinuesInBackground(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): boolean {
+  if (isRecord(nativeResult)) {
+    if (nativeResult.isAsync === true || nativeResult.is_async === true) return true;
+    if (nativeResult.status === "async_launched") return true;
+  }
+  return outputText?.includes("The agent is working in the background.") ?? false;
 }
 
 function resultText(content: unknown, nativeResult: unknown): string | undefined {
@@ -508,15 +528,19 @@ export class ClaudeNativeTurnAccumulator {
       this.#tools.delete(callId);
       this.#completedToolIds.add(callId);
       const isError = block.is_error === true;
-      const nativeResult = resultBlocks.length === 1 ? message.tool_use_result : undefined;
+      const nativeResult =
+        resultBlocks.length === 1 ? (message.tool_use_result ?? message.toolUseResult) : undefined;
       const outputText = resultText(block.content, nativeResult);
       if (tool.subagent) {
         const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
-        const agentId = nativeSubagentId(nativeResult);
+        const agentId = nativeSubagentId(nativeResult, outputText);
         events.push({
           type: "subagent.completed",
           callId,
           isError,
+          ...(subagentContinuesInBackground(nativeResult, outputText)
+            ? { continuesInBackground: true }
+            : {}),
           ...(agentId ? { nativeSubagentId: agentId } : {}),
           ...(resultSummary ? { resultSummary } : {}),
         });

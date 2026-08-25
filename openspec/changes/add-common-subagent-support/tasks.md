@@ -34,3 +34,4 @@
 - [x] 5.9 Refresh already-open Child Threads from correlated nested Claude transcript changes and terminal history.
 - [x] 5.10 Preserve stable Child history when Claude's official Subagent API omits the initial prompt or returns a partial transcript view.
 - [x] 5.11 Restore omitted Child prompts from correlated Parent history and reopen the stable Child Turn before live Item publication.
+- [x] 5.12 Preserve running state after asynchronous Agent launch, keep the Parent Thread active while background Children run, and refresh each Child on terminal notification.

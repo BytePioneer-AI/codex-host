@@ -516,6 +516,105 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("keeps the Parent Thread active until all background Subagents settle", async () => {
+    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    let completed = false;
+    const adapter = Object.assign(base, {
+      subagents: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => ({
+          ok: true as const,
+          value: {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: harnessIdSchema.parse("pi"),
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "background-child-turn",
+                  formatVersion: 1,
+                },
+                input: [{ type: "text", text: "Inspect files" }],
+                items: completed
+                  ? [
+                      {
+                        item: {
+                          type: "agentMessage" as const,
+                          itemId: hostItemIdSchema.parse("background-child-answer"),
+                          text: "Inspection complete",
+                        },
+                        outcome: { status: "succeeded" as const },
+                      },
+                    ]
+                  : [],
+                outcome: { status: "unknown" as const, reason: "Background work" },
+              },
+            ],
+          },
+        })),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const childStartedPromise = fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+    );
+    const itemId = session.startSubagentDelegation({
+      subagentId: "background-agent-call",
+      nativeSubagentId: "native-background-agent",
+      description: "Inspect files",
+      background: true,
+      status: "running",
+    });
+    const childStarted = await childStartedPromise;
+    const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
+    writeRequest(fixture.desktopInput, {
+      id: 95,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 95));
+    session.completeItem(itemId, { status: "succeeded" });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(
+      fixture.collector.messages.some((message) => threadStatus(message, threadId, "idle")),
+    ).toBe(false);
+    expect(
+      fixture.collector.messages.some((message) => threadStatus(message, threadId, "active")),
+    ).toBe(true);
+
+    completed = true;
+    session.emitSubagentState("native-background-agent", "completed", "Inspection complete");
+    await expect(
+      fixture.collector.waitFor((message) => threadStatus(message, childThreadId, "idle")),
+    ).resolves.toBeTruthy();
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.type === "agentMessage" &&
+          (messageParams(message).item as JsonObject | undefined)?.text === "Inspection complete",
+      ),
+    ).resolves.toBeTruthy();
+    await expect(
+      fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle")),
+    ).resolves.toBeTruthy();
+    await stopFixture(fixture);
+  });
+
   it("terminates the official app-server when its Host session closes", async () => {
     const fixture = createFixture();
     fixture.official.kill.mockImplementationOnce(() => {

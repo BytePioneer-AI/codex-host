@@ -103,7 +103,7 @@ export class ClaudeSubagentLifecycle {
       ? "interrupted"
       : event.isError
         ? "failed"
-        : active.item.operation === "send"
+        : active.item.operation === "send" || event.continuesInBackground
           ? "running"
           : "completed";
     const subagent: HostSubagentState = {

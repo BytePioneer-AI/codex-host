@@ -383,6 +383,7 @@ export class AppServerHost {
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
+  #deferredTurnCompletions = new Map<string, JsonObject[]>();
   #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
@@ -2320,6 +2321,7 @@ export class AppServerHost {
       this.#trackRunningSubagent(thread.id, record.hostThreadId, status);
       await this.#setSubagentThreadStatus(record.hostThreadId, status);
       if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
+        await this.#flushDeferredTurnCompletion(thread.id);
         await this.#setThreadStatus(thread, { type: "idle" });
       }
       return;
@@ -2385,6 +2387,7 @@ export class AppServerHost {
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
+      await this.#flushDeferredTurnCompletion(thread.id);
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
@@ -2403,7 +2406,15 @@ export class AppServerHost {
       thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#writer.json(message);
+    const deferCompletion =
+      event.type === "turn.completed" &&
+      event.outcome.status === "succeeded" &&
+      this.#hasRunningSubagents(thread.id);
+    if (deferCompletion) {
+      this.#deferredTurnCompletions.set(thread.id, result.messages);
+    } else {
+      for (const message of result.messages) await this.#writer.json(message);
+    }
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(
         thread,
@@ -2539,6 +2550,13 @@ export class AppServerHost {
         });
       }
     }
+  }
+
+  async #flushDeferredTurnCompletion(threadId: string): Promise<void> {
+    const messages = this.#deferredTurnCompletions.get(threadId);
+    if (!messages) return;
+    this.#deferredTurnCompletions.delete(threadId);
+    for (const message of messages) await this.#writer.json(message);
   }
 
   #trackRunningSubagent(

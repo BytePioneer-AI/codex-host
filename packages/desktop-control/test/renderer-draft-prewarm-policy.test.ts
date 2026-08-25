@@ -9,8 +9,132 @@ import {
   installDraftPrewarmPolicyInRenderer,
   type DraftPrewarmPolicyTarget,
   type RendererDebugger,
+  type RendererHostRequestBridge,
+  type RendererHostRequestManager,
   type RendererWebContents,
 } from "../src/renderer-draft-prewarm-runtime.js";
+
+function requestManagerFixture(): RendererHostRequestManager {
+  return {
+    onNotification: vi.fn(),
+    onRequest: vi.fn(),
+    dispatchAppServerResponse: vi.fn(),
+  };
+}
+
+function requestBridgeFixture(
+  input: {
+    sendRequest?: RendererHostRequestBridge["sendRequest"];
+    prewarmThreadStart?: RendererHostRequestBridge["prewarmThreadStart"];
+  } = {},
+): RendererHostRequestBridge {
+  return {
+    sendRequest: input.sendRequest ?? vi.fn(),
+    prewarmThreadStart: input.prewarmThreadStart ?? vi.fn(),
+    enqueueRequest: vi.fn(),
+    onResult: vi.fn(),
+    onError: vi.fn(),
+  };
+}
+
+function remoteRequestBridgeFixture(): {
+  bridge: RendererHostRequestBridge;
+  directSend: ReturnType<typeof vi.fn>;
+} {
+  let nextRequestId = 1;
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
+  >();
+  const directSend = vi.fn((): Promise<unknown> => Promise.resolve({}));
+  const bridge: RendererHostRequestBridge = {
+    sendRequest: directSend,
+    prewarmThreadStart: vi.fn(),
+    enqueueRequest(method, parameters, _options, dispatch) {
+      const id = nextRequestId;
+      nextRequestId += 1;
+      const promise = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+      });
+      dispatch?.({ id, method, params: parameters });
+      return promise;
+    },
+    onResult(id, result) {
+      const entry = pending.get(Number(id));
+      pending.delete(Number(id));
+      entry?.resolve(result);
+    },
+    onError(id, error) {
+      const entry = pending.get(Number(id));
+      pending.delete(Number(id));
+      entry?.reject(error);
+    },
+  };
+  return { bridge, directSend };
+}
+
+function emitBridgeOutput(
+  manager: RendererHostRequestManager,
+  processHandle: string,
+  value: Record<string, unknown> | string,
+): void {
+  const text = typeof value === "string" ? value : `${JSON.stringify(value)}\n`;
+  manager.onNotification("process/outputDelta", {
+    processHandle,
+    stream: "stdout",
+    deltaBase64: Buffer.from(text, "utf8").toString("base64"),
+    capReached: false,
+  });
+}
+
+function remoteNotificationTargetFixture(hostId = "remote-control:fixture-host"): {
+  target: DraftPrewarmPolicyTarget;
+  emit(method: string, parameters: unknown): void;
+} {
+  const listeners = new Set<(event: Event) => void>();
+  return {
+    target: {
+      addEventListener(type, listener) {
+        if (type === "message") listeners.add(listener);
+      },
+      removeEventListener(type, listener) {
+        if (type === "message") listeners.delete(listener);
+      },
+    },
+    emit(method, parameters) {
+      const event = {
+        data: { type: "mcp-notification", hostId, method, params: parameters },
+      } as MessageEvent;
+      for (const listener of listeners) listener(event);
+    },
+  };
+}
+
+function emitRemoteBridgeOutput(
+  fixture: ReturnType<typeof remoteNotificationTargetFixture>,
+  processHandle: string,
+  value: Record<string, unknown> | string,
+): void {
+  const text = typeof value === "string" ? value : `${JSON.stringify(value)}\n`;
+  fixture.emit("process/outputDelta", {
+    processHandle,
+    stream: "stdout",
+    deltaBase64: Buffer.from(text, "utf8").toString("base64"),
+    capReached: false,
+  });
+}
+
+function writtenBridgeFrames(directSend: ReturnType<typeof vi.fn>): Record<string, unknown>[] {
+  return directSend.mock.calls
+    .filter(([method]) => method === "process/writeStdin")
+    .map(([, parameters]) => {
+      const deltaBase64 = (parameters as { deltaBase64: string }).deltaBase64;
+      return JSON.parse(Buffer.from(deltaBase64, "base64").toString("utf8")) as Record<
+        string,
+        unknown
+      >;
+    });
+}
 
 function rendererFixture(
   options: {
@@ -42,7 +166,8 @@ function rendererFixture(
               result: [
                 { name: "candidateCount", value: { value: options.candidateCount ?? 1 } },
                 { name: "hostId", value: { value: options.hostId ?? "local" } },
-                { name: "manager", value: { objectId: "request-manager" } },
+                { name: "manager", value: { objectId: "outer-request-manager" } },
+                { name: "requestClient", value: { objectId: "request-client" } },
                 ...(options.includePrewarmedThreadManager === false
                   ? []
                   : [
@@ -195,9 +320,13 @@ describe("Renderer draft prewarm policy", () => {
     expect(fixture.sendCommand).toHaveBeenCalledWith(
       "Runtime.callFunctionOn",
       expect.objectContaining({
-        objectId: "request-manager",
+        objectId: "outer-request-manager",
         functionDeclaration: "function syntheticPolicy() {}",
-        arguments: [{ value: "local" }, { objectId: "prewarm-manager" }],
+        arguments: [
+          { objectId: "request-client" },
+          { value: "local" },
+          { objectId: "prewarm-manager" },
+        ],
       }),
     );
   });
@@ -216,8 +345,12 @@ describe("Renderer draft prewarm policy", () => {
     expect(fixture.sendCommand).toHaveBeenCalledWith(
       "Runtime.callFunctionOn",
       expect.objectContaining({
-        objectId: "request-manager",
-        arguments: [{ value: "remote-ssh-discovered:mac" }, { objectId: "prewarm-manager" }],
+        objectId: "outer-request-manager",
+        arguments: [
+          { objectId: "request-client" },
+          { value: "remote-ssh-discovered:mac" },
+          { objectId: "prewarm-manager" },
+        ],
       }),
     );
   });
@@ -245,8 +378,10 @@ describe("Renderer draft prewarm policy", () => {
     const discardAllPrewarmedThreads = vi.fn();
     const sendRequest = vi.fn();
     const prewarmThreadStart = vi.fn();
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ sendRequest, prewarmThreadStart });
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge({ sendRequest, prewarmThreadStart }, "local", target, {
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, {
       discardAllPrewarmedThreads,
     });
     const policy = target.__codexhostDraftPrewarmPolicyV1 as { clear(): Promise<void> };
@@ -260,10 +395,12 @@ describe("Renderer draft prewarm policy", () => {
   it("keeps the selected route when the same Host bridge is reconciled", () => {
     const sendRequest = vi.fn();
     const prewarmThreadStart = vi.fn();
-    const bridge = { sendRequest, prewarmThreadStart };
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ sendRequest, prewarmThreadStart });
     const target: DraftPrewarmPolicyTarget = {};
     const prewarmedThreadManager = { discardAllPrewarmedThreads: vi.fn() };
     installDraftPrewarmPolicyBridge(
+      manager,
       bridge,
       "remote-ssh-discovered:mac",
       target,
@@ -276,6 +413,7 @@ describe("Renderer draft prewarm policy", () => {
     first.select("codexhost/claude-code-native");
 
     installDraftPrewarmPolicyBridge(
+      manager,
       bridge,
       "remote-ssh-discovered:mac",
       target,
@@ -295,9 +433,10 @@ describe("Renderer draft prewarm policy", () => {
       async () => undefined,
     );
     const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
-    const bridge = { sendRequest, prewarmThreadStart };
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ sendRequest, prewarmThreadStart });
     const target: DraftPrewarmPolicyTarget = {};
-    installDraftPrewarmPolicyBridge(bridge, "local", target, {
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, {
       discardAllPrewarmedThreads: vi.fn(),
     });
     const policy = target.__codexhostDraftPrewarmPolicyV1 as {
@@ -321,6 +460,268 @@ describe("Renderer draft prewarm policy", () => {
       ephemeral: true,
       model: "gpt-5",
     });
+  });
+
+  it("tunnels private Host requests through the stock Remote Control app-server", async () => {
+    const manager = requestManagerFixture();
+    const originalNotification = manager.onNotification as ReturnType<typeof vi.fn>;
+    const originalServerRequest = manager.onRequest as ReturnType<typeof vi.fn>;
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const notifications = remoteNotificationTargetFixture();
+    const target = notifications.target;
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    const inspectPromise = bridge.sendRequest("codexhost/harness/inspect", {
+      harnessId: "claude-code",
+    }) as Promise<unknown>;
+    const spawnParameters = directSend.mock.calls[0]?.[1] as {
+      command: string[];
+      processHandle: string;
+    };
+    const encodedCommandIndex = spawnParameters.command.indexOf("-EncodedCommand") + 1;
+    expect(encodedCommandIndex).toBeGreaterThan(0);
+    const encodedCommand = spawnParameters.command[encodedCommandIndex];
+    const encodedCommandBytes = atob(encodedCommand ?? "");
+    let decodedCommand = "";
+    for (let index = 0; index < encodedCommandBytes.length; index += 2) {
+      decodedCommand += String.fromCharCode(
+        encodedCommandBytes.charCodeAt(index) | (encodedCommandBytes.charCodeAt(index + 1) << 8),
+      );
+    }
+    expect(decodedCommand).toContain("--codexhost-remote-control-bridge");
+    expect(decodedCommand).toContain("remote-control-bridge-v1.json");
+    expect(directSend).toHaveBeenCalledWith(
+      "process/spawn",
+      expect.objectContaining({
+        command: expect.arrayContaining(["powershell.exe", "-EncodedCommand"]),
+        cwd: "C:\\",
+        streamStdin: true,
+        streamStdoutStderr: true,
+        outputBytesCap: null,
+        timeoutMs: null,
+      }),
+    );
+    expect(directSend).not.toHaveBeenCalledWith("codexhost/harness/inspect", expect.anything());
+    const processHandle = spawnParameters.processHandle;
+
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 1 },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(1));
+    const initialize = writtenBridgeFrames(directSend)[0];
+    expect(initialize).toMatchObject({ method: "initialize" });
+
+    emitRemoteBridgeOutput(notifications, processHandle, { id: initialize?.id, result: {} });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
+    const frames = writtenBridgeFrames(directSend);
+    expect(frames[1]).toEqual({ method: "initialized", params: {} });
+    expect(frames[2]).toMatchObject({
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "claude-code" },
+    });
+
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: frames[2]?.id,
+      result: { harnessId: "claude-code", status: "ready" },
+    });
+    await expect(inspectPromise).resolves.toEqual({
+      harnessId: "claude-code",
+      status: "ready",
+    });
+
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      method: "thread/started",
+      params: { thread: { id: "external-1", modelProvider: "codexhost" } },
+    });
+    expect(originalNotification).toHaveBeenCalledWith("thread/started", {
+      thread: { id: "external-1", modelProvider: "codexhost" },
+    });
+
+    const readPromise = bridge.sendRequest("thread/read", {
+      threadId: "external-1",
+    }) as Promise<unknown>;
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(4));
+    const read = writtenBridgeFrames(directSend)[3];
+    expect(read).toMatchObject({ method: "thread/read", params: { threadId: "external-1" } });
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: read?.id,
+      result: { thread: { id: "external-1" } },
+    });
+    await expect(readPromise).resolves.toEqual({ thread: { id: "external-1" } });
+
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: -71,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "external-1" },
+    });
+    expect(originalServerRequest).toHaveBeenCalledWith({
+      id: -71,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "external-1" },
+    });
+    manager.dispatchAppServerResponse("item/commandExecution/requestApproval", {
+      id: -71,
+      result: { decision: "accept" },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(5));
+    expect(writtenBridgeFrames(directSend)[4]).toEqual({
+      id: -71,
+      result: { decision: "accept" },
+    });
+  });
+
+  it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    await bridge.sendRequest("model/list", {});
+    await bridge.sendRequest("thread/start", { model: "gpt-5", cwd: "C:\\workspace" });
+    expect(directSend).toHaveBeenNthCalledWith(1, "model/list", {});
+    expect(directSend).toHaveBeenNthCalledWith(2, "thread/start", {
+      model: "gpt-5",
+      cwd: "C:\\workspace",
+    });
+
+    const pending = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    void pending.catch(() => undefined);
+    const processHandle = (directSend.mock.calls[2]?.[1] as { processHandle: string })
+      .processHandle;
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void };
+    policy.dispose();
+
+    expect(directSend).toHaveBeenCalledWith("process/kill", { processHandle });
+  });
+
+  it("replaces a failed Remote Control bridge process when diagnostics retry", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    const first = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    const firstStart = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    const firstProcessHandle = (firstStart?.[1] as { processHandle: string }).processHandle;
+    emitBridgeOutput(manager, firstProcessHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 99 },
+    });
+    await expect(first).rejects.toThrow("unsupported protocol version");
+    expect(directSend).toHaveBeenCalledWith("process/kill", {
+      processHandle: firstProcessHandle,
+    });
+
+    const second = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    void second.catch(() => undefined);
+    const starts = directSend.mock.calls.filter(([method]) => method === "process/spawn");
+    expect(starts).toHaveLength(2);
+    const secondProcessHandle = (starts[1]?.[1] as { processHandle: string }).processHandle;
+    expect(secondProcessHandle).not.toBe(firstProcessHandle);
+
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void };
+    policy.dispose();
+  });
+
+  it("reports a Remote Control bridge process exit and permits a clean retry", async () => {
+    const manager = requestManagerFixture();
+    const originalNotification = manager.onNotification as ReturnType<typeof vi.fn>;
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const notifications = remoteNotificationTargetFixture();
+    const target = notifications.target;
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    const first = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    const firstStart = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    const firstProcessHandle = (firstStart?.[1] as { processHandle: string }).processHandle;
+    notifications.emit("process/exited", {
+      processHandle: firstProcessHandle,
+      exitCode: 7,
+      stdout: "",
+      stdoutCapReached: false,
+      stderr: "bridge failed",
+      stderrCapReached: false,
+    });
+
+    await expect(first).rejects.toThrow("process exited unexpectedly with code 7: bridge failed");
+    expect(originalNotification).not.toHaveBeenCalledWith(
+      "process/exited",
+      expect.objectContaining({ processHandle: firstProcessHandle }),
+    );
+    expect(directSend).not.toHaveBeenCalledWith("process/kill", {
+      processHandle: firstProcessHandle,
+    });
+
+    const second = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+    void second.catch(() => undefined);
+    const starts = directSend.mock.calls.filter(([method]) => method === "process/spawn");
+    expect(starts).toHaveLength(2);
+    expect((starts[1]?.[1] as { processHandle: string }).processHandle).not.toBe(
+      firstProcessHandle,
+    );
+
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void };
+    policy.dispose();
+  });
+
+  it("times out a stalled Remote Control initialization and permits a clean retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const notifications = remoteNotificationTargetFixture();
+      const target = notifications.target;
+      installDraftPrewarmPolicyBridge(manager, bridge, "remote-control:fixture-host", target, {
+        discardAllPrewarmedThreads: vi.fn(),
+      });
+
+      const first = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+      const firstRejected = expect(first).rejects.toThrow("initialization timed out after 15000ms");
+      const firstStart = directSend.mock.calls.find(([method]) => method === "process/spawn");
+      const firstProcessHandle = (firstStart?.[1] as { processHandle: string }).processHandle;
+      notifications.emit("process/outputDelta", {
+        processHandle: firstProcessHandle,
+        stream: "stdout",
+        deltaBase64: Buffer.from(
+          `${JSON.stringify({
+            method: "codexhost/remote-control-bridge/ready",
+            params: { protocolVersion: 1 },
+          })}\n`,
+          "utf8",
+        ).toString("base64"),
+        capReached: false,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writtenBridgeFrames(directSend)).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await firstRejected;
+      expect(directSend).toHaveBeenCalledWith("process/kill", {
+        processHandle: firstProcessHandle,
+      });
+
+      const second = bridge.sendRequest("codexhost/harness/inspect", {}) as Promise<unknown>;
+      void second.catch(() => undefined);
+      const starts = directSend.mock.calls.filter(([method]) => method === "process/spawn");
+      expect(starts).toHaveLength(2);
+      expect((starts[1]?.[1] as { processHandle: string }).processHandle).not.toBe(
+        firstProcessHandle,
+      );
+
+      const policy = target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void };
+      policy.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects an invalid Renderer identity before inspecting the Desktop", async () => {

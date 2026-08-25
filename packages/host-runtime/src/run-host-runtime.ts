@@ -10,6 +10,10 @@ import {
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import {
+  createRemoteControlAppServerPlan,
+  publishRemoteControlAppServerDescriptor,
+} from "./remote-control-app-server.js";
+import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
   officialListenerArgumentsForRemoteListener,
@@ -86,17 +90,83 @@ export async function runHostRuntime(input: {
       : undefined);
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
-    const externalAdapters = createExternalHarnessAdapters(input.environment);
+    const remoteControlPlan = createRemoteControlAppServerPlan({
+      arguments: input.arguments,
+      environment: input.environment,
+      ...(hostRuntimePath ? { hostRuntimePath } : {}),
+    });
+    const environment = remoteControlPlan?.environment ?? input.environment;
+    if (!remoteControlPlan) {
+      const externalAdapters = createExternalHarnessAdapters(environment);
+      const host = new AppServerHost({
+        stockCodexPath,
+        arguments: input.arguments,
+        defaultAgent,
+        environment,
+        externalAdapters,
+        ...(updateCoordinator ? { updateCoordinator } : {}),
+      });
+      void prefetchClaudeCodeModelCatalog(externalAdapters);
+      return host.run();
+    }
+
+    const mappingStore = createProductionExternalThreadStore(environment);
+    await mappingStore.initialize();
+    const externalAdapters = createExternalHarnessAdapters(environment);
     const host = new AppServerHost({
       stockCodexPath,
       arguments: input.arguments,
       defaultAgent,
-      environment: input.environment,
+      environment,
       externalAdapters,
+      mappingStore,
+      closeMappingStoreOnExit: false,
       ...(updateCoordinator ? { updateCoordinator } : {}),
     });
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath: remoteControlPlan.pipePath,
+      diagnosticOutput: process.stderr,
+      createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
+        const sessionAdapters = createExternalHarnessAdapters(environment);
+        void prefetchClaudeCodeModelCatalog(sessionAdapters);
+        return new AppServerHost({
+          stockCodexPath,
+          // Unlike the Unix listener, this Windows session does not connect to
+          // a shared native listener. Preserve the original app-server argv so
+          // the per-connection official child starts in protocol mode instead
+          // of entering the interactive TUI with an unusable stdio transport.
+          arguments: remoteControlPlan.officialArguments,
+          defaultAgent,
+          environment,
+          desktopInput,
+          desktopOutput,
+          diagnosticOutput,
+          externalAdapters: sessionAdapters,
+          mappingStore,
+          closeMappingStoreOnExit: false,
+          ...(updateCoordinator ? { updateCoordinator } : {}),
+        });
+      },
+    });
     void prefetchClaudeCodeModelCatalog(externalAdapters);
-    return host.run();
+    let hostStarted = false;
+    try {
+      await listener.listen();
+      await publishRemoteControlAppServerDescriptor(remoteControlPlan);
+      hostStarted = true;
+      return await host.run();
+    } finally {
+      if (!hostStarted) {
+        await Promise.allSettled(
+          [...new Set(externalAdapters.values())].map((adapter) => adapter.close()),
+        );
+      }
+      try {
+        await listener.close();
+      } finally {
+        await mappingStore.close();
+      }
+    }
   }
 
   if (process.platform === "win32") {

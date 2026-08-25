@@ -717,6 +717,45 @@ fn exact_process_instance_is_executable(process_id: u32, started_at_micros: u64)
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
+fn forwards_validated_host_runtime_paths_to_the_host_runtime() {
+    let directory = temporary_directory();
+    let ready = directory.join("ready");
+    let mut shim = host_runtime_shim(&directory, &ready);
+    let stdin = shim.stdin.take().expect("Host Runtime stdin");
+    let identity = wait_for_file(&ready, Duration::from_secs(5));
+    let expected = fake_codex_path()
+        .canonicalize()
+        .expect("canonical fake Host Runtime path")
+        .display()
+        .to_string();
+
+    assert!(
+        identity
+            .lines()
+            .any(|line| line == format!("host_node_path={expected}")),
+        "Host Runtime did not inherit the validated Node path: {identity}"
+    );
+    assert!(
+        identity
+            .lines()
+            .any(|line| line == format!("host_runtime_path={expected}")),
+        "Host Runtime did not inherit the validated runtime path: {identity}"
+    );
+
+    drop(stdin);
+    if !wait_for_process_exit(&mut shim, Duration::from_secs(5)) {
+        force_stop_test_process(shim.id());
+        let root = process_id_from_ready(&identity, "root=");
+        force_stop_test_process(root);
+        let _ = shim.wait();
+        let _ = fs::remove_dir_all(&directory);
+        panic!("Host Runtime Shim did not converge after Desktop stdin EOF");
+    }
+    fs::remove_dir_all(directory).expect("remove Host Runtime path forwarding fixture");
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[test]
 fn hands_off_local_host_runtime_ownership_and_converges_on_stdin_eof() {
     let directory = temporary_directory();
     let first_ready = directory.join("first-ready");

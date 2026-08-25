@@ -44,6 +44,7 @@ function validMetafile(extraInputs = {}) {
       "packages/host-runtime/src/app-server-host.ts": {},
       "packages/host-runtime/src/adapter-composition.ts": {},
       "packages/host-runtime/src/remote-app-server.ts": {},
+      "packages/host-runtime/src/remote-control-app-server.ts": {},
       "packages/host-runtime/src/remote-socket-lock.ts": {},
       "packages/adapters/pi/dist/index.js": {},
       "packages/adapters/claude-code/dist/index.js": {},
@@ -95,6 +96,12 @@ describe("release Host Bundle", () => {
     delete withoutSocketLock["packages/host-runtime/src/remote-socket-lock.ts"];
     expect(() => auditHostBundleMetafile({ inputs: withoutSocketLock })).toThrow(
       "missing required input: /packages/host-runtime/src/remote-socket-lock.ts/",
+    );
+
+    const withoutRemoteControlBridge = { ...validMetafile().inputs };
+    delete withoutRemoteControlBridge["packages/host-runtime/src/remote-control-app-server.ts"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutRemoteControlBridge })).toThrow(
+      "missing required input: /packages/host-runtime/src/remote-control-app-server.ts/",
     );
 
     const withoutPi = { ...validMetafile().inputs };

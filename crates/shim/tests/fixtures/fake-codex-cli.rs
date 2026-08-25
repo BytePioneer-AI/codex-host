@@ -3,7 +3,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -211,7 +211,21 @@ fn main() {
         return;
     }
     if let Some(ready_path) = env::var_os("FAKE_CODEX_HOST_RUNTIME_READY") {
-        write_ready_file(Path::new(&ready_path), &format!("root={}\n", process::id()));
+        let host_node_path = env::var_os(HOST_NODE_PATH_ENV)
+            .map(PathBuf::from)
+            .map(|value| value.display().to_string())
+            .unwrap_or_default();
+        let host_runtime_path = env::var_os(HOST_RUNTIME_PATH_ENV)
+            .map(PathBuf::from)
+            .map(|value| value.display().to_string())
+            .unwrap_or_default();
+        write_ready_file(
+            Path::new(&ready_path),
+            &format!(
+                "root={}\nhost_node_path={host_node_path}\nhost_runtime_path={host_runtime_path}\n",
+                process::id(),
+            ),
+        );
         io::stdin()
             .read_to_end(&mut Vec::new())
             .expect("wait for fake Host Runtime stdin EOF");

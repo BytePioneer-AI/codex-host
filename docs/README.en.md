@@ -64,6 +64,8 @@ No app switching required: use Pi, Claude Code, Grok Build, and DeepSeek Harness
 `✅` supported, `🚧` partial or in progress, `—` not currently supported.
 
 > **Remote SSH Harness**: ✅ Use Harnesses on remote nodes through Codex Desktop's native SSH workspace.
+>
+> **Remote Control Harness (experimental)**: 🧪 Use Harnesses on a controlled Windows Host through the official Remote Control relay.
 
 ## Quick Start
 
@@ -120,6 +122,14 @@ codexhost remote status
 Then start Codex Desktop through local codexhost, open the SSH workspace, and choose the target Harness in the remote composer’s Agent/Model selector.
 
 [Remote SSH setup, diagnostics, and uninstall →](remote-ssh-host.md)
+
+### Remote Control Harness (experimental)
+
+When Windows is the controlled Host, codexhost can preserve Codex Desktop's official pairing, account authentication, and relay while making Harnesses installed and authenticated on Windows available in the paired controller Desktop. Both computers need the same codexhost build, and stock Codex must already work through official Remote Control.
+
+This path does not add a public service or TCP listener. Harness credentials remain on the controlled Windows machine.
+
+[Remote Control requirements, transport boundary, and diagnostics →](remote-control-host.md)
 
 <details>
 <summary><h3>How it works</h3></summary>

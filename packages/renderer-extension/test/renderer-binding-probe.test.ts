@@ -272,143 +272,51 @@ describe("Renderer Composer DOM behavior", () => {
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("anchors credits to the leading footer control instead of Usage", () => {
-    const plus = {
-      hasAttribute: () => false,
-      contains: () => false,
-    };
-    const usageRoot = {};
-    const footer = {
-      children: [plus, usageRoot],
-    };
-    Object.assign(plus, { parentElement: footer });
-    Object.assign(usageRoot, { parentElement: footer });
-    Object.assign(footer, { parentElement: {} });
+  it("anchors credits to the permission-mode picker's own root", () => {
+    const permissionModeRoot = { parentElement: {} } as HTMLElement;
+    const control = {
+      permissionModePicker: { root: permissionModeRoot },
+    } as unknown as ComposerAgentControl;
 
-    expect(creditsPlacementAnchor({} as Element, usageRoot as HTMLElement)).toBe(plus);
+    expect(creditsPlacementAnchor(control)).toBe(permissionModeRoot);
   });
 
-  it("walks past harness commands when anchoring credits to the leading footer control", () => {
-    const plus = {
-      hasAttribute: () => false,
-      contains: () => false,
-    };
-    const commands = {
-      hasAttribute: (name: string) => name === "data-codexhost-harness-command-control",
-      contains: () => false,
-    };
-    const usageRoot = { hasAttribute: () => false };
-    const cluster = {
-      hasAttribute: () => false,
-      contains: (node: unknown) => node === usageRoot || node === commands,
-      children: [commands, usageRoot],
-    };
-    const footer = {
-      children: [plus, cluster],
-    };
-    Object.assign(plus, { parentElement: footer });
-    Object.assign(commands, { parentElement: cluster });
-    Object.assign(usageRoot, { parentElement: cluster });
-    Object.assign(cluster, { parentElement: footer });
-    Object.assign(footer, { parentElement: {} });
+  it("does not anchor credits until the permission-mode picker has been inserted into the DOM", () => {
+    const permissionModeRoot = { parentElement: null } as unknown as HTMLElement;
+    const control = {
+      permissionModePicker: { root: permissionModeRoot },
+    } as unknown as ComposerAgentControl;
 
-    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
+    expect(creditsPlacementAnchor(control)).toBeNull();
   });
 
-  it("walks past a voice button when anchoring credits to the leading plus control", () => {
-    const plus = {
-      hasAttribute: () => false,
-      contains: () => false,
-    };
-    const voice = {
-      type: "button",
-      hasAttribute: () => false,
-      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
-      contains: () => false,
-    };
-    const usageRoot = { hasAttribute: () => false, contains: () => false };
-    const cluster = {
-      hasAttribute: () => false,
-      contains: (node: unknown) => node === usageRoot || node === voice,
-      children: [voice, usageRoot],
-    };
-    const footer = {
-      children: [plus, cluster],
-    };
-    Object.assign(plus, { parentElement: footer });
-    Object.assign(voice, { parentElement: cluster });
-    Object.assign(usageRoot, { parentElement: cluster });
-    Object.assign(cluster, { parentElement: footer });
-    Object.assign(footer, { parentElement: {} });
+  it("places credits immediately before the permission-mode picker, independent of Usage", () => {
+    const permissionModeRoot = { parentElement: {} } as HTMLElement;
+    const placeUsage = vi.fn();
+    const placeCredits = vi.fn();
+    const control = {
+      composer: { querySelectorAll: () => [] },
+      modelPicker: { root: {}, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      permissionModePicker: { root: permissionModeRoot },
+      credits: {
+        anchor: null,
+        place: placeCredits,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+      usage: {
+        anchor: null,
+        place: placeUsage,
+        syncNativeModelClassName: vi.fn(),
+        root: { remove: vi.fn() },
+      },
+    } as unknown as ComposerAgentControl;
 
-    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
-  });
+    reconcileComposerNativeControls(control, true, false);
 
-  it("walks past a pause button when anchoring credits to the leading plus control", () => {
-    const plus = {
-      hasAttribute: () => false,
-      contains: () => false,
-    };
-    const pause = {
-      type: "button",
-      hasAttribute: () => false,
-      getAttribute: (name: string) => (name === "aria-label" ? "Pause" : null),
-      contains: () => false,
-    };
-    const usageRoot = { hasAttribute: () => false, contains: () => false };
-    const cluster = {
-      hasAttribute: () => false,
-      contains: (node: unknown) => node === usageRoot || node === pause,
-      children: [pause, usageRoot],
-    };
-    const footer = {
-      children: [plus, cluster],
-    };
-    Object.assign(plus, { parentElement: footer });
-    Object.assign(pause, { parentElement: cluster });
-    Object.assign(usageRoot, { parentElement: cluster });
-    Object.assign(cluster, { parentElement: footer });
-    Object.assign(footer, { parentElement: {} });
-
-    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
-  });
-
-  it("uses the plus control inside a leading footer group as the credits anchor", () => {
-    const plus = {
-      type: "button",
-      hasAttribute: () => false,
-      getAttribute: (name: string) => (name === "aria-label" ? "Add files" : null),
-      contains: () => false,
-    };
-    const left = {
-      hasAttribute: () => false,
-      contains: () => false,
-      children: [plus],
-      querySelectorAll: () => [plus],
-    };
-    const voice = {
-      type: "button",
-      hasAttribute: () => false,
-      getAttribute: (name: string) => (name === "aria-label" ? "Dictation" : null),
-      contains: () => false,
-    };
-    const usageRoot = { hasAttribute: () => false, contains: () => false };
-    const right = {
-      hasAttribute: () => false,
-      contains: (node: unknown) => node === usageRoot || node === voice,
-      children: [voice, usageRoot],
-    };
-    const toolbar = {
-      children: [left, right],
-    };
-    Object.assign(plus, { parentElement: left });
-    Object.assign(left, { parentElement: toolbar });
-    Object.assign(voice, { parentElement: right });
-    Object.assign(usageRoot, { parentElement: right });
-    Object.assign(right, { parentElement: toolbar });
-    Object.assign(toolbar, { parentElement: {} });
-
-    expect(creditsPlacementAnchor({} as Element, usageRoot as unknown as HTMLElement)).toBe(plus);
+    expect(placeCredits).toHaveBeenCalledWith(permissionModeRoot);
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

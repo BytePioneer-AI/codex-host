@@ -301,21 +301,25 @@ export function mountRendererCreditsControl(
       placementReference = null;
     },
     place(anchor) {
+      // Credits sits immediately *before* its anchor (the permission-mode
+      // picker) rather than being derived by walking up from the Usage
+      // control's current DOM position. Anchoring directly to a
+      // renderer-owned, already-tracked element keeps this stable across
+      // reconciliation passes instead of re-deriving a different ancestor
+      // once the host page's own DOM settles a few seconds after mount.
       if (!anchor?.parentElement) return false;
       const parent = anchor.parentElement;
-      const next = anchor.nextElementSibling;
       if (
         control.anchor === anchor &&
         placementReference === anchor &&
         root.parentElement === parent &&
-        root.previousElementSibling === anchor
+        root.nextElementSibling === anchor
       ) {
         return true;
       }
       control.anchor = anchor;
       placementReference = anchor;
-      if (next && next !== root) parent.insertBefore(root, next);
-      else if (next !== root) parent.append(root);
+      if (root !== anchor) parent.insertBefore(root, anchor);
       return true;
     },
   };

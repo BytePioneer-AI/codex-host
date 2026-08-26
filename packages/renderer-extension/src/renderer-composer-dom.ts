@@ -117,8 +117,6 @@ export function isComposerSubmitButton(button: HTMLButtonElement): boolean {
 const VOICE_CONTROL_PATTERN =
   /(dictat|microphone|speech(?:[-_\s]?to[-_\s]?text)?|voice[-_\s]?input|(^|\s)voice(\s|$)|composer[-_](?:speech|dictat|mic)|语音|听写|麦克风|pause|暂停|stop recording|stop dictation|停止录音|停止听写|(^|\s)stop(\s|$))/iu;
 const CANCEL_CONTROL_PATTERN = /(cancel|discard|close|dismiss|取消|关闭|丢弃)/iu;
-const ATTACH_CONTROL_PATTERN =
-  /(add files|attach files|attach file|attachment|composer[-_]attach|添加文件|附件)/iu;
 const TRAILING_ACTION_WALK_DEPTH = 3;
 
 function isComposerCancelButton(element: Element): boolean {
@@ -133,11 +131,6 @@ export function isComposerVoiceButton(element: Element): boolean {
   return VOICE_CONTROL_PATTERN.test(description);
 }
 
-function isComposerAttachButton(element: Element): boolean {
-  if (isOwnedRendererControl(element)) return false;
-  return ATTACH_CONTROL_PATTERN.test(controlDescription(element));
-}
-
 function isComposerTrailingActionButton(element: Element): boolean {
   return isComposerVoiceButton(element) || isComposerSubmitButton(element as HTMLButtonElement);
 }
@@ -148,15 +141,6 @@ function isTrailingActionNode(element: Element): boolean {
   if (typeof element.querySelectorAll !== "function") return false;
   const buttons = [...element.querySelectorAll("button")];
   return buttons.length > 0 && buttons.every((button) => isComposerTrailingActionButton(button));
-}
-
-function attachControlWithin(root: Element): HTMLElement | null {
-  if (isComposerAttachButton(root)) return root as HTMLElement;
-  if (typeof root.querySelectorAll !== "function") return null;
-  const matches = [
-    ...root.querySelectorAll<HTMLElement>("button, [aria-label], [title], [data-testid]"),
-  ].filter(isComposerAttachButton);
-  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export function sendButtonWithin(root: Element): HTMLButtonElement | null {
@@ -399,40 +383,26 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
   return native?.parentElement ? native : null;
 }
 
-function firstMaterialChild(parent: Element): HTMLElement | null {
-  for (const child of parent.children) {
-    if (typeof (child as HTMLElement).hasAttribute !== "function") continue;
-    const element = child as HTMLElement;
-    // Skip injected trailing-cluster controls and native action buttons so the
-    // walk can reach the leading + control instead of voice/send.
-    if (
-      element.hasAttribute("data-codexhost-credits-control") ||
-      element.hasAttribute("data-codexhost-harness-command-control") ||
-      isTrailingActionNode(element)
-    ) {
-      continue;
-    }
-    return element;
-  }
-  return null;
-}
-
-export function creditsPlacementAnchor(
-  composer: Element,
-  usageRoot: HTMLElement,
-): HTMLElement | null {
-  let current: HTMLElement | null = usageRoot;
-  while (current && current !== composer) {
-    const parent: HTMLElement | null = current.parentElement;
-    if (!parent) break;
-    const first = firstMaterialChild(parent);
-    if (first && first !== current && !first.contains(usageRoot)) {
-      return attachControlWithin(first) ?? first;
-    }
-    if (parent === composer) break;
-    current = parent;
-  }
-  return null;
+/**
+ * Credits (the account-quota pill) anchors directly to the permission-mode
+ * picker — a renderer-owned element we already track — instead of being
+ * derived by walking up from the Usage control's current DOM position.
+ *
+ * That walk used to re-resolve a different ancestor depending on whatever
+ * native DOM happened to exist at the moment it ran (native context-usage
+ * indicator present vs. not, native model control mounted vs. not), so the
+ * pill would render near the leading "+" one pass and near the trailing
+ * cluster the next, visibly jumping a few seconds after mount once the host
+ * page's own DOM settled. Anchoring to `permissionModePicker.root` — which
+ * exists in the DOM from the moment the composer mounts and never moves
+ * outside the permission-mode picker's own reconciliation — gives Credits a
+ * single, stable position: immediately to the left of the permission-mode
+ * control, grouped with the other session/usage status indicators instead of
+ * the leading attach button.
+ */
+export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
+  const root = control.permissionModePicker?.root;
+  return root?.parentElement ? root : null;
 }
 
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
@@ -460,8 +430,6 @@ function refreshUsagePlacement(control: ComposerAgentControl): void {
   if (!anchor) {
     if (control.usage.anchor) control.usage.root.remove();
     control.usage.anchor = null;
-    if (control.credits.anchor) control.credits.root.remove();
-    control.credits.anchor = null;
     return;
   }
   const previousUsageParent = control.usage.root.parentElement;
@@ -471,13 +439,19 @@ function refreshUsagePlacement(control: ComposerAgentControl): void {
     previousUsageParent !== control.usage.root.parentElement ||
     previousUsageNextSibling !== control.usage.root.nextElementSibling;
   if (usagePositionChanged) control.harnessCommands?.placeBefore(control.usage.root);
-  const leading = creditsPlacementAnchor(control.composer, control.usage.root);
-  if (!leading) {
+}
+
+// Deliberately independent of `refreshUsagePlacement`: Credits no longer
+// derives its position from where Usage happens to land, so it stays put
+// even when Usage's own anchor is still resolving (or has none at all).
+function refreshCreditsPlacement(control: ComposerAgentControl): void {
+  const anchor = creditsPlacementAnchor(control);
+  if (!anchor) {
     if (control.credits.anchor) control.credits.root.remove();
     control.credits.anchor = null;
     return;
   }
-  control.credits.place(leading);
+  control.credits.place(anchor);
 }
 
 function refreshNativePermissionModeControl(control: ComposerAgentControl): void {
@@ -521,9 +495,13 @@ export function reconcileComposerNativeControls(
   hidePermissionMode: boolean,
 ): void {
   refreshNativeModelControl(control);
+  // Resolve the permission-mode picker's position before Credits anchors to
+  // it below, so Credits never reads a stale (e.g. mount-time fallback)
+  // location for it within this same pass.
+  refreshNativePermissionModeControl(control);
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
-  refreshNativePermissionModeControl(control);
+  refreshCreditsPlacement(control);
   setNativeControlHidden(control.nativeModelControl, hideModel);
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
 }
@@ -594,6 +572,7 @@ export function mountComposerAgentControl(
   } satisfies ComposerAgentControl;
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
+  refreshCreditsPlacement(control);
   return control;
 }
 

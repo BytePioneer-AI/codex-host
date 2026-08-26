@@ -1,11 +1,14 @@
 import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
-import { RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES } from "./renderer-model-picker.js";
 import {
   applyRendererPopoverChrome,
   createRendererUsageRing,
   formatRendererCreditsPercent,
 } from "./renderer-usage-control.js";
+import {
+  ensureRendererTriggerChipStyle,
+  TRIGGER_CHIP_CLASS,
+} from "./renderer-trigger-chip-style.js";
 
 export interface RendererCreditsControl {
   root: HTMLDivElement;
@@ -14,7 +17,6 @@ export interface RendererCreditsControl {
   anchor: HTMLElement | null;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
-  syncNativeModelClassName(className?: string): void;
 }
 
 export type RendererCreditsTone = "ok" | "warn" | "hot";
@@ -223,37 +225,40 @@ function togglePopover(control: Pick<RendererCreditsControl, "trigger" | "popove
 
 export function mountRendererCreditsControl(
   composerId: string,
-  nativeModelClassName?: string,
 ): RendererCreditsControl {
+  ensureRendererTriggerChipStyle(document);
+
   const root = document.createElement("div");
   root.dataset.codexhostCreditsControl = composerId;
   root.className = "relative min-w-0";
   root.style.display = "none";
+  root.style.alignItems = "center";
+  root.style.alignSelf = "center";
+  root.style.height = "28px";
+  root.style.flex = "0 0 auto";
+  root.style.verticalAlign = "middle";
 
   const trigger = document.createElement("button");
-  const syncNativeModelClassName = (className?: string): void => {
-    trigger.className = className?.trim() || RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES;
-  };
-  syncNativeModelClassName(nativeModelClassName);
+  trigger.className = TRIGGER_CHIP_CLASS;
   trigger.type = "button";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("aria-label", "Account limit");
   trigger.title = "Account limit";
-  trigger.style.display = "inline-flex";
-  trigger.style.alignItems = "center";
   trigger.style.gap = "5px";
   trigger.style.width = "fit-content";
   trigger.style.maxWidth = "min(72px, 18vw)";
-  trigger.style.height = "24px";
-  trigger.style.padding = "0 6px";
-  trigger.style.borderRadius = "9999px";
+  // Match the 28px height shared by the Model/Permission-mode/Agent triggers
+  // it sits next to — a shorter box here previously threw off the row's
+  // vertical alignment (visible as Credits sitting a few px lower than its
+  // neighbors), whether the host lays this row out as flex or inline content.
+  trigger.style.height = "28px";
+  trigger.style.padding = "0 8px";
+  trigger.style.verticalAlign = "middle";
   trigger.style.fontSize = "12px";
   trigger.style.lineHeight = "16px";
   trigger.style.fontVariantNumeric = "tabular-nums";
   trigger.style.letterSpacing = "0";
-  trigger.style.whiteSpace = "nowrap";
-  trigger.style.cursor = "pointer";
 
   const ringSlot = document.createElement("span");
   ringSlot.dataset.codexhostCreditsRing = "";
@@ -292,7 +297,6 @@ export function mountRendererCreditsControl(
     trigger,
     popover,
     anchor: null,
-    syncNativeModelClassName,
     dispose() {
       closePopover(control);
       if (closeTimer !== null) window.clearTimeout(closeTimer);

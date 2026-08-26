@@ -12,9 +12,10 @@ import {
   RENDERER_MODEL_PICKER_MAIN_MENU_WIDTH,
   RENDERER_MODEL_PICKER_MODEL_MENU_MAX_HEIGHT,
 } from "./renderer-model-picker-positioning.js";
-
-export const RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES =
-  "border-token-border no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-sm leading-[18px] min-w-0";
+import {
+  ensureRendererTriggerChipStyle,
+  TRIGGER_CHIP_CLASS,
+} from "./renderer-trigger-chip-style.js";
 
 const MENU_CLASSES =
   "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
@@ -218,11 +219,11 @@ function positionModelMenu(control: RendererModelPickerControl, standalone = fal
     placement.bottom === undefined ? "auto" : `${placement.bottom}px`;
 }
 
-export function syncRendererModelTriggerClass(
-  control: RendererModelPickerControl,
-  nativeClassName?: string,
-): void {
-  control.trigger.className = nativeClassName?.trim() || RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES;
+export function syncRendererModelTriggerClass(control: RendererModelPickerControl): void {
+  // Keep codexhost controls independent from Codex's private utility classes.
+  // Codex can rename or remove those between Desktop releases; our own
+  // `TRIGGER_CHIP_CLASS` chrome (see renderer-trigger-chip-style.ts) does not.
+  control.trigger.className = TRIGGER_CHIP_CLASS;
   control.trigger.style.width = "fit-content";
   control.trigger.style.maxWidth = MODEL_TRIGGER_MAX_WIDTH;
 }
@@ -267,10 +268,11 @@ function applyModelSearchFilter(control: RendererModelPickerControl): void {
 
 export function mountRendererModelPicker(
   composerId: string,
-  nativeClassName: string | undefined,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
 ): RendererModelPickerControl {
+  ensureRendererTriggerChipStyle(document);
+
   const root = document.createElement("div");
   root.setAttribute("data-codexhost-model-control", composerId);
   root.className = "relative min-w-0";
@@ -281,16 +283,21 @@ export function mountRendererModelPicker(
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("data-state", "closed");
+  trigger.style.height = "28px";
+  trigger.style.padding = "0 8px";
+  trigger.style.gap = "4px";
+  trigger.style.font = "400 13px/18px system-ui, sans-serif";
+  trigger.style.letterSpacing = "0";
 
   const label = document.createElement("span");
-  label.className = "truncate text-token-foreground";
+  label.style.color = "inherit";
   label.style.minWidth = "0";
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
 
   const thinkingLabel = document.createElement("span");
-  thinkingLabel.className = "shrink-0 truncate text-token-text-tertiary";
+  thinkingLabel.style.color = "var(--color-text-tertiary, #8f8f8f)";
   thinkingLabel.style.flex = "none";
   thinkingLabel.style.maxWidth = "96px";
   thinkingLabel.style.overflow = "hidden";
@@ -546,7 +553,7 @@ export function mountRendererModelPicker(
       root.remove();
     },
   };
-  syncRendererModelTriggerClass(control, nativeClassName);
+  syncRendererModelTriggerClass(control);
   return control;
 }
 
@@ -627,7 +634,12 @@ export function renderRendererModelPicker(
   view: RendererModelControlView,
   visible: boolean,
 ): void {
-  control.root.style.display = visible ? "block" : "none";
+  control.root.style.display = visible ? "inline-flex" : "none";
+  control.root.style.alignItems = "center";
+  control.root.style.alignSelf = "center";
+  control.root.style.height = "28px";
+  control.root.style.flex = "0 0 auto";
+  control.root.style.verticalAlign = "middle";
   if (!visible) {
     control.close();
     return;

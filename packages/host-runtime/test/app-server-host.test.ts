@@ -940,10 +940,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/thread/usage/inspect",
       params: { threadId: "official-thread" },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 42)),
-    ).resolves.toMatchObject({
-      error: { code: -32079, message: "Thread Usage is unavailable for official Codex Threads" },
+    await expect(fixture.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual({
+      id: 42,
+      result: { threadId: "official-thread", usage: null },
     });
 
     writeRequest(fixture.desktopInput, {
@@ -956,6 +955,86 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({ error: { code: -32602 } });
 
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("projects official Codex token Usage and account rate limits for inspection", async () => {
+    const fixture = createFixture();
+    fixture.official.stdin.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n")) {
+        if (!line) continue;
+        const message = JSON.parse(line) as JsonObject;
+        if (message.method !== "account/rateLimits/read") continue;
+        fixture.official.stdout.write(
+          `${JSON.stringify({
+            id: message.id,
+            result: {
+              rateLimits: {
+                primary: { usedPercent: 3, windowDurationMins: 300, resetsAt: 1_800 },
+                secondary: { usedPercent: 9, windowDurationMins: 10_080, resetsAt: 2_400 },
+              },
+              rateLimitsByLimitId: null,
+            },
+          })}\n`,
+        );
+      }
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "official-thread",
+          turnId: "official-turn",
+          tokenUsage: {
+            total: {
+              totalTokens: 1_000,
+              inputTokens: 800,
+              cachedInputTokens: 600,
+              cacheWriteInputTokens: 10,
+              outputTokens: 200,
+              reasoningOutputTokens: 50,
+            },
+            last: {
+              totalTokens: 240,
+              inputTokens: 200,
+              cachedInputTokens: 150,
+              cacheWriteInputTokens: 5,
+              outputTokens: 40,
+              reasoningOutputTokens: 10,
+            },
+            modelContextWindow: 2_000,
+          },
+        },
+      })}\n`,
+    );
+    await fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated"));
+
+    writeRequest(fixture.desktopInput, {
+      id: 44,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: "official-thread" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 44))).resolves.toEqual({
+      id: 44,
+      result: {
+        threadId: "official-thread",
+        usage: {
+          totalTokens: 1_000,
+          inputTokens: 800,
+          cachedInputTokens: 600,
+          cacheWriteInputTokens: 10,
+          outputTokens: 200,
+          reasoningOutputTokens: 50,
+          contextUsedTokens: 240,
+          contextWindowTokens: 2_000,
+          cacheHitRatePercent: 75,
+          planFiveHourUsedPercent: 3,
+          planFiveHourResetsAtUnix: 1_800,
+          planSevenDayUsedPercent: 9,
+          planSevenDayResetsAtUnix: 2_400,
+        },
+      },
+    });
     await stopFixture(fixture);
   });
 

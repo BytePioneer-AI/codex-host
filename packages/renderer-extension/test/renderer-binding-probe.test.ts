@@ -261,19 +261,19 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { trigger, root: { parentElement: {} } },
       nativeModelControl: { element: previous, hidden: false, ariaHidden: null },
       nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
       credits: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         dispose: vi.fn(),
         root: { remove: vi.fn() },
       },
+      composerId: "test-composer",
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, true, true);
@@ -315,7 +315,8 @@ describe("Renderer Composer DOM behavior", () => {
   it("recognizes only a uniquely described native context control", () => {
     const native = {
       hasAttribute: vi.fn(() => false),
-      getAttribute: (name: string) => (name === "aria-label" ? "Context window usage" : null),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
     } as unknown as HTMLElement;
     const composer = {
       querySelectorAll: vi.fn(() => [native]),
@@ -331,12 +332,22 @@ describe("Renderer Composer DOM behavior", () => {
     expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
   });
 
-  it("places Usage before the native context circle when it is present", () => {
-    const modelRoot = { parentElement: {} } as HTMLElement;
+  it("places Usage beside the native context wrapper when it is present", () => {
+    const modelRoot = {
+      parentElement: { kind: "model" } as unknown as HTMLElement,
+    } as HTMLElement;
+    const footer = {} as HTMLElement;
+    const contextWrapper = { parentElement: footer } as HTMLElement;
     const nativeContext = {
-      parentElement: {},
+      parentElement: contextWrapper,
+      hidden: false,
       hasAttribute: () => false,
-      getAttribute: (name: string) => (name === "aria-label" ? "Context usage: 20%" : null),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      getAttribute: () => "Context usage: 20%",
+      querySelectorAll: () => [{}, {}],
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
+      contains: () => false,
     } as unknown as HTMLElement;
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
@@ -349,28 +360,27 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
+      nativeContextUsageControl: { element: nativeContext, hidden: false, ariaHidden: null },
       credits: {
         anchor: null,
         place: placeCredits,
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: placeUsage,
-        syncNativeModelClassName: vi.fn(),
         root: usageRoot,
       },
     } as unknown as ComposerAgentControl;
 
-    reconcileComposerNativeControls(control, true, false);
+    reconcileComposerNativeControls(control, false, false);
 
-    expect(placeUsage).toHaveBeenCalledWith(nativeContext);
+    expect(placeUsage).toHaveBeenCalledWith(contextWrapper);
     expect(placeUsage).not.toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("places Usage before the model picker when the native context circle is absent", () => {
+  it("does not place Usage without the native Codex context control", () => {
     const modelRoot = { parentElement: {} } as HTMLElement;
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
@@ -380,23 +390,22 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
       credits: {
         anchor: null,
         place: placeCredits,
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: placeUsage,
-        syncNativeModelClassName: vi.fn(),
         root: usageRoot,
       },
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeUsage).toHaveBeenCalledWith(modelRoot);
+    expect(placeUsage).not.toHaveBeenCalled();
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
@@ -427,17 +436,16 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: {}, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
       permissionModePicker: { root: permissionModeRoot },
       credits: {
         anchor: null,
         place: placeCredits,
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: placeUsage,
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
     } as unknown as ComposerAgentControl;
@@ -675,13 +683,11 @@ describe("Renderer Composer DOM behavior", () => {
       credits: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
     } as unknown as ComposerAgentControl;
@@ -725,13 +731,11 @@ describe("Renderer Composer DOM behavior", () => {
       credits: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
       usage: {
         anchor: null,
         place: vi.fn(),
-        syncNativeModelClassName: vi.fn(),
         root: { remove: vi.fn() },
       },
     } as unknown as ComposerAgentControl;

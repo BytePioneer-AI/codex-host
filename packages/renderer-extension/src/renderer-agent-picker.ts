@@ -100,6 +100,8 @@ export function mountRendererAgentPicker(
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
   root.style.display = "inline-flex";
   root.style.alignItems = "center";
+  root.style.alignSelf = "center";
+  root.style.verticalAlign = "middle";
   root.style.width = "30px";
   root.style.height = "28px";
   root.style.marginInline = "4px";

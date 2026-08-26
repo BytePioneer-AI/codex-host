@@ -11,6 +11,7 @@ import type {
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
+import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
@@ -102,6 +103,8 @@ import {
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
+  observeCodexRateLimits,
+  observeCodexTokenUsage,
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
@@ -385,6 +388,9 @@ export class AppServerHost {
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
+  #officialUsageByThread = new Map<string, HostUsage>();
+  #officialRateLimitUsage: Partial<HostUsage> | null = null;
+  #officialRateLimitRefresh: Promise<void> | null = null;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
@@ -894,6 +900,20 @@ export class AppServerHost {
       for await (const frame of readLfFrames(official.stdout)) {
         const parsed = parseJsonFrame(frame);
         if (this.#officialRequestBroker.handle(parsed)) continue;
+        const tokenUsage = observeCodexTokenUsage(parsed);
+        if (tokenUsage) {
+          const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
+          try {
+            this.#officialUsageByThread.set(
+              tokenUsage.threadId,
+              parseHostUsage({ ...(previous ?? {}), ...tokenUsage.usage }),
+            );
+          } catch {
+            // Ignore an invalid native observation while preserving the official frame.
+          }
+        }
+        const rateLimits = observeCodexRateLimits(parsed);
+        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits);
         this.#routeObservationTracker.bindOfficialResponse(parsed);
         await this.#writer.frame(frame);
       }
@@ -1114,9 +1134,14 @@ export class AppServerHost {
       return;
     }
     if (resolution.kind === "official") {
-      await this.#writer.json(
-        rpcError(request, -32079, "Thread Usage is unavailable for official Codex Threads"),
-      );
+      if (this.#officialUsageByThread.has(params.data.threadId)) {
+        await this.#refreshOfficialRateLimits();
+      }
+      const result = threadUsageInspectionSchema.parse({
+        threadId: params.data.threadId,
+        usage: this.#combinedOfficialUsage(this.#officialUsageByThread.get(params.data.threadId)),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
@@ -1129,6 +1154,43 @@ export class AppServerHost {
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+  }
+
+  #mergeOfficialRateLimits(rateLimits: Partial<HostUsage>): void {
+    try {
+      this.#officialRateLimitUsage = parseHostUsage({
+        ...(this.#officialRateLimitUsage ?? {}),
+        ...rateLimits,
+      });
+    } catch {
+      // Ignore a malformed sparse update while preserving the last valid snapshot.
+    }
+  }
+
+  #combinedOfficialUsage(usage: HostUsage | undefined): HostUsage | null {
+    const combined = { ...(usage ?? {}), ...(this.#officialRateLimitUsage ?? {}) };
+    if (Object.keys(combined).length === 0) return null;
+    try {
+      return parseHostUsage(combined);
+    } catch {
+      return usage ?? this.#officialRateLimitUsage;
+    }
+  }
+
+  async #refreshOfficialRateLimits(): Promise<void> {
+    if (this.#officialRateLimitUsage) return;
+    if (this.#officialRateLimitRefresh) return this.#officialRateLimitRefresh;
+    this.#officialRateLimitRefresh = this.#officialRequestBroker
+      .request("account/rateLimits/read", {})
+      .then((response) => {
+        const rateLimits = observeCodexRateLimits(response);
+        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.#officialRateLimitRefresh = null;
+      });
+    return this.#officialRateLimitRefresh;
   }
 
   async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {

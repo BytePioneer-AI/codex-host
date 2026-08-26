@@ -1,6 +1,9 @@
 import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 
-import { RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES } from "./renderer-model-picker.js";
+import {
+  ensureRendererTriggerChipStyle,
+  TRIGGER_CHIP_CLASS,
+} from "./renderer-trigger-chip-style.js";
 
 export interface RendererUsageControl {
   root: HTMLDivElement;
@@ -8,7 +11,6 @@ export interface RendererUsageControl {
   popover: HTMLDivElement;
   anchor: HTMLElement | null;
   label: HTMLSpanElement;
-  syncNativeModelClassName(className?: string): void;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
 }
@@ -198,6 +200,9 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | nul
   if (usage?.reasoningOutputTokens !== undefined) {
     addDetailRow(popover, "Reasoning", formatRendererTokenCount(usage.reasoningOutputTokens));
   }
+  if (usage?.totalTokens !== undefined) {
+    addDetailRow(popover, "Total tokens", formatRendererTokenCount(usage.totalTokens));
+  }
   if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
     addDetailRow(
       popover,
@@ -267,36 +272,44 @@ function togglePopover(control: Pick<RendererUsageControl, "trigger" | "popover"
 
 export function mountRendererUsageControl(
   composerId: string,
-  nativeModelClassName?: string,
 ): RendererUsageControl {
+  ensureRendererTriggerChipStyle(document);
+
   const root = document.createElement("div");
   root.dataset.codexhostUsageControl = composerId;
   root.className = "relative min-w-0";
   root.style.display = "none";
+  root.style.alignItems = "center";
+  root.style.alignSelf = "center";
+  root.style.height = "28px";
+  root.style.flex = "0 0 auto";
+  root.style.verticalAlign = "middle";
 
   const trigger = document.createElement("button");
-  const syncNativeModelClassName = (className?: string): void => {
-    trigger.className = className?.trim() || RENDERER_MODEL_TRIGGER_FALLBACK_CLASSES;
-  };
-  syncNativeModelClassName(nativeModelClassName);
+  trigger.className = TRIGGER_CHIP_CLASS;
   trigger.type = "button";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("aria-label", "Thread Usage");
   trigger.title = "Thread Usage";
-  trigger.style.display = "inline-flex";
-  trigger.style.alignItems = "center";
+  // Usage is secondary metadata, not a primary composer action. Keep the
+  // compact, muted treatment used by the previous Composer integration while
+  // avoiding Codex's private trigger class names.
+  trigger.style.color = "var(--color-text-tertiary, #8f8f8f)";
+  trigger.style.gap = "4px";
   trigger.style.width = "fit-content";
   trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
-  trigger.style.height = "24px";
-  trigger.style.padding = "0 4px";
-  trigger.style.borderRadius = "9999px";
+  // Match the 28px height shared by the Model/Permission-mode/Agent triggers
+  // it sits next to — a shorter box here previously threw off the row's
+  // vertical alignment (visible as Usage sitting a few px lower than its
+  // neighbors), whether the host lays this row out as flex or inline content.
+  trigger.style.height = "28px";
+  trigger.style.padding = "0 8px";
+  trigger.style.verticalAlign = "middle";
   trigger.style.fontSize = "12px";
   trigger.style.lineHeight = "16px";
   trigger.style.fontVariantNumeric = "tabular-nums";
   trigger.style.letterSpacing = "0";
-  trigger.style.whiteSpace = "nowrap";
-  trigger.style.cursor = "pointer";
 
   const label = document.createElement("span");
   label.style.display = "inline-block";
@@ -330,7 +343,6 @@ export function mountRendererUsageControl(
     popover,
     anchor: null,
     label,
-    syncNativeModelClassName,
     dispose() {
       closePopover(control);
       if (closeTimer !== null) window.clearTimeout(closeTimer);
@@ -340,27 +352,18 @@ export function mountRendererUsageControl(
     },
     place(anchor) {
       if (!anchor?.parentElement) return false;
-      let reference: Element = anchor;
-      let container = anchor.parentElement;
-      while (
-        container.parentElement &&
-        (getComputedStyle(container).display === "inline" ||
-          (container.tagName === "SPAN" && container.attributes.length === 0))
-      ) {
-        reference = container;
-        container = container.parentElement;
-      }
+      const container = anchor.parentElement;
       if (
         control.anchor === anchor &&
-        placementReference === reference &&
+        placementReference === anchor &&
         root.parentElement === container &&
-        root.nextElementSibling === reference
+        root.nextElementSibling === anchor
       ) {
         return true;
       }
       control.anchor = anchor;
-      placementReference = reference;
-      container.insertBefore(root, reference);
+      placementReference = anchor;
+      container.insertBefore(root, anchor);
       return true;
     },
   };
@@ -412,7 +415,19 @@ export function renderRendererUsageControl(
   const hasCacheHitRate = cacheHitRatePercent !== undefined;
   const hasOutputSpeed = outputTokensPerSecond !== undefined;
   const hasCost = totalCostUsd !== undefined;
-  const visible = hasCacheHitRate || hasOutputSpeed || hasCost;
+  const hasContext =
+    usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined;
+  const hasTokenUsage =
+    usage?.totalTokens !== undefined ||
+    usage?.inputTokens !== undefined ||
+    usage?.cachedInputTokens !== undefined ||
+    usage?.cacheWriteInputTokens !== undefined ||
+    usage?.outputTokens !== undefined ||
+    usage?.reasoningOutputTokens !== undefined;
+  const hasPlanLimit =
+    usage?.planFiveHourUsedPercent !== undefined || usage?.planSevenDayUsedPercent !== undefined;
+  const visible =
+    hasCacheHitRate || hasOutputSpeed || hasCost || hasContext || hasTokenUsage || hasPlanLimit;
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {
     closePopover(control);
@@ -424,6 +439,31 @@ export function renderRendererUsageControl(
     outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
+  if (
+    summary.length === 0 &&
+    hasContext &&
+    usage?.contextWindowTokens !== undefined &&
+    usage.contextWindowTokens > 0
+  ) {
+    summary.push(
+      `${decimal(((usage.contextUsedTokens ?? 0) / usage.contextWindowTokens) * 100, 1)}% context`,
+    );
+  }
+  if (summary.length === 0 && usage?.totalTokens !== undefined) {
+    summary.push(`${formatRendererTokenCount(usage.totalTokens)} tokens`);
+  }
+  if (summary.length === 0 && hasTokenUsage) {
+    summary.push(
+      `${formatRendererTokenCount((usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0))} tokens`,
+    );
+  }
+  if (summary.length === 0 && hasPlanLimit) {
+    summary.push(
+      usage?.planFiveHourUsedPercent !== undefined
+        ? `5h ${formatRendererCreditsPercent(usage.planFiveHourUsedPercent)}`
+        : `7d ${formatRendererCreditsPercent(usage?.planSevenDayUsedPercent ?? 0)}`,
+    );
+  }
   const compactSummary = summary.join(" · ");
   const accessibleSummary = `Thread Usage: ${compactSummary}`;
   control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth();

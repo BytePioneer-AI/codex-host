@@ -601,7 +601,7 @@ export function installRendererBindingProbe(
       activeHarnessAvailabilityState().availability,
       mounted.modelView,
       mounted.permissionModeView,
-      mounted.usage,
+      controller.get(mounted.composer).agent === "codex" ? null : mounted.usage,
       mounted.accountCredits,
     );
   };
@@ -663,7 +663,7 @@ export function installRendererBindingProbe(
 
   const refreshThreadUsage = async (mounted: MountedComposer): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
-    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") {
+    if (!threadId || !modelControl) {
       mounted.usage = null;
       mounted.accountCredits = null;
       usageRefreshAttempts.delete(mounted.composer);
@@ -839,15 +839,13 @@ export function installRendererBindingProbe(
         renderMounted(mounted);
         if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
         sidebarAgentIcons.refresh();
-        if (
-          mounted.ownershipStatus !== "error" &&
-          shouldRetryExternalThreadUsage(
-            controller.get(mounted.composer).agent,
-            mounted.usage,
-            mounted.accountCredits,
-          )
-        ) {
-          scheduleThreadUsageRefresh(mounted);
+        if (mounted.ownershipStatus !== "error") {
+          const agent = controller.get(mounted.composer).agent;
+          if (agent === "codex" && mounted.usage === null) {
+            void refreshThreadUsage(mounted);
+          } else if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
+            scheduleThreadUsageRefresh(mounted);
+          }
         }
       }
     }
@@ -1958,8 +1956,8 @@ export function installRendererBindingProbe(
         continue;
       }
       const state = controller.get(composer);
-      const hideNativeControls = controller.isSwitching(composer) || state.agent !== "codex";
-      reconcileComposerNativeControls(mounted.control, hideNativeControls, hideNativeControls);
+      const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
+      reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       if (refreshTargets) refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {

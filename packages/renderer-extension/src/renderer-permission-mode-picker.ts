@@ -10,8 +10,10 @@ import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import Shield from "lucide/dist/esm/icons/shield.mjs";
 import ShieldAlert from "lucide/dist/esm/icons/shield-alert.mjs";
 
-const FALLBACK_TRIGGER_CLASSES =
-  "no-drag cursor-interaction items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 flex rounded-full text-token-text-tertiary enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer-sm px-1.5 py-0 text-sm leading-[18px] outline-hidden min-w-0";
+import {
+  ensureRendererTriggerChipStyle,
+  TRIGGER_CHIP_CLASS,
+} from "./renderer-trigger-chip-style.js";
 
 const MENU_CLASSES =
   "fixed z-50 overflow-hidden rounded-lg bg-token-dropdown-background/95 text-token-foreground shadow-lg ring-[0.5px] ring-token-border backdrop-blur-xl";
@@ -89,18 +91,21 @@ function positionMenu(control: RendererPermissionModePickerControl): void {
 
 export function syncRendererPermissionModeTriggerClass(
   control: RendererPermissionModePickerControl,
-  nativeClassName?: string,
 ): void {
-  control.trigger.className = nativeClassName?.trim() || FALLBACK_TRIGGER_CLASSES;
+  // Do not copy Codex's private Composer classes into codexhost controls.
+  // Codex can rename or remove those between Desktop releases; our own
+  // `TRIGGER_CHIP_CLASS` chrome (see renderer-trigger-chip-style.ts) does not.
+  control.trigger.className = TRIGGER_CHIP_CLASS;
   control.trigger.style.maxWidth = "min(220px, 34vw)";
   control.trigger.style.letterSpacing = "0";
 }
 
 export function mountRendererPermissionModePicker(
   composerId: string,
-  nativeClassName: string | undefined,
   onSelect: (permissionModeId: string) => void,
 ): RendererPermissionModePickerControl {
+  ensureRendererTriggerChipStyle(document);
+
   const root = document.createElement("div");
   root.setAttribute("data-codexhost-permission-mode-control", composerId);
   root.className = "relative min-w-0";
@@ -111,6 +116,10 @@ export function mountRendererPermissionModePicker(
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("data-state", "closed");
+  trigger.style.height = "28px";
+  trigger.style.padding = "0 6px";
+  trigger.style.gap = "4px";
+  trigger.style.font = "400 13px/18px system-ui, sans-serif";
 
   const shield = document.createElement("span");
   shield.className = "inline-flex shrink-0 items-center";
@@ -124,7 +133,8 @@ export function mountRendererPermissionModePicker(
   label.style.whiteSpace = "nowrap";
 
   const chevron = document.createElement("span");
-  chevron.className = "inline-flex shrink-0 items-center text-token-text-tertiary";
+  chevron.className = "inline-flex shrink-0 items-center";
+  chevron.style.color = "var(--color-text-tertiary, #8f8f8f)";
   chevron.append(icon(ChevronDown, 14));
   trigger.append(shield, label, chevron);
 
@@ -251,7 +261,7 @@ export function mountRendererPermissionModePicker(
       root.remove();
     },
   };
-  syncRendererPermissionModeTriggerClass(control, nativeClassName);
+  syncRendererPermissionModeTriggerClass(control);
   return control;
 }
 
@@ -305,7 +315,12 @@ export function renderRendererPermissionModePicker(
   view: RendererPermissionModeControlView,
   visible: boolean,
 ): void {
-  control.root.style.display = visible ? "block" : "none";
+  control.root.style.display = visible ? "inline-flex" : "none";
+  control.root.style.alignItems = "center";
+  control.root.style.alignSelf = "center";
+  control.root.style.height = "28px";
+  control.root.style.flex = "0 0 auto";
+  control.root.style.verticalAlign = "middle";
   if (!visible) {
     control.close();
     return;

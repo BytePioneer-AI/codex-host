@@ -11,7 +11,9 @@ describe("OMP Host bridge", () => {
     const frames: Record<string, unknown>[] = [];
     const failures: Error[] = [];
     const bridge = new OmpHostBridge({
-      send: async (frame) => frames.push(frame),
+      send: async (frame) => {
+        frames.push(frame);
+      },
       onFailure: (error) => failures.push(error),
       tools: [
         {
@@ -71,7 +73,9 @@ describe("OMP Host bridge", () => {
     const frames: Record<string, unknown>[] = [];
     const toolAborted = new Promise<void>((resolve) => {
       const bridge = new OmpHostBridge({
-        send: async (frame) => frames.push(frame),
+        send: async (frame) => {
+          frames.push(frame);
+        },
         onFailure: () => undefined,
         tools: [
           {
@@ -95,7 +99,7 @@ describe("OMP Host bridge", () => {
             writable: true,
             async resolve(_request, signal) {
               await new Promise<void>((resolveWait) =>
-                signal.addEventListener("abort", resolveWait),
+                signal.addEventListener("abort", () => resolveWait()),
               );
               throw new Error("aborted");
             },
@@ -126,7 +130,9 @@ describe("OMP Host bridge", () => {
   it("routes URI reads and rejects writes to read-only schemes", async () => {
     const frames: Record<string, unknown>[] = [];
     const bridge = new OmpHostBridge({
-      send: async (frame) => frames.push(frame),
+      send: async (frame) => {
+        frames.push(frame);
+      },
       onFailure: () => undefined,
       uriSchemes: [
         {

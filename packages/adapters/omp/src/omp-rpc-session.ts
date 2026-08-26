@@ -14,6 +14,8 @@ import {
 
 import { resolveOmpExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { OmpSessionHistory } from "./omp-history.js";
+
+export type { OmpSessionHistory } from "./omp-history.js";
 import {
   latestOmpCacheHitRatePercent,
   optionalOmpCacheHitRatePercent,

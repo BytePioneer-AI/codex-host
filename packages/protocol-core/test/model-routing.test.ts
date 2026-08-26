@@ -80,7 +80,9 @@ describe("external Harness transport model routing", () => {
     const model = harnessModelRefSchema.parse({ id: "omp-model-v1.b21wZW4" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     const transportModelId = encodeOmpTransportModel(model, thinkingOptionId);
-    expect(decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } })).toMatchObject({
+    expect(
+      decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({
       harnessId: "omp",
       model,
       thinkingOptionId,

@@ -5,6 +5,7 @@ import {
   harnessThinkingOptionIdSchema,
   nativeSessionRefSchema,
   type HarnessThinkingOptionId,
+  type HostTurnId,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -208,7 +209,7 @@ describe("OMP Adapter Subagents", () => {
     const observed = outputs(opened.value);
     const accepted = await opened.value.execute({
       type: "turn.start",
-      turnId: "turn-1",
+      turnId: "turn-1" as HostTurnId,
       input: [{ type: "text", text: "delegate" }],
     });
     expect(accepted).toEqual({ ok: true, value: { turnId: "turn-1" } });
@@ -311,7 +312,7 @@ describe("OMP Adapter Subagents", () => {
     const observed = outputs(opened.value);
     await opened.value.execute({
       type: "turn.start",
-      turnId: "turn-parent",
+      turnId: "turn-parent" as HostTurnId,
       input: [{ type: "text", text: "start background work" }],
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -393,7 +394,7 @@ describe("OMP Adapter Subagents", () => {
     const observed = outputs(opened.value);
     await opened.value.execute({
       type: "turn.start",
-      turnId: "turn-background-parent",
+      turnId: "turn-background-parent" as HostTurnId,
       input: [{ type: "text", text: "prime background subscription" }],
     });
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -119,18 +119,26 @@ export function rendererUsageTriggerMaxWidth(): string {
 /**
  * Shared chrome for the Usage/Credits popovers: a raised card rather than a
  * flat system-color panel. `Canvas`/`CanvasText` still anchor the palette (so
- * this reads correctly regardless of the host page's own light/dark theme),
- * but `color-mix` lifts the surface a touch off the background and the
- * border, so the popover reads as an elevated card instead of the browser's
- * bare default panel.
+ * this reads correctly regardless of the host page's own light/dark theme).
+ *
+ * Light and dark need different elevation recipes, not just inverted colors:
+ * a light surface reads as clean when it stays near-white and lets a soft,
+ * tight shadow carry the elevation; the same "tint the fill toward the
+ * foreground colour" trick that lifts a dark surface off a near-black page
+ * instead muddies a light one into flat grey, and the deep 45px/0.35-alpha
+ * shadow tuned for a dark host smears into a dirty halo on a light one.
+ * `light-dark()` switches on the same resolved `color-scheme` that already
+ * drives `Canvas`/`CanvasText` here, so it tracks the host page's actual
+ * theme rather than the OS preference.
  */
 export function applyRendererPopoverChrome(popover: HTMLElement): void {
-  popover.style.border = "1px solid color-mix(in srgb, CanvasText 14%, transparent)";
+  popover.style.border =
+    "1px solid light-dark(rgba(15, 23, 42, 0.10), color-mix(in srgb, CanvasText 16%, transparent))";
   popover.style.borderRadius = "14px";
-  popover.style.backgroundColor = "color-mix(in srgb, Canvas 92%, CanvasText 8%)";
+  popover.style.backgroundColor = "light-dark(Canvas, color-mix(in srgb, Canvas 88%, white 12%))";
   popover.style.color = "CanvasText";
   popover.style.boxShadow =
-    "0 20px 45px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.22)";
+    "light-dark(0 10px 24px rgba(15, 23, 42, 0.12), 0 20px 45px rgba(0, 0, 0, 0.42)), 0 2px 8px light-dark(rgba(15, 23, 42, 0.06), rgba(0, 0, 0, 0.28))";
 }
 
 function addDetailRow(parent: HTMLElement, label: string, value: string): void {

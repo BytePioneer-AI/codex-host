@@ -53,6 +53,7 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/adapters/claude-code/",
     "/packages/adapters/deepseek-harness/",
     "/packages/adapters/grok/",
+    "/packages/adapters/omp/",
     "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
     "/node_modules/@deepseek-ai/dsh-host-apiproxy/",

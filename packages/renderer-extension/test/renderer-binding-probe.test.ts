@@ -54,6 +54,7 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "ready",
           "deepseek-harness": "notInstalled",
           grok: "ready",
+          omp: "ready",
         },
         {
           pi: undefined,
@@ -64,6 +65,7 @@ describe("Renderer Composer DOM behavior", () => {
             retryable: false,
           },
           grok: undefined,
+          omp: undefined,
         },
       ),
     ).toEqual([]);
@@ -75,6 +77,7 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "ready",
           "deepseek-harness": "error",
           grok: "ready",
+          omp: "ready",
         },
         {
           pi: undefined,
@@ -85,6 +88,7 @@ describe("Renderer Composer DOM behavior", () => {
             retryable: true,
           },
           grok: undefined,
+          omp: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -96,6 +100,7 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "ready",
           "deepseek-harness": "unavailable",
           grok: "ready",
+          omp: "ready",
         },
         {
           pi: undefined,
@@ -106,6 +111,7 @@ describe("Renderer Composer DOM behavior", () => {
             retryable: true,
           },
           grok: undefined,
+          omp: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -119,15 +125,17 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "checking",
           "deepseek-harness": "checking",
           grok: "checking",
+          omp: "checking",
         },
         {
           pi: undefined,
           "claude-code": undefined,
           "deepseek-harness": undefined,
           grok: undefined,
+          omp: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -136,6 +144,7 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "ready",
           "deepseek-harness": "notInstalled",
           grok: "ready",
+          omp: "ready",
         },
         {
           pi: undefined,
@@ -146,6 +155,7 @@ describe("Renderer Composer DOM behavior", () => {
             retryable: false,
           },
           grok: undefined,
+          omp: undefined,
         },
       ),
     ).toEqual([]);
@@ -157,6 +167,7 @@ describe("Renderer Composer DOM behavior", () => {
           "claude-code": "ready",
           "deepseek-harness": "unavailable",
           grok: "ready",
+          omp: "ready",
         },
         {
           pi: undefined,
@@ -167,6 +178,7 @@ describe("Renderer Composer DOM behavior", () => {
             retryable: true,
           },
           grok: undefined,
+          omp: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);

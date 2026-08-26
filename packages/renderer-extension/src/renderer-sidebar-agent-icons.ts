@@ -104,6 +104,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "claude-code") return "claude-code";
   if (ownership.harnessId === "deepseek-harness") return "deepseek-harness";
   if (ownership.harnessId === "grok") return "grok";
+  if (ownership.harnessId === "omp") return "omp";
   return null;
 }
 

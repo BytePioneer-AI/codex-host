@@ -8,6 +8,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek Harness",
   grok: "Grok",
+  omp: "Oh My Pi",
 };
 
 const PI_PATHS = [
@@ -79,6 +80,7 @@ export function createRendererAgentIcon(
       "0 0 23.16 17.04",
     );
   }
+  if (agent === "omp") return createSvgIcon(PI_PATHS, "#7c3aed", size, ownerDocument);
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;
   mark.alt = "";

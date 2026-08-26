@@ -17,7 +17,8 @@
     { "path": "../adapters/pi/tsconfig.json" },
     { "path": "../adapters/claude-code/tsconfig.json" },
     { "path": "../adapters/deepseek-harness/tsconfig.json" },
-    { "path": "../adapters/grok/tsconfig.json" }
+    { "path": "../adapters/grok/tsconfig.json" },
+    { "path": "../adapters/omp/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

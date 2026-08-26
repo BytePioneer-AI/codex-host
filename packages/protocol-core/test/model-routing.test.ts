@@ -10,6 +10,7 @@ import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
+  OMP_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
@@ -23,6 +24,7 @@ import {
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
+  encodeOmpTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
 
@@ -32,6 +34,7 @@ describe("external Harness transport model routing", () => {
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
+    ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -70,6 +73,17 @@ describe("external Harness transport model routing", () => {
       routeMode: "native",
       transportModelId,
       model,
+    });
+  });
+
+  it("round-trips an OMP Model and Thinking selection", () => {
+    const model = harnessModelRefSchema.parse({ id: "omp-model-v1.b21wZW4" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodeOmpTransportModel(model, thinkingOptionId);
+    expect(decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } })).toMatchObject({
+      harnessId: "omp",
+      model,
+      thinkingOptionId,
     });
   });
 

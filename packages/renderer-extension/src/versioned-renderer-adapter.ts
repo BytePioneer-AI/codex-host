@@ -36,6 +36,8 @@ export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-n
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID}@`;
 export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
+export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
+export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -129,6 +131,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
+  if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -149,6 +152,21 @@ export function piTransportModelId(
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
   return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function ompTransportModelId(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    return OMP_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
 }
 
 export function claudeTransportModelId(
@@ -313,6 +331,29 @@ export function decodePiTransportModelId(value: unknown): {
 
 export function isPiTransportModelId(value: unknown): value is string {
   return decodePiTransportModelId(value) !== null;
+}
+
+export function decodeOmpTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+} | null {
+  if (value === OMP_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(OMP_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(OMP_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, thinkingOptionId] = components;
+  if (components.length === 2 && !thinkingOptionId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+}
+
+export function isOmpTransportModelId(value: unknown): value is string {
+  return decodeOmpTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(
@@ -661,7 +702,9 @@ export function modelSelectionForAgent(
           ? deepSeekHarnessTransportModelId(model)
           : agent === "grok"
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-            : transportModelIdForAgent(agent);
+            : agent === "omp"
+              ? ompTransportModelId(model, thinkingOptionId)
+              : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

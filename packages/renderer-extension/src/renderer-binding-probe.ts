@@ -44,6 +44,7 @@ import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeOmpTransportModelId,
   decodePiTransportModelId,
   findComposerModelTarget,
   threadIdFromComposerModelTarget,
@@ -81,6 +82,7 @@ const externalHarnessIds = {
   "claude-code": harnessIdSchema.parse("claude-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
+  omp: harnessIdSchema.parse("omp"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -88,6 +90,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "claude-code",
   "deepseek-harness",
   "grok",
+  "omp",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -291,6 +294,18 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
+  if (inspection.harnessId === "omp") {
+    const transportSelection = decodeOmpTransportModelId(inspection.transportModelId);
+    if (!transportSelection) throw new Error("OMP Thread reported an incompatible transport Model");
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    return {
+      agent: "omp",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {
@@ -524,6 +539,7 @@ export function installRendererBindingProbe(
       "claude-code": undefined,
       "deepseek-harness": undefined,
       grok: undefined,
+      omp: undefined,
     },
     requestGeneration: 0,
     request: null,

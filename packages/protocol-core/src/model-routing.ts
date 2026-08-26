@@ -16,7 +16,15 @@ export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-ha
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
-export const EXTERNAL_HARNESS_IDS = ["pi", "claude-code", "deepseek-harness", "grok"] as const;
+export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
+export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const EXTERNAL_HARNESS_IDS = [
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "grok",
+  "omp",
+] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
@@ -26,6 +34,7 @@ const transportModelByHarness = {
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
+  omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -73,6 +82,44 @@ export function encodePiTransportModel(
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
   return `${PI_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function encodeOmpTransportModel(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    return OMP_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function decodeOmpTransportSelection(value: unknown): ExternalConfigurationSelection | null {
+  if (value === OMP_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(OMP_NATIVE_TRANSPORT_MODEL_PREFIX))
+    return null;
+  const components = value.slice(OMP_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2)
+    throw new Error("OMP transport configuration has an invalid component count");
+  const [modelId, thinkingOptionId] = components;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("OMP transport Model contains an invalid Model Ref");
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success)
+    throw new Error("OMP transport configuration contains an invalid Thinking option");
+  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+}
+
+export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null | undefined {
+  const selection = decodeOmpTransportSelection(value);
+  return selection === null ? null : selection.model;
 }
 
 export function decodePiTransportSelection(value: unknown): ExternalConfigurationSelection | null {
@@ -278,6 +325,8 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    case "omp":
+      return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
   }
 }
 
@@ -294,6 +343,8 @@ export function decodeExternalTransportSelection(
       return decodeDeepSeekHarnessTransportSelection(value);
     case "grok":
       return decodeGrokTransportSelection(value);
+    case "omp":
+      return decodeOmpTransportSelection(value);
   }
 }
 
@@ -345,6 +396,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...grokSelection,
+    };
+  }
+  const ompSelection = decodeOmpTransportSelection(request.params.model);
+  if (ompSelection !== null) {
+    return {
+      harnessId: "omp",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...ompSelection,
     };
   }
 

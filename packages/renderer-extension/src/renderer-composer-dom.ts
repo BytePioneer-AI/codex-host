@@ -473,7 +473,11 @@ function setNativeControlHidden(
   }
   if (state.element.hidden && state.element.getAttribute("aria-hidden") === "true") return;
   const active = typeof document !== "undefined" ? document.activeElement : null;
-  if (active && typeof (active as HTMLElement).blur === "function" && state.element.contains(active)) {
+  if (
+    active &&
+    typeof (active as HTMLElement).blur === "function" &&
+    state.element.contains(active)
+  ) {
     (active as HTMLElement).blur();
   }
   if (state.element.getAttribute("aria-expanded") === "true") state.element.click();
@@ -526,11 +530,7 @@ export function mountComposerAgentControl(
     semanticNativePermissionModeControl !== null &&
     nativePermissionModeControlForComposer(composer) === semanticNativePermissionModeControl;
   const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect, onDownload);
-  const modelPicker = mountRendererModelPicker(
-    composerId,
-    onSelectModel,
-    onSelectThinking,
-  );
+  const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
     onSelectPermissionMode,

@@ -288,9 +288,7 @@ function togglePopover(control: Pick<RendererUsageControl, "trigger" | "popover"
   else openPopover(control);
 }
 
-export function mountRendererUsageControl(
-  composerId: string,
-): RendererUsageControl {
+export function mountRendererUsageControl(composerId: string): RendererUsageControl {
   ensureRendererTriggerChipStyle(document);
 
   const root = document.createElement("div");
@@ -430,9 +428,6 @@ export function renderRendererUsageControl(
   const cacheHitRatePercent = usage?.cacheHitRatePercent;
   const outputTokensPerSecond = usage?.outputTokensPerSecond;
   const totalCostUsd = usage?.totalCostUsd;
-  const hasCacheHitRate = cacheHitRatePercent !== undefined;
-  const hasOutputSpeed = outputTokensPerSecond !== undefined;
-  const hasCost = totalCostUsd !== undefined;
   const hasContext =
     usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined;
   const hasTokenUsage =

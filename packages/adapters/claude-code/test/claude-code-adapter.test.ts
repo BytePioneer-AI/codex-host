@@ -416,7 +416,7 @@ describe("Claude Code HarnessAdapter", () => {
     if (!opened.ok) throw new Error(opened.error.message);
     expect(dependencies.forkSession).toHaveBeenCalledWith({
       checkpointId: "assistant-1",
-      cwd: "/synthetic",
+      cwd: path.resolve("/synthetic"),
       sourceSessionId: "source-session",
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({

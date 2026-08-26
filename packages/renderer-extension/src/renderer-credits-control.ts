@@ -223,9 +223,7 @@ function togglePopover(control: Pick<RendererCreditsControl, "trigger" | "popove
   else openPopover(control);
 }
 
-export function mountRendererCreditsControl(
-  composerId: string,
-): RendererCreditsControl {
+export function mountRendererCreditsControl(composerId: string): RendererCreditsControl {
   ensureRendererTriggerChipStyle(document);
 
   const root = document.createElement("div");

@@ -182,7 +182,18 @@ describe("Renderer Composer DOM behavior", () => {
   it("retries external Usage after an early empty inspection", () => {
     expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
     expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(false);
+    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage("codex", { totalCostUsd: 0.168 })).toBe(true);
+    expect(
+      shouldRetryExternalThreadUsage(
+        "codex",
+        { totalCostUsd: 0.168 },
+        {
+          usedPercent: 33,
+          periodType: "five_hour",
+        },
+      ),
+    ).toBe(false);
     expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
     expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
     expect(

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { observeCodexRateLimits, observeCodexTokenUsage } from "../src/codex-native-usage.js";
+import {
+  observeCodexRateLimits,
+  observeCodexTokenUsage,
+  projectCodexRateLimitsToCredits,
+} from "../src/codex-native-usage.js";
 
 describe("Codex native Usage observations", () => {
   it("maps thread token usage into the Host Usage shape", () => {
@@ -121,6 +125,41 @@ describe("Codex native Usage observations", () => {
     ).toEqual({
       planSevenDayUsedPercent: 12,
       planSevenDayResetsAtUnix: 5_000,
+    });
+  });
+
+  it("projects generic Codex windows into the shared Credits snapshot", () => {
+    expect(
+      projectCodexRateLimitsToCredits({
+        planFiveHourUsedPercent: 15,
+        planFiveHourResetsAtUnix: 1_800,
+        planSevenDayUsedPercent: 25,
+        planSevenDayResetsAtUnix: 2_400,
+      }),
+    ).toEqual({
+      usedPercent: 15,
+      periodType: "five_hour",
+      resetsAt: new Date(1_800 * 1000).toISOString(),
+      productUsage: [
+        {
+          product: "7-day window",
+          usagePercent: 25,
+          resetsAt: new Date(2_400 * 1000).toISOString(),
+        },
+      ],
+    });
+  });
+
+  it("projects a weekly-only Codex account without inventing a five-hour window", () => {
+    expect(
+      projectCodexRateLimitsToCredits({
+        planSevenDayUsedPercent: 41,
+        planSevenDayResetsAtUnix: 2_400,
+      }),
+    ).toEqual({
+      usedPercent: 41,
+      periodType: "seven_day",
+      resetsAt: new Date(2_400 * 1000).toISOString(),
     });
   });
 });

@@ -103,6 +103,7 @@ import {
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
   mapExternalThreadHarnessError,
+  projectCodexRateLimitsToCredits,
   observeCodexRateLimits,
   observeCodexTokenUsage,
   parseJsonFrame,
@@ -900,7 +901,8 @@ export class AppServerHost {
     try {
       for await (const frame of readLfFrames(official.stdout)) {
         const parsed = parseJsonFrame(frame);
-        if (isRecord(parsed) && parsed.method === "account/updated") this.#resetOfficialUsageState();
+        if (isRecord(parsed) && parsed.method === "account/updated")
+          this.#resetOfficialUsageState();
         if (this.#officialRequestBroker.handle(parsed)) continue;
         const tokenUsage = observeCodexTokenUsage(parsed);
         if (tokenUsage) {
@@ -1136,12 +1138,20 @@ export class AppServerHost {
       return;
     }
     if (resolution.kind === "official") {
+      // A native Codex thread may have no token-usage observation yet, but its
+      // account quota is still useful to the Credits pill. Start a refresh for
+      // that case without blocking the first inspection; subsequent renderer
+      // retries will observe the populated snapshot. When token usage already
+      // exists, await the refresh so Usage and Credits arrive together.
+      const rateLimitRefresh = this.#refreshOfficialRateLimits();
       if (this.#officialUsageByThread.has(params.data.threadId)) {
-        await this.#refreshOfficialRateLimits();
+        await rateLimitRefresh;
       }
+      const accountCredits = projectCodexRateLimitsToCredits(this.#officialRateLimitUsage);
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
         usage: this.#combinedOfficialUsage(this.#officialUsageByThread.get(params.data.threadId)),
+        ...(accountCredits ? { accountCredits } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;

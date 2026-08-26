@@ -954,7 +954,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor((message) => requestId(message, 43)),
     ).resolves.toMatchObject({ error: { code: -32602 } });
 
-    expect(officialWrite).not.toHaveBeenCalled();
+    expect(officialWrite).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(officialWrite.mock.calls[0]?.[0]?.toString() ?? "{}")).toMatchObject({
+      method: "account/rateLimits/read",
+      params: {},
+    });
     await stopFixture(fixture);
   });
 
@@ -1032,6 +1036,18 @@ describe("AppServerHost HarnessAdapter projection", () => {
           planFiveHourResetsAtUnix: 1_800,
           planSevenDayUsedPercent: 9,
           planSevenDayResetsAtUnix: 2_400,
+        },
+        accountCredits: {
+          usedPercent: 3,
+          periodType: "five_hour",
+          resetsAt: new Date(1_800 * 1000).toISOString(),
+          productUsage: [
+            {
+              product: "7-day window",
+              usagePercent: 9,
+              resetsAt: new Date(2_400 * 1000).toISOString(),
+            },
+          ],
         },
       },
     });

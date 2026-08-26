@@ -1,5 +1,10 @@
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
-import { hostThreadIdSchema, hostTurnIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
+import {
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+  type AccountCreditsSnapshot,
+  type HostTurnId,
+} from "@codexhost/shared-contracts";
 
 interface CodexTokenUsageObservation {
   threadId: string;
@@ -184,4 +189,45 @@ export function observeCodexRateLimits(value: unknown): Partial<HostUsage> | nul
   } catch {
     return null;
   }
+}
+
+function isoFromUnix(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toISOString();
+}
+
+/**
+ * Projects the account-wide Codex rate-limit fields into the shared Credits
+ * snapshot consumed by the renderer's pill/popover. Model-specific buckets
+ * have already been excluded by observeCodexRateLimits.
+ */
+export function projectCodexRateLimitsToCredits(
+  usage: Partial<HostUsage> | null | undefined,
+): AccountCreditsSnapshot | null {
+  if (!usage) return null;
+  const hasFiveHour = usage.planFiveHourUsedPercent !== undefined;
+  const hasSevenDay = usage.planSevenDayUsedPercent !== undefined;
+  if (!hasFiveHour && !hasSevenDay) return null;
+
+  const usedPercent = hasFiveHour ? usage.planFiveHourUsedPercent : usage.planSevenDayUsedPercent;
+  if (usedPercent === undefined) return null;
+  const resetsAtUnix = hasFiveHour
+    ? usage.planFiveHourResetsAtUnix
+    : usage.planSevenDayResetsAtUnix;
+  const secondary =
+    hasFiveHour && hasSevenDay && usage.planSevenDayUsedPercent !== undefined
+      ? {
+          product: "7-day window",
+          usagePercent: usage.planSevenDayUsedPercent,
+          ...(usage.planSevenDayResetsAtUnix !== undefined
+            ? { resetsAt: isoFromUnix(usage.planSevenDayResetsAtUnix) }
+            : {}),
+        }
+      : undefined;
+
+  return {
+    usedPercent,
+    periodType: hasFiveHour ? "five_hour" : "seven_day",
+    ...(resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(resetsAtUnix) } : {}),
+    ...(secondary ? { productUsage: [secondary] } : {}),
+  };
 }

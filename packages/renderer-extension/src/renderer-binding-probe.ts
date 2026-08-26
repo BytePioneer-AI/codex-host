@@ -141,12 +141,12 @@ export function rendererUsageRefreshDelay(attempt: number): number {
 }
 
 /**
- * Agents whose Harness Adapter implements `credits()`/`refreshCredits()` — the only ones where
- * it's worth retrying purely to pick up Account Credits after Usage has already arrived. Every
- * other Agent would retry forever at the backoff ceiling for a value it can never produce.
+ * Agents that can produce account-wide Credits independently of a Thread
+ * Usage snapshot. These are the only ones where it is worth retrying purely
+ * to pick up account limits after Usage has already arrived.
  */
 function externalAgentHasAccountCredits(agent: RendererAgent): boolean {
-  return agent === "grok" || agent === "claude-code";
+  return agent === "codex" || agent === "grok" || agent === "claude-code";
 }
 
 export function shouldRetryExternalThreadUsage(
@@ -154,7 +154,6 @@ export function shouldRetryExternalThreadUsage(
   usage: ThreadUsageSnapshot | null,
   accountCredits: AccountCreditsSnapshot | null = null,
 ): boolean {
-  if (agent === "codex") return false;
   if (usage === null) return true;
   return externalAgentHasAccountCredits(agent) && accountCredits === null;
 }

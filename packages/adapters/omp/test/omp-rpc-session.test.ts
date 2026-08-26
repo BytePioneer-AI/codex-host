@@ -74,58 +74,8 @@ class FakeOmpProcess extends EventEmitter {
       return this.#response(command, { protocolVersion: 2 });
     if (command.type === "get_state") return this.#response(command, this.#state());
     if (command.type === "get_messages") return this.#response(command, { messages: [] });
-    if (command.type === "new_session") {
-      this.#sessionId = "omp-new-session";
-      return this.#response(command, { cancelled: false });
-    }
     if (command.type === "handoff") {
       return this.#response(command, { savedPath: "/tmp/omp-handoff.md" });
-    }
-    if (command.type === "set_subagent_subscription") {
-      return this.#response(command, { level: command.level });
-    }
-    if (command.type === "set_host_tools") {
-      const tools = Array.isArray(command.tools) ? command.tools : [];
-      return this.#response(command, {
-        toolNames: tools.flatMap((tool) =>
-          typeof tool === "object" &&
-          tool !== null &&
-          !Array.isArray(tool) &&
-          typeof tool.name === "string"
-            ? [tool.name]
-            : [],
-        ),
-      });
-    }
-    if (command.type === "set_host_uri_schemes") {
-      const schemes = Array.isArray(command.schemes) ? command.schemes : [];
-      return this.#response(command, {
-        schemes: schemes.flatMap((scheme) =>
-          typeof scheme === "object" &&
-          scheme !== null &&
-          !Array.isArray(scheme) &&
-          typeof scheme.scheme === "string"
-            ? [scheme.scheme]
-            : [],
-        ),
-      });
-    }
-    if (command.type === "get_subagents") {
-      return this.#response(command, {
-        subagents: [
-          {
-            id: "subagent-1",
-            index: 0,
-            agent: "task",
-            agentSource: "bundled",
-            description: "Inspect the repository",
-            status: "running",
-            sessionFile: "/tmp/subagent.jsonl",
-            parentToolCallId: "tool-1",
-            lastUpdate: 1,
-          },
-        ],
-      });
     }
     if (command.type === "get_subagent_messages") {
       return this.#response(command, {
@@ -283,15 +233,11 @@ describe("OMP RPC session", () => {
     await session.close();
   });
 
-  it("reads Subagent registry and transcript through OMP RPC", async () => {
+  it("reads a Subagent transcript through OMP RPC", async () => {
     const process = new FakeOmpProcess();
     const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
     const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
     await session.start();
-    await expect(session.setSubagentSubscription("progress")).resolves.toBe("progress");
-    await expect(session.getSubagents()).resolves.toMatchObject([
-      { id: "subagent-1", status: "running", sessionFile: "/tmp/subagent.jsonl" },
-    ]);
     await expect(
       session.getSubagentMessages({ subagentId: "subagent-1", fromByte: 7 }),
     ).resolves.toMatchObject({
@@ -299,48 +245,6 @@ describe("OMP RPC session", () => {
       fromByte: 7,
       nextByte: 42,
     });
-    await session.close();
-  });
-
-  it("registers configured Host Tools and URI schemes during startup", async () => {
-    const process = new FakeOmpProcess();
-    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
-    const session = new OmpRpcSession(
-      {
-        cwd: "/synthetic",
-        commandTimeoutMs: 2_000,
-        hostTools: [
-          {
-            name: "lookup",
-            description: "Look up a value",
-            parameters: { type: "object" },
-            execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
-          },
-        ],
-        hostUriSchemes: [
-          {
-            scheme: "docs",
-            async resolve() {
-              return { content: "docs" };
-            },
-          },
-        ],
-      },
-      adapter,
-    );
-    await session.start();
-    expect(process.commands).toContainEqual(
-      expect.objectContaining({
-        type: "set_host_tools",
-        tools: [{ name: "lookup", description: "Look up a value", parameters: { type: "object" } }],
-      }),
-    );
-    expect(process.commands).toContainEqual(
-      expect.objectContaining({
-        type: "set_host_uri_schemes",
-        schemes: [{ scheme: "docs" }],
-      }),
-    );
     await session.close();
   });
 
@@ -358,41 +262,6 @@ describe("OMP RPC session", () => {
         type: "handoff",
         customInstructions: "Focus on the remaining risks",
       }),
-    );
-    await session.close();
-  });
-
-  it("forwards OMP steering, follow-up, queue-mode, rename, and new-session commands", async () => {
-    const process = new FakeOmpProcess();
-    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
-    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
-    await session.start();
-
-    await expect(session.steer("Stop and inspect the failing test")).resolves.toBeUndefined();
-    await expect(session.followUp("Then summarize the remaining risks")).resolves.toBeUndefined();
-    await expect(session.setSteeringMode("one-at-a-time")).resolves.toBeUndefined();
-    await expect(session.setFollowUpMode("all")).resolves.toBeUndefined();
-    await expect(session.setSessionName("OMP integration")).resolves.toBeUndefined();
-    await expect(session.newSession("/tmp/parent-session.jsonl")).resolves.toMatchObject({
-      cancelled: false,
-      state: { sessionId: "omp-new-session" },
-    });
-
-    expect(process.commands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "steer", message: "Stop and inspect the failing test" }),
-        expect.objectContaining({
-          type: "follow_up",
-          message: "Then summarize the remaining risks",
-        }),
-        expect.objectContaining({ type: "set_steering_mode", mode: "one-at-a-time" }),
-        expect.objectContaining({ type: "set_follow_up_mode", mode: "all" }),
-        expect.objectContaining({ type: "set_session_name", name: "OMP integration" }),
-        expect.objectContaining({
-          type: "new_session",
-          parentSession: "/tmp/parent-session.jsonl",
-        }),
-      ]),
     );
     await session.close();
   });

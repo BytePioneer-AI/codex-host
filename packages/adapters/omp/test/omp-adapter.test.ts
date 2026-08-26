@@ -54,14 +54,6 @@ class FakeOmpTransport implements OmpTurnTransport {
     return structuredClone(this.history);
   }
 
-  async getSubagents(): Promise<never[]> {
-    return [];
-  }
-
-  async setSubagentSubscription(): Promise<"off"> {
-    return "off";
-  }
-
   async getSubagentMessages(): Promise<OmpSubagentMessagesResult> {
     return {
       sessionFile: "/synthetic/subagent.jsonl",
@@ -98,10 +90,6 @@ class FakeOmpTransport implements OmpTurnTransport {
   }
 
   async fork(): Promise<OmpSessionState> {
-    return this.state;
-  }
-
-  async clone(): Promise<OmpSessionState> {
     return this.state;
   }
 

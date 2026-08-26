@@ -102,37 +102,4 @@ describe("OMP RPC protocol", () => {
       },
     });
   });
-
-  it("parses native Host Tool and Host URI request frames", () => {
-    expect(
-      parseOmpNotification({
-        type: "host_tool_call",
-        id: "request-1",
-        toolCallId: "tool-1",
-        toolName: "lookup",
-        arguments: { query: "omp" },
-      }),
-    ).toEqual({
-      type: "host_tool_call",
-      id: "request-1",
-      toolCallId: "tool-1",
-      toolName: "lookup",
-      arguments: { query: "omp" },
-    });
-    expect(
-      parseOmpNotification({
-        type: "host_uri_request",
-        id: "request-2",
-        operation: "write",
-        url: "docs://guide",
-        content: "new",
-      }),
-    ).toEqual({
-      type: "host_uri_request",
-      id: "request-2",
-      operation: "write",
-      url: "docs://guide",
-      content: "new",
-    });
-  });
 });

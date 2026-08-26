@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 
 import {
   HarnessOutputChannel,
-  validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessCommandAccepted,
   type HarnessCommandCapability,
@@ -27,7 +26,6 @@ import {
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
-  type HostQuestionInteraction,
   type HostReasoningItem,
   type HostSubagentDelegationItem,
   type HostSubagentState,
@@ -55,13 +53,11 @@ import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
   harnessThinkingOptionIdSchema,
-  hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
-  type HostInteractionId,
   type HostItemId,
   type HostTurnId,
   type JsonValue,
@@ -76,8 +72,6 @@ import {
   OmpRpcFaultError,
   OmpRpcSession,
   OmpRpcUnsupportedCommandError,
-  type OmpInteractionRequest,
-  type OmpInteractionResponse,
   type OmpRpcSessionOptions,
   type OmpSessionState,
   type OmpCompactResult,
@@ -96,8 +90,6 @@ import {
   type OmpNativeModelRef,
 } from "./omp-model-catalog.js";
 import { OmpSubagentLifecycle } from "./omp-subagent-lifecycle.js";
-import type { OmpHostToolRegistration, OmpHostUriRegistration } from "./omp-host-bridge.js";
-import type { OmpExtensionUiHandlers } from "./omp-extension-ui.js";
 
 export interface OmpAdapterOptions {
   command?: string;
@@ -106,9 +98,6 @@ export interface OmpAdapterOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   toolOutputLimit?: number;
-  hostTools?: readonly OmpHostToolRegistration[];
-  hostUriSchemes?: readonly OmpHostUriRegistration[];
-  extensionUi?: OmpExtensionUiHandlers;
 }
 
 export interface OmpTurnTransport {
@@ -125,7 +114,6 @@ export interface OmpTurnTransport {
   }): Promise<OmpSubagentMessagesResult>;
   getSessionUsage(): Promise<HostUsage | null>;
   fork(entryId: string): Promise<OmpSessionState>;
-  clone(): Promise<OmpSessionState>;
   verifySessionCwd(expectedCwd: string): Promise<void>;
   selectModel(model: OmpNativeModelRef): Promise<OmpSessionState>;
   selectThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<OmpSessionState>;
@@ -135,7 +123,6 @@ export interface OmpTurnTransport {
   ): Promise<OmpCompactResult>;
   handoff(customInstructions?: string): Promise<OmpHandoffResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
-  respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -150,11 +137,6 @@ interface ActiveTool {
   startedAtMs: number;
 }
 
-interface ActiveInteraction {
-  interaction: HostQuestionInteraction;
-  nativeRequest: OmpInteractionRequest;
-}
-
 interface ActiveTurn {
   command: TurnStartCommand;
   agentItem: HostAgentMessageItem | null;
@@ -164,8 +146,6 @@ interface ActiveTurn {
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   subagents: OmpSubagentLifecycle;
-  interactions: Map<HostInteractionId, ActiveInteraction>;
-  interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
@@ -692,7 +672,16 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "interaction.respond") return this.#respond(command);
+    if (command.type === "interaction.respond") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Omp does not expose Host Interactions",
+          retryable: false,
+        },
+      };
+    }
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "permissionMode.select") {
@@ -770,8 +759,6 @@ class OmpHarnessSession implements HarnessSession {
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
         }),
-        interactions: new Map(),
-        interactionByNativeId: new Map(),
         cancellationRequested: false,
         beforeNativeTurnKeys: new Set(
           beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
@@ -838,62 +825,6 @@ class OmpHarnessSession implements HarnessSession {
       this.#closePromise = this.#close().finally(this.#onClosed);
     }
     return this.#closePromise;
-  }
-
-  async #respond(
-    command: InteractionRespondCommand,
-  ): Promise<HarnessResult<InteractionRespondAccepted>> {
-    const active = this.#active;
-    const pending = active?.interactions.get(command.interactionId);
-    if (!active || !pending) {
-      return {
-        ok: false,
-        error: invalidState("Omp Interaction Response must reference a pending Question"),
-      };
-    }
-    if (command.response.type !== "question") {
-      return {
-        ok: false,
-        error: {
-          code: "invalidRequest",
-          message: "Omp Question requires a Question Response",
-          retryable: false,
-        },
-      };
-    }
-    const validationError = validateHostQuestionResponse(pending.interaction, command.response);
-    if (validationError) return { ok: false, error: validationError };
-    const transport = this.#transport;
-    if (!transport) return { ok: false, error: invalidState("Omp transport is unavailable") };
-    const answers = command.response.answers.answer ?? [];
-    let response: OmpInteractionResponse;
-    if (command.response.cancelled) {
-      response = { requestId: pending.nativeRequest.requestId, cancelled: true };
-    } else if (pending.nativeRequest.method === "confirm") {
-      response = {
-        requestId: pending.nativeRequest.requestId,
-        confirmed: answers[0] === "yes",
-      };
-    } else {
-      const value = answers[0];
-      if (value === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "invalidRequest",
-            message: "Omp Question Response has no answer",
-            retryable: false,
-          },
-        };
-      }
-      response = { requestId: pending.nativeRequest.requestId, value };
-    }
-    try {
-      await transport.respondToInteraction(response);
-      return { ok: true, value: { accepted: true } };
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "nativeFailure") };
-    }
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
@@ -1135,8 +1066,6 @@ class OmpHarnessSession implements HarnessSession {
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
         }),
-        interactions: new Map(),
-        interactionByNativeId: new Map(),
         cancellationRequested: false,
         beforeNativeTurnKeys: new Set(),
         completion,
@@ -1324,12 +1253,6 @@ class OmpHarnessSession implements HarnessSession {
       case "compaction.completed":
         this.#completeCompaction(active, event);
         return;
-      case "interaction.requested":
-        this.#startInteraction(active, event.request);
-        return;
-      case "interaction.closed":
-        this.#closeInteraction(active, event.requestId, event.reason);
-        return;
       case "tool.started":
         this.#completeReasoning(active, { status: "succeeded" });
         this.#completeAgentItem(active, { status: "succeeded" }, false);
@@ -1419,83 +1342,6 @@ class OmpHarnessSession implements HarnessSession {
             };
     this.#completeItem(active, item, outcome);
     if (event.outcome === "succeeded") void this.#refreshUsage(active.command.turnId);
-  }
-
-  #startInteraction(active: ActiveTurn, request: OmpInteractionRequest): void {
-    if (active.interactionByNativeId.has(request.requestId)) {
-      throw new Error("Omp Interaction started more than once");
-    }
-    const interactionId = hostInteractionIdSchema.parse(randomUUID());
-    const question =
-      request.method === "select"
-        ? {
-            id: "answer",
-            type: "choice" as const,
-            prompt: request.title,
-            options: request.options.map((option) => ({ value: option, label: option })),
-            multiple: false,
-            allowOther: false,
-            optional: false,
-          }
-        : request.method === "confirm"
-          ? {
-              id: "answer",
-              type: "choice" as const,
-              prompt: request.message || request.title,
-              options: [
-                { value: "yes", label: "Yes" },
-                { value: "no", label: "No" },
-              ],
-              multiple: false,
-              allowOther: false,
-              optional: false,
-            }
-          : {
-              id: "answer",
-              type: "text" as const,
-              prompt: request.title,
-              multiline: request.method === "editor",
-              secret: false,
-              optional: false,
-              ...(request.method === "input" && request.placeholder
-                ? { placeholder: request.placeholder }
-                : {}),
-              ...(request.method === "editor" && request.prefill
-                ? { prefill: request.prefill }
-                : {}),
-            };
-    const associatedTool = active.tools.size === 1 ? [...active.tools.values()][0] : undefined;
-    const interaction: HostQuestionInteraction = {
-      type: "question",
-      interactionId,
-      turnId: active.command.turnId,
-      ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
-      title: "Omp",
-      questions: [question],
-      ...(request.timeoutMs !== undefined
-        ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
-        : {}),
-    };
-    active.interactions.set(interactionId, { interaction, nativeRequest: request });
-    active.interactionByNativeId.set(request.requestId, interactionId);
-    this.#channel.emit({ kind: "interaction", interaction });
-  }
-
-  #closeInteraction(
-    active: ActiveTurn,
-    nativeRequestId: string,
-    reason: "responded" | "cancelled" | "expired" | "superseded",
-  ): void {
-    const interactionId = active.interactionByNativeId.get(nativeRequestId);
-    if (!interactionId) throw new Error("Omp Interaction close references an unknown request");
-    active.interactionByNativeId.delete(nativeRequestId);
-    active.interactions.delete(interactionId);
-    this.#event({
-      type: "interaction.closed",
-      interactionId,
-      turnId: active.command.turnId,
-      reason,
-    });
   }
 
   #activateAgentMessage(active: ActiveTurn, messageId: string): void {
@@ -1685,22 +1531,6 @@ class OmpHarnessSession implements HarnessSession {
     });
   }
 
-  #closeActiveInteractions(
-    active: ActiveTurn,
-    reason: "cancelled" | "expired" | "superseded",
-  ): void {
-    for (const [interactionId, pending] of active.interactions) {
-      active.interactions.delete(interactionId);
-      active.interactionByNativeId.delete(pending.nativeRequest.requestId);
-      this.#event({
-        type: "interaction.closed",
-        interactionId,
-        turnId: active.command.turnId,
-        reason,
-      });
-    }
-  }
-
   async #completedTurnIdentity(
     active: ActiveTurn,
     transport: OmpTurnTransport,
@@ -1729,10 +1559,6 @@ class OmpHarnessSession implements HarnessSession {
     nativeTurnRef?: NativeTurnRef,
   ): void {
     if (this.#active !== active) return;
-    this.#closeActiveInteractions(
-      active,
-      outcome.status === "succeeded" ? "superseded" : "cancelled",
-    );
     this.#active = null;
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"

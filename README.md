@@ -39,26 +39,26 @@
 
 ### 界面
 
-![Pi、Claude Code 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
+![Pi、Oh My Pi、Claude Code 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/app-overview.png)
 
 ## 功能状态
 
-| 能力 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
-| --- | --- | --- | --- | --- | --- |
-| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Thinking | 原生 | ✅ | ✅ | ✅ | — |
-| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 提问 / 取消 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | 🚧 |
-| 工具审批 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | ✅ | — |
-| Usage | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| Fork | 原生 | ✅ | ✅ | ✅ | — |
-| 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ |
-| 斜杠命令 | 原生 | ✅ | ✅ | ✅ | — |
-| 修订上一条消息 | 原生 | ✅ | 🚧 | ✅ | — |
+| 能力 | Codex | Pi | OMP | Claude Code | Grok Build | DeepSeek Harness |
+| --- | --- | --- | --- | --- | --- | --- |
+| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Thinking | 原生 | ✅ | ✅ | ✅ | ✅ | — |
+| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ |
+| 权限模式 | 原生 | — | — | ✅ | ✅ | — |
+| Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 会话恢复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 原生 | ✅ | ✅ | ✅ | ✅ | — |
+| 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
+| 修订上一条消息 | 原生 | ✅ | ✅ | 🚧 | ✅ | — |
 
 > **SSH 远程 Harness**：✅ 支持通过 Codex Desktop 原生 SSH 工作区使用远程节点上的 Harness。
 >
@@ -144,6 +144,8 @@ CodexHost 尽量不走这条路：
 </details>
 
 ### 交互展示
+
+OMP 已接入 Agent 选择器，可作为独立的 Agent 在 Codex Desktop 中创建和恢复会话。
 
 <table>
   <tr>

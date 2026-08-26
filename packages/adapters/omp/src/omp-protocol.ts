@@ -25,32 +25,6 @@ export type OmpNotification =
     }
   | { type: "auto_compaction_start" }
   | { type: "auto_compaction_end"; aborted: boolean; errorMessage?: string }
-  | {
-      type: "extension_ui_request";
-      id: string;
-      method: string;
-      title?: string;
-      options?: string[];
-      message?: string;
-      placeholder?: string;
-      prefill?: string;
-    }
-  | {
-      type: "host_tool_call";
-      id: string;
-      toolCallId: string;
-      toolName: string;
-      arguments: OmpJsonObject;
-    }
-  | { type: "host_tool_cancel"; id: string; targetId: string }
-  | {
-      type: "host_uri_request";
-      id: string;
-      operation: "read" | "write";
-      url: string;
-      content?: string;
-    }
-  | { type: "host_uri_cancel"; id: string; targetId: string }
   | { type: "subagent_lifecycle"; payload: OmpJsonObject }
   | { type: "subagent_progress"; payload: OmpJsonObject }
   | { type: "subagent_event"; payload: OmpJsonObject }
@@ -248,47 +222,6 @@ export function parseOmpNotification(payload: OmpJsonObject): OmpNotification {
         type: "auto_compaction_end",
         aborted: payload.aborted === true,
         ...(typeof payload.errorMessage === "string" ? { errorMessage: payload.errorMessage } : {}),
-      };
-    case "extension_ui_request":
-      return {
-        type: "extension_ui_request",
-        id: stringValue(payload.id, randomUUID()),
-        method: stringValue(payload.method),
-        ...(typeof payload.title === "string" ? { title: payload.title } : {}),
-        ...(Array.isArray(payload.options)
-          ? { options: payload.options.filter((item): item is string => typeof item === "string") }
-          : {}),
-        ...(typeof payload.message === "string" ? { message: payload.message } : {}),
-        ...(typeof payload.placeholder === "string" ? { placeholder: payload.placeholder } : {}),
-        ...(typeof payload.prefill === "string" ? { prefill: payload.prefill } : {}),
-      };
-    case "host_tool_call":
-      return {
-        type: "host_tool_call",
-        id: stringValue(payload.id, randomUUID()),
-        toolCallId: stringValue(payload.toolCallId),
-        toolName: stringValue(payload.toolName),
-        arguments: isObject(payload.arguments) ? payload.arguments : {},
-      };
-    case "host_tool_cancel":
-      return {
-        type: "host_tool_cancel",
-        id: stringValue(payload.id, randomUUID()),
-        targetId: stringValue(payload.targetId),
-      };
-    case "host_uri_request":
-      return {
-        type: "host_uri_request",
-        id: stringValue(payload.id, randomUUID()),
-        operation: payload.operation === "write" ? "write" : "read",
-        url: stringValue(payload.url),
-        ...(typeof payload.content === "string" ? { content: payload.content } : {}),
-      };
-    case "host_uri_cancel":
-      return {
-        type: "host_uri_cancel",
-        id: stringValue(payload.id, randomUUID()),
-        targetId: stringValue(payload.targetId),
       };
     case "subagent_lifecycle":
     case "subagent_progress":

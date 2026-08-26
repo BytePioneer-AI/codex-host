@@ -391,6 +391,7 @@ export class AppServerHost {
   #officialUsageByThread = new Map<string, HostUsage>();
   #officialRateLimitUsage: Partial<HostUsage> | null = null;
   #officialRateLimitRefresh: Promise<void> | null = null;
+  #officialAccountGeneration = 0;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
@@ -899,6 +900,7 @@ export class AppServerHost {
     try {
       for await (const frame of readLfFrames(official.stdout)) {
         const parsed = parseJsonFrame(frame);
+        if (isRecord(parsed) && parsed.method === "account/updated") this.#resetOfficialUsageState();
         if (this.#officialRequestBroker.handle(parsed)) continue;
         const tokenUsage = observeCodexTokenUsage(parsed);
         if (tokenUsage) {
@@ -1167,6 +1169,15 @@ export class AppServerHost {
     }
   }
 
+  #resetOfficialUsageState(): void {
+    // Native Codex can change accounts without restarting the app-server. Do
+    // not carry the previous account's thread or quota snapshot into the next
+    // account's Usage popover.
+    this.#officialAccountGeneration += 1;
+    this.#officialUsageByThread.clear();
+    this.#officialRateLimitUsage = null;
+  }
+
   #combinedOfficialUsage(usage: HostUsage | undefined): HostUsage | null {
     const combined = { ...(usage ?? {}), ...(this.#officialRateLimitUsage ?? {}) };
     if (Object.keys(combined).length === 0) return null;
@@ -1180,9 +1191,11 @@ export class AppServerHost {
   async #refreshOfficialRateLimits(): Promise<void> {
     if (this.#officialRateLimitUsage) return;
     if (this.#officialRateLimitRefresh) return this.#officialRateLimitRefresh;
+    const accountGeneration = this.#officialAccountGeneration;
     this.#officialRateLimitRefresh = this.#officialRequestBroker
       .request("account/rateLimits/read", {})
       .then((response) => {
+        if (accountGeneration !== this.#officialAccountGeneration) return;
         const rateLimits = observeCodexRateLimits(response);
         if (rateLimits) this.#mergeOfficialRateLimits(rateLimits);
       })

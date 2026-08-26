@@ -109,8 +109,22 @@ function parseRateLimitWindow(value: unknown): RateLimitWindow | null {
   return { usedPercent, windowDurationMins, ...(resetsAt !== undefined ? { resetsAt } : {}) };
 }
 
-function parseRateLimitCandidate(value: unknown): RateLimitCandidate | null {
+function parseRateLimitCandidate(
+  value: unknown,
+  options: { genericOnly?: boolean } = {},
+): RateLimitCandidate | null {
   if (!isRecord(value)) return null;
+  if (
+    options.genericOnly &&
+    value.limitId !== undefined &&
+    value.limitId !== null &&
+    value.limitId !== "codex"
+  ) {
+    // Rolling notifications can carry a model-specific snapshot (for
+    // example, GPT-5.3-Codex-Spark). It must not replace the account-wide
+    // `codex` bucket in the Usage popover.
+    return null;
+  }
   const primary = parseRateLimitWindow(value.primary);
   const secondary = parseRateLimitWindow(value.secondary);
   return primary || secondary ? { primary, secondary } : null;
@@ -121,13 +135,15 @@ function rateLimitCandidates(value: unknown): RateLimitCandidate[] {
   const result = isRecord(value.result) ? value.result : value;
   if (!isRecord(result)) return [];
   const candidates: RateLimitCandidate[] = [];
-  const base = parseRateLimitCandidate(result.rateLimits);
+  const base = parseRateLimitCandidate(result.rateLimits, { genericOnly: true });
   if (base) candidates.push(base);
   // `rateLimitsByLimitId` contains model-specific buckets (for example,
   // GPT-5.3-Codex-Spark). Usage reports the account-level limit, so these
   // buckets must not replace or augment the generic account snapshot.
   const notificationParams = isRecord(value.params) ? value.params : undefined;
-  const notificationSnapshot = parseRateLimitCandidate(notificationParams?.rateLimits);
+  const notificationSnapshot = parseRateLimitCandidate(notificationParams?.rateLimits, {
+    genericOnly: true,
+  });
   if (notificationSnapshot) candidates.push(notificationSnapshot);
   return candidates;
 }

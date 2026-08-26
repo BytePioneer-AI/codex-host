@@ -1038,6 +1038,39 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("does not carry official Usage across a native account change", async () => {
+    const fixture = createFixture();
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "official-thread",
+          turnId: "official-turn",
+          tokenUsage: {
+            total: { totalTokens: 100, inputTokens: 80, outputTokens: 20 },
+            last: { totalTokens: 100, inputTokens: 80, outputTokens: 20 },
+            modelContextWindow: 1_000,
+          },
+        },
+      })}\n`,
+    );
+    await fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated"));
+
+    fixture.official.stdout.write(`${JSON.stringify({ method: "account/updated", params: {} })}\n`);
+    await fixture.collector.waitFor((message) => method(message, "account/updated"));
+
+    writeRequest(fixture.desktopInput, {
+      id: 45,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: "official-thread" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 45))).resolves.toEqual({
+      id: 45,
+      result: { threadId: "official-thread", usage: null },
+    });
+    await stopFixture(fixture);
+  });
+
   it("continues an existing Pi Thread without requiring a Renderer Model carrier", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

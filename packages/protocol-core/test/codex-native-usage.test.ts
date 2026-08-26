@@ -90,4 +90,37 @@ describe("Codex native Usage observations", () => {
       planSevenDayResetsAtUnix: 3_000,
     });
   });
+
+  it("ignores model-specific rolling notifications", () => {
+    expect(
+      observeCodexRateLimits({
+        method: "account/rateLimits/updated",
+        params: {
+          rateLimits: {
+            limitId: "codex_spark",
+            primary: { usedPercent: 4, windowDurationMins: 300, resetsAt: 4_000 },
+            secondary: { usedPercent: 12, windowDurationMins: 10_080, resetsAt: 5_000 },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts a generic rolling notification with only a weekly window", () => {
+    expect(
+      observeCodexRateLimits({
+        method: "account/rateLimits/updated",
+        params: {
+          rateLimits: {
+            limitId: "codex",
+            primary: null,
+            secondary: { usedPercent: 12, windowDurationMins: 10_080, resetsAt: 5_000 },
+          },
+        },
+      }),
+    ).toEqual({
+      planSevenDayUsedPercent: 12,
+      planSevenDayResetsAtUnix: 5_000,
+    });
+  });
 });

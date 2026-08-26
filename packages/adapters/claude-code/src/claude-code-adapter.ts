@@ -377,7 +377,7 @@ class ClaudeHarnessSession implements HarnessSession {
       selectThinkingOption: true,
       selectPermissionMode: true,
     },
-    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
   };
   readonly commands: HarnessCommandCapability;
@@ -2033,7 +2033,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
               selectThinkingOption: false,
               selectPermissionMode: snapshot.canSelectPermissionMode,
             },
-            history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+            history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
             subagents: { observe: true, readTranscript: true },
           },
         };
@@ -2049,7 +2049,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             selectThinkingOption: true,
             selectPermissionMode: snapshot.canSelectPermissionMode,
           },
-          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },
         },
       };
@@ -2097,15 +2097,80 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    let rollback:
+      | {
+          openMode: "create" | "resume";
+          sessionId?: string;
+        }
+      | undefined;
     if (input.kind === "rollbackLastTurn") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Claude Code does not support exact last-Turn rollback",
-          retryable: false,
-        },
-      };
+      const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
+      if (!sourceRef.success || sourceRef.data.harnessId !== this.harnessId) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code cannot roll back another Harness's Native Session",
+            retryable: false,
+          },
+        };
+      }
+      let sourceSnapshot: HostThreadSnapshot;
+      try {
+        const messages = await this.#dependencies.readSessionMessages({
+          cwd: path.resolve(input.cwd),
+          sessionId: sourceRef.data.nativeSessionId,
+        });
+        sourceSnapshot = mapClaudeSnapshot(messages, sourceRef.data.nativeSessionId);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Claude Code history could not be read",
+            retryable: true,
+          },
+        };
+      }
+      if (sourceSnapshot.turns.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidState",
+            message: "Claude Code Native Session has no Turn to roll back",
+            retryable: false,
+          },
+        };
+      }
+      const retained = sourceSnapshot.turns.at(-2);
+      if (!retained) {
+        rollback = {
+          openMode: "create",
+          sessionId: this.#dependencies.randomUUID(),
+        };
+      } else if (!retained.checkpoint?.checkpointId) {
+        return {
+          ok: false,
+          error: {
+            code: "checkpointNotFound",
+            message: "Claude Code last-Turn rollback boundary is unavailable",
+            retryable: false,
+          },
+        };
+      } else {
+        const forked = await forkClaudeSession({
+          checkpoint: retained.checkpoint,
+          cwd: path.resolve(input.cwd),
+          dependencies: this.#dependencies,
+          harnessId: this.harnessId,
+          sourceRef: sourceRef.data,
+        });
+        if (!forked.ok) return forked;
+        rollback = {
+          openMode: "resume",
+          sessionId: forked.value.sessionId,
+        };
+      }
     }
     let requestedThinkingOptionId = CLAUDE_DEFAULT_THINKING_OPTION_ID;
     if (input.kind === "create" && input.thinkingOptionId) {
@@ -2183,12 +2248,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(planLimit),
       {
-        openMode: input.kind === "create" ? "create" : "resume",
-        sessionId: forked?.ok
-          ? forked.value.sessionId
-          : nativeRef?.success
-            ? nativeRef.data.nativeSessionId
-            : this.#dependencies.randomUUID(),
+        openMode: rollback?.openMode ?? (input.kind === "create" ? "create" : "resume"),
+        sessionId:
+          rollback?.sessionId ??
+          (forked?.ok
+            ? forked.value.sessionId
+            : nativeRef?.success
+              ? nativeRef.data.nativeSessionId
+              : this.#dependencies.randomUUID()),
         ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
         requestedPermissionModeId,
         requestedThinkingOptionId,

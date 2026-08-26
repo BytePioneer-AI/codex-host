@@ -118,6 +118,24 @@ export function rendererUsageTriggerMaxWidth(): string {
   return "min(180px, 30vw)";
 }
 
+/** Whether a snapshot contains anything useful for the left Usage popover. */
+export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): boolean {
+  return (
+    usage?.cacheHitRatePercent !== undefined ||
+    usage?.outputTokensPerSecond !== undefined ||
+    usage?.totalCostUsd !== undefined ||
+    (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) ||
+    usage?.totalTokens !== undefined ||
+    usage?.inputTokens !== undefined ||
+    usage?.cachedInputTokens !== undefined ||
+    usage?.cacheWriteInputTokens !== undefined ||
+    usage?.outputTokens !== undefined ||
+    usage?.reasoningOutputTokens !== undefined ||
+    usage?.planFiveHourUsedPercent !== undefined ||
+    usage?.planSevenDayUsedPercent !== undefined
+  );
+}
+
 /**
  * Shared chrome for the Usage/Credits popovers: a raised card rather than a
  * flat system-color panel. `Canvas`/`CanvasText` still anchor the palette (so
@@ -426,8 +444,7 @@ export function renderRendererUsageControl(
     usage?.reasoningOutputTokens !== undefined;
   const hasPlanLimit =
     usage?.planFiveHourUsedPercent !== undefined || usage?.planSevenDayUsedPercent !== undefined;
-  const visible =
-    hasCacheHitRate || hasOutputSpeed || hasCost || hasContext || hasTokenUsage || hasPlanLimit;
+  const visible = rendererUsageHasDisplayData(usage);
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {
     closePopover(control);

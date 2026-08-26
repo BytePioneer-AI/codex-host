@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatRendererPlanReset,
   formatRendererPlanWindow,
+  rendererUsageHasDisplayData,
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Usage plan-window formatting", () => {
@@ -18,5 +19,18 @@ describe("Renderer Usage plan-window formatting", () => {
 
   it("formats an invalid reset timestamp as an empty string", () => {
     expect(formatRendererPlanReset(Number.NaN)).toBe("");
+  });
+});
+
+describe("Renderer Usage native Codex snapshots", () => {
+  it("keeps token-only native snapshots eligible for the left Usage popover", () => {
+    expect(
+      rendererUsageHasDisplayData({
+        totalTokens: 12_345,
+        inputTokens: 10_000,
+        outputTokens: 2_345,
+      }),
+    ).toBe(true);
+    expect(rendererUsageHasDisplayData(null)).toBe(false);
   });
 });

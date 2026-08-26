@@ -586,12 +586,8 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
 ): void {
-  const externalAgent = state.agent !== "codex";
-  if (externalAgent && control.usage === null) {
+  if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId);
-  } else if (!externalAgent && control.usage !== null) {
-    control.usage.dispose();
-    control.usage = null;
   }
 
   const selectedModel = modelView.selected;
@@ -645,7 +641,7 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  if (control.usage) renderRendererUsageControl(control.usage, externalAgent ? usage : null);
+  if (control.usage) renderRendererUsageControl(control.usage, usage);
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

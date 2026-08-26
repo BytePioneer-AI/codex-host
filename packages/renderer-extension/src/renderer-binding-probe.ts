@@ -601,7 +601,7 @@ export function installRendererBindingProbe(
       activeHarnessAvailabilityState().availability,
       mounted.modelView,
       mounted.permissionModeView,
-      controller.get(mounted.composer).agent === "codex" ? null : mounted.usage,
+      mounted.usage,
       mounted.accountCredits,
     );
   };

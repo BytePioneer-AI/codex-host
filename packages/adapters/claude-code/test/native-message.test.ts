@@ -31,12 +31,13 @@ function assistantBlocks(
   uuid: string,
   error?: string,
   parentToolUseId: string | null = null,
+  usage?: Record<string, unknown>,
 ) {
   return {
     type: "assistant",
     uuid,
     parent_tool_use_id: parentToolUseId,
-    message: { id: uuid, content },
+    message: { id: uuid, content, ...(usage ? { usage } : {}) },
     ...(error ? { error } : {}),
   };
 }
@@ -1014,6 +1015,28 @@ describe("Claude native Turn interpretation", () => {
       },
     ]);
     expect(consumed.terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("publishes latest request cache Usage when an Assistant message completes", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const consumed = turn.consume(
+      assistantBlocks([{ type: "text", text: "answer" }], "assistant-with-usage", undefined, null, {
+        input_tokens: 10,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 70,
+        output_tokens: 5,
+      }),
+    );
+    expect(consumed.events).toContainEqual({
+      type: "message.completed",
+      messageId: "assistant-with-usage",
+      checkpointId: "assistant-with-usage",
+      lastRequestUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 70,
+      },
+    });
   });
 
   it("omits modelUsage entirely when any per-model entry is malformed", () => {

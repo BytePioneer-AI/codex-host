@@ -1177,6 +1177,9 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeReasoning(active, event.messageId, { status: "succeeded" });
         return;
       case "message.completed":
+        if (event.lastRequestUsage) {
+          this.#applyLatestRequestUsage(active, event.lastRequestUsage);
+        }
         if (event.checkpointId) active.checkpointId = event.checkpointId;
         this.#completeReasoning(active, event.messageId, { status: "succeeded" });
         if (
@@ -1650,6 +1653,19 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
+  #applyLatestRequestUsage(
+    active: ActiveTurn,
+    usage: {
+      inputTokens: number;
+      cacheCreationInputTokens: number;
+      cacheReadInputTokens: number;
+    },
+  ): void {
+    const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
+    if (cacheHitRatePercent === undefined) return;
+    this.#mergeAndPublishUsage({ cacheHitRatePercent }, active.command.turnId);
+  }
+
   #applyResultUsage(
     active: ActiveTurn,
     event: Extract<ClaudeTurnEvent, { type: "usage.result" }>,
@@ -1731,6 +1747,18 @@ class ClaudeHarnessSession implements HarnessSession {
       usage = parseHostUsage({ ...(this.#latestUsage ?? {}), ...delta });
     } catch {
       return;
+    }
+    if (this.#latestUsage) {
+      const latestKeys = Object.keys(this.#latestUsage);
+      const nextKeys = Object.keys(usage);
+      if (
+        latestKeys.length === nextKeys.length &&
+        nextKeys.every(
+          (key) => this.#latestUsage?.[key as keyof HostUsage] === usage[key as keyof HostUsage],
+        )
+      ) {
+        return;
+      }
     }
     this.#latestUsage = usage;
     this.#event({

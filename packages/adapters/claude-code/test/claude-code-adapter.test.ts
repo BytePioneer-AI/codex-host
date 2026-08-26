@@ -3140,6 +3140,63 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("publishes latest cache hit after each completed Assistant request", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("latest-cache-hit"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    const nextUsage = async () => {
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "session.usage.changed") return event;
+      }
+    };
+
+    transport.delta("first", "assistant-1");
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-1",
+      lastRequestUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 70,
+      },
+    });
+    expect(await nextUsage()).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "latest-cache-hit",
+      usage: { cacheHitRatePercent: 70 },
+    });
+
+    transport.delta("second", "assistant-2");
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-2",
+      lastRequestUsage: {
+        inputTokens: 50,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 50,
+      },
+    });
+    expect(await nextUsage()).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "latest-cache-hit",
+      usage: { cacheHitRatePercent: 50 },
+    });
+
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await session.close();
+  });
+
   it("publishes stable context Usage after the Turn terminal", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

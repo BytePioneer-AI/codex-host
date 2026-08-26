@@ -51,6 +51,12 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; answers: Record<string, string> }
   | { type: "question"; requestId: string; cancelled: true };
 
+export interface ClaudeLastRequestUsage {
+  inputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
 export type ClaudeTurnEvent =
   | { type: "segment.started" }
   | { type: "subagents.live"; nativeSubagentIds: string[] }
@@ -59,7 +65,12 @@ export type ClaudeTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
-  | { type: "message.completed"; messageId: string; checkpointId?: string }
+  | {
+      type: "message.completed";
+      messageId: string;
+      checkpointId?: string;
+      lastRequestUsage?: ClaudeLastRequestUsage;
+    }
   | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
   | { type: "tool.progress"; callId: string; elapsedMs: number }
   | {
@@ -115,11 +126,7 @@ export type ClaudeTurnEvent =
       type: "usage.result";
       totalCostUsd?: number;
       modelUsage?: Array<{ inputTokens: number; outputTokens: number }>;
-      lastRequestUsage?: {
-        inputTokens: number;
-        cacheCreationInputTokens: number;
-        cacheReadInputTokens: number;
-      };
+      lastRequestUsage?: ClaudeLastRequestUsage;
     };
 
 export interface ClaudeTransportContextUsage {

@@ -642,10 +642,14 @@ export class ClaudeNativeTurnAccumulator {
     this.#consumeToolUseBlocks(message, events, false);
 
     if (!this.#protocolConflict && !this.#textConflict) {
+      const usage = isRecord(message.message)
+        ? parseLastRequestUsage(message.message.usage)
+        : undefined;
       events.push({
         type: "message.completed",
         messageId,
         ...(checkpointId ? { checkpointId } : {}),
+        ...(usage ? { lastRequestUsage: usage } : {}),
       });
     }
     state.completed = true;

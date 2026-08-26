@@ -164,6 +164,8 @@ export function installRendererSettingsLifecycle(
       clearUpdateRetry();
       retryUpdateClient = client;
       updateRetryAttempt = 0;
+    } else if (updateRetryTimer !== null) {
+      return;
     }
     checkedUpdateClient = client;
     const generation = ++updateCheckGeneration;

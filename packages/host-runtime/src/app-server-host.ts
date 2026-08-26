@@ -1749,7 +1749,7 @@ export class AppServerHost {
             approvalsReviewer: "user",
             sandbox: sandboxResult(params),
             reasoningEffort: "medium",
-            serviceTier: "default",
+            serviceTier: "flex",
             multiAgentMode: "explicitRequestOnly",
             activePermissionProfile: null,
             runtimeWorkspaceRoots: Array.isArray(params.runtimeWorkspaceRoots)

@@ -8,6 +8,8 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::time::SystemTime;
 
 #[cfg(target_os = "macos")]
 use plist::Value;
@@ -60,34 +62,6 @@ use super::{
 };
 
 #[cfg(target_os = "windows")]
-fn files_equal(left: &Path, right: &Path) -> Result<bool, PlatformError> {
-    let left_metadata = left.metadata()?;
-    let right_metadata = right.metadata()?;
-    if left_metadata.len() != right_metadata.len() {
-        return Ok(false);
-    }
-
-    let mut left_file = File::open(left)?;
-    let mut right_file = File::open(right)?;
-    let mut left_buffer = vec![0_u8; 1024 * 1024];
-    let mut right_buffer = vec![0_u8; 1024 * 1024];
-
-    loop {
-        let left_read = left_file.read(&mut left_buffer)?;
-        let right_read = right_file.read(&mut right_buffer)?;
-        if left_read != right_read {
-            return Ok(false);
-        }
-        if left_read == 0 {
-            return Ok(true);
-        }
-        if left_buffer[..left_read] != right_buffer[..right_read] {
-            return Ok(false);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
 
 #[cfg(target_os = "windows")]
@@ -98,34 +72,6 @@ struct WindowsPackageDetails {
     appx_activation: WindowsAppxActivationIdentity,
     version: String,
     install_root: PathBuf,
-}
-
-#[cfg(target_os = "windows")]
-fn find_executable_codex_cli(
-    packaged_cli: &Path,
-    local_app_data: &Path,
-) -> Result<PathBuf, PlatformError> {
-    let cache_root = local_app_data.join("OpenAI/Codex/bin");
-    let mut candidates = vec![cache_root.join("codex.exe")];
-
-    if let Ok(entries) = cache_root.read_dir() {
-        for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
-                candidates.push(entry.path().join("codex.exe"));
-            }
-        }
-    }
-
-    for candidate in candidates {
-        if candidate.is_file() && files_equal(packaged_cli, &candidate).unwrap_or(false) {
-            return candidate.canonicalize().map_err(PlatformError::Io);
-        }
-    }
-
-    Err(PlatformError::NotFound(format!(
-        "no executable Desktop-managed Codex CLI cache matches '{}'; run the official Desktop once before launching codexhost",
-        packaged_cli.display()
-    )))
 }
 
 #[cfg(target_os = "windows")]
@@ -270,6 +216,39 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
 }
 
 #[cfg(target_os = "windows")]
+fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, PlatformError> {
+    let cache_root = local_app_data.join("OpenAI/Codex/bin");
+    let mut candidates = vec![cache_root.join("codex.exe")];
+
+    if let Ok(entries) = cache_root.read_dir() {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                candidates.push(entry.path().join("codex.exe"));
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| {
+            let modified = candidate
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let canonical = candidate.canonicalize().map_err(PlatformError::Io)?;
+            Ok((modified, canonical))
+        })
+        .collect::<Result<Vec<_>, PlatformError>>()
+        .map(|candidates| {
+            candidates
+                .into_iter()
+                .max_by_key(|(modified, _)| *modified)
+                .map(|(_, candidate)| candidate)
+        })
+}
+
+#[cfg(target_os = "windows")]
 fn windows_installation(
     details: WindowsPackageDetails,
     local_app_data: &Path,
@@ -289,7 +268,14 @@ fn windows_installation(
             install_root.display()
         )));
     }
-    let executable_codex_cli = find_executable_codex_cli(&packaged_codex_cli, local_app_data)?;
+    // WindowsApps resources are not directly executable by a normal desktop
+    // process. Use any Desktop-managed CLI copy, without requiring it to match
+    // the bundled CLI byte-for-byte or by version.
+    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
+        PlatformError::NotFound(
+            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
+        )
+    })?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -308,17 +294,6 @@ fn windows_installation(
     })
 }
 
-#[cfg(target_os = "windows")]
-fn windows_local_app_data() -> Result<PathBuf, PlatformError> {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            PlatformError::NotFound(
-                "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
-            )
-        })
-}
-
 /// Read the standalone portable-installation override.
 ///
 /// This is deliberately independent of the Gate A `CODEXHOST_PROBE_*` set: it
@@ -331,6 +306,17 @@ fn custom_install_root(
     value(CUSTOM_INSTALL_ROOT_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_local_app_data() -> Result<PathBuf, PlatformError> {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            PlatformError::NotFound(
+                "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
+            )
+        })
 }
 
 #[cfg(target_os = "windows")]
@@ -401,15 +387,7 @@ pub fn discover_codex_desktop_from_root(
             install_root.display()
         )));
     }
-    // A portable installation may never have been launched through the official
-    // Desktop, so the Desktop-managed CLI cache may be absent. Prefer a matching
-    // cached CLI when one exists, otherwise fall back to the packaged CLI.
-    let executable_codex_cli = windows_local_app_data()
-        .ok()
-        .and_then(|local_app_data| {
-            find_executable_codex_cli(&packaged_codex_cli, &local_app_data).ok()
-        })
-        .unwrap_or_else(|| packaged_codex_cli.clone());
+    let executable_codex_cli = packaged_codex_cli.clone();
 
     let version = portable_package_version(&install_root).unwrap_or_else(|| "0.0.0.0".to_owned());
 
@@ -495,7 +473,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn validates_package_layout_and_matches_the_desktop_cli_cache() {
+    fn validates_package_layout_and_uses_the_packaged_cli() {
         let root = temporary_directory("codexhost-windows-installation");
         let install_root = root.join("WindowsApps/OpenAI.Codex_1.2.3.4_x64");
         let desktop = install_root.join("app/ChatGPT.exe");
@@ -506,13 +484,13 @@ mod windows_tests {
         fs::create_dir_all(packaged_cli.parent().expect("CLI parent"))
             .expect("create CLI directory");
         fs::write(&desktop, b"desktop").expect("write Desktop executable");
-        fs::write(&packaged_cli, b"matching codex cli").expect("write packaged CLI");
+        fs::write(&packaged_cli, b"packaged codex cli").expect("write packaged CLI");
         fs::write(&app_asar, b"reviewed app asar").expect("write app.asar");
 
         let local_app_data = root.join("LocalAppData");
         let cached_cli = local_app_data.join("OpenAI/Codex/bin/version/codex.exe");
         fs::create_dir_all(cached_cli.parent().expect("cache parent")).expect("create CLI cache");
-        fs::write(&cached_cli, b"matching codex cli").expect("write cached CLI");
+        fs::write(&cached_cli, b"different cached codex cli").expect("write cached CLI");
 
         let installation = windows_installation(
             WindowsPackageDetails {
@@ -606,10 +584,10 @@ mod windows_tests {
             installation.desktop_executable
         );
         assert!(installation.asar_integrity.starts_with("sha256:"));
-        // A portable installation may never have been launched through the
-        // official Desktop, so the resolved CLI falls back to the packaged one
-        // when no Desktop-managed cache matches.
-        assert!(installation.executable_codex_cli.is_file());
+        assert_eq!(
+            installation.executable_codex_cli,
+            installation.packaged_codex_cli
+        );
 
         fs::remove_dir_all(root).expect("remove portable fixture");
     }

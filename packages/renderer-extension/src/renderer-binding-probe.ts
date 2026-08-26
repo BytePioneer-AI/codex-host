@@ -92,12 +92,24 @@ const externalAgents: readonly ExternalRendererAgent[] = [
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
 
+function isRetryableHarnessAvailability(
+  availability: RendererAgentAvailability | undefined,
+  error: CodexhostError | undefined,
+): boolean {
+  return (
+    availability !== undefined &&
+    availability !== "ready" &&
+    availability !== "notInstalled" &&
+    error?.retryable === true
+  );
+}
+
 export function retryableHarnessAvailabilityAgents(
   availability: HarnessAvailability,
   errors: HarnessAvailabilityErrors,
 ): ExternalRendererAgent[] {
-  return externalAgents.filter(
-    (agent) => availability[agent] === "error" && errors[agent]?.retryable === true,
+  return externalAgents.filter((agent) =>
+    isRetryableHarnessAvailability(availability[agent], errors[agent]),
   );
 }
 
@@ -108,7 +120,7 @@ export function passiveHarnessAvailabilityAgents(
   return externalAgents.filter(
     (agent) =>
       availability[agent] === "checking" ||
-      (availability[agent] === "error" && errors[agent]?.retryable === true),
+      isRetryableHarnessAvailability(availability[agent], errors[agent]),
   );
 }
 

@@ -88,6 +88,27 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toEqual(["deepseek-harness"]);
+
+    expect(
+      retryableHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "unavailable",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "unavailable",
+            message: "DeepSeek Harness is temporarily unavailable",
+            retryable: true,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["deepseek-harness"]);
   });
 
   it("keeps terminal Harness availability stable across passive focus refreshes", () => {
@@ -128,6 +149,27 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toEqual([]);
+
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "unavailable",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "unavailable",
+            message: "DeepSeek Harness is temporarily unavailable",
+            retryable: true,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["deepseek-harness"]);
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {

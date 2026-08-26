@@ -1,5 +1,6 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
+import ompAgentIconUrl from "./assets/omp-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -80,7 +81,18 @@ export function createRendererAgentIcon(
       "0 0 23.16 17.04",
     );
   }
-  if (agent === "omp") return createSvgIcon(PI_PATHS, "#7c3aed", size, ownerDocument);
+  if (agent === "omp") {
+    const image = ownerDocument.createElement("img");
+    image.src = ompAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.borderRadius = "22.37%";
+    image.style.flex = "none";
+    return image;
+  }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;
   mark.alt = "";

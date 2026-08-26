@@ -16,6 +16,10 @@ button).
 `openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
 does not depend on a local extension path or a network request.
 
+`omp-agent.svg` is the official OMP favicon mark from the Oh My Pi repository
+(`packages/collab-web/public/favicon.svg`). It is bundled as a data URL so the
+Renderer does not depend on a network request.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

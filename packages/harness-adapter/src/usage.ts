@@ -113,18 +113,12 @@ export function parseHostUsage(value: unknown): HostUsage {
   if (hasContextWindow && value.contextWindowTokens === 0) {
     throw new Error("Harness Usage 'contextWindowTokens' must be greater than zero");
   }
-  if (
-    value.planFiveHourResetsAtUnix !== undefined &&
-    value.planFiveHourUsedPercent === undefined
-  ) {
+  if (value.planFiveHourResetsAtUnix !== undefined && value.planFiveHourUsedPercent === undefined) {
     throw new Error(
       "Harness Usage 'planFiveHourResetsAtUnix' must be provided with 'planFiveHourUsedPercent'",
     );
   }
-  if (
-    value.planSevenDayResetsAtUnix !== undefined &&
-    value.planSevenDayUsedPercent === undefined
-  ) {
+  if (value.planSevenDayResetsAtUnix !== undefined && value.planSevenDayUsedPercent === undefined) {
     throw new Error(
       "Harness Usage 'planSevenDayResetsAtUnix' must be provided with 'planSevenDayUsedPercent'",
     );

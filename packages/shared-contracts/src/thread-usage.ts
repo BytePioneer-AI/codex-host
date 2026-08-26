@@ -45,17 +45,25 @@ export const threadUsageSnapshotSchema = z
         path: ["contextWindowTokens"],
       });
     }
-    if (usage.planFiveHourResetsAtUnix !== undefined && usage.planFiveHourUsedPercent === undefined) {
+    if (
+      usage.planFiveHourResetsAtUnix !== undefined &&
+      usage.planFiveHourUsedPercent === undefined
+    ) {
       context.addIssue({
         code: "custom",
-        message: "Thread Usage planFiveHourResetsAtUnix must be provided with planFiveHourUsedPercent",
+        message:
+          "Thread Usage planFiveHourResetsAtUnix must be provided with planFiveHourUsedPercent",
         path: ["planFiveHourResetsAtUnix"],
       });
     }
-    if (usage.planSevenDayResetsAtUnix !== undefined && usage.planSevenDayUsedPercent === undefined) {
+    if (
+      usage.planSevenDayResetsAtUnix !== undefined &&
+      usage.planSevenDayUsedPercent === undefined
+    ) {
       context.addIssue({
         code: "custom",
-        message: "Thread Usage planSevenDayResetsAtUnix must be provided with planSevenDayUsedPercent",
+        message:
+          "Thread Usage planSevenDayResetsAtUnix must be provided with planSevenDayUsedPercent",
         path: ["planSevenDayResetsAtUnix"],
       });
     }

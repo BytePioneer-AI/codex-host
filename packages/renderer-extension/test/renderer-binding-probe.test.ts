@@ -15,7 +15,9 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lateConversationTargetResolution,
+  passiveHarnessAvailabilityAgents,
   restoredThreadOwnership,
+  retryableHarnessAvailabilityAgents,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
@@ -44,6 +46,132 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Composer DOM behavior", () => {
+  it("does not re-probe ready Agents when an optional Harness is not installed", () => {
+    expect(
+      retryableHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "notInstalled",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "notInstalled",
+            message: "DeepSeek Harness is not installed",
+            retryable: false,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual([]);
+
+    expect(
+      retryableHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "error",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "internalError",
+            message: "Remote request manager is temporarily unavailable",
+            retryable: true,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["deepseek-harness"]);
+
+    expect(
+      retryableHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "unavailable",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "unavailable",
+            message: "DeepSeek Harness is temporarily unavailable",
+            retryable: true,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["deepseek-harness"]);
+  });
+
+  it("keeps terminal Harness availability stable across passive focus refreshes", () => {
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "checking",
+          "claude-code": "checking",
+          "deepseek-harness": "checking",
+          grok: "checking",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": undefined,
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok"]);
+
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "notInstalled",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "notInstalled",
+            message: "DeepSeek Harness is not installed",
+            retryable: false,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual([]);
+
+    expect(
+      passiveHarnessAvailabilityAgents(
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          "deepseek-harness": "unavailable",
+          grok: "ready",
+        },
+        {
+          pi: undefined,
+          "claude-code": undefined,
+          "deepseek-harness": {
+            code: "unavailable",
+            message: "DeepSeek Harness is temporarily unavailable",
+            retryable: true,
+          },
+          grok: undefined,
+        },
+      ),
+    ).toEqual(["deepseek-harness"]);
+  });
+
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true)).toBe(false);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", false)).toBe(true);

@@ -90,10 +90,43 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+
+function isRetryableHarnessAvailability(
+  availability: RendererAgentAvailability | undefined,
+  error: CodexhostError | undefined,
+): boolean {
+  return (
+    availability !== undefined &&
+    availability !== "ready" &&
+    availability !== "notInstalled" &&
+    error?.retryable === true
+  );
+}
+
+export function retryableHarnessAvailabilityAgents(
+  availability: HarnessAvailability,
+  errors: HarnessAvailabilityErrors,
+): ExternalRendererAgent[] {
+  return externalAgents.filter((agent) =>
+    isRetryableHarnessAvailability(availability[agent], errors[agent]),
+  );
+}
+
+export function passiveHarnessAvailabilityAgents(
+  availability: HarnessAvailability,
+  errors: HarnessAvailabilityErrors,
+): ExternalRendererAgent[] {
+  return externalAgents.filter(
+    (agent) =>
+      availability[agent] === "checking" ||
+      isRetryableHarnessAvailability(availability[agent], errors[agent]),
+  );
+}
 
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
-  errors: Record<ExternalRendererAgent, CodexhostError | undefined>;
+  errors: HarnessAvailabilityErrors;
   requestGeneration: number;
   request: { client: RendererModelClient; promise: Promise<void> } | null;
   retryTimer: number | null;
@@ -1581,6 +1614,7 @@ export function installRendererBindingProbe(
     hostId: string,
     refresh = false,
     retry = false,
+    force = false,
   ): Promise<void> {
     const state = hostHarnessAvailabilityState(hostId);
     if (!retry) resetHarnessAvailabilityRetry(hostId);
@@ -1590,12 +1624,18 @@ export function installRendererBindingProbe(
       return Promise.resolve();
     }
     if (state.request?.client === client) return state.request.promise;
-    state.availability = Object.fromEntries(
-      externalAgents.map((agent) => [
-        agent,
-        state.availability[agent] === "ready" ? "ready" : "checking",
-      ]),
-    ) as HarnessAvailability;
+    const agentsToInspect = force
+      ? externalAgents
+      : passiveHarnessAvailabilityAgents(state.availability, state.errors);
+    if (agentsToInspect.length === 0) {
+      resetHarnessAvailabilityRetry(hostId);
+      return Promise.resolve();
+    }
+    const nextAvailability = { ...state.availability };
+    for (const agent of agentsToInspect) {
+      if (nextAvailability[agent] !== "ready") nextAvailability[agent] = "checking";
+    }
+    state.availability = nextAvailability;
     if (hostId === activeAvailabilityHostId) {
       publishConnectionStatus();
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
@@ -1603,7 +1643,7 @@ export function installRendererBindingProbe(
     const generation = ++state.requestGeneration;
     const promise = (async () => {
       await Promise.all(
-        externalAgents.map(async (agent) => {
+        agentsToInspect.map(async (agent) => {
           let status: RendererAgentAvailability = "error";
           let nextError: CodexhostError | undefined;
           try {
@@ -1670,7 +1710,7 @@ export function installRendererBindingProbe(
         }),
       );
       if (generation !== state.requestGeneration || disposed) return;
-      if (externalAgents.every((agent) => state.availability[agent] === "ready")) {
+      if (retryableHarnessAvailabilityAgents(state.availability, state.errors).length === 0) {
         resetHarnessAvailabilityRetry(hostId);
       } else {
         scheduleHarnessAvailabilityRetry(hostId);
@@ -1761,7 +1801,7 @@ export function installRendererBindingProbe(
     },
     refresh(): Promise<void> {
       for (const hostId of harnessAvailabilityByHost.keys()) {
-        void refreshHarnessAvailabilityForHost(hostId, true);
+        void refreshHarnessAvailabilityForHost(hostId, true, false, true);
       }
       return Promise.resolve();
     },

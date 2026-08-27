@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -166,6 +167,88 @@ async function createNpmMetaPackageFixture(root) {
   }
 }
 
+async function createLauncherLifecycleFixture(root, platform) {
+  const launcherPath = path.join(root, "node_modules", "@codexhost", "cli", "bin", "codexhost.js");
+  const platformPackage = `@codexhost/cli-${platform}-x64`;
+  const platformRoot = path.join(root, "node_modules", ...platformPackage.split("/"));
+  const executableSuffix = platform === "win32" ? ".exe" : "";
+  const npmCliPath = path.join(root, "npm-cli.js");
+  const preloadPath = path.join(root, "launcher-child-preload.mjs");
+
+  await writeExecutable(launcherPath, createNpmBinLauncherSource({ version: "0.1.0" }));
+  await mkdir(platformRoot, { recursive: true });
+  await writeFile(
+    path.join(platformRoot, "package.json"),
+    `${JSON.stringify({ name: platformPackage, version: "0.1.0" })}\n`,
+  );
+  for (const relative of [
+    path.join("bin", `codexhost${executableSuffix}`),
+    path.join("libexec", `codexhost-shim${executableSuffix}`),
+    path.join("app", "host-runtime.mjs"),
+    path.join("app", "desktop-controller.mjs"),
+    path.join("app", "renderer-extension.js"),
+  ]) {
+    await writeExecutable(path.join(platformRoot, relative), `fixture:${relative}\n`);
+  }
+  await writeFile(npmCliPath, "// fixture npm CLI\n");
+  await writeFile(
+    preloadPath,
+    `import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
+
+Object.defineProperty(process, "platform", {
+  configurable: true,
+  value: process.env.CODEXHOST_TEST_PLATFORM,
+});
+Object.defineProperty(process, "arch", {
+  configurable: true,
+  value: "x64",
+});
+
+childProcess.spawn = () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  setTimeout(() => child.stdout.write("startup:" + "x".repeat(1024 * 1024) + "rea"), 10);
+  setTimeout(() => child.stdout.write("dy\\n"), 20);
+  setTimeout(() => child.emit("exit", 7, null), 80);
+  return child;
+};
+syncBuiltinESMExports();
+`,
+  );
+
+  return { launcherPath, npmCliPath, preloadPath };
+}
+
+async function runLauncherLifecycle(platform) {
+  const root = await temporaryDirectory();
+  try {
+    const { launcherPath, npmCliPath, preloadPath } = await createLauncherLifecycleFixture(
+      root,
+      platform,
+    );
+    return spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(preloadPath).href, launcherPath],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEXHOST_STARTUP_TRACE: "1",
+          CODEXHOST_TEST_PLATFORM: platform,
+          npm_execpath: npmCliPath,
+        },
+        timeout: 2_000,
+        windowsHide: true,
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("npm package release", () => {
   it("maps the current host to a release target id", () => {
     expect(hostReleaseTargetId("darwin", "arm64")).toBe("macos-arm64");
@@ -283,22 +366,30 @@ describe("npm package release", () => {
     expect(source).toContain('"--codexhost-remote"');
     expect(source).toContain('"--host-runtime", hostRuntime');
     expect(source).toContain('stdio: ["ignore", "pipe", "inherit"]');
-    expect(source).toContain('launcherOutput.includes("ready\\n")');
+    expect(source).toContain('const readyMarker = "ready\\n"');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
   });
 
-  it("keeps Windows launcher supervision alive after the ready handshake", () => {
-    const source = createNpmBinLauncherSource({ version: "0.1.0" });
+  it("keeps Windows launcher supervision alive after the ready handshake", async () => {
+    const result = await runLauncherLifecycle("win32");
     const readme = createNpmMetaReadme({ version: "0.1.0" });
 
-    expect(source).toContain('const keepLauncherForeground = process.platform === "win32"');
-    expect(source).toContain("if (!keepLauncherForeground) finish(0)");
-    expect(source).toContain(
-      'startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready")',
-    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(7);
+    expect(result.stderr).toContain("received Launcher ready");
+    expect(result.stderr).toContain("Launcher exited after ready");
     expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
     expect(readme).toContain("process trees of completed commands");
+  });
+
+  it.each(["darwin", "linux"])("returns after the ready handshake on %s", async (platform) => {
+    const result = await runLauncherLifecycle(platform);
+
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("received Launcher ready");
+    expect(result.stderr).not.toContain("Launcher exited after ready");
   });
 
   it("does not forward remote SSH bootstrap variables into a local Desktop launch", () => {

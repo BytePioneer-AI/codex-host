@@ -528,13 +528,19 @@ if (remoteArguments !== null) {
   child.stdout.setEncoding("utf8");
   let ready = false;
   let launcherOutput = "";
+  const readyMarker = "ready\\n";
   child.stdout.on("data", (chunk) => {
-    launcherOutput += chunk;
-    if (!ready && launcherOutput.includes("ready\\n")) {
+    if (ready) return;
+    const output = launcherOutput + chunk;
+    if (output.includes(readyMarker)) {
       ready = true;
+      launcherOutput = "";
       startupTrace("received Launcher ready");
       if (!keepLauncherForeground) finish(0);
+      return;
     }
+    // Only retain the tail needed to recognize a marker split across chunks.
+    launcherOutput = output.slice(1 - readyMarker.length);
   });
   child.on("error", (error) => {
     startupTrace("Launcher spawn failed: " + error.message);

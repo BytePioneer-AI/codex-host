@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   CdpClient,
@@ -13,7 +14,7 @@ import { installRendererObserver, readRendererObserver } from "./renderer-observ
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultOutputDirectory = path.join(repositoryRoot, ".codexhost", "renderer-binding");
-const RENDERER_PROBE_AGENTS = Object.freeze([
+export const RENDERER_PROBE_AGENTS = Object.freeze([
   "codex",
   "pi",
   "claude-code",
@@ -98,7 +99,7 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validateProbeStatus(value) {
+export function validateProbeStatus(value) {
   if (
     !isRecord(value) ||
     value.version !== 2 ||
@@ -396,11 +397,17 @@ async function run() {
   }
 }
 
-try {
-  await run();
-} catch (error) {
-  console.error(
-    `renderer binding probe: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  process.exitCode = 1;
+const invokedAsScript =
+  typeof process.argv[1] === "string" &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (invokedAsScript) {
+  try {
+    await run();
+  } catch (error) {
+    console.error(
+      `renderer binding probe: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  }
 }

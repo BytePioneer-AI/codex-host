@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { RENDERER_PROBE_AGENTS, validateProbeStatus } from "../../tools/renderer-binding/run.mjs";
+
 const root = path.resolve(import.meta.dirname, "../..");
 
 async function source(relative) {
@@ -11,14 +13,12 @@ async function source(relative) {
 
 describe("production Renderer release chain", () => {
   it("uses the fixed production Agent list without a development enable switch", async () => {
-    const [productionEntry, probeEntry, installer, agentState, rendererBindingTool] =
-      await Promise.all([
-        source("packages/renderer-extension/src/production-entry.ts"),
-        source("packages/renderer-extension/src/probe-entry.ts"),
-        source("packages/renderer-extension/src/install-renderer-binding.ts"),
-        source("packages/renderer-extension/src/agent-selection-state.ts"),
-        source("tools/renderer-binding/run.mjs"),
-      ]);
+    const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
+      source("packages/renderer-extension/src/production-entry.ts"),
+      source("packages/renderer-extension/src/probe-entry.ts"),
+      source("packages/renderer-extension/src/install-renderer-binding.ts"),
+      source("packages/renderer-extension/src/agent-selection-state.ts"),
+    ]);
 
     expect(agentState).toContain('"deepseek-harness",');
     expect(agentState).toContain('"grok",');
@@ -29,9 +29,27 @@ describe("production Renderer release chain", () => {
     expect(probeEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
     expect(probeEntry).not.toContain("enableClaudeCode");
     expect(installer).toContain("installCurrentRendererAdapter");
-    expect(rendererBindingTool).toContain('"grok",');
-    expect(rendererBindingTool).toContain("RENDERER_PROBE_AGENTS.includes(agent)");
-    expect(rendererBindingTool).toContain("enabledAgents = [...RENDERER_PROBE_AGENTS]");
+  });
+
+  it("accepts Grok in renderer probe capabilities and selections", () => {
+    const status = validateProbeStatus({
+      version: 2,
+      mountedComposers: 1,
+      enabledAgents: [...RENDERER_PROBE_AGENTS],
+      selections: [{ composerId: "composer-grok", agent: "grok", phase: "draft" }],
+      adapter: { state: "ready", reason: "ready", modelUpdates: 0 },
+    });
+
+    expect(RENDERER_PROBE_AGENTS).toContain("grok");
+    expect(status.selections).toEqual([
+      { composerId: "composer-grok", agent: "grok", phase: "draft" },
+    ]);
+    expect(() =>
+      validateProbeStatus({
+        ...status,
+        selections: [{ composerId: "composer-unknown", agent: "unknown", phase: "draft" }],
+      }),
+    ).toThrow("invalid selection");
   });
 
   it("builds and packages executable production entries", async () => {

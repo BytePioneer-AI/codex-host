@@ -28,6 +28,7 @@ import type {
   ClaudePlanLimitEvent,
   ClaudePlanLimitWindow,
   ClaudeQuestion,
+  ClaudeTransportSessionUsage,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -147,23 +148,6 @@ function safeNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function parseContextApiUsage(value: unknown): ClaudeTransportContextUsage["apiUsage"] {
-  if (!isRecord(value)) return undefined;
-  const inputTokens = value.input_tokens;
-  const outputTokens = value.output_tokens;
-  const cacheCreationInputTokens = value.cache_creation_input_tokens;
-  const cacheReadInputTokens = value.cache_read_input_tokens;
-  if (
-    !safeNonNegativeInteger(inputTokens) ||
-    !safeNonNegativeInteger(outputTokens) ||
-    !safeNonNegativeInteger(cacheCreationInputTokens) ||
-    !safeNonNegativeInteger(cacheReadInputTokens)
-  ) {
-    return undefined;
-  }
-  return { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens };
-}
-
 function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   if (!isRecord(value)) throw new Error("Claude SDK context Usage is invalid");
   const usedTokens = value.totalTokens;
@@ -182,8 +166,7 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   ) {
     throw new Error("Claude SDK context Usage contains invalid values");
   }
-  const apiUsage = parseContextApiUsage(value.apiUsage);
-  return { usedTokens, maxTokens, model, ...(apiUsage ? { apiUsage } : {}) };
+  return { usedTokens, maxTokens, model };
 }
 
 function parseUsageQueryWindow(value: unknown): ClaudePlanLimitWindow | undefined {
@@ -213,6 +196,33 @@ function parseUsageQueryPlanLimit(value: unknown): ClaudePlanLimitEvent | null {
   const sevenDay = parseUsageQueryWindow(rateLimits.seven_day);
   if (!fiveHour && !sevenDay) return null;
   return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
+}
+
+function parseUsageQuerySession(value: unknown): ClaudeTransportSessionUsage | null {
+  if (!isRecord(value) || !isRecord(value.session)) return null;
+  const session = value.session;
+  const totalCostUsd = session.total_cost_usd;
+  if (typeof totalCostUsd !== "number" || !Number.isFinite(totalCostUsd) || totalCostUsd < 0) {
+    return null;
+  }
+  const modelUsage = session.model_usage;
+  if (!isRecord(modelUsage)) return { totalCostUsd };
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const entry of Object.values(modelUsage)) {
+    if (
+      !isRecord(entry) ||
+      !safeNonNegativeInteger(entry.inputTokens) ||
+      !safeNonNegativeInteger(entry.outputTokens)
+    ) {
+      return { totalCostUsd };
+    }
+    inputTokens += entry.inputTokens;
+    outputTokens += entry.outputTokens;
+  }
+  return Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)
+    ? { totalCostUsd, inputTokens, outputTokens }
+    : { totalCostUsd };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -479,6 +489,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage());
+  }
+
+  async getSessionUsage(): Promise<ClaudeTransportSessionUsage | null> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) return null;
+    return parseUsageQuerySession(
+      await activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+    );
   }
 
   async getPlanLimit(): Promise<ClaudePlanLimitEvent | null> {

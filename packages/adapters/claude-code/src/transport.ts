@@ -133,12 +133,12 @@ export interface ClaudeTransportContextUsage {
   usedTokens: number;
   maxTokens: number;
   model: string;
-  apiUsage?: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens: number;
-    cacheReadInputTokens: number;
-  };
+}
+
+export interface ClaudeTransportSessionUsage {
+  totalCostUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface ClaudePlanLimitWindow {
@@ -159,6 +159,22 @@ export interface ClaudePlanLimitEvent {
   sevenDay?: ClaudePlanLimitWindow;
 }
 
+/**
+ * Which of the two channels above an observation arrived on. These are not
+ * equally trustworthy, and the Adapter arbitrates between them by source:
+ *
+ * - `"pull"` answers "what is the utilization right now?", asked on demand.
+ * - `"push"` rides along on whatever API call the CLI happened to make, so it
+ *   reports the account state as of *that Session's* last request. An idle
+ *   Session's push can therefore carry a value from hours ago, and two
+ *   concurrent Sessions routinely disagree.
+ *
+ * Letting both write the Adapter's account-wide cache made the credits pill
+ * flip between an active Session's current value and an idle Session's stale
+ * one. See `ClaudeCodeAdapter#recordPlanLimit` for the resulting rules.
+ */
+export type ClaudePlanLimitSource = "push" | "pull";
+
 export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
   events: ClaudeTurnEvent[];
@@ -177,6 +193,8 @@ export interface ClaudeTurnTransport {
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  /** Pulls the cost and token totals accumulated by the current Session. */
+  getSessionUsage(): Promise<ClaudeTransportSessionUsage | null>;
   /**
    * Asks the CLI's `/usage` control channel for the plan-window utilization
    * right now, instead of waiting for the next `rate_limit_event` to arrive on

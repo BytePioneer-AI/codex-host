@@ -24,6 +24,7 @@ import type {
   ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
+  ClaudeTransportSessionUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
   ClaudeTurnTransport,
@@ -46,11 +47,15 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
+  sessionUsage: ClaudeTransportSessionUsage | null = null;
   planLimitOnDemand: ClaudePlanLimitEvent | null = null;
   permissionMode: ClaudePermissionMode;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly getContextUsage = vi.fn(
     async (): Promise<ClaudeTransportContextUsage | null> => this.contextUsage,
+  );
+  readonly getSessionUsage = vi.fn(
+    async (): Promise<ClaudeTransportSessionUsage | null> => this.sessionUsage,
   );
   readonly getPlanLimit = vi.fn(
     async (): Promise<ClaudePlanLimitEvent | null> => this.planLimitOnDemand,
@@ -3177,7 +3182,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("does not query context Usage for an intermediate Assistant message", async () => {
+  it("publishes context Usage after every completed Assistant response", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -3193,18 +3198,99 @@ describe("Claude Code HarnessAdapter", () => {
     transport.delta("working", "assistant-usage");
     await nextEvent(iterator);
     transport.event({ type: "message.completed", messageId: "assistant-usage" });
-    expect(transport.getContextUsage).not.toHaveBeenCalled();
 
-    transport.finish({ status: "succeeded" });
     expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
       observedForTurnId: "usage-during-turn",
       usage: { contextUsedTokens: 60, contextWindowTokens: 200 },
     });
     expect(transport.getContextUsage).toHaveBeenCalledOnce();
+
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
     await session.close();
+  });
+
+  it("refreshes Context after a Tool result while the Turn remains active", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-tool-boundary"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 40, maxTokens: 200, model: "runtime-default" };
+
+    transport.event({
+      type: "tool.started",
+      callId: "tool-1",
+      toolName: "Read",
+      arguments: { file_path: "large.txt" },
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.completed",
+      callId: "tool-1",
+      toolName: "Read",
+      outputText: "large result",
+      isError: false,
+    });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-tool-boundary",
+      usage: { contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
+
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await session.close();
+  });
+
+  it("refreshes Usage only at Assistant and Turn boundaries", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("usage-boundaries"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.contextUsage = { usedTokens: 60, maxTokens: 200, model: "runtime-default" };
+      transport.sessionUsage = { totalCostUsd: 0.25, inputTokens: 10, outputTokens: 2 };
+
+      transport.delta("working", "assistant-usage");
+      await nextEvent(iterator);
+      transport.event({ type: "message.completed", messageId: "assistant-usage" });
+      expect((await nextEvent(iterator)).type).toBe("item.completed");
+      expect(transport.getContextUsage).toHaveBeenCalledOnce();
+      expect(transport.getSessionUsage).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+      expect(transport.getSessionUsage).toHaveBeenCalledOnce();
+
+      transport.finish({ status: "succeeded" });
+      for (;;) {
+        if ((await nextEvent(iterator)).type === "turn.completed") break;
+      }
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(4);
+      expect(transport.getSessionUsage).toHaveBeenCalledTimes(2);
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("publishes latest cache hit after each completed Assistant request", async () => {
@@ -3261,6 +3347,52 @@ describe("Claude Code HarnessAdapter", () => {
     for (;;) {
       if ((await nextEvent(iterator)).type === "turn.completed") break;
     }
+    await session.close();
+  });
+
+  it("does not let Context Usage overwrite cache hit rate from the completed Assistant response", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("usage-source-priority"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = {
+      usedTokens: 60,
+      maxTokens: 200,
+      model: "runtime-default",
+    };
+
+    transport.delta("working", "assistant-usage");
+    await nextEvent(iterator);
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-usage",
+      lastRequestUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 70,
+      },
+    });
+
+    expect((await nextEvent(iterator)).type).toBe("session.usage.changed");
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "usage-source-priority",
+      usage: {
+        cacheHitRatePercent: 70,
+        contextUsedTokens: 100,
+        contextWindowTokens: 200,
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
     await session.close();
   });
 
@@ -3796,6 +3928,127 @@ describe("Claude Code HarnessAdapter", () => {
   it("returns the cached value without erroring when no Session is open to pull through", async () => {
     const { adapter } = fixture();
     await expect(adapter.refreshCredits()).resolves.toBeNull();
+  });
+
+  it("keeps an idle Session's stale push from overwriting a pulled reading", async () => {
+    const { adapter, transports } = fixture();
+    const sessionA = await openSession(adapter);
+    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
+    await sessionA.execute(textTurn("session-a"));
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    const transportA = transports[0];
+    if (!transportA) throw new Error("Fake Claude transport was not created");
+    transportA.finish({ status: "succeeded" });
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+
+    const sessionB = await openSession(adapter);
+    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
+    await sessionB.execute(textTurn("session-b"));
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    const transportB = transports[1];
+    if (!transportB) throw new Error("Fake Claude transport was not created");
+
+    // The active Session pulls the account's real current utilization.
+    transportA.planLimitOnDemand = { fiveHour: { utilizationPercent: 19 } };
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 19,
+      periodType: "five_hour",
+    });
+    await nextEvent(iteratorA);
+
+    // The other Session has been idle, so the rate-limit event riding along on
+    // its next API call reports the account as it stood hours ago. It must not
+    // be allowed to drag the pill backwards — this flapping between an active
+    // Session's 19% and an idle Session's 3% is the bug being guarded here.
+    transportB.planLimit({ fiveHour: { utilizationPercent: 3 } });
+    expect(adapter.credits()).toEqual({ usedPercent: 19, periodType: "five_hour" });
+
+    // ...and the rejected push must not leave Session B's own Usage snapshot
+    // disagreeing with the pill either.
+    transportB.planLimitOnDemand = { fiveHour: { utilizationPercent: 19 } };
+    expect(await nextEvent(iteratorB)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "session-b",
+      usage: { planFiveHourUsedPercent: 19 },
+    });
+
+    transportB.finish({ status: "succeeded" });
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await sessionA.close();
+    await sessionB.close();
+  });
+
+  it("lets a push fill a window the pull never reported", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("partial-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 40 } };
+    await adapter.refreshCredits();
+    await nextEvent(iterator);
+
+    // A push carrying only the 7-day window expresses no opinion about the
+    // 5-hour one, so it fills the empty window without disturbing the pulled one.
+    transport.planLimit({ sevenDay: { utilizationPercent: 26 } });
+    expect(adapter.credits()).toEqual({
+      usedPercent: 40,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", usagePercent: 26 }],
+    });
+
+    await session.close();
+  });
+
+  it("serves the pulled reading from cache until it expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("ttl-turn"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.finish({ status: "succeeded" });
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+
+      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 40 } };
+      await adapter.refreshCredits();
+      await nextEvent(iterator);
+      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
+
+      // Every mounted composer inspects Usage on its own schedule; those reads
+      // must be served from cache rather than each firing its own pull.
+      await adapter.refreshCredits();
+      await adapter.refreshCredits();
+      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
+
+      vi.advanceTimersByTime(15_001);
+      await adapter.refreshCredits();
+      expect(transport.getPlanLimit).toHaveBeenCalledTimes(2);
+
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("tries each open Session in turn until one answers", async () => {
@@ -4390,6 +4643,7 @@ describe("Claude Code HarnessAdapter", () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
         getContextUsage: async () => null,
+        getSessionUsage: async () => null,
         getPlanLimit: async () => null,
         getPermissionMode: () => "default",
         setModel: async () => undefined,

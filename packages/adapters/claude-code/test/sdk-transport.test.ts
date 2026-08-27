@@ -33,7 +33,6 @@ class FakeQuery {
       totalTokens: number;
       maxTokens: number;
       model: string;
-      apiUsage?: unknown;
     }> => ({
       totalTokens: 40,
       maxTokens: 200,
@@ -207,59 +206,6 @@ describe("ClaudeSdkTransport context Usage", () => {
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
     await value.transport.close();
   });
-
-  it("includes valid apiUsage and omits it when malformed", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
-      totalTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-      apiUsage: {
-        input_tokens: 10,
-        output_tokens: 45,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 990,
-      },
-    });
-    await expect(value.transport.getContextUsage()).resolves.toEqual({
-      usedTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-      apiUsage: {
-        inputTokens: 10,
-        outputTokens: 45,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 990,
-      },
-    });
-
-    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
-      totalTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-      apiUsage: { input_tokens: -1, output_tokens: 45 },
-    });
-    await expect(value.transport.getContextUsage()).resolves.toEqual({
-      usedTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-    });
-
-    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
-      totalTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-      apiUsage: null,
-    });
-    await expect(value.transport.getContextUsage()).resolves.toEqual({
-      usedTokens: 40,
-      maxTokens: 200,
-      model: "runtime-model",
-    });
-    await value.transport.close();
-  });
 });
 
 describe("ClaudeSdkTransport plan-limit forwarding", () => {
@@ -307,6 +253,55 @@ describe("ClaudeSdkTransport plan-limit forwarding", () => {
     completeTurn(value.fakeQuery);
     await turn;
     expect(value.onPlanLimit).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport Session Usage pull", () => {
+  it("returns null before the transport has started", async () => {
+    const value = fixture();
+    await expect(value.transport.getSessionUsage()).resolves.toBeNull();
+    expect(
+      value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("pulls current Session cost and token totals from the /usage control channel", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
+      {
+        session: {
+          total_cost_usd: 1.373,
+          model_usage: {
+            "claude-opus": { inputTokens: 100, outputTokens: 40 },
+            "claude-haiku": { inputTokens: 20, outputTokens: 5 },
+          },
+        },
+      },
+    );
+    await expect(value.transport.getSessionUsage()).resolves.toEqual({
+      totalCostUsd: 1.373,
+      inputTokens: 120,
+      outputTokens: 45,
+    });
+    await value.transport.close();
+  });
+
+  it("retains a valid Session cost when per-model token totals are malformed", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
+      {
+        session: {
+          total_cost_usd: 0.5,
+          model_usage: { "claude-opus": { inputTokens: 10, outputTokens: -1 } },
+        },
+      },
+    );
+    await expect(value.transport.getSessionUsage()).resolves.toEqual({ totalCostUsd: 0.5 });
     await value.transport.close();
   });
 });

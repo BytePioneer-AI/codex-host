@@ -403,8 +403,9 @@ describe("Renderer Composer DOM behavior", () => {
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("does not place Usage without the native Codex context control", () => {
-    const modelRoot = { parentElement: {} } as HTMLElement;
+  it("places Usage before the Model control when native Context is not ready", () => {
+    const modelParent = {} as HTMLElement;
+    const modelRoot = { parentElement: modelParent } as HTMLElement;
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
     const usageRoot = { remove: vi.fn() };
@@ -428,7 +429,7 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeUsage).not.toHaveBeenCalled();
+    expect(placeUsage).toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
   });
 

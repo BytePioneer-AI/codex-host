@@ -2201,6 +2201,41 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("notifies Renderer when reliable Usage arrives before Context Usage", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+
+    const turnId = await startPiTurn(fixture, threadId, 2);
+    session.publishUsage(
+      { cacheHitRatePercent: 0, totalCostUsd: 0.01, inputTokens: 9, outputTokens: 122 },
+      hostTurnIdSchema.parse(turnId),
+    );
+
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "codexhost/thread/usage/updated") &&
+          messageParams(message).threadId === threadId,
+      ),
+    ).resolves.toEqual({
+      method: "codexhost/thread/usage/updated",
+      params: { threadId },
+    });
+    expect(
+      fixture.collector.messages.some(
+        (message) =>
+          method(message, "thread/tokenUsage/updated") &&
+          messageParams(message).threadId === threadId,
+      ),
+    ).toBe(false);
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await stopFixture(fixture);
+  });
+
   it("orders early and terminal Usage updates and replays current Usage after thread/read", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

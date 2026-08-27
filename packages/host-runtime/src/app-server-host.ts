@@ -76,6 +76,7 @@ import {
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
+const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -2394,6 +2395,10 @@ export class AppServerHost {
       thread.latestUsage = event.usage;
       if (event.usage === null) {
         thread.usageTurnId = null;
+        await this.#writer.json({
+          method: THREAD_USAGE_UPDATED_METHOD,
+          params: { threadId: thread.id },
+        });
         return;
       }
       const turnId = event.observedForTurnId
@@ -2402,7 +2407,14 @@ export class AppServerHost {
           : null
         : (thread.activeTurnId ?? this.#latestCompletedTurnId(thread));
       thread.usageTurnId = turnId;
-      if (turnId) await this.#writeExternalUsage(thread, turnId);
+      if (turnId) {
+        await this.#waitForTurnResponse(thread, turnId);
+        await this.#writeExternalUsage(thread, turnId);
+      }
+      await this.#writer.json({
+        method: THREAD_USAGE_UPDATED_METHOD,
+        params: { threadId: thread.id },
+      });
       return;
     }
     if (event.type === "subagent.transcript.changed") {

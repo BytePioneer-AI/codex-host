@@ -379,7 +379,13 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
   // participates in the footer's flex alignment instead of being nested in
   // the wrapper's 18px line box.
   const contextWrapper = context?.parentElement;
-  return contextWrapper?.parentElement ? contextWrapper : null;
+  if (contextWrapper?.parentElement) return contextWrapper;
+  // External Harnesses can publish reliable cache, token, or cost Usage before
+  // the native Context control exists. The renderer-owned Model control is a
+  // stable footer anchor, so early Usage remains visible instead of waiting for
+  // a later Context observation to create the native indicator.
+  const modelRoot = control.modelPicker?.root;
+  return modelRoot?.parentElement ? modelRoot : null;
 }
 
 /**

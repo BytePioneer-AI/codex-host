@@ -19,6 +19,7 @@ import {
   THREAD_OWNERSHIP_LIST_METHOD,
   THREAD_TOKEN_USAGE_UPDATED_METHOD,
   THREAD_USAGE_INSPECT_METHOD,
+  THREAD_USAGE_UPDATED_METHOD,
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
@@ -236,12 +237,12 @@ describe("Renderer fixed Model request client", () => {
     const onUsage = vi.fn();
     const unsubscribe = client.subscribeThreadUsage?.(onUsage);
     expect(addNotificationCallback).toHaveBeenCalledWith(
-      THREAD_TOKEN_USAGE_UPDATED_METHOD,
+      [THREAD_TOKEN_USAGE_UPDATED_METHOD, THREAD_USAGE_UPDATED_METHOD],
       expect.any(Function),
     );
     usageNotification?.({
-      method: THREAD_TOKEN_USAGE_UPDATED_METHOD,
-      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: {} },
+      method: THREAD_USAGE_UPDATED_METHOD,
+      params: { threadId: "thread-1" },
     });
     usageNotification?.({
       method: THREAD_TOKEN_USAGE_UPDATED_METHOD,

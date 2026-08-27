@@ -57,6 +57,7 @@ export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
+export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
@@ -67,7 +68,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
-  if (!isRecord(notification) || notification.method !== THREAD_TOKEN_USAGE_UPDATED_METHOD) {
+  if (
+    !isRecord(notification) ||
+    (notification.method !== THREAD_TOKEN_USAGE_UPDATED_METHOD &&
+      notification.method !== THREAD_USAGE_UPDATED_METHOD)
+  ) {
     return null;
   }
   const params = notification.params;
@@ -246,7 +251,7 @@ export function createRendererModelClient(
       let disposed = false;
       const generations = new Map<ThreadUsageInspectionParams["threadId"], number>();
       const removeNotificationCallback = notifications.addNotificationCallback(
-        THREAD_TOKEN_USAGE_UPDATED_METHOD,
+        [THREAD_TOKEN_USAGE_UPDATED_METHOD, THREAD_USAGE_UPDATED_METHOD],
         (notification) => {
           const threadId = notifiedThreadId(notification);
           if (!threadId) return;

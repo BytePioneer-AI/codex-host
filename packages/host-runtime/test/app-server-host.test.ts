@@ -2009,6 +2009,53 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("acknowledges an accepted Harness command through the public command contract", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "none" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => {
+        session.publishEphemeralCommand(turnId, {
+          type: "contextCompaction",
+          itemId: hostItemIdSchema.parse("fake-command-compaction-item"),
+        });
+        return { ok: true, value: { turnId } };
+      },
+    };
+    const turnId = hostTurnIdSchema.parse("manual-compact");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact", turnId },
+    });
+
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ result: { accepted: true, turnId } });
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+    const nextTurnId = await startPiTurn(fixture, threadId, 3);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurnId));
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
+    await stopFixture(fixture);
+  });
+
   it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

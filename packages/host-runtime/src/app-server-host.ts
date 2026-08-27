@@ -1399,7 +1399,12 @@ export class AppServerHost {
     try {
       const response =
         responseKind === "command"
-          ? jsonValueSchema.parse(threadCommandExecuteResultSchema.parse(result.value))
+          ? jsonValueSchema.parse(
+              threadCommandExecuteResultSchema.parse({
+                accepted: true,
+                turnId: result.value.turnId,
+              }),
+            )
           : { turn: projection.projector.pendingTurn() };
       await this.#writer.json(rpcEnvelope(request, { result: response as JsonObject }));
     } finally {

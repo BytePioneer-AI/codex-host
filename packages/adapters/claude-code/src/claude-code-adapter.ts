@@ -2518,8 +2518,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           })
         : null;
     if (forked && !forked.ok) return forked;
-    let session: ClaudeHarnessSession;
-    session = new ClaudeHarnessSession(
+    const session = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
       this.#closeTimeoutMs,

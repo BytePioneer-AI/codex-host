@@ -23,7 +23,7 @@ import {
   parseOmpStateContextUsage,
 } from "./omp-usage.js";
 import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
-import { verifyOmpSessionCwd } from "./omp-session-file.js";
+import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpFrameDecoder } from "./omp-protocol.js";
 
 export interface OmpSessionState {
@@ -134,6 +134,7 @@ export interface OmpRpcSessionOptions {
   forkSessionFile?: string;
   model?: OmpNativeModelRef;
   commandTimeoutMs?: number;
+  compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
@@ -442,7 +443,10 @@ const nodeProcessAdapter: OmpRpcProcessAdapter = {
 
 export class OmpRpcSession {
   readonly #options: Required<
-    Required<Pick<OmpRpcSessionOptions, "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs">>
+    Pick<
+      OmpRpcSessionOptions,
+      "commandTimeoutMs" | "compactionTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs"
+    >
   > &
     OmpRpcSessionOptions;
   readonly #processAdapter: OmpRpcProcessAdapter;
@@ -452,6 +456,7 @@ export class OmpRpcSession {
   #closed = false;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
+  #compactionTimeout: NodeJS.Timeout | null = null;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: OmpSessionState | null = null;
@@ -476,6 +481,7 @@ export class OmpRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
+      compactionTimeoutMs: 300_000,
       cancelTimeoutMs: 2_000,
       closeTimeoutMs: 2_000,
       ...options,
@@ -571,6 +577,9 @@ export class OmpRpcSession {
 
   async getEntries(): Promise<OmpSessionHistory> {
     try {
+      if (this.state.sessionFile) {
+        return await readOmpSessionHistory(this.state.sessionFile);
+      }
       const response = await this.#send("get_messages", {});
       const data = isRecord(response.data) ? response.data : null;
       if (!data || !Array.isArray(data.messages)) {
@@ -908,6 +917,15 @@ export class OmpRpcSession {
     if (value.type === "auto_compaction_start" || value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
+      this.#compactionTimeout ??= setTimeout(() => {
+        this.#compactionTimeout = null;
+        this.#fail(
+          new OmpRpcFaultError(
+            "protocolError",
+            `Omp RPC compaction timed out after ${this.#options.compactionTimeoutMs}ms`,
+          ),
+        );
+      }, this.#options.compactionTimeoutMs);
       const onEvent = this.#activeTurn?.onEvent ?? this.#manualCompaction?.onEvent;
       onEvent?.({ type: "compaction.started" });
       for (const pending of this.#pending.values()) {
@@ -920,6 +938,8 @@ export class OmpRpcSession {
     }
     if (value.type === "auto_compaction_end" || value.type === "compaction_end") {
       this.#compactionActive = false;
+      if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
+      this.#compactionTimeout = null;
       const compactionTurn = this.#compactionTurn;
       this.#compactionTurn = null;
       for (const [id, pending] of this.#pending) {
@@ -1373,6 +1393,8 @@ export class OmpRpcSession {
   }
 
   #rejectAll(error: Error): void {
+    if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
+    this.#compactionTimeout = null;
     for (const pending of this.#pending.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(error);

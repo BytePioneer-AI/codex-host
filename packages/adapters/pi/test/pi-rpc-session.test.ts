@@ -24,6 +24,7 @@ type Scenario =
   | "prompt-preflight-compaction"
   | "prompt-preflight-compaction-timeout"
   | "manual-compaction"
+  | "manual-compaction-stalled"
   | "empty"
   | "tools"
   | "long-running"
@@ -245,8 +246,12 @@ class FakePiRpcProcess extends EventEmitter {
       this.#respond(command);
       return;
     }
-    if (command.type === "compact" && this.#scenario === "manual-compaction") {
+    if (
+      command.type === "compact" &&
+      (this.#scenario === "manual-compaction" || this.#scenario === "manual-compaction-stalled")
+    ) {
       this.#output({ type: "compaction_start", reason: "manual" });
+      if (this.#scenario === "manual-compaction-stalled") return;
       setTimeout(() => {
         this.#output({
           type: "compaction_end",
@@ -605,7 +610,11 @@ class FakePiRpcProcess extends EventEmitter {
 function session(
   scenario: Scenario,
   onFault = vi.fn(),
-  options: { commandTimeoutMs?: number; cancelTimeoutMs?: number } = {},
+  options: {
+    commandTimeoutMs?: number;
+    compactionTimeoutMs?: number;
+    cancelTimeoutMs?: number;
+  } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
@@ -616,6 +625,7 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
+      compactionTimeoutMs: options.compactionTimeoutMs ?? 300_000,
       cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
       closeTimeoutMs: 500,
       onFault,
@@ -915,6 +925,29 @@ describe("Pi RPC Turn aggregation", () => {
         { type: "compaction.started" },
         { type: "compaction.completed", outcome: "succeeded" },
       ]);
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails a manual Compact when native compaction never reaches a terminal event", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("manual-compaction-stalled", onFault, {
+      commandTimeoutMs: 5,
+      compactionTimeoutMs: 20,
+    });
+
+    try {
+      await rpc.start();
+      const compact = rpc.compact(undefined, () => undefined);
+      const rejected = expect(compact).rejects.toThrow("compaction timed out after 20ms");
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      await rejected;
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     } finally {
       await rpc.close();
       vi.useRealTimers();

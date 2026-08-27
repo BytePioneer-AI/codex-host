@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   OmpRpcSession,
@@ -21,7 +24,10 @@ class FakeOmpProcess extends EventEmitter {
   #buffer = "";
   #sessionId = "omp-session";
 
-  constructor() {
+  constructor(
+    readonly compactMode: "complete" | "stalled" = "complete",
+    readonly sessionFile?: string,
+  ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
       this.#buffer += chunk.toString("utf8");
@@ -65,6 +71,7 @@ class FakeOmpProcess extends EventEmitter {
       isStreaming: false,
       contextUsage: { tokens: 4, contextWindow: 100 },
       sessionId: this.#sessionId,
+      ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
     };
   }
 
@@ -87,6 +94,30 @@ class FakeOmpProcess extends EventEmitter {
     if (command.type === "branch") {
       this.#sessionId = "omp-forked-session";
       return this.#response(command, { text: "", cancelled: false });
+    }
+    if (command.type === "compact") {
+      this.#output({ type: "compaction_start", reason: "manual" });
+      if (this.compactMode === "stalled") return;
+      queueMicrotask(() => {
+        this.#output({
+          type: "compaction_end",
+          reason: "manual",
+          result: {
+            summary: "Synthetic manual summary",
+            firstKeptEntryId: "user-1",
+            tokensBefore: 100,
+            estimatedTokensAfter: 20,
+          },
+          aborted: false,
+        });
+        this.#response(command, {
+          summary: "Synthetic manual summary",
+          firstKeptEntryId: "user-1",
+          tokensBefore: 100,
+          estimatedTokensAfter: 20,
+        });
+      });
+      return;
     }
     if (command.type === "prompt") {
       this.#response(command);
@@ -217,6 +248,107 @@ describe("OMP RPC session", () => {
       }),
     );
     await session.close();
+  });
+
+  it("correlates manual Compact RPC events without an active Prompt Turn", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    const events: OmpTurnEvent[] = [];
+    await session.start();
+
+    await expect(
+      session.compact("Keep implementation details", (event) => events.push(event)),
+    ).resolves.toEqual({ outcome: "succeeded" });
+    expect(events).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "succeeded" },
+    ]);
+    await session.close();
+  });
+
+  it("fails a manual Compact when native compaction never reaches a terminal event", async () => {
+    const process = new FakeOmpProcess("stalled");
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      {
+        cwd: "/synthetic",
+        commandTimeoutMs: 10,
+        compactionTimeoutMs: 20,
+        onFault,
+      },
+      adapter,
+    );
+    await session.start();
+
+    await expect(session.compact(undefined, () => undefined)).rejects.toThrow(
+      "compaction timed out after 20ms",
+    );
+    expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    await session.close();
+  });
+
+  it("reads the persisted full transcript when OMP's compacted RPC context omits User messages", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-rpc-history-"));
+    const sessionFile = path.join(directory, "session.jsonl");
+    await writeFile(
+      sessionFile,
+      [
+        { type: "title", title: "Compacted session" },
+        { type: "session", version: 3, id: "omp-session", cwd: directory },
+        {
+          type: "message",
+          id: "user-1",
+          parentId: null,
+          message: { role: "user", content: [{ type: "text", text: "original prompt" }] },
+        },
+        {
+          type: "message",
+          id: "assistant-1",
+          parentId: "user-1",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "original answer" }],
+            stopReason: "stop",
+          },
+        },
+        {
+          type: "compaction",
+          id: "compaction-1",
+          parentId: "assistant-1",
+          summary: "Compacted context",
+          firstKeptEntryId: "assistant-1",
+          tokensBefore: 100,
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n",
+    );
+    const process = new FakeOmpProcess("complete", sessionFile);
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession(
+      { cwd: directory, sessionFile, commandTimeoutMs: 2_000 },
+      adapter,
+    );
+
+    try {
+      await session.start();
+      await expect(session.getEntries()).resolves.toMatchObject({
+        leafId: "compaction-1",
+        entries: [
+          { id: "user-1", parentId: null, type: "message" },
+          { id: "assistant-1", parentId: "user-1", type: "message" },
+          { id: "compaction-1", parentId: "assistant-1", type: "compaction" },
+        ],
+      });
+      expect(process.commands).not.toContainEqual(
+        expect.objectContaining({ type: "get_messages" }),
+      );
+    } finally {
+      await session.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("branches to a distinct OMP session through the RPC branch command", async () => {

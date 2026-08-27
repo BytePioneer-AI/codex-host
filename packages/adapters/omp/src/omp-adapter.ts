@@ -94,6 +94,7 @@ export interface OmpAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
+  compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   toolOutputLimit?: number;
@@ -709,6 +710,12 @@ class OmpHarnessSession implements HarnessSession {
 
     this.#acceptingTurn = true;
     try {
+      // A still-null transport means this call is about to perform the Native
+      // Session's first-ever spawn (plain `create`, no resume/fork). Such a
+      // Session provably has no prior Turns yet, so there is nothing to read:
+      // Omp allocates the future Session file path before it exists on disk,
+      // and racing that with a history read here is what produces ENOENT.
+      const isInitialSpawn = this.#transport === null;
       let transport: OmpTurnTransport;
       try {
         transport = await this.#ensureTransport();
@@ -720,13 +727,17 @@ class OmpHarnessSession implements HarnessSession {
       }
 
       let beforeHistory: HostThreadSnapshot;
-      try {
-        beforeHistory = mapOmpSnapshot(await transport.getEntries(), {
-          sessionId: transport.state.sessionId,
-          model: nativeModelForHistory(transport.state),
-        });
-      } catch (error) {
-        return { ok: false, error: normalizedError(error, "protocolError") };
+      if (isInitialSpawn) {
+        beforeHistory = { turns: [] };
+      } else {
+        try {
+          beforeHistory = mapOmpSnapshot(await transport.getEntries(), {
+            sessionId: transport.state.sessionId,
+            model: nativeModelForHistory(transport.state),
+          });
+        } catch (error) {
+          return { ok: false, error: normalizedError(error, "protocolError") };
+        }
       }
 
       let resolveCompletion = (): void => undefined;

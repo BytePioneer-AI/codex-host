@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessThinkingOptionId,
   type HostTurnId,
@@ -167,6 +168,118 @@ class FakeOmpTransport implements OmpTurnTransport {
 
   async close(): Promise<void> {}
 }
+
+function historyTurn(input: {
+  assistantId: string;
+  parentId: string | null;
+  text: string;
+  userId: string;
+}): OmpSessionHistory["entries"] {
+  return [
+    {
+      id: input.userId,
+      parentId: input.parentId,
+      type: "message",
+      message: { role: "user", content: [{ type: "text", text: input.text }] },
+    },
+    {
+      id: input.assistantId,
+      parentId: input.userId,
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `${input.text} response` }],
+        stopReason: "stop",
+      },
+    },
+  ];
+}
+
+describe("OMP Adapter Fork", () => {
+  it("forks the requested completed prefix from the next OMP User Entry", async () => {
+    const firstTurn = historyTurn({
+      userId: "source-user-1",
+      assistantId: "source-assistant-1",
+      parentId: null,
+      text: "first",
+    });
+    const secondTurn = historyTurn({
+      userId: "source-user-2",
+      assistantId: "source-assistant-2",
+      parentId: "source-assistant-1",
+      text: "second",
+    });
+    const transport = new FakeOmpTransport();
+    transport.state = {
+      ...transport.state,
+      sessionId: "fork-startup",
+      sessionFile: "/synthetic/fork-startup.jsonl",
+    };
+    transport.history = {
+      entries: [...firstTurn, ...secondTurn],
+      leafId: "source-assistant-2",
+    };
+    const fork = vi.fn(async (entryId: string) => {
+      expect(entryId).toBe("source-user-2");
+      transport.state = {
+        ...transport.state,
+        sessionId: "fork-derived",
+        sessionFile: "/synthetic/fork-derived.jsonl",
+      };
+      transport.history = { entries: firstTurn, leafId: "source-assistant-1" };
+      return transport.state;
+    });
+    transport.fork = fork;
+    const verifySessionCwd = vi.fn(async () => undefined);
+    transport.verifySessionCwd = verifySessionCwd;
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source-session.jsonl" },
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "source-session",
+      checkpointId: "source-user-1",
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "fork",
+      cwd: "/synthetic",
+      sourceRef,
+      checkpoint,
+    });
+
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ forkSessionFile: "/synthetic/source-session.jsonl" }),
+    );
+    expect(fork).toHaveBeenCalledTimes(1);
+    expect(verifySessionCwd).toHaveBeenCalledWith("/synthetic");
+    expect(opened.value.initialState.nativeRef).toMatchObject({
+      nativeSessionId: "fork-derived",
+      locator: { sessionFile: "/synthetic/fork-derived.jsonl" },
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: { nativeSessionId: "fork-derived", nativeTurnKey: "source-user-1" },
+            checkpoint: { nativeSessionId: "fork-derived", checkpointId: "source-user-1" },
+          },
+        ],
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOutput[] {
   const values: HarnessOutput[] = [];

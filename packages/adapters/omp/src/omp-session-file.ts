@@ -1,4 +1,10 @@
+import { createReadStream } from "node:fs";
 import { open, realpath } from "node:fs/promises";
+import readline from "node:readline";
+
+import type { JsonObject } from "@codexhost/shared-contracts";
+
+import type { OmpSessionHistory } from "./omp-history.js";
 
 const MAX_SESSION_HEADER_BYTES = 64 * 1024;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
@@ -11,6 +17,48 @@ interface OmpSessionHeader {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function historyEntry(value: unknown): JsonObject | null {
+  if (
+    !isRecord(value) ||
+    value.type === "title" ||
+    value.type === "session" ||
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    (value.parentId !== null && typeof value.parentId !== "string") ||
+    typeof value.type !== "string"
+  ) {
+    return null;
+  }
+  return value as JsonObject;
+}
+
+export async function readOmpSessionHistory(sessionFile: string): Promise<OmpSessionHistory> {
+  const entries: JsonObject[] = [];
+  let leafId: string | null = null;
+  const lines = readline.createInterface({
+    input: createReadStream(sessionFile, { encoding: "utf8" }),
+    crlfDelay: Number.POSITIVE_INFINITY,
+  });
+  try {
+    for await (const line of lines) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const entry = historyEntry(parsed);
+      if (!entry) continue;
+      entries.push(entry);
+      leafId = entry.id as string;
+    }
+  } finally {
+    lines.close();
+  }
+  return { entries, leafId };
 }
 
 async function readOmpSessionHeader(sessionFile: string): Promise<OmpSessionHeader> {

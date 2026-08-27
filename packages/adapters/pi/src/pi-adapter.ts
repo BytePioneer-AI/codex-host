@@ -93,6 +93,7 @@ export interface PiAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   commandTimeoutMs?: number;
+  compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   toolOutputLimit?: number;

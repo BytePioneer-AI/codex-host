@@ -95,11 +95,6 @@ export interface OmpCompactResult {
   errorMessage?: string;
 }
 
-export interface OmpHandoffResult {
-  savedPath?: string;
-  state: OmpSessionState;
-}
-
 export type OmpSubagentTurnStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
 
 export interface OmpSubagentMessagesResult {
@@ -664,22 +659,6 @@ export class OmpRpcSession {
       pending?.reject(error instanceof Error ? error : new Error(message(error)));
     }
     return result;
-  }
-
-  async handoff(customInstructions?: string): Promise<OmpHandoffResult> {
-    const response = await this.#send("handoff", customInstructions ? { customInstructions } : {});
-    const data = response.data === null || response.data === undefined ? null : response.data;
-    if (
-      data !== null &&
-      (!isRecord(data) || (data.savedPath !== undefined && typeof data.savedPath !== "string"))
-    ) {
-      throw new OmpRpcFaultError("protocolError", "Omp RPC Handoff response is invalid");
-    }
-    this.#state = parseSessionState(await this.#send("get_state", {}));
-    return {
-      ...(data && typeof data.savedPath === "string" ? { savedPath: data.savedPath } : {}),
-      state: this.#state,
-    };
   }
 
   async getSessionUsage(): Promise<HostUsage | null> {

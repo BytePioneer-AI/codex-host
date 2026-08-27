@@ -107,10 +107,6 @@ class FakeOmpTransport implements OmpTurnTransport {
     return { outcome: "succeeded" };
   }
 
-  async handoff(): Promise<{ savedPath: string; state: OmpSessionState }> {
-    return { savedPath: "/synthetic/handoff.md", state: this.state };
-  }
-
   runTurn(_text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     this.onEvent = onEvent;
     return new Promise((resolve) => {
@@ -249,6 +245,33 @@ describe("OMP Adapter Subagents", () => {
     expect(laterEvents).toContainEqual({
       type: "subagent.transcript.changed",
       nativeSubagentId: "subagent-1",
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("exposes only OMP compact as a Harness command", async () => {
+    const transport = new FakeOmpTransport();
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    await expect(opened.value.commands.list()).resolves.toEqual({
+      ok: true,
+      value: {
+        commands: [
+          {
+            id: "omp.compact",
+            invocation: "/compact",
+            label: "Compact context",
+            description: "Compact the current conversation context",
+            argumentMode: "text",
+          },
+        ],
+      },
     });
     await opened.value.close();
     await adapter.close();

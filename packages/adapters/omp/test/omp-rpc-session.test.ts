@@ -74,9 +74,6 @@ class FakeOmpProcess extends EventEmitter {
       return this.#response(command, { protocolVersion: 2 });
     if (command.type === "get_state") return this.#response(command, this.#state());
     if (command.type === "get_messages") return this.#response(command, { messages: [] });
-    if (command.type === "handoff") {
-      return this.#response(command, { savedPath: "/tmp/omp-handoff.md" });
-    }
     if (command.type === "get_subagent_messages") {
       return this.#response(command, {
         sessionFile: "/tmp/subagent.jsonl",
@@ -245,24 +242,6 @@ describe("OMP RPC session", () => {
       fromByte: 7,
       nextByte: 42,
     });
-    await session.close();
-  });
-
-  it("runs OMP handoff and refreshes the confirmed session state", async () => {
-    const process = new FakeOmpProcess();
-    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
-    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
-    await session.start();
-    await expect(session.handoff("Focus on the remaining risks")).resolves.toMatchObject({
-      savedPath: "/tmp/omp-handoff.md",
-      state: { sessionId: "omp-session" },
-    });
-    expect(process.commands).toContainEqual(
-      expect.objectContaining({
-        type: "handoff",
-        customInstructions: "Focus on the remaining risks",
-      }),
-    );
     await session.close();
   });
 

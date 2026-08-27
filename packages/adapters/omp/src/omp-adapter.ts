@@ -75,7 +75,6 @@ import {
   type OmpRpcSessionOptions,
   type OmpSessionState,
   type OmpCompactResult,
-  type OmpHandoffResult,
   type OmpSubagentMessagesResult,
   type OmpTurnEvent,
   type OmpTurnResult,
@@ -121,7 +120,6 @@ export interface OmpTurnTransport {
     customInstructions: string | undefined,
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
-  handoff(customInstructions?: string): Promise<OmpHandoffResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -167,13 +165,6 @@ const ompCommandCatalog = harnessCommandCatalogSchema.parse({
       invocation: "/compact",
       label: "Compact context",
       description: "Compact the current conversation context",
-      argumentMode: "text",
-    },
-    {
-      id: "omp.handoff",
-      invocation: "/handoff",
-      label: "Handoff context",
-      description: "Write a handoff summary and continue in a fresh OMP session",
       argumentMode: "text",
     },
   ],
@@ -994,7 +985,7 @@ class OmpHarnessSession implements HarnessSession {
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
-    if (command.commandId !== "omp.compact" && command.commandId !== "omp.handoff") {
+    if (command.commandId !== "omp.compact") {
       return {
         ok: false,
         error: {
@@ -1021,7 +1012,7 @@ class OmpHarnessSession implements HarnessSession {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: `Omp ${command.commandId === "omp.handoff" ? "handoff" : "compact"} command argument 'text' must be a string`,
+          message: "Omp compact command argument 'text' must be a string",
           retryable: false,
         },
       };
@@ -1031,7 +1022,7 @@ class OmpHarnessSession implements HarnessSession {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: `Omp ${command.commandId === "omp.handoff" ? "handoff" : "compact"} command has an unknown argument`,
+          message: "Omp compact command has an unknown argument",
           retryable: false,
         },
       };
@@ -1073,31 +1064,6 @@ class OmpHarnessSession implements HarnessSession {
       };
       this.#active = active;
       this.#event({ type: "turn.started", turnId: command.turnId });
-      if (command.commandId === "omp.handoff") {
-        void transport
-          .handoff(customInstructions)
-          .then(async (result) => {
-            try {
-              this.#publishTransportState(
-                result.state,
-                await transport.getAvailableThinkingLevels(),
-              );
-              this.#completeTurn(active, { status: "succeeded" });
-            } catch (error) {
-              this.#completeTurn(active, {
-                status: "failed",
-                error: normalizedError(error, "protocolError"),
-              });
-            }
-          })
-          .catch((error: unknown) => {
-            this.#completeTurn(active, {
-              status: "failed",
-              error: normalizedError(error, "nativeFailure"),
-            });
-          });
-        return { ok: true, value: { turnId: command.turnId } };
-      }
       void transport
         .compact(customInstructions, (event) => this.#handleTurnEvent(active, event))
         .then((result) => {

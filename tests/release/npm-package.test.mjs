@@ -31,6 +31,7 @@ import {
   validateNpmPackage,
 } from "../../scripts/release/prepare-npm.mjs";
 import {
+  createNpmMetaReadme,
   createNpmMetaPackageManifest,
   expectedNpmMetaPackagePaths,
   validateNpmMetaPackage,
@@ -285,6 +286,19 @@ describe("npm package release", () => {
     expect(source).toContain('launcherOutput.includes("ready\\n")');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it("keeps Windows launcher supervision alive after the ready handshake", () => {
+    const source = createNpmBinLauncherSource({ version: "0.1.0" });
+    const readme = createNpmMetaReadme({ version: "0.1.0" });
+
+    expect(source).toContain('const keepLauncherForeground = process.platform === "win32"');
+    expect(source).toContain("if (!keepLauncherForeground) finish(0)");
+    expect(source).toContain(
+      'startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready")',
+    );
+    expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
+    expect(readme).toContain("process trees of completed commands");
   });
 
   it("does not forward remote SSH bootstrap variables into a local Desktop launch", () => {

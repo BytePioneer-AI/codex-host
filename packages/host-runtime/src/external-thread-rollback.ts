@@ -1,4 +1,8 @@
-import type { HarnessAdapter, HarnessSessionState } from "@codexhost/harness-adapter";
+import type {
+  HarnessAdapter,
+  HarnessSession,
+  HarnessSessionState,
+} from "@codexhost/harness-adapter";
 import {
   mapExternalThreadHarnessError,
   type DecodedThreadRollbackRequest,
@@ -21,14 +25,77 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 export type ExternalThreadRollbackResult =
   { ok: false; error: ExternalThreadRpcError } | { ok: true; thread: JsonObject };
 
+function currentConfiguration(current: ExternalThread): HarnessSessionState {
+  const state = current.stateObserver.state;
+  return {
+    ...state,
+    ...((state.effectiveModel ?? current.requestedModel)
+      ? { effectiveModel: state.effectiveModel ?? current.requestedModel }
+      : {}),
+    ...((state.effectiveThinkingOptionId ?? current.requestedThinkingOptionId)
+      ? {
+          effectiveThinkingOptionId:
+            state.effectiveThinkingOptionId ?? current.requestedThinkingOptionId,
+        }
+      : {}),
+    ...((state.effectivePermissionModeId ?? current.requestedPermissionModeId)
+      ? {
+          effectivePermissionModeId:
+            state.effectivePermissionModeId ?? current.requestedPermissionModeId,
+        }
+      : {}),
+  };
+}
+
 function sameCurrentConfiguration(
   current: HarnessSessionState,
   replacement: HarnessSessionState,
 ): boolean {
   return (
     current.effectiveModel?.id === replacement.effectiveModel?.id &&
-    current.effectiveThinkingOptionId === replacement.effectiveThinkingOptionId
+    current.effectiveThinkingOptionId === replacement.effectiveThinkingOptionId &&
+    current.effectivePermissionModeId === replacement.effectivePermissionModeId
   );
+}
+
+async function restoreCurrentConfiguration(
+  session: HarnessSession,
+  configuration: HarnessSessionState,
+): Promise<ExternalThreadRpcError | null> {
+  if (configuration.effectiveModel) {
+    if (!session.capabilities.configuration.selectModel) {
+      return { code: -32076, message: "External rollback cannot restore the current Model" };
+    }
+    const selected = await session.execute({
+      type: "model.select",
+      model: configuration.effectiveModel,
+    });
+    if (!selected.ok) return mapExternalThreadHarnessError(selected.error, "fork");
+  }
+  if (configuration.effectiveThinkingOptionId) {
+    if (!session.capabilities.configuration.selectThinkingOption) {
+      return { code: -32076, message: "External rollback cannot restore current Thinking" };
+    }
+    const selected = await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: configuration.effectiveThinkingOptionId,
+    });
+    if (!selected.ok) return mapExternalThreadHarnessError(selected.error, "fork");
+  }
+  if (configuration.effectivePermissionModeId) {
+    if (!session.capabilities.configuration.selectPermissionMode) {
+      return {
+        code: -32076,
+        message: "External rollback cannot restore the current Permission Mode",
+      };
+    }
+    const selected = await session.execute({
+      type: "permissionMode.select",
+      permissionModeId: configuration.effectivePermissionModeId,
+    });
+    if (!selected.ok) return mapExternalThreadHarnessError(selected.error, "fork");
+  }
+  return null;
 }
 
 async function executeCurrentLastTurnRollback(input: {
@@ -76,6 +143,12 @@ async function executeCurrentLastTurnRollback(input: {
       error: { code: -32076, message: "External rollback did not return a valid Session" },
     };
   }
+  const configuration = currentConfiguration(current);
+  const configurationError = await restoreCurrentConfiguration(session, configuration);
+  if (configurationError) {
+    await session.close().catch(() => undefined);
+    return { ok: false, error: configurationError };
+  }
   const snapshot = await session.readSnapshot();
   if (!snapshot.ok) {
     await session.close().catch(() => undefined);
@@ -89,11 +162,11 @@ async function executeCurrentLastTurnRollback(input: {
     };
   }
   const replacementState = snapshot.value.state ?? session.initialState;
-  if (!sameCurrentConfiguration(current.stateObserver.state, replacementState)) {
+  if (!sameCurrentConfiguration(configuration, replacementState)) {
     await session.close().catch(() => undefined);
     return {
       ok: false,
-      error: { code: -32080, message: "External rollback changed Model or Thinking" },
+      error: { code: -32080, message: "External rollback changed configuration" },
     };
   }
 

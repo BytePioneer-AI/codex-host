@@ -6,8 +6,12 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
-import type { HarnessAdapter, HostThreadSnapshot } from "@codexhost/harness-adapter";
-import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import type {
+  HarnessAdapter,
+  HarnessSessionState,
+  HostThreadSnapshot,
+} from "@codexhost/harness-adapter";
+import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
@@ -153,6 +157,29 @@ function rollbackCapableAdapter(): FakeHarnessAdapter {
     undefined,
     true,
   );
+}
+
+class ResumeStateRollbackAdapter extends FakeHarnessAdapter {
+  rollbackReplacementStateAtFirstRead: HarnessSessionState | undefined;
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (
+      input.kind === "rollbackLastTurn" &&
+      opened.ok &&
+      opened.value instanceof FakeHarnessSession
+    ) {
+      const session = opened.value;
+      const nativeRef = session.initialState.nativeRef;
+      if (nativeRef) session.setStateForSnapshot({ nativeRef });
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        this.rollbackReplacementStateAtFirstRead ??= session.state;
+        return readSnapshot();
+      };
+    }
+    return opened;
+  }
 }
 
 function createFixture(
@@ -2706,6 +2733,72 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await completePiTurn(fixture, threadId, 11, 1);
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("restores configuration before reading a resume-state rollback replacement", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "auto", label: "Auto" },
+      ],
+      defaultModeId: "default",
+    });
+    const adapter = new ResumeStateRollbackAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+      true,
+    );
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    const model = adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+    const thinkingOptionId = "low";
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
+
+    writeRequest(fixture.desktopInput, {
+      id: 40,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 40));
+    writeRequest(fixture.desktopInput, {
+      id: 41,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 41));
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "codexhost/thread/permission-mode/select",
+      params: { threadId, permissionModeId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 42));
+
+    const firstTurnId = await completePiTurn(fixture, threadId, 43);
+    await completePiTurn(fixture, threadId, 44);
+    writeRequest(fixture.desktopInput, {
+      id: 45,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 45)),
+    ).resolves.toMatchObject({
+      result: { thread: { id: threadId, turns: [{ id: firstTurnId }] } },
+    });
+
+    const expectedConfiguration = {
+      effectiveModel: model,
+      effectiveThinkingOptionId: thinkingOptionId,
+      effectivePermissionModeId: permissionModeId,
+    };
+    expect(adapter.rollbackReplacementStateAtFirstRead).toMatchObject(expectedConfiguration);
+    expect(adapter.sessions[1]?.state).toMatchObject(expectedConfiguration);
     await stopFixture(fixture);
   });
 

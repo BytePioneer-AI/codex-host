@@ -6,6 +6,9 @@
       <stop offset="1" stop-color="#5ad8e6" />
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="12" fill="#0f0a14" />
-  <path fill="url(#omp-gradient)" d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
+  <path
+    fill="url(#omp-gradient)"
+    transform="translate(-14.4 -20.2) scale(1.45)"
+    d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z"
+  />
 </svg>

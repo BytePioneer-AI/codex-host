@@ -13,6 +13,13 @@ import { installRendererObserver, readRendererObserver } from "./renderer-observ
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultOutputDirectory = path.join(repositoryRoot, ".codexhost", "renderer-binding");
+const RENDERER_PROBE_AGENTS = Object.freeze([
+  "codex",
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "grok",
+]);
 
 function usage() {
   console.error(`usage:
@@ -98,9 +105,7 @@ function validateProbeStatus(value) {
     !Number.isInteger(value.mountedComposers) ||
     !Array.isArray(value.enabledAgents) ||
     value.enabledAgents.length < 2 ||
-    value.enabledAgents.some(
-      (agent) => !["codex", "pi", "claude-code", "deepseek-harness"].includes(agent),
-    ) ||
+    value.enabledAgents.some((agent) => !RENDERER_PROBE_AGENTS.includes(agent)) ||
     !value.enabledAgents.includes("codex") ||
     !value.enabledAgents.includes("pi") ||
     !Array.isArray(value.selections) ||
@@ -114,7 +119,7 @@ function validateProbeStatus(value) {
     if (
       !isRecord(selection) ||
       typeof selection.composerId !== "string" ||
-      !["codex", "pi", "claude-code", "deepseek-harness"].includes(selection.agent) ||
+      !RENDERER_PROBE_AGENTS.includes(selection.agent) ||
       !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
@@ -296,7 +301,7 @@ async function run() {
     await pageClient.command("Runtime.enable");
     const cdpDom = await inspectRendererDom(pageClient);
     const source = fs.readFileSync(probeBundlePath, "utf8");
-    const enabledAgents = ["codex", "pi", "claude-code", "deepseek-harness"];
+    const enabledAgents = [...RENDERER_PROBE_AGENTS];
     rendererControl = await installRendererControlSession({
       inspectorEndpoint: options.inspectorEndpoint,
       rendererSource: source,

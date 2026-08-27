@@ -11,12 +11,14 @@ async function source(relative) {
 
 describe("production Renderer release chain", () => {
   it("uses the fixed production Agent list without a development enable switch", async () => {
-    const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
-      source("packages/renderer-extension/src/production-entry.ts"),
-      source("packages/renderer-extension/src/probe-entry.ts"),
-      source("packages/renderer-extension/src/install-renderer-binding.ts"),
-      source("packages/renderer-extension/src/agent-selection-state.ts"),
-    ]);
+    const [productionEntry, probeEntry, installer, agentState, rendererBindingTool] =
+      await Promise.all([
+        source("packages/renderer-extension/src/production-entry.ts"),
+        source("packages/renderer-extension/src/probe-entry.ts"),
+        source("packages/renderer-extension/src/install-renderer-binding.ts"),
+        source("packages/renderer-extension/src/agent-selection-state.ts"),
+        source("tools/renderer-binding/run.mjs"),
+      ]);
 
     expect(agentState).toContain('"deepseek-harness",');
     expect(agentState).toContain('"grok",');
@@ -27,6 +29,9 @@ describe("production Renderer release chain", () => {
     expect(probeEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
     expect(probeEntry).not.toContain("enableClaudeCode");
     expect(installer).toContain("installCurrentRendererAdapter");
+    expect(rendererBindingTool).toContain('"grok",');
+    expect(rendererBindingTool).toContain("RENDERER_PROBE_AGENTS.includes(agent)");
+    expect(rendererBindingTool).toContain("enabledAgents = [...RENDERER_PROBE_AGENTS]");
   });
 
   it("builds and packages executable production entries", async () => {

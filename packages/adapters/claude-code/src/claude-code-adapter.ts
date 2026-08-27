@@ -267,19 +267,12 @@ const REQUEST_USAGE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 // notifications is not observable. The user task is therefore idle once the
 // native Session stops opening Segments for this long.
 const DEFAULT_CONTINUATION_QUIESCENCE_MS = 2_000;
-// How long a pulled plan-limit reading is served without re-asking the CLI.
-//
-// This is a throttle, not a poll interval: the Renderer re-inspects Usage on
-// every `thread/tokenUsage/updated` notification, so during a long Turn the
-// pill is already refreshed by activity rather than by a timer. The TTL only
-// decides how many of those inspections reach the CLI's `/usage` channel.
-//
-// It therefore has to stay well under the interval users notice. A minute of
-// throttling made a running Turn's quota visibly lag — the window moves on
-// every billed request, which during a Turn is constantly. Kept low enough to
-// track an active Turn, high enough that the burst of inspections every
-// mounted composer fires still collapses into one pull.
+// Ordinary Renderer inspections share a short-lived pulled reading instead of
+// each hitting the experimental `/usage` channel. Active Turns bypass this TTL
+// through one Adapter-wide poller, while native pushes and Turn completion also
+// force a refresh.
 const PLAN_LIMIT_TTL_MS = 15_000;
+const ACTIVE_PLAN_LIMIT_POLL_INTERVAL_MS = 5_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -465,6 +458,8 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #cwd: string;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
+  readonly #onTurnFinished: () => void;
+  readonly #onTurnStarted: () => void;
   readonly #onPlanLimitObserved: (
     planLimit: ClaudePlanLimitEvent,
     source: ClaudePlanLimitSource,
@@ -505,6 +500,8 @@ class ClaudeHarnessSession implements HarnessSession {
     dependencies: ClaudeAdapterDependencies,
     closeTimeoutMs: number,
     onClosed: () => void,
+    onTurnStarted: () => void,
+    onTurnFinished: () => void,
     onPlanLimitObserved: (
       planLimit: ClaudePlanLimitEvent,
       source: ClaudePlanLimitSource,
@@ -525,6 +522,8 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#readSessionMessages = dependencies.readSessionMessages;
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
+    this.#onTurnStarted = onTurnStarted;
+    this.#onTurnFinished = onTurnFinished;
     this.#onPlanLimitObserved = onPlanLimitObserved;
     this.#openMode = options.openMode;
     this.#requestedModel = options.requestedModel;
@@ -714,6 +713,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    this.#onTurnStarted();
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
     try {
@@ -815,6 +815,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    this.#onTurnStarted();
     this.#event({ type: "turn.started", turnId: command.turnId });
     if (item) this.#event({ type: "item.started", turnId: command.turnId, item });
     const running =
@@ -1661,6 +1662,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    this.#onTurnStarted();
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
@@ -1974,18 +1976,22 @@ class ClaudeHarnessSession implements HarnessSession {
    */
   #handlePlanLimit(planLimit: ClaudePlanLimitEvent, source: ClaudePlanLimitSource): void {
     const effective = this.#onPlanLimitObserved(planLimit, source);
-    if (this.#phase !== "open" || !effective) return;
+    if (effective) this.publishPlanLimit(effective);
+  }
+
+  publishPlanLimit(planLimit: ClaudePlanLimitEvent): void {
+    if (this.#phase !== "open") return;
     const delta: Partial<HostUsage> = {};
-    if (effective.fiveHour) {
-      delta.planFiveHourUsedPercent = effective.fiveHour.utilizationPercent;
-      if (effective.fiveHour.resetsAtUnix !== undefined) {
-        delta.planFiveHourResetsAtUnix = effective.fiveHour.resetsAtUnix;
+    if (planLimit.fiveHour) {
+      delta.planFiveHourUsedPercent = planLimit.fiveHour.utilizationPercent;
+      if (planLimit.fiveHour.resetsAtUnix !== undefined) {
+        delta.planFiveHourResetsAtUnix = planLimit.fiveHour.resetsAtUnix;
       }
     }
-    if (effective.sevenDay) {
-      delta.planSevenDayUsedPercent = effective.sevenDay.utilizationPercent;
-      if (effective.sevenDay.resetsAtUnix !== undefined) {
-        delta.planSevenDayResetsAtUnix = effective.sevenDay.resetsAtUnix;
+    if (planLimit.sevenDay) {
+      delta.planSevenDayUsedPercent = planLimit.sevenDay.utilizationPercent;
+      if (planLimit.sevenDay.resetsAtUnix !== undefined) {
+        delta.planSevenDayResetsAtUnix = planLimit.sevenDay.resetsAtUnix;
       }
     }
     this.#mergeAndPublishUsage(delta, this.#active?.command.turnId);
@@ -2100,6 +2106,7 @@ class ClaudeHarnessSession implements HarnessSession {
       outcome: checkpoint ? { ...outcome, checkpoint } : outcome,
     });
     this.#active = null;
+    this.#onTurnFinished();
     this.#occupancy.clear();
     this.#transport?.setIdleLive(false);
     active.resolveCompletion();
@@ -2186,11 +2193,13 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
+  readonly #activeTurnSessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
   #planLimitFreshUntilMs = 0;
   #planLimitRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
   #planLimitPullUnavailable = false;
+  #planLimitPoller: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
@@ -2509,12 +2518,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           })
         : null;
     if (forked && !forked.ok) return forked;
-    const session = new ClaudeHarnessSession(
+    let session: ClaudeHarnessSession;
+    session = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
       this.#closeTimeoutMs,
       () => this.#sessions.delete(session),
-      (planLimit, source) => this.#recordPlanLimit(planLimit, source),
+      () => this.#startTurnCreditsPolling(session),
+      () => this.#finishTurnCreditsPolling(session),
+      (planLimit, source) => this.#recordPlanLimit(session, planLimit, source),
       {
         openMode: rollback?.openMode ?? (input.kind === "create" ? "create" : "resume"),
         sessionId:
@@ -2549,10 +2561,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
    * authoritative writer:
    *
    * 1. `"pull"` always writes, and marks the value fresh for `PLAN_LIMIT_TTL_MS`.
-   * 2. `"push"` never overwrites a window that already has a value; it only
-   *    expires the cache, so the next read re-pulls. This costs nothing in
-   *    practice — a push only arrives over an open Session's transport, which
-   *    is exactly what makes a pull possible.
+   * 2. `"push"` never overwrites a window that already has a value; it expires
+   *    the cache and immediately re-pulls through an open Session.
    * 3. `"push"` may fill a window that is *empty*, so the pill lights up before
    *    the first pull lands, and may write freely if pulling has proven
    *    unavailable (an SDK without the experimental `/usage` query never
@@ -2567,6 +2577,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
    * its own Usage snapshot, keeping popover and pill in agreement.
    */
   #recordPlanLimit(
+    origin: ClaudeHarnessSession,
     planLimit: ClaudePlanLimitEvent,
     source: ClaudePlanLimitSource,
   ): ClaudePlanLimitEvent | null {
@@ -2575,10 +2586,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     if (planLimit.fiveHour && (mayOverwrite || !next.fiveHour)) next.fiveHour = planLimit.fiveHour;
     if (planLimit.sevenDay && (mayOverwrite || !next.sevenDay)) next.sevenDay = planLimit.sevenDay;
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
+    if (this.#latestPlanLimit) {
+      for (const session of this.#sessions) {
+        if (session !== origin) session.publishPlanLimit(this.#latestPlanLimit);
+      }
+    }
     // Only a pull earns the freshness window. A push always expires the cache:
     // whether or not it filled an empty window, it signals that the account
     // state moved and the cached reading should be re-pulled on the next read.
     this.#planLimitFreshUntilMs = source === "pull" ? Date.now() + PLAN_LIMIT_TTL_MS : 0;
+    // A push is an immediate refresh signal even between scheduled active-Turn
+    // polls. Re-pull rather than trusting a possibly stale Session observation.
+    if (source === "push") void this.#refreshCredits(true);
     return this.#latestPlanLimit;
   }
 
@@ -2597,12 +2616,35 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
    * independently, and letting those race produced overlapping pulls whose
    * answers landed out of order.
    */
-  async refreshCredits(): Promise<AccountCreditsSnapshot | null> {
-    if (this.#latestPlanLimit && Date.now() < this.#planLimitFreshUntilMs) return this.credits();
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    return this.#refreshCredits(false);
+  }
+
+  #refreshCredits(force: boolean): Promise<AccountCreditsSnapshot | null> {
+    if (!force && this.#latestPlanLimit && Date.now() < this.#planLimitFreshUntilMs) {
+      return Promise.resolve(this.credits());
+    }
     this.#planLimitRefresh ??= this.#pullPlanLimit().finally(() => {
       this.#planLimitRefresh = null;
     });
     return this.#planLimitRefresh;
+  }
+
+  #startTurnCreditsPolling(session: ClaudeHarnessSession): void {
+    this.#activeTurnSessions.add(session);
+    if (this.#planLimitPoller) return;
+    this.#planLimitPoller = setInterval(() => {
+      void this.#refreshCredits(true);
+    }, ACTIVE_PLAN_LIMIT_POLL_INTERVAL_MS);
+    this.#planLimitPoller.unref();
+  }
+
+  #finishTurnCreditsPolling(session: ClaudeHarnessSession): void {
+    if (!this.#activeTurnSessions.delete(session)) return;
+    void this.#refreshCredits(true);
+    if (this.#activeTurnSessions.size > 0 || !this.#planLimitPoller) return;
+    clearInterval(this.#planLimitPoller);
+    this.#planLimitPoller = null;
   }
 
   /**
@@ -2612,7 +2654,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
    */
   async #pullPlanLimit(): Promise<AccountCreditsSnapshot | null> {
     let pulled = false;
-    for (const session of this.#sessions) {
+    const candidates = new Set([...this.#activeTurnSessions, ...this.#sessions]);
+    for (const session of candidates) {
       // `refreshPlanLimit` already records a non-null answer into
       // `#latestPlanLimit` (it routes through `#handlePlanLimit`, same as the
       // passive push) — this loop only decides when to stop trying Sessions.
@@ -2630,6 +2673,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   close(): Promise<void> {
     if (!this.#closePromise) {
       this.#inspectionCache.clear();
+      if (this.#planLimitPoller) clearInterval(this.#planLimitPoller);
+      this.#planLimitPoller = null;
+      this.#activeTurnSessions.clear();
       this.#closePromise = Promise.all([
         ...[...this.#inspectors].map((inspector) => inspector.close()),
         ...[...this.#sessions].map((session) => session.close()),

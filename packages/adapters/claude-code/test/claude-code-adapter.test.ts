@@ -3953,6 +3953,8 @@ describe("Claude Code HarnessAdapter", () => {
     transport.finish({ status: "succeeded" });
     await nextEvent(iterator);
     await nextEvent(iterator);
+    await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledOnce());
+    transport.getPlanLimit.mockClear();
 
     transport.planLimitOnDemand = {
       fiveHour: { utilizationPercent: 71, resetsAtUnix: 1_787_674_200 },
@@ -4039,6 +4041,40 @@ describe("Claude Code HarnessAdapter", () => {
     await sessionB.close();
   });
 
+  it("polls account credits during a Turn, refreshes on completion, then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("poll-credits"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 6 } };
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
+      await expect(nextEvent(iterator)).resolves.toMatchObject({
+        type: "session.usage.changed",
+        usage: { planFiveHourUsedPercent: 6 },
+      });
+
+      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 10 } };
+      transport.finish({ status: "succeeded" });
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledTimes(2));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(transport.getPlanLimit).toHaveBeenCalledTimes(2);
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets a push fill a window the pull never reported", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -4084,6 +4120,8 @@ describe("Claude Code HarnessAdapter", () => {
       transport.finish({ status: "succeeded" });
       await nextEvent(iterator);
       await nextEvent(iterator);
+      await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledOnce());
+      transport.getPlanLimit.mockClear();
 
       transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 40 } };
       await adapter.refreshCredits();
@@ -4131,6 +4169,14 @@ describe("Claude Code HarnessAdapter", () => {
     transportB.finish({ status: "succeeded" });
     await nextEvent(iteratorB);
     await nextEvent(iteratorB);
+    await vi.waitFor(() =>
+      expect(
+        transportA.getPlanLimit.mock.calls.length + transportB.getPlanLimit.mock.calls.length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+    await adapter.refreshCredits();
+    transportA.getPlanLimit.mockClear();
+    transportB.getPlanLimit.mockClear();
 
     // A has no answer (planLimitOnDemand unset); B does — the loop must not give up after A.
     transportB.planLimitOnDemand = { fiveHour: { utilizationPercent: 12 } };

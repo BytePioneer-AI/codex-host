@@ -90,7 +90,8 @@ class FakeOmpTransport implements OmpTurnTransport {
     return null;
   }
 
-  async fork(): Promise<OmpSessionState> {
+  async fork(entryId: string): Promise<OmpSessionState> {
+    void entryId;
     return this.state;
   }
 
@@ -372,7 +373,9 @@ describe("OMP Adapter Subagents", () => {
     const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    await expect(opened.value.commands.list()).resolves.toEqual({
+    const commands = opened.value.commands;
+    if (!commands) throw new Error("OMP Session did not expose commands");
+    await expect(commands.list()).resolves.toEqual({
       ok: true,
       value: {
         commands: [

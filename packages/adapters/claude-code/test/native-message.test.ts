@@ -133,6 +133,68 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("publishes late Usage from a repeated Assistant snapshot", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const messageId = "request-1";
+
+    const thinking = assistantBlocks(
+      [{ type: "thinking", thinking: "inspect" }],
+      "thinking-checkpoint",
+      undefined,
+      null,
+      {
+        input_tokens: 2_695,
+        output_tokens: 115,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+      },
+    );
+    thinking.message.id = messageId;
+    expect(turn.consume(thinking)).toEqual({
+      events: [
+        {
+          type: "message.completed",
+          messageId,
+          checkpointId: "thinking-checkpoint",
+        },
+      ],
+    });
+
+    const complete = assistantBlocks(
+      [{ type: "tool_use", name: "Read", id: "read-1", input: { file_path: "package.json" } }],
+      "tool-checkpoint",
+      undefined,
+      null,
+      {
+        input_tokens: 2_695,
+        output_tokens: 115,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 19_968,
+      },
+    );
+    complete.message.id = messageId;
+    expect(turn.consume(complete)).toEqual({
+      events: [
+        {
+          type: "tool.started",
+          callId: "read-1",
+          toolName: "Read",
+          arguments: { file_path: "package.json" },
+        },
+        {
+          type: "message.completed",
+          messageId,
+          checkpointId: "tool-checkpoint",
+          lastRequestUsage: {
+            inputTokens: 2_695,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 19_968,
+          },
+        },
+      ],
+    });
+  });
+
   it("reconciles separate Assistant text responses across a Tool loop", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

@@ -23,6 +23,7 @@ interface AssistantMessageState {
   completed: boolean;
   reasoning: string;
   text: string;
+  usagePublished: boolean;
 }
 
 interface ActiveNativeTool {
@@ -619,6 +620,18 @@ export class ClaudeNativeTurnAccumulator {
     const state = this.#messageState(messageId);
     if (state.completed) {
       this.#consumeToolUseBlocks(message, events, true);
+      const usage = isRecord(message.message)
+        ? parseLastRequestUsage(message.message.usage)
+        : undefined;
+      if (usage && !state.usagePublished) {
+        state.usagePublished = true;
+        events.push({
+          type: "message.completed",
+          messageId,
+          ...(checkpointId ? { checkpointId } : {}),
+          lastRequestUsage: usage,
+        });
+      }
       return;
     }
 
@@ -645,6 +658,7 @@ export class ClaudeNativeTurnAccumulator {
       const usage = isRecord(message.message)
         ? parseLastRequestUsage(message.message.usage)
         : undefined;
+      state.usagePublished = usage !== undefined;
       events.push({
         type: "message.completed",
         messageId,
@@ -789,7 +803,7 @@ export class ClaudeNativeTurnAccumulator {
   #messageState(messageId: string): AssistantMessageState {
     const existing = this.#messages.get(messageId);
     if (existing) return existing;
-    const created = { completed: false, reasoning: "", text: "" };
+    const created = { completed: false, reasoning: "", text: "", usagePublished: false };
     this.#messages.set(messageId, created);
     return created;
   }

@@ -77,6 +77,11 @@ import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
+// Mirrors PLAN_LIMIT_TTL_MS in the Claude Code Adapter: how long a pulled
+// account-quota reading is served before `account/rateLimits/read` is re-asked.
+// Sized to keep a running Turn's quota current, since Usage is re-inspected by
+// token-usage activity rather than on a timer. See that constant for why.
+const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -395,6 +400,7 @@ export class AppServerHost {
   #officialUsageByThread = new Map<string, HostUsage>();
   #officialRateLimitUsage: Partial<HostUsage> | null = null;
   #officialRateLimitRefresh: Promise<void> | null = null;
+  #officialRateLimitFreshUntilMs = 0;
   #officialAccountGeneration = 0;
   #routeObservationTracker = new RequestRouteObservationTracker();
   #writer: OrderedWriter;
@@ -920,7 +926,7 @@ export class AppServerHost {
           }
         }
         const rateLimits = observeCodexRateLimits(parsed);
-        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits);
+        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "push");
         this.#routeObservationTracker.bindOfficialResponse(parsed);
         await this.#writer.frame(frame);
       }
@@ -1171,12 +1177,26 @@ export class AppServerHost {
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }
 
-  #mergeOfficialRateLimits(rateLimits: Partial<HostUsage>): void {
+  /**
+   * Native Codex reports account quota the same two ways the Claude Code
+   * Adapter does, and arbitrates them the same way: the on-demand
+   * `account/rateLimits/read` pull is authoritative, while a notification push
+   * may only fill an empty snapshot or expire the cached one. Letting both
+   * write freely made the credits pill flip between readings taken at
+   * different moments. See `ClaudeCodeAdapter#recordPlanLimit`.
+   */
+  #mergeOfficialRateLimits(rateLimits: Partial<HostUsage>, source: "push" | "pull"): void {
+    if (source === "push" && this.#officialRateLimitUsage) {
+      this.#officialRateLimitFreshUntilMs = 0;
+      return;
+    }
     try {
       this.#officialRateLimitUsage = parseHostUsage({
         ...(this.#officialRateLimitUsage ?? {}),
         ...rateLimits,
       });
+      this.#officialRateLimitFreshUntilMs =
+        source === "pull" ? Date.now() + OFFICIAL_RATE_LIMIT_TTL_MS : 0;
     } catch {
       // Ignore a malformed sparse update while preserving the last valid snapshot.
     }
@@ -1189,6 +1209,7 @@ export class AppServerHost {
     this.#officialAccountGeneration += 1;
     this.#officialUsageByThread.clear();
     this.#officialRateLimitUsage = null;
+    this.#officialRateLimitFreshUntilMs = 0;
   }
 
   #combinedOfficialUsage(usage: HostUsage | undefined): HostUsage | null {
@@ -1202,7 +1223,11 @@ export class AppServerHost {
   }
 
   async #refreshOfficialRateLimits(): Promise<void> {
-    if (this.#officialRateLimitUsage) return;
+    // Serve the cached snapshot only while it is still fresh. This used to
+    // return on any non-null snapshot, which made the refresh a permanent
+    // no-op after the first success: the pill then froze at that first reading
+    // for the rest of the process, and only a push could ever move it again.
+    if (this.#officialRateLimitUsage && Date.now() < this.#officialRateLimitFreshUntilMs) return;
     if (this.#officialRateLimitRefresh) return this.#officialRateLimitRefresh;
     const accountGeneration = this.#officialAccountGeneration;
     this.#officialRateLimitRefresh = this.#officialRequestBroker
@@ -1210,7 +1235,7 @@ export class AppServerHost {
       .then((response) => {
         if (accountGeneration !== this.#officialAccountGeneration) return;
         const rateLimits = observeCodexRateLimits(response);
-        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits);
+        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "pull");
       })
       .catch(() => undefined)
       .finally(() => {

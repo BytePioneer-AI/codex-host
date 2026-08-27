@@ -100,6 +100,7 @@ import type {
   ClaudeAutonomousTurn,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
+  ClaudeLastRequestUsage,
   ClaudeModelInspector,
   ClaudePlanLimitEvent,
   ClaudePlanLimitSource,
@@ -142,6 +143,13 @@ interface ContextUsageRefreshRequest {
 interface SessionUsageRefreshRequest {
   transport: ClaudeTurnTransport;
   turnId: TurnStartCommand["turnId"];
+  generation: number;
+}
+
+interface RequestUsageRefreshRequest {
+  turnId: TurnStartCommand["turnId"];
+  messageId: string;
+  boundary: number;
   generation: number;
 }
 
@@ -253,6 +261,7 @@ const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 const ACTIVE_CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
+const REQUEST_USAGE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 // Claude opens the continuation Segment within milliseconds of the Segment that
 // observed a task notification, and the number of Segments it spends on queued
 // notifications is not observable. The user task is therefore idle once the
@@ -271,6 +280,44 @@ const DEFAULT_CONTINUATION_QUIESCENCE_MS = 2_000;
 // track an active Turn, high enough that the burst of inspections every
 // mounted composer fires still collapses into one pull.
 const PLAN_LIMIT_TTL_MS = 15_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function transcriptRequestUsage(
+  messages: readonly unknown[],
+  messageId: string,
+): ClaudeLastRequestUsage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (
+      !isRecord(entry) ||
+      entry.type !== "assistant" ||
+      (entry.parent_tool_use_id !== null && entry.parent_tool_use_id !== undefined) ||
+      !isRecord(entry.message) ||
+      entry.message.id !== messageId ||
+      !isRecord(entry.message.usage)
+    ) {
+      continue;
+    }
+    const inputTokens = entry.message.usage.input_tokens;
+    const cacheCreationInputTokens = entry.message.usage.cache_creation_input_tokens;
+    const cacheReadInputTokens = entry.message.usage.cache_read_input_tokens;
+    if (
+      safeNonNegativeInteger(inputTokens) &&
+      safeNonNegativeInteger(cacheCreationInputTokens) &&
+      safeNonNegativeInteger(cacheReadInputTokens)
+    ) {
+      return { inputTokens, cacheCreationInputTokens, cacheReadInputTokens };
+    }
+  }
+  return undefined;
+}
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -448,6 +495,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #contextRefreshWake: (() => void) | null = null;
   #sessionRefreshInFlight: Promise<void> | null = null;
   #sessionRefreshPending: SessionUsageRefreshRequest | null = null;
+  #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
   #occupancy = new ClaudeBackgroundOccupancy();
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -1094,6 +1142,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#usageGeneration += 1;
     this.#contextRefreshPending = null;
     this.#sessionRefreshPending = null;
+    this.#requestUsageBoundary += 1;
     this.#contextRefreshWake?.();
     this.#contextRefreshWake = null;
     this.#clearContinuationQuiescence();
@@ -1222,7 +1271,10 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "message.completed": {
         if (event.lastRequestUsage) {
+          this.#requestUsageBoundary += 1;
           this.#applyLatestRequestUsage(active, event.lastRequestUsage);
+        } else {
+          this.#requestLatestRequestUsage(active, event.messageId);
         }
         const transport = this.#transport;
         if (transport) this.#refreshUsageSnapshot(transport, active.command.turnId, false);
@@ -1807,14 +1859,51 @@ class ClaudeHarnessSession implements HarnessSession {
     return result;
   }
 
-  #applyLatestRequestUsage(
-    active: ActiveTurn,
-    usage: {
-      inputTokens: number;
-      cacheCreationInputTokens: number;
-      cacheReadInputTokens: number;
-    },
-  ): void {
+  #requestLatestRequestUsage(active: ActiveTurn, messageId: string): void {
+    const request: RequestUsageRefreshRequest = {
+      turnId: active.command.turnId,
+      messageId,
+      boundary: (this.#requestUsageBoundary += 1),
+      generation: this.#usageGeneration,
+    };
+    void this.#readLatestRequestUsage(request);
+  }
+
+  async #readLatestRequestUsage(request: RequestUsageRefreshRequest): Promise<void> {
+    for (const retryDelayMs of REQUEST_USAGE_RETRY_DELAYS_MS) {
+      if (retryDelayMs > 0) await delay(retryDelayMs);
+      if (
+        this.#phase !== "open" ||
+        this.#usageGeneration !== request.generation ||
+        this.#requestUsageBoundary !== request.boundary
+      ) {
+        return;
+      }
+      try {
+        const messages = await this.#readSessionMessages({
+          cwd: this.#cwd,
+          sessionId: this.#sessionId,
+        });
+        if (
+          this.#phase !== "open" ||
+          this.#usageGeneration !== request.generation ||
+          this.#requestUsageBoundary !== request.boundary
+        ) {
+          return;
+        }
+        const usage = transcriptRequestUsage(messages, request.messageId);
+        if (!usage) continue;
+        const active = this.#active;
+        if (!active || active.command.turnId !== request.turnId) return;
+        this.#applyLatestRequestUsage(active, usage);
+        return;
+      } catch {
+        // The transcript is written asynchronously; retry without affecting the Turn.
+      }
+    }
+  }
+
+  #applyLatestRequestUsage(active: ActiveTurn, usage: ClaudeLastRequestUsage): void {
     const promptTokens =
       usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
@@ -1969,6 +2058,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #finish(active: ActiveTurn, outcome: TurnOutcome): void {
     if (this.#active !== active) return;
+    this.#requestUsageBoundary += 1;
     this.#clearContinuationQuiescence();
     const hold =
       outcome.status === "succeeded" && !active.cancellationRequested && this.#occupancy.unsettled;
@@ -2020,6 +2110,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#usageGeneration += 1;
     this.#contextRefreshPending = null;
     this.#sessionRefreshPending = null;
+    this.#requestUsageBoundary += 1;
     this.#contextRefreshWake?.();
     this.#contextRefreshWake = null;
     const active = this.#active;

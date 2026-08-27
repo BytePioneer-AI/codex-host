@@ -3350,6 +3350,61 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("recovers cache Usage from the transcript when the live Assistant Usage is sparse", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, history, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("transcript-cache-hit"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.delta("working", "native-request-1");
+      await nextEvent(iterator);
+      transport.event({ type: "message.completed", messageId: "native-request-1" });
+      expect((await nextEvent(iterator)).type).toBe("item.completed");
+      await vi.advanceTimersByTimeAsync(0);
+
+      history.push({
+        type: "assistant",
+        uuid: "assistant-checkpoint-1",
+        session_id: "claude-id-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "native-request-1",
+          role: "assistant",
+          content: [{ type: "text", text: "working" }],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 70,
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(await nextEvent(iterator)).toEqual({
+        type: "session.usage.changed",
+        observedForTurnId: "transcript-cache-hit",
+        usage: { cacheHitRatePercent: 70 },
+      });
+
+      transport.finish({ status: "succeeded" });
+      for (;;) {
+        if ((await nextEvent(iterator)).type === "turn.completed") break;
+      }
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not let Context Usage overwrite cache hit rate from the completed Assistant response", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

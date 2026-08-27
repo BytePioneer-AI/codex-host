@@ -929,7 +929,17 @@ fn migrates_a_live_version_one_owner_before_starting_a_replacement() {
         .stdin
         .take()
         .expect("replacement Host Runtime stdin");
-    let replacement_identity = wait_for_file(&replacement_ready, Duration::from_secs(5));
+    // Version-one migration can consume the four-second graceful window and the two-second forced
+    // window before the replacement publishes readiness. Keep the fixture outside that bounded
+    // production handoff and report an early Shim exit with its owner record and stderr.
+    let replacement_identity = wait_for_child_file_matching(
+        &mut replacement,
+        &replacement_ready,
+        &directory,
+        Duration::from_secs(10),
+        "replacement Host Runtime readiness failed after version-one owner migration",
+        |_| true,
+    );
     let replacement_root = process_id_from_ready(&replacement_identity, "root=");
     let owner_was_retired = wait_for_process_exit(&mut owner, Duration::from_secs(2));
 

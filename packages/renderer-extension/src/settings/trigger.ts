@@ -58,11 +58,6 @@ function measuredBounds(element: Element): RendererSettingsBounds {
   };
 }
 
-function isVisibleButton(button: HTMLButtonElement): boolean {
-  const bounds = button.getBoundingClientRect();
-  return bounds.width > 0 && bounds.height > 0;
-}
-
 export function selectRendererSettingsHeaderSlot<T>(
   header: RendererSettingsBounds,
   candidates: readonly RendererSettingsHeaderSlotCandidate<T>[],
@@ -103,9 +98,7 @@ function findRendererSettingsHeaderInsertionPoint(
       const bounds = measuredBounds(slot);
       return bounds.width > 0 && bounds.height > 0;
     })
-    .toSorted(
-      (left, right) => measuredBounds(right).left - measuredBounds(left).left,
-    )[0];
+    .toSorted((left, right) => measuredBounds(right).left - measuredBounds(left).left)[0];
   return endSlot ? { parent: header, before: endSlot } : null;
 }
 

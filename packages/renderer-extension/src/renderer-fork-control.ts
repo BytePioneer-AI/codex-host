@@ -177,10 +177,12 @@ export function installRendererForkControl(options: {
       .inspectThread({ threadId: target.threadId })
       .then(async (inspection) => {
         if (disposed) return;
+        // Project Threads must retain Desktop's native destination/worktree flow.
+        // forkAcrossCwd validates the chosen destination at Host; it must not bypass that UI.
         if (
           inspection.owner === "codex" ||
           !inspection.history.fork ||
-          (!target.isProjectlessConversation && inspection.history.forkAcrossCwd)
+          !target.isProjectlessConversation
         ) {
           dom.replay(target);
           return;

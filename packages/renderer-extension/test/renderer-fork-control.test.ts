@@ -168,7 +168,7 @@ describe("Renderer external Thread Fork control", () => {
     control.dispose();
   });
 
-  it("uses same-cwd Fork for a project Thread without cross-cwd capability", async () => {
+  it("replays the native destination flow for a project Thread without cross-cwd capability", async () => {
     const dom = new FakeForkDom();
     const client = clientWith({
       owner: "external",
@@ -183,12 +183,9 @@ describe("Renderer external Thread Fork control", () => {
     expect(dom.emit(source)).toBe(true);
     await settle();
 
-    expect(client.forkThread).toHaveBeenCalledWith({
-      threadId: "source-thread",
-      lastTurnId: "source-turn",
-    });
-    expect(dom.openThread).toHaveBeenCalledWith("derived-thread");
-    expect(dom.replay).not.toHaveBeenCalled();
+    expect(dom.replay).toHaveBeenCalledWith(source);
+    expect(client.forkThread).not.toHaveBeenCalled();
+    expect(dom.openThread).not.toHaveBeenCalled();
     control.dispose();
   });
 

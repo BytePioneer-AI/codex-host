@@ -33,51 +33,50 @@
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
-![Codex Desktop에서 실행 중인 Pi와 Claude Code 전체 데모](imgs/demo.gif)
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ### 인터페이스
 
-![Codex Desktop에서 실행 중인 Pi, Claude Code, DeepSeek Harness](imgs/app-overview.png)
+![Codex Desktop에서 독립 Thread로 실행 중인 Pi, Oh My Pi, Grok Build, DeepSeek Harness](imgs/codexhost-interface-overview.png)
 
 ## 기능 상태
 
-| 기능 | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
-| --- | --- | --- | --- | --- | --- |
-| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| Thinking | 기본 제공 | ✅ | ✅ | ✅ | — |
-| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | 🚧 |
-| 도구 승인 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| 권한 모드 | 기본 제공 | — | ✅ | ✅ | — |
-| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| 세션 복원 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| Fork | 기본 제공 | ✅ | ✅ | ✅ | — |
-| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ |
-| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | 🚧 | ✅ | — |
-
-> **SSH 원격 Harness**: ✅ Codex Desktop의 기본 SSH 작업 공간을 통해 원격 노드의 Harness를 사용할 수 있습니다.
+| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- |
+| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ |
+| 권한 모드 | 기본 제공 | — | — | ✅ | ✅ | — |
+| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
+| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 
 ## 빠른 시작
 
-**방법 1: npm으로 설치**
+**npm 사용**
+
+> macOS, Windows 및 [x64 Linux](linux.md)를 지원합니다.
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
-npm은 macOS, Windows 및 [x64 Linux](linux.md)를 지원합니다.
+**또는** [설치 프로그램](https://github.com/BytePioneer-AI/codex-host/releases) 다운로드 (macOS, Windows)
 
-**방법 2: 설치 프로그램 다운로드**
+<details>
+<summary>설치 문제 해결</summary>
 
-[GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases)에서 최신 설치 프로그램을 다운로드한 다음 운영체제와 CPU 아키텍처에 맞는 파일을 선택하세요. 현재 설치 프로그램은 macOS와 Windows를 지원합니다.
+**macOS** - Apple 인증 문제
 
-macOS에서 처음 실행할 때 Apple이 앱을 확인할 수 없다는 메시지가 표시되면 터미널에서 다음 명령을 실행하세요:
+처음 실행할 때 Apple이 앱을 확인할 수 없다는 메시지가 표시되면 다음을 실행하세요:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/codexhost.app
@@ -85,27 +84,34 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 그런 다음 `codexhost`를 다시 실행하세요.
 
-Windows에서 압축 해제 방식의 Codex Desktop을 사용하는 경우, codexhost를 실행하기 전에 `CODEXHOST_INSTALL_ROOT`를 `app\ChatGPT.exe`가 포함된 디렉터리로 설정하세요:
+**Windows** - 휴대용 Codex Desktop
+
+휴대용 Codex Desktop을 사용하는 경우, codexhost를 실행하기 전에 `CODEXHOST_INSTALL_ROOT`를 `app\ChatGPT.exe`가 포함된 디렉터리로 설정하세요:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-새 터미널을 열고 codexhost를 시작하세요. 이 설정은 npm 명령과 Windows 설치 프로그램 모두에 적용됩니다.
+새 터미널을 열고 codexhost를 시작하세요.
 
-### SSH 원격 Harness
+</details>
 
-로컬 Codex Desktop에서 SSH를 통해 다른 개발 노드의 Harness에 연결하고 제어할 수 있으며, 원격 컴퓨터에서 작업을 실행하면서 Codex Desktop의 통합 인터페이스를 계속 사용할 수 있습니다.
+<details>
+<summary><h3>원격 Harness</h3></summary>
 
-양쪽 컴퓨터에 동일한 버전의 codexhost를 설치하고 Codex Desktop의 기본 SSH 작업 공간이 정상적으로 작동하는지 확인하세요.
+로컬 Codex Desktop에서 원격 노드의 Harness를 사용하여 원격 컴퓨터에서 작업을 실행하면서 Codex Desktop의 통합 인터페이스를 계속 사용할 수 있습니다. 양쪽 끝에 동일한 버전의 codexhost를 설치해야 합니다.
+
+**두 가지 연결 방식을 지원합니다:**
+
+#### 1️⃣ SSH 원격 (Mac/Linux 서버에 권장)
+
+Codex Desktop의 기본 SSH 작업 공간을 통해 SSH를 통해 다른 개발 노드의 Harness에 연결하고 제어할 수 있습니다.
 
 | 클라이언트 ↓ / 원격 Host → | macOS | Linux | Windows |
 | --- | --- | --- | --- |
 | macOS | ✅ | ✅ | ❌ |
 | Linux | ✅ | ✅ | ❌ |
 | Windows | ✅ | ✅ | ❌ |
-
-Windows는 클라이언트로 사용할 수 있지만 원격 Host로는 현재 지원되지 않습니다. 원격 Host는 macOS 또는 Linux에서 실행되어야 합니다.
 
 SSH 원격 Host에서 실행하세요:
 
@@ -119,6 +125,16 @@ codexhost remote status
 그런 다음 로컬 codexhost를 통해 Codex Desktop을 시작하고 SSH 작업 공간을 연 뒤, 원격 composer의 Agent/Model 선택기에서 원하는 Harness를 선택하세요.
 
 [SSH 원격 설정, 진단 및 제거 문서 보기 →](remote-ssh-host.md)
+
+#### 2️⃣ Remote Control 원격 (실험 · Windows에 권장)
+
+Windows가 제어 대상 Host인 경우, codexhost는 Codex Desktop의 공식 페어링, 계정 인증 및 relay를 유지하면서 Windows에 설치되고 인증된 Harness를 이미 페어링된 다른 컴퓨터의 Codex Desktop에서 사용할 수 있습니다. 두 컴퓨터 모두 동일한 codexhost 빌드가 필요하며, 공식 Remote Control을 통해 기본 Codex가 이미 작동해야 합니다.
+
+이 연결 방식은 공개 서비스나 TCP 리스너를 추가하지 않습니다. Harness 자격 증명은 제어 대상 Windows 컴퓨터에 그대로 유지됩니다.
+
+[Remote Control 요구 사항, 전송 경계 및 진단 →](remote-control-host.md)
+
+</details>
 
 <details>
 <summary><h3>작동 방식</h3></summary>
@@ -137,11 +153,24 @@ CodexHost는 다른 방식을 사용합니다.
 
 ### 상호작용 예시
 
+OMP가 Agent 선택기에 통합되어 Codex Desktop에서 독립 Agent로 사용하여 세션을 생성하고 복원할 수 있습니다.
+
+<table>
+  <tr>
+    <td width="50%">
+      <img width="100%" alt="codexhost-demo-github-gif-1" src="https://github.com/user-attachments/assets/6974f178-53a7-4b85-a6d2-c25eb49816bd" />
+    </td>
+    <td width="50%">
+      <img width="100%" alt="codexhost-demo-github-gif-2" src="https://github.com/user-attachments/assets/b0336bfd-a614-4f2e-bf98-af1b45fbaee4" />
+    </td>
+  </tr>
+</table>
+
 <table>
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 및 Model 선택</strong></p>
-      <img src="imgs/grok-agent-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Grok이 목록에 추가되었습니다">
+      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 및 비용 정보</strong></p>
@@ -156,8 +185,7 @@ CodexHost는 다른 방식을 사용합니다.
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Grok 예시</strong></p>
-      <img src="imgs/grok-account-credits.png" alt="Grok 예시: 계정 크레딧, 주간 한도, 사용량 및 초기화 시간을 한눈에 확인할 수 있습니다">
+      <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
     </td>
   </tr>
 </table>

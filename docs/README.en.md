@@ -34,82 +34,85 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
 
 ## Interface Preview
 
-No app switching required: use Pi, Claude Code, Grok Build, and DeepSeek Harness directly in the same Codex Desktop window. Streaming output, thinking, tool status, diffs, approvals, and questions are rendered in real time when supported by each Harness.
+No app switching required: use Pi, Claude Code, OMP, Grok Build, and DeepSeek Harness directly in the same Codex Desktop window.
 
-![Full demo of Pi and Claude Code running in Codex Desktop](imgs/demo.gif)
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ### Interface
 
-![Pi, Claude Code, and DeepSeek Harness running as independent threads in Codex Desktop](imgs/app-overview.png)
+![Pi, Oh My Pi, Grok Build, and DeepSeek Harness running as independent threads in Codex Desktop](imgs/codexhost-interface-overview.png)
 
 ## Feature Status
 
-| Capability | Codex | Pi | Claude Code | Grok Build | DeepSeek Harness |
-| --- | --- | --- | --- | --- | --- |
-| Streaming replies | Native | ✅ | ✅ | ✅ | ✅ |
-| Thinking | Native | ✅ | ✅ | ✅ | — |
-| Tool status | Native | ✅ | ✅ | ✅ | ✅ |
-| Edit diffs | Native | ✅ | ✅ | ✅ | ✅ |
-| Ask / cancel | Native | ✅ | ✅ | 🚧 | ✅ |
-| Model / thinking selection | Native | ✅ | ✅ | ✅ | 🚧 |
-| Tool approvals | Native | ✅ | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | ✅ | ✅ | — |
-| Usage | Native | ✅ | ✅ | ✅ | ✅ |
-| Session resume | Native | ✅ | ✅ | ✅ | ✅ |
-| Thread management | Native | ✅ | 🚧 | 🚧 | 🚧 |
-| Fork | Native | ✅ | ✅ | ✅ | — |
-| Context compaction | Native | ✅ | ✅ | — | ✅ |
-| Slash commands | Native | 🚧 | 🚧 | — | — |
-| Revise the previous message | Native | ✅ | 🚧 | ✅ | — |
-
-`✅` supported, `🚧` partial or in progress, `—` not currently supported.
-
-> **Remote SSH Harness**: ✅ Use Harnesses on remote nodes through Codex Desktop's native SSH workspace.
->
-> **Remote Control Harness (experimental)**: 🧪 Use Harnesses on a controlled Windows Host through the official Remote Control relay.
+| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- |
+| Streaming replies | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit diffs | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Ask / cancel | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ |
+| Model / thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ |
+| Permission modes | Native | — | — | ✅ | ✅ | — |
+| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Revise the previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
 
 ## Quick Start
 
-**Option 1: Install with npm**
+**Use npm**
+
+> Supports macOS, Windows, and [x64 Linux](linux.md).
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
-npm supports macOS, Windows, and [x64 Linux](linux.md).
+**Or download** [installers](https://github.com/BytePioneer-AI/codex-host/releases) (macOS, Windows)
 
-**Option 2: Download an installer**
+<details>
+<summary>Installation Troubleshooting</summary>
 
-Download the latest installer from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases), then choose the file matching your operating system and CPU architecture. Installers currently support macOS and Windows.
+**macOS** - Apple verification issue
 
-After installing on macOS, if Apple says it cannot verify the app when you first open it, run the following command in Terminal:
+If Apple says the app cannot be verified when you first open it, run:
+
 ```bash
 xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
+
 Then open `codexhost` again.
 
-On Windows, if you use a portable/extracted Codex Desktop, set `CODEXHOST_INSTALL_ROOT` to the directory containing `app\ChatGPT.exe` before launching codexhost:
+**Windows** - Portable Codex Desktop
+
+If you use a portable/extracted Codex Desktop, set `CODEXHOST_INSTALL_ROOT` to the directory containing `app\ChatGPT.exe` before launching codexhost:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-Then open a new terminal and start codexhost. This applies to both the npm command and the Windows installer.
+Then open a new terminal and start codexhost.
 
-### Remote SSH Harness
+</details>
 
-Use Codex Desktop on your local machine to connect to and control Harnesses on other development nodes over SSH, while continuing to use Codex Desktop's unified interface.
+<details>
+<summary><h3>Remote Harness</h3></summary>
 
-Install the same codexhost version on both machines and make sure the native Codex Desktop SSH workspace already works.
+Use Harnesses on remote nodes within Codex Desktop on your local machine, executing tasks on remote machines while continuing to use Codex Desktop’s unified interface. Both ends need to install the same codexhost version.
+
+**Two connection methods are supported:**
+
+#### 1️⃣ SSH Remote (recommended for Mac/Linux servers)
+
+Connect to and control Harnesses on other development nodes over SSH through Codex Desktop’s native SSH workspace.
 
 | Client ↓ / Remote Host → | macOS | Linux | Windows |
 | --- | --- | --- | --- |
 | macOS | ✅ | ✅ | ❌ |
 | Linux | ✅ | ✅ | ❌ |
 | Windows | ✅ | ✅ | ❌ |
-
-Windows can be used as the client, but is not currently supported as a remote Host; remote Hosts must run macOS or Linux.
 
 Run this on the SSH remote host:
 
@@ -124,13 +127,15 @@ Then start Codex Desktop through local codexhost, open the SSH workspace, and ch
 
 [Remote SSH setup, diagnostics, and uninstall →](remote-ssh-host.md)
 
-### Remote Control Harness (experimental)
+#### 2️⃣ Remote Control Remote (experimental · recommended for Windows)
 
-When Windows is the controlled Host, codexhost can preserve Codex Desktop's official pairing, account authentication, and relay while making Harnesses installed and authenticated on Windows available in the paired controller Desktop. Both computers need the same codexhost build, and stock Codex must already work through official Remote Control.
+When Windows is the controlled Host, codexhost can preserve Codex Desktop’s official pairing, account authentication, and relay while making Harnesses installed and authenticated on Windows available in the paired controller Desktop. You can use Harnesses on Windows in the Codex Desktop of another paired computer. Both computers need the same codexhost build, and stock Codex must already work through official Remote Control.
 
 This path does not add a public service or TCP listener. Harness credentials remain on the controlled Windows machine.
 
 [Remote Control requirements, transport boundary, and diagnostics →](remote-control-host.md)
+
+</details>
 
 <details>
 <summary><h3>How it works</h3></summary>
@@ -149,11 +154,24 @@ The goal is fidelity, not merely making the conversation work. Streaming, tool s
 
 ### Interaction Examples
 
+OMP has been integrated into the Agent selector and can be used as an independent Agent in Codex Desktop to create and resume sessions.
+
+<table>
+  <tr>
+    <td width="50%">
+      <img width="100%" alt="codexhost-demo-github-gif-1" src="https://github.com/user-attachments/assets/6974f178-53a7-4b85-a6d2-c25eb49816bd" />
+    </td>
+    <td width="50%">
+      <img width="100%" alt="codexhost-demo-github-gif-2" src="https://github.com/user-attachments/assets/b0336bfd-a614-4f2e-bf98-af1b45fbaee4" />
+    </td>
+  </tr>
+</table>
+
 <table>
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/grok-agent-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Grok is now in the list">
+      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Codex, Pi, Claude Code, DeepSeek Harness, Grok, and Oh My Pi are available">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage and cost information</strong></p>
@@ -168,8 +186,7 @@ The goal is fidelity, not merely making the conversation work. Streaming, tool s
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Grok showcase</strong></p>
-      <img src="imgs/grok-account-credits.png" alt="Grok showcase: account credits with weekly limits, usage, and reset time at a glance">
+      <img src="imgs/grok-usage-limits.png" alt="Remaining allowance and reset times for the five-hour and seven-day windows">
     </td>
   </tr>
 </table>

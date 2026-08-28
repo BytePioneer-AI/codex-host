@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   CdpClient,
@@ -13,6 +14,13 @@ import { installRendererObserver, readRendererObserver } from "./renderer-observ
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultOutputDirectory = path.join(repositoryRoot, ".codexhost", "renderer-binding");
+export const RENDERER_PROBE_AGENTS = Object.freeze([
+  "codex",
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "grok",
+]);
 
 function usage() {
   console.error(`usage:
@@ -91,16 +99,14 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validateProbeStatus(value) {
+export function validateProbeStatus(value) {
   if (
     !isRecord(value) ||
     value.version !== 2 ||
     !Number.isInteger(value.mountedComposers) ||
     !Array.isArray(value.enabledAgents) ||
     value.enabledAgents.length < 2 ||
-    value.enabledAgents.some(
-      (agent) => !["codex", "pi", "claude-code", "deepseek-harness"].includes(agent),
-    ) ||
+    value.enabledAgents.some((agent) => !RENDERER_PROBE_AGENTS.includes(agent)) ||
     !value.enabledAgents.includes("codex") ||
     !value.enabledAgents.includes("pi") ||
     !Array.isArray(value.selections) ||
@@ -114,7 +120,7 @@ function validateProbeStatus(value) {
     if (
       !isRecord(selection) ||
       typeof selection.composerId !== "string" ||
-      !["codex", "pi", "claude-code", "deepseek-harness"].includes(selection.agent) ||
+      !RENDERER_PROBE_AGENTS.includes(selection.agent) ||
       !["draft", "locked"].includes(selection.phase)
     ) {
       throw new Error("Renderer binding probe returned an invalid selection");
@@ -296,7 +302,7 @@ async function run() {
     await pageClient.command("Runtime.enable");
     const cdpDom = await inspectRendererDom(pageClient);
     const source = fs.readFileSync(probeBundlePath, "utf8");
-    const enabledAgents = ["codex", "pi", "claude-code", "deepseek-harness"];
+    const enabledAgents = [...RENDERER_PROBE_AGENTS];
     rendererControl = await installRendererControlSession({
       inspectorEndpoint: options.inspectorEndpoint,
       rendererSource: source,
@@ -391,11 +397,17 @@ async function run() {
   }
 }
 
-try {
-  await run();
-} catch (error) {
-  console.error(
-    `renderer binding probe: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  process.exitCode = 1;
+const invokedAsScript =
+  typeof process.argv[1] === "string" &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (invokedAsScript) {
+  try {
+    await run();
+  } catch (error) {
+    console.error(
+      `renderer binding probe: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  }
 }

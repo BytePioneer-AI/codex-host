@@ -507,9 +507,12 @@ if (remoteArguments !== null) {
   });
 } else if (launchArguments?.[0] === "launch") {
   // The Launcher prints "ready" once the Desktop, Controller, and Host chain
-  // are up, then detaches from the terminal to keep supervising. Return
-  // success immediately so the terminal is not held open by this command.
+  // are up, then detaches from the terminal to keep supervising. Windows
+  // command hosts may clean up a completed command's process tree, so keep the
+  // npm parent alive there until the managed Desktop exits. Other platforms
+  // return immediately after startup as before.
   startupTrace("spawning Launcher");
+  const keepLauncherForeground = process.platform === "win32";
   const child = spawn(launcher, launchArguments, {
     env: updateEnvironment,
     stdio: ["ignore", "pipe", "inherit"],
@@ -523,20 +526,28 @@ if (remoteArguments !== null) {
     process.exit(code);
   };
   child.stdout.setEncoding("utf8");
+  let ready = false;
   let launcherOutput = "";
+  const readyMarker = "ready\\n";
   child.stdout.on("data", (chunk) => {
-    launcherOutput += chunk;
-    if (launcherOutput.includes("ready\\n")) {
+    if (ready) return;
+    const output = launcherOutput + chunk;
+    if (output.includes(readyMarker)) {
+      ready = true;
+      launcherOutput = "";
       startupTrace("received Launcher ready");
-      finish(0);
+      if (!keepLauncherForeground) finish(0);
+      return;
     }
+    // Only retain the tail needed to recognize a marker split across chunks.
+    launcherOutput = output.slice(1 - readyMarker.length);
   });
   child.on("error", (error) => {
     startupTrace("Launcher spawn failed: " + error.message);
     fail(error.message);
   });
   child.on("exit", (code, signal) => {
-    startupTrace("Launcher exited before ready");
+    startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready");
     if (signal) {
       process.kill(process.pid, signal);
       return;

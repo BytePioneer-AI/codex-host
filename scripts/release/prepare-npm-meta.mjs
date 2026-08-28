@@ -60,7 +60,7 @@ codexhost --version
 codexhost
 \`\`\`
 
-The \`codexhost\` command starts Codex Desktop and returns immediately: the packaged Launcher keeps supervising in the background and exits after you quit the Desktop. Re-running \`codexhost\` attaches to the same controlled instance.
+The \`codexhost\` command starts Codex Desktop. On macOS and Linux it returns immediately while the packaged Launcher keeps supervising in the background. On Windows, the command remains attached until Codex Desktop exits so shells that clean up process trees of completed commands cannot discard the supervisor. Re-running \`codexhost\` attaches to the same controlled instance.
 
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
 `;

@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 ### 界面
 
 <div align="center">
-  <img width="70%" src="docs/imgs/codexhost-interface-overview.png" alt="Pi、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中">
+  <img width="90%" src="docs/imgs/codexhost-interface-overview.png" alt="Pi、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中">
 </div>
 
 ## 快速使用

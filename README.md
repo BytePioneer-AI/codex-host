@@ -91,7 +91,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
     <td colspan="2" valign="top">
       <p><strong>完整工作界面</strong></p>
       <div align="center">
-        <img width="75%" src="docs/imgs/image.png" alt="Codex Desktop 中 CodexHost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
+        <img width="90%" src="docs/imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 CodexHost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
       </div>
     </td>
   </tr>
@@ -114,7 +114,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
     <td colspan="2" valign="top">
       <p><strong>Mermaid 图表可视化渲染</strong></p>
       <div align="center">
-        <img width="75%" src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+        <img width="90%" src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
       </div>
     </td>
   </tr>

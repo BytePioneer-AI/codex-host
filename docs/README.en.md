@@ -42,23 +42,6 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ![Pi, Oh My Pi, Grok Build, and DeepSeek Harness running as independent threads in Codex Desktop](imgs/codexhost-interface-overview.png)
 
-## Feature Status
-
-| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- |
-| Streaming replies | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit diffs | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Ask / cancel | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ |
-| Model / thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 |
-| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | — | ✅ | ✅ | — |
-| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | Native | ✅ | ✅ | ✅ | ✅ | — |
-| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
-| Revise the previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
-
 ## Quick Start
 
 **Use npm**
@@ -96,6 +79,59 @@ If you use a portable/extracted Codex Desktop, set `CODEXHOST_INSTALL_ROOT` to t
 Then open a new terminal and start codexhost.
 
 </details>
+
+### Interaction Examples
+
+<table>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Full workspace</strong></p>
+      <div align="center">
+        <img width="90%" src="imgs/codexhost-full-workspace.png" alt="The complete CodexHost workspace in Codex Desktop, showing the project tree, conversation area, and multiple Agent selectors">
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Agent and Model selection</strong></p>
+      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Codex, Pi, Claude Code, DeepSeek Harness, Grok, and Oh My Pi are available">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Usage and cost information</strong></p>
+      <img src="imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="imgs/grok-usage-limits.png" alt="Remaining allowance and reset times for the five-hour and seven-day windows">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Mermaid diagram rendering</strong></p>
+      <div align="center">
+        <img width="90%" src="imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
+      </div>
+    </td>
+  </tr>
+</table>
+
+## Feature Status
+
+| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- |
+| Streaming responses | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ |
+| Permission modes | Native | — | — | ✅ | ✅ | — |
+| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
 
 <details>
 <summary><h3>Remote Harness</h3></summary>
@@ -151,45 +187,6 @@ codexhost takes a different approach:
 The goal is fidelity, not merely making the conversation work. Streaming, tool status, reliable patches, native approvals, and questions should come from the Harness itself whenever possible, rather than being guessed or fabricated by the Host.
 
 </details>
-
-### Interaction Examples
-
-OMP has been integrated into the Agent selector and can be used as an independent Agent in Codex Desktop to create and resume sessions.
-
-<table>
-  <tr>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-1" src="https://github.com/user-attachments/assets/6974f178-53a7-4b85-a6d2-c25eb49816bd" />
-    </td>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-2" src="https://github.com/user-attachments/assets/b0336bfd-a614-4f2e-bf98-af1b45fbaee4" />
-    </td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Codex, Pi, Claude Code, DeepSeek Harness, Grok, and Oh My Pi are available">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage and cost information</strong></p>
-      <img src="imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid diagram rendering</strong></p>
-      <img src="imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <img src="imgs/grok-usage-limits.png" alt="Remaining allowance and reset times for the five-hour and seven-day windows">
-    </td>
-  </tr>
-</table>
 
 ## Acknowledgements
 

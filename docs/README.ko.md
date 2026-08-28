@@ -41,23 +41,6 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ![Codex Desktop에서 독립 Thread로 실행 중인 Pi, Oh My Pi, Grok Build, DeepSeek Harness](imgs/codexhost-interface-overview.png)
 
-## 기능 상태
-
-| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- |
-| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 |
-| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ |
-| 권한 모드 | 기본 제공 | — | — | ✅ | ✅ | — |
-| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
-| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
-
 ## 빠른 시작
 
 **npm 사용**
@@ -95,6 +78,59 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 새 터미널을 열고 codexhost를 시작하세요.
 
 </details>
+
+### 상호작용 예시
+
+<table>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>전체 작업 화면</strong></p>
+      <div align="center">
+        <img width="90%" src="imgs/codexhost-full-workspace.png" alt="프로젝트 구조, 대화 영역 및 여러 Agent 선택기가 표시된 Codex Desktop의 CodexHost 전체 작업 화면">
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Agent 및 Model 선택</strong></p>
+      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Usage 및 비용 정보</strong></p>
+      <img src="imgs/usage-panel.png" alt="Usage 패널에서 컨텍스트, 캐시 적중 및 예상 비용을 확인할 수 있습니다">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>Mermaid 다이어그램 렌더링</strong></p>
+      <div align="center">
+        <img width="90%" src="imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
+      </div>
+    </td>
+  </tr>
+</table>
+
+## 기능 상태
+
+| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- |
+| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ |
+| 권한 모드 | 기본 제공 | — | — | ✅ | ✅ | — |
+| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
+| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 
 <details>
 <summary><h3>원격 Harness</h3></summary>
@@ -148,47 +184,6 @@ CodexHost는 다른 방식을 사용합니다.
 - **Harness 계층**: 각 Harness의 기본 인터페이스를 사용해 통합합니다. Pi는 공식 RPC를 사용하고 Claude Code는 Agent SDK / CLI를 사용한 다음, 결과를 Desktop의 스트리밍 출력, 도구, Diff, 승인 및 질문 UI에 반영합니다.
 
 목표는 단순히 대화가 가능하게 만드는 것이 아니라 높은 충실도를 유지하는 것입니다. 스트리밍, 도구 상태, 안정적인 Patch, 기본 승인과 질문은 가능한 한 Host가 추측하거나 만들어 내지 않고 Harness 자체에서 제공됩니다.
-
-</details>
-
-### 상호작용 예시
-
-OMP가 Agent 선택기에 통합되어 Codex Desktop에서 독립 Agent로 사용하여 세션을 생성하고 복원할 수 있습니다.
-
-<table>
-  <tr>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-1" src="https://github.com/user-attachments/assets/6974f178-53a7-4b85-a6d2-c25eb49816bd" />
-    </td>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-2" src="https://github.com/user-attachments/assets/b0336bfd-a614-4f2e-bf98-af1b45fbaee4" />
-    </td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agent 및 Model 선택</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage 및 비용 정보</strong></p>
-      <img src="imgs/usage-panel.png" alt="Usage 패널에서 컨텍스트, 캐시 적중 및 예상 비용을 확인할 수 있습니다">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid 다이어그램 렌더링</strong></p>
-      <img src="imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
-    </td>
-  </tr>
-</table>
 
 ## 감사의 글
 

@@ -7,6 +7,8 @@ import {
 export const SETTINGS_TRIGGER_ATTRIBUTE = "data-codexhost-settings-trigger";
 export const SETTINGS_HEADER_SURFACE_SELECTOR =
   '[data-testid="app-shell-header-context-menu-surface"]';
+const SETTINGS_APPLICATION_HEADER_SELECTOR = 'header[data-pip-obstacle="app-shell-header"]';
+const SETTINGS_HEADER_SLOT_SELECTOR = ':scope > [data-test-id="header-shell-slot"]';
 
 export interface RendererSettingsTriggerControl {
   root: HTMLElement;
@@ -90,25 +92,21 @@ export function selectRendererSettingsHeaderSlot<T>(
 function findRendererSettingsHeaderInsertionPoint(
   ownerDocument: Document,
 ): RendererSettingsHeaderInsertionPoint | null {
-  const surface = ownerDocument.querySelector<HTMLElement>(SETTINGS_HEADER_SURFACE_SELECTOR);
-  if (!surface || !surface.closest("header")) return null;
+  const header = ownerDocument.querySelector<HTMLElement>(SETTINGS_APPLICATION_HEADER_SELECTOR);
+  if (!header) return null;
 
-  const surfaceBounds = measuredBounds(surface);
-  const view = ownerDocument.defaultView;
-  const measuredSlots = [...surface.querySelectorAll<HTMLElement>("div")].map(
-    (slot): RendererSettingsHeaderSlotCandidate<HTMLElement> => ({
-      value: slot,
-      bounds: measuredBounds(slot),
-      visibleButtonCount: [...slot.querySelectorAll<HTMLButtonElement>("button")].filter(
-        isVisibleButton,
-      ).length,
-      structuralActionGroup:
-        slot.parentElement?.lastElementChild === slot &&
-        view?.getComputedStyle(slot.parentElement).display === "grid",
-    }),
-  );
-  const actionGroup = selectRendererSettingsHeaderSlot(surfaceBounds, measuredSlots);
-  return actionGroup ? { parent: actionGroup, before: actionGroup.firstChild } : null;
+  const headerBounds = measuredBounds(header);
+  if (headerBounds.width <= 0 || headerBounds.height <= 0) return null;
+
+  const endSlot = [...header.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SLOT_SELECTOR)]
+    .filter((slot) => {
+      const bounds = measuredBounds(slot);
+      return bounds.width > 0 && bounds.height > 0;
+    })
+    .toSorted(
+      (left, right) => measuredBounds(right).left - measuredBounds(left).left,
+    )[0];
+  return endSlot ? { parent: header, before: endSlot } : null;
 }
 
 export function mountRendererSettingsTrigger(
@@ -256,23 +254,30 @@ export function installRendererSettingsHeaderTrigger(options: {
 
   const refresh = (): boolean => {
     if (disposed) return false;
-    if (trigger?.root.isConnected) return true;
-    trigger?.dispose();
-    trigger = null;
-    for (const duplicate of ownerDocument.querySelectorAll(`[${SETTINGS_TRIGGER_ATTRIBUTE}]`)) {
-      duplicate.remove();
-    }
     const insertionPoint = findRendererSettingsHeaderInsertionPoint(ownerDocument);
-    if (!insertionPoint) return false;
-    trigger = mountRendererSettingsTrigger(
-      "application-header",
-      options.available,
-      options.onOpen,
-      ownerDocument,
-      options.messages,
-    );
-    trigger.setUpdateAvailable(updateAvailable);
-    insertionPoint.parent.insertBefore(trigger.root, insertionPoint.before);
+    if (!insertionPoint) {
+      trigger?.root.remove();
+      return false;
+    }
+    if (!trigger) {
+      for (const duplicate of ownerDocument.querySelectorAll(`[${SETTINGS_TRIGGER_ATTRIBUTE}]`)) {
+        duplicate.remove();
+      }
+      trigger = mountRendererSettingsTrigger(
+        "application-header",
+        options.available,
+        options.onOpen,
+        ownerDocument,
+        options.messages,
+      );
+      trigger.setUpdateAvailable(updateAvailable);
+    }
+    if (
+      trigger.root.parentElement !== insertionPoint.parent ||
+      trigger.root.nextSibling !== insertionPoint.before
+    ) {
+      insertionPoint.parent.insertBefore(trigger.root, insertionPoint.before);
+    }
     return true;
   };
 

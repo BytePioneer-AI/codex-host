@@ -187,6 +187,17 @@ CodexHost 尽量不走这条路：
 
 </details>
 
+### 开发
+
+环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host
+cd codex-host
+npm ci
+npm start
+```
+
 ## 鸣谢
 
 - 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。

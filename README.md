@@ -35,11 +35,18 @@
 
 无需切换应用，**Pi、Claude Code、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
 
-https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
+<div align="center">
+  <video width="70%" controls style="max-width: 100%; aspect-ratio: 16/9; background: #0a0e27;">
+    <source src="https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76" type="video/mp4">
+    Your browser does not support the video tag.
+  </video>
+</div>
 
 ### 界面
 
-![Pi、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中](docs/imgs/codexhost-interface-overview.png)
+<div align="center">
+  <img width="70%" src="docs/imgs/codexhost-interface-overview.png" alt="Pi、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中">
+</div>
 
 ## 快速使用
 
@@ -81,20 +88,11 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 <table>
   <tr>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-1" src="https://github.com/user-attachments/assets/6974f178-53a7-4b85-a6d2-c25eb49816bd" />
-    </td>
-    <td width="50%">
-      <img width="100%" alt="codexhost-demo-github-gif-2" src="https://github.com/user-attachments/assets/b0336bfd-a614-4f2e-bf98-af1b45fbaee4" />
-    </td>
-  </tr>
-</table>
-
-<table>
-  <tr>
     <td colspan="2" valign="top">
       <p><strong>完整工作界面</strong></p>
-      <img width="100%" src="docs/imgs/image.png" alt="Codex Desktop 中 CodexHost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
+      <div align="center">
+        <img width="75%" src="docs/imgs/image.png" alt="Codex Desktop 中 CodexHost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
+      </div>
     </td>
   </tr>
   <tr>
@@ -115,7 +113,9 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td colspan="2" valign="top">
       <p><strong>Mermaid 图表可视化渲染</strong></p>
-      <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+      <div align="center">
+        <img width="75%" src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
+      </div>
     </td>
   </tr>
 </table>

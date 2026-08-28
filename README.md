@@ -35,7 +35,7 @@
 
 无需切换应用，**Pi、Claude Code、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
 
-![Pi 与 Claude Code 在 Codex Desktop 中运行的完整演示](docs/imgs/demo.gif)
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ### 界面
 

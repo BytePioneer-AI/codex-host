@@ -35,12 +35,7 @@
 
 无需切换应用，**Pi、Claude Code、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
 
-<div align="center">
-  <video width="70%" controls style="max-width: 100%; aspect-ratio: 16/9; background: #0a0e27;">
-    <source src="https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76" type="video/mp4">
-    Your browser does not support the video tag.
-  </video>
-</div>
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ### 界面
 

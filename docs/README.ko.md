@@ -132,6 +132,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 | 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 
+외부 Harness가 명시적으로 내보낸 추론 요약을 표시하려면 **codexhost 설정 → 모델 풀 → 추론 요약 표시**를 활성화하세요. 기본값은 꺼짐이며 숨김, 암호화 또는 원시 사고 과정은 읽거나 저장하지 않습니다.
+
 <details>
 <summary><h3>원격 Harness</h3></summary>
 

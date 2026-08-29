@@ -142,6 +142,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
 
+外部 Harness 明确输出的推理摘要可在 **codexhost 设置 → 模型池 → 显示推理摘要** 中开启。该功能默认关闭，只展示经过验证的可见摘要；隐藏、加密或原始思维链不会被读取或保存。
+
 <details>
 <summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
 

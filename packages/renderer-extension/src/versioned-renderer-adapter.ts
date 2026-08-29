@@ -24,9 +24,15 @@ import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
 import {
   createRendererModelClient,
+  createThreadReasoningSubscriptionRelay,
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
+import {
+  installRendererReasoningDisplay,
+  type RendererReasoningDisplayControl,
+} from "./renderer-reasoning-display.js";
+import type { RendererReasoningEvent } from "./renderer-reasoning-events.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
@@ -107,6 +113,7 @@ export interface ModelPowerSelection {
 export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
+  readonly requestTarget?: () => unknown;
   select(model: string | null): boolean;
   clear(): Promise<void>;
 }
@@ -619,6 +626,30 @@ function prewarmTargetHostId(target: PrewarmTarget): string | null {
   return typeof hostId === "string" && hostId.length > 0 ? hostId : null;
 }
 
+function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
+  if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
+  return isCurrentRequestBridge(value.requestClient ?? value);
+}
+
+function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {
+  return "requestTarget" in policy;
+}
+
+function exactRendererRequestTarget(
+  policy: RendererDraftPrewarmPolicy,
+): readonly PrewarmTarget[] | null {
+  if (typeof policy.requestTarget !== "function") return null;
+  try {
+    const target = policy.requestTarget();
+    if (!isRendererRequestTarget(target) || prewarmTargetHostId(target) !== policy.hostId) {
+      return null;
+    }
+    return [target];
+  } catch {
+    return null;
+  }
+}
+
 export function rendererRequestTargetsForHost(
   targets: readonly PrewarmTarget[],
   hostId: string,
@@ -632,6 +663,7 @@ function activeRendererDraftPrewarmTargets(
   targets: readonly PrewarmTarget[],
 ): readonly PrewarmTarget[] | null {
   if (!isDraftPrewarmPolicyReady(policy)) return null;
+  if (hasPolicyRequestTarget(policy)) return exactRendererRequestTarget(policy);
   return rendererRequestTargetsForHost(targets, policy.hostId);
 }
 
@@ -649,6 +681,8 @@ export function resolveRendererRequestRoute(
   if (isDraftPrewarmPolicyReady(policy) && activeTargets) {
     return { policy, targets: activeTargets };
   }
+
+  if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
 
   // Composer replacement and settings overlays can briefly remove the only
   // Fiber path that exposes the request manager. Retain the confirmed route
@@ -674,7 +708,12 @@ export function createRendererRequestRouteResolver(
     resolve() {
       // Persist null invalidations too, otherwise a later empty discovery gap
       // could revive a request manager that belonged to the previous Host.
-      route = resolveRendererRequestRoute(readPolicy(), discoverTargets(), route);
+      const policy = readPolicy();
+      const discoveredTargets =
+        isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)
+          ? []
+          : discoverTargets();
+      route = resolveRendererRequestRoute(policy, discoveredTargets, route);
       return route;
     },
     clear() {
@@ -759,11 +798,16 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const usageSubscription = createThreadUsageSubscriptionRelay();
+  const reasoningSubscription = createThreadReasoningSubscriptionRelay();
+  let reasoningDisplay: RendererReasoningDisplayControl = {
+    refresh() {},
+    reset() {},
+    dispose() {},
+  };
   const requestRouteResolver = createRendererRequestRouteResolver(
     () => window.__codexhostDraftPrewarmPolicyV1,
     () => findActivePrewarmTargets(document),
   );
-  const currentRequestRoute = () => requestRouteResolver.resolve();
   const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
   const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
     const target = targets[0];
@@ -774,8 +818,26 @@ export function installCurrentRendererAdapter(): {
     if (client) clientsByTarget.set(target, client);
     return client;
   };
+  let reasoningRoutePolicy: RendererDraftPrewarmPolicy | null = null;
+  let reasoningRouteClient: RendererModelClient | null = null;
+  const syncReasoningRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
+    const policy = route?.policy ?? null;
+    const client = route ? modelClientForTargets(route.targets) : null;
+    if (reasoningRoutePolicy === policy && reasoningRouteClient === client) return client;
+    reasoningSubscription.disconnect();
+    reasoningRoutePolicy = policy;
+    reasoningRouteClient = client;
+    reasoningDisplay.reset();
+    if (client) reasoningSubscription.connect(client);
+    return client;
+  };
+  const currentRequestRoute = (): RendererRequestRoute | null => {
+    const route = requestRouteResolver.resolve();
+    syncReasoningRoute(route);
+    return route;
+  };
   const currentModelClient = (): RendererModelClient => {
-    const client = modelClientForTargets(currentRequestRoute()?.targets ?? []);
+    const client = currentRequestRoute() ? reasoningRouteClient : null;
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     usageSubscription.connect(client);
     return client;
@@ -783,6 +845,10 @@ export function installCurrentRendererAdapter(): {
   const modelControl: RendererModelClient = Object.freeze({
     currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
     clientForHost(hostId: string): RendererModelClient | null {
+      const route = currentRequestRoute();
+      if (route?.policy.hostId === hostId) return modelClientForTargets(route.targets);
+      const policy = window.__codexhostDraftPrewarmPolicyV1;
+      if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
       return modelClientForTargets(targets ?? []);
     },
@@ -797,6 +863,15 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().inspectThreadUsage(input),
     subscribeThreadUsage: (listener: (update: ThreadUsageInspection) => void) =>
       usageSubscription.subscribe(listener),
+    subscribeThreadReasoning: (listener: (event: RendererReasoningEvent) => void) => {
+      const unsubscribe = reasoningSubscription.subscribe(listener);
+      try {
+        reasoningSubscription.connect(currentModelClient());
+      } catch {
+        // A pending route will connect the relay once the request manager appears.
+      }
+      return unsubscribe;
+    },
     listThreadOwnership: (input: ThreadOwnershipListParams) =>
       currentModelClient().listThreadOwnership(input),
     selectThreadModel: (input: ThreadModelSelectParams) =>
@@ -813,6 +888,14 @@ export function installCurrentRendererAdapter(): {
     updateStatus("unsupported", "title-policy-unavailable", null);
     return unsupportedResult();
   }
+  try {
+    reasoningDisplay = installRendererReasoningDisplay(modelControl, window);
+  } catch (error) {
+    console.error(
+      "codexhost optional Reasoning display installation failed",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+  }
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
     reportError: (error) => {
@@ -825,25 +908,76 @@ export function installCurrentRendererAdapter(): {
 
   let routingPolicy: RendererDraftPrewarmPolicy | null = null;
   let policyTimer: number | null = null;
+  let policyRecaptureObserver: MutationObserver | null = null;
+  let hasCapturedRoutingPolicy = false;
+  let selectedRoutingPolicy: RendererDraftPrewarmPolicy | null = null;
+  let selectedCarrier: string | null = null;
   let desiredCarrier: string | null = null;
+  const stopPolicyCapture = (): void => {
+    if (policyTimer === null) return;
+    window.clearInterval(policyTimer);
+    policyTimer = null;
+  };
+  const stopPolicyRecapture = (): void => {
+    policyRecaptureObserver?.disconnect();
+    policyRecaptureObserver = null;
+  };
   const captureRoutingPolicy = (): boolean => {
     const route = currentRequestRoute();
     if (!route) return false;
     routingPolicy = route.policy;
-    routingPolicy.select(desiredCarrier);
-    if (policyTimer !== null) {
-      window.clearInterval(policyTimer);
-      policyTimer = null;
+    stopPolicyRecapture();
+    if (selectedRoutingPolicy !== routingPolicy || selectedCarrier !== desiredCarrier) {
+      try {
+        routingPolicy.select(desiredCarrier);
+      } catch {
+        updateStatus("installing", "draft-routing-policy-unavailable", null);
+        return false;
+      }
+      selectedRoutingPolicy = routingPolicy;
+      selectedCarrier = desiredCarrier;
     }
+    hasCapturedRoutingPolicy = true;
+    stopPolicyCapture();
     updateStatus("ready", "ready", "request-bridge");
     return true;
   };
+  const startPolicyCapture = (): void => {
+    stopPolicyCapture();
+    policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
+  };
+  const startPolicyRecapture = (): void => {
+    stopPolicyRecapture();
+    policyRecaptureObserver = new MutationObserver(() => {
+      captureRoutingPolicy();
+    });
+    policyRecaptureObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+  };
   if (!captureRoutingPolicy()) {
     updateStatus("installing", "draft-routing-policy-unavailable", null);
-    policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
+    const policy = window.__codexhostDraftPrewarmPolicyV1;
+    if (!isDraftPrewarmPolicyReady(policy) || !hasPolicyRequestTarget(policy)) {
+      startPolicyCapture();
+    }
   }
   const handleRoutingPolicyChange = (): void => {
-    captureRoutingPolicy();
+    stopPolicyRecapture();
+    if (captureRoutingPolicy()) return;
+    const policy = window.__codexhostDraftPrewarmPolicyV1;
+    if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) {
+      stopPolicyCapture();
+    }
+    if (!hasCapturedRoutingPolicy) return;
+    updateStatus("installing", "draft-routing-policy-unavailable", null);
+    if (isDraftPrewarmPolicyReady(policy) && !hasPolicyRequestTarget(policy)) {
+      startPolicyRecapture();
+    }
   };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
 
@@ -868,9 +1002,16 @@ export function installCurrentRendererAdapter(): {
     const route = currentRequestRoute();
     if (!route) return false;
     routingPolicy = route.policy;
-    if (route.policy.select(desiredCarrier)) {
-      modelUpdates += 1;
-      liveStatus.modelUpdates = modelUpdates;
+    try {
+      if (route.policy.select(desiredCarrier)) {
+        modelUpdates += 1;
+        liveStatus.modelUpdates = modelUpdates;
+      }
+      selectedRoutingPolicy = route.policy;
+      selectedCarrier = desiredCarrier;
+    } catch {
+      updateStatus("installing", "draft-routing-policy-unavailable", null);
+      return false;
     }
     return true;
   };
@@ -881,16 +1022,30 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
-      if (policyTimer !== null) window.clearInterval(policyTimer);
+      stopPolicyCapture();
+      stopPolicyRecapture();
       window.removeEventListener(
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,
       );
-      routingPolicy?.select(null);
+      const activeRoutingPolicy = routingPolicy;
       routingPolicy = null;
       requestRouteResolver.clear();
-      forkControl.dispose();
-      usageSubscription.dispose();
+      const cleanups = [
+        () => activeRoutingPolicy?.select(null),
+        () => syncReasoningRoute(null),
+        () => reasoningDisplay.dispose(),
+        () => forkControl.dispose(),
+        () => reasoningSubscription.dispose(),
+        () => usageSubscription.dispose(),
+      ];
+      for (const cleanup of cleanups) {
+        try {
+          cleanup();
+        } catch {
+          // Every owned resource must still be released if an external cleanup fails.
+        }
+      }
     },
   };
 }

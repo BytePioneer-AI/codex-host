@@ -133,6 +133,8 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 | Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
 | Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
 
+To display reasoning summaries explicitly emitted by an external Harness, enable **codexhost Settings → Model Pool → Show reasoning summaries**. The option is off by default and never reads or stores hidden, encrypted, or raw chain-of-thought content.
+
 <details>
 <summary><h3>Remote Harness</h3></summary>
 

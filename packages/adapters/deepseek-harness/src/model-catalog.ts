@@ -1,13 +1,19 @@
 import { Buffer } from "node:buffer";
 
-import type { ModelProviderGroup, ModelSelection } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type {
+  ModelProviderGroup,
+  ModelSelection,
+  SessionModels,
+} from "@deepseek-ai/dsh-host-apiproxy/api";
 
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   type HarnessModelCatalog,
   type HarnessModelRef,
+  type HarnessThinkingOption,
 } from "@codexhost/shared-contracts";
 
 const MODEL_REF_PREFIX = "deepseek-harness-model-v2.";
@@ -63,20 +69,63 @@ export function decodeDeepSeekHarnessModelRef(ref: HarnessModelRef): DeepSeekNat
   return native;
 }
 
+/** Adapter-owned reasoning effort identifier when the Host reports one. */
+export function parseDeepSeekThinkingOptionId(
+  value: string | undefined,
+): HarnessThinkingOption["id"] | undefined {
+  if (value === undefined) return undefined;
+  const parsed = harnessThinkingOptionIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Thinking options advertised by the exact Model route the Session currently serves. */
+export function normalizeDeepSeekThinkingOptions(models: SessionModels): HarnessThinkingOption[] {
+  const group = models.groups.find((candidate) => candidate.id === models.current.provider);
+  const model = group?.models.find((candidate) => candidate.id === models.current.model);
+  return (model?.reasoning?.efforts ?? []).flatMap((effort) => {
+    const parsedId = harnessThinkingOptionIdSchema.safeParse(effort.id);
+    return parsedId.success ? [{ id: parsedId.data, label: effort.name }] : [];
+  });
+}
+
 export function normalizeDeepSeekModelCatalog(
   groups: readonly ModelProviderGroup[],
   selection: ModelSelection,
 ): HarnessModelCatalog {
+  const thinkingOptions: HarnessThinkingOption[] = [];
+  const knownEffortIds = new Set<string>();
+  for (const group of groups) {
+    for (const model of group.models) {
+      for (const effort of model.reasoning?.efforts ?? []) {
+        if (knownEffortIds.has(effort.id)) continue;
+        const parsedId = harnessThinkingOptionIdSchema.safeParse(effort.id);
+        if (!parsedId.success) continue;
+        knownEffortIds.add(effort.id);
+        thinkingOptions.push({ id: parsedId.data, label: effort.name });
+      }
+    }
+  }
   const models = groups.flatMap((group) =>
     group.models.map((model) => ({
       ref: encodeDeepSeekHarnessModelRef({ provider: group.id, model: model.id }),
       label: `${group.name} / ${model.name}`,
       ...(model.description ? { description: model.description } : {}),
+      ...(model.reasoning && model.reasoning.efforts.length > 0
+        ? { supportedThinkingOptionIds: model.reasoning.efforts.map((effort) => effort.id) }
+        : {}),
     })),
   );
   const defaultModel = encodeDeepSeekHarnessModelRef(selection);
   if (!models.some((model) => model.ref.id === defaultModel.id)) {
     models.unshift({ ref: defaultModel, label: `${selection.provider} / ${selection.model}` });
   }
-  return harnessModelCatalogSchema.parse({ models, defaultModel, thinkingOptions: [] });
+  const defaultThinkingOptionId = parseDeepSeekThinkingOptionId(selection.reasoningEffort);
+  return harnessModelCatalogSchema.parse({
+    models,
+    defaultModel,
+    thinkingOptions,
+    ...(defaultThinkingOptionId && knownEffortIds.has(defaultThinkingOptionId)
+      ? { defaultThinkingOptionId }
+      : {}),
+  });
 }

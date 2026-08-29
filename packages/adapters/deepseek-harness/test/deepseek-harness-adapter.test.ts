@@ -12,7 +12,7 @@ import { RpcId } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   DeepSeekHarnessAdapter,
@@ -37,8 +37,30 @@ const MODEL_GROUPS = [
     id: "deepseek-official",
     name: "DeepSeek",
     models: [
-      { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+      {
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        reasoning: {
+          efforts: [
+            { id: "off", name: "Off" },
+            { id: "low", name: "Low" },
+            { id: "high", name: "High" },
+          ],
+        },
+      },
+      {
+        id: "deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        reasoning: {
+          efforts: [
+            { id: "off", name: "Off" },
+            { id: "low", name: "Low" },
+            { id: "high", name: "High" },
+            { id: "max", name: "Max" },
+          ],
+          defaultEffort: "high",
+        },
+      },
     ],
   },
 ];
@@ -98,8 +120,16 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       ),
     );
     this.calls.selectModel.mockImplementation(
-      ({ provider, model }: { provider: string; model: string }) => {
-        this.currentModel = { provider, model };
+      ({
+        provider,
+        model,
+        reasoningEffort,
+      }: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+      }) => {
+        this.currentModel = { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
         return Promise.resolve(success({ selected: this.currentModel }));
       },
     );
@@ -339,6 +369,108 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       model: "deepseek-v4-pro",
     });
     expect(connection.calls.models).toHaveBeenCalledTimes(2);
+    await adapter.close();
+  });
+
+  it("advertises Thinking options from the Host model catalog", async () => {
+    const { adapter } = fixture();
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+      catalog: {
+        thinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+          { id: "max", label: "Max" },
+        ],
+        models: [
+          { supportedThinkingOptionIds: ["off", "low", "high"] },
+          { supportedThinkingOptionIds: ["off", "low", "high", "max"] },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("creates a Session with the requested Thinking option", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect(session.capabilities.configuration.selectThinkingOption).toBe(true);
+    expect(connection.calls.selectModel).toHaveBeenCalledWith({
+      sessionId: "session-native-1",
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      reasoningEffort: "high",
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        state: {
+          effectiveThinkingOptionId: "high",
+          availableThinkingOptions: expect.arrayContaining([
+            { id: "off", label: "Off" },
+            { id: "high", label: "High" },
+          ]),
+        },
+      },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("selects Thinking for a resumed Session and publishes confirmed state", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const selecting = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: {
+            nativeRef: { nativeSessionId: SESSION_ID },
+            effectiveModel: expect.anything(),
+            effectiveThinkingOptionId: "high",
+            availableThinkingOptions: expect.arrayContaining([
+              { id: "off", label: "Off" },
+              { id: "low", label: "Low" },
+              { id: "high", label: "High" },
+            ]),
+          },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(connection.calls.selectModel).toHaveBeenLastCalledWith({
+      sessionId: SESSION_ID,
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      reasoningEffort: "high",
+    });
     await adapter.close();
   });
 

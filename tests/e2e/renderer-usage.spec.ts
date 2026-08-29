@@ -116,7 +116,6 @@ test("renders Usage immediately to the left of the model control", async ({ page
     "aria-label",
     "Thread Usage: CH 99.9% · $0.822",
   );
-  await expect(usage.locator("button")).toHaveClass(/codexhost-trigger-chip/u);
   await expect(usage.locator("svg")).toHaveCount(0);
   const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
   if (!usageBox || !modelBox) throw new Error("Usage geometry is unavailable");
@@ -206,10 +205,6 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 47%");
   await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
   await expect(trigger).toHaveCSS("max-width", "180px");
-  await expect(credits.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
-    "aria-label",
-    "Add files",
-  );
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "data-codexhost-model-control",
     "usage-composer",

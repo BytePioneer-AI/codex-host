@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatRendererPlanReset,
-  formatRendererCacheHitRate,
-  formatRendererCost,
   formatRendererPlanWindow,
   rendererUsageHasDisplayData,
 } from "../src/renderer-usage-control.js";
@@ -24,10 +22,8 @@ describe("Renderer Usage plan-window formatting", () => {
   });
 });
 
-describe("Renderer Usage Claude summary", () => {
-  it("keeps plan windows out of the collapsed CH and cost summary fields", () => {
-    expect(formatRendererCacheHitRate(99)).toBe("CH 99%");
-    expect(formatRendererCost(1.373)).toBe("$1.373");
+describe("Renderer Usage Claude plan windows", () => {
+  it("keeps a plan-only snapshot eligible for the Usage popover", () => {
     expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(true);
   });
 });

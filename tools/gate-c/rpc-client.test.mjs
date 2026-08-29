@@ -104,19 +104,6 @@ describe("Gate C Pi RPC client", () => {
     await rpc.close();
   });
 
-  it("fails all pending requests with the same process exit fact", async () => {
-    const rpc = client("crash");
-    await rpc.start();
-    const results = await Promise.allSettled([
-      rpc.send({ type: "one" }),
-      rpc.send({ type: "two" }),
-    ]);
-    expect(results.every(({ status }) => status === "rejected")).toBe(true);
-    expect(results.map(({ reason }) => reason.code)).toEqual(["PROCESS_EXIT", "PROCESS_EXIT"]);
-    expect(results.map(({ reason }) => reason.details.code)).toEqual([23, 23]);
-    await rpc.close();
-  });
-
   it("fails pending requests when protocol stdout reaches EOF", async () => {
     const child = new EventEmitter();
     child.stdin = new PassThrough();

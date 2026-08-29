@@ -2,7 +2,12 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { HistoryEntry, MuxFrame, SessionModels } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type {
+  HistoryEntry,
+  ModelSelection,
+  MuxFrame,
+  SessionModels,
+} from "@deepseek-ai/dsh-host-apiproxy/api";
 import { RpcId } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
@@ -23,7 +28,10 @@ import { encodeDeepSeekHarnessModelRef } from "../src/model-catalog.js";
 import { projectToolResult } from "../src/projection.js";
 
 const SESSION_ID = "session-native-1" as SessionId;
-const CURRENT_MODEL = { provider: "deepseek-official", model: "deepseek-v4-flash" };
+const CURRENT_MODEL: ModelSelection = {
+  provider: "deepseek-official",
+  model: "deepseek-v4-flash",
+};
 const MODEL_GROUPS = [
   {
     id: "deepseek-official",
@@ -60,6 +68,7 @@ class FakeConnection implements DeepSeekHostConnectionLike {
   };
   connected = false;
   closed = false;
+  currentModel: ModelSelection = CURRENT_MODEL;
   readonly client: DeepSeekHostClient;
 
   constructor() {
@@ -78,17 +87,21 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     this.calls.history.mockImplementation(({ sessionId }: { sessionId: SessionId }) =>
       Promise.resolve(success({ events: this.history.get(sessionId) ?? [], hasMore: false })),
     );
-    this.calls.models.mockResolvedValue(
-      success<SessionModels>({
-        current: CURRENT_MODEL,
-        routable: true,
-        groups: MODEL_GROUPS,
-        failures: [],
-      }),
+    this.calls.models.mockImplementation(() =>
+      Promise.resolve(
+        success<SessionModels>({
+          current: this.currentModel,
+          routable: true,
+          groups: MODEL_GROUPS,
+          failures: [],
+        }),
+      ),
     );
     this.calls.selectModel.mockImplementation(
-      ({ provider, model }: { provider: string; model: string }) =>
-        Promise.resolve(success({ selected: { provider, model } })),
+      ({ provider, model }: { provider: string; model: string }) => {
+        this.currentModel = { provider, model };
+        return Promise.resolve(success({ selected: this.currentModel }));
+      },
     );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
     this.calls.cancel.mockResolvedValue(success({ accepted: true }));
@@ -283,6 +296,167 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(false);
     await adapter.close();
     expect(connection.closed).toBe(true);
+  });
+
+  it("selects another Model for a resumed Session and publishes confirmed state", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect(session.capabilities.configuration.selectModel).toBe(true);
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const selecting = session.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: {
+            nativeRef: { nativeSessionId: SESSION_ID },
+            effectiveModel: model,
+          },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(connection.calls.selectModel).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    expect(connection.calls.models).toHaveBeenCalledTimes(2);
+    await adapter.close();
+  });
+
+  it("preserves the confirmed Model when native selection fails", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    connection.calls.selectModel.mockResolvedValueOnce({
+      rpcId: RpcId("selection-failed"),
+      result: {
+        ok: false,
+        error: { code: "model-unavailable", message: "Model is unavailable", details: {} },
+      },
+    });
+
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("Model is unavailable") },
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectiveModel: encodeDeepSeekHarnessModelRef(CURRENT_MODEL) } },
+    });
+    expect(connection.calls.models).toHaveBeenCalledTimes(1);
+    await adapter.close();
+  });
+
+  it("rejects Model selection during a Turn", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const turnId = hostTurnIdSchema.parse("host-turn-model-busy");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "hello" }],
+    });
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(connection.calls.selectModel).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("rejects Turn admission and snapshot reads while Model selection is pending", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    let releaseSelection: (() => void) | undefined;
+    connection.calls.selectModel.mockImplementationOnce(
+      ({ provider, model: modelId }: { provider: string; model: string }) =>
+        new Promise((resolve) => {
+          releaseSelection = () => {
+            connection.currentModel = { provider, model: modelId };
+            resolve(success({ selected: connection.currentModel }));
+          };
+        }),
+    );
+
+    const selecting = session.execute({ type: "model.select", model });
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("host-turn-during-model-selection"),
+        input: [{ type: "text", text: "hello" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    releaseSelection?.();
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    await adapter.close();
+  });
+
+  it("rejects selection when native readback differs from the request", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const previousModel = encodeDeepSeekHarnessModelRef(CURRENT_MODEL);
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    connection.calls.models.mockResolvedValueOnce(
+      success<SessionModels>({
+        current: CURRENT_MODEL,
+        routable: true,
+        groups: MODEL_GROUPS,
+        failures: [],
+      }),
+    );
+
+    await expect(session.execute({ type: "model.select", model })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not activate the requested Model",
+        retryable: false,
+      },
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectiveModel: previousModel } },
+    });
+    await adapter.close();
   });
 
   it("projects Session Usage with a context window for a known Model", async () => {

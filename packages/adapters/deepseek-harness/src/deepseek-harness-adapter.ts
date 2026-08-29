@@ -215,7 +215,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   readonly harnessId: HarnessId = deepSeekHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: {
-      selectModel: false,
+      selectModel: true,
       selectThinkingOption: false,
       selectPermissionMode: false,
     },
@@ -234,7 +234,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #closed = false;
+  #configuring = false;
   #lastSeq: number;
+  #reading = false;
   #model: HarnessModelRef;
   #contextWindowTokens: number | undefined;
   #turns: HostTurnSnapshot[];
@@ -281,16 +283,17 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (this.#closed) {
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     }
-    if (this.#active) {
+    if (this.#active || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "DeepSeek Harness Session cannot read while a Turn is active",
+          message: "DeepSeek Harness Session cannot read while another operation is active",
           retryable: true,
         },
       };
     }
+    this.#reading = true;
     try {
       const entries = await readAllDeepSeekHistory(
         this.#client,
@@ -324,6 +327,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       };
     } catch (error) {
       return { ok: false, error: normalizedError(error, "nativeFailure") };
+    } finally {
+      this.#reading = false;
     }
   }
 
@@ -351,18 +356,19 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
+    if (command.type === "model.select") return this.#selectModel(command);
     if (command.type !== "turn.start") {
       return {
         ok: false,
         error: unsupported(`DeepSeek Harness does not support '${command.type}'`),
       };
     }
-    if (this.#active) {
+    if (this.#active || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "DeepSeek Harness Session already has an active Turn",
+          message: "DeepSeek Harness Session already has another active operation",
           retryable: true,
         },
       };
@@ -476,6 +482,69 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#closed = true;
     this.#channel.end();
     this.#onClosed();
+  }
+
+  async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (this.#active || this.#configuring || this.#reading) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message:
+            "DeepSeek Harness Session cannot select a Model while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    let requested: ReturnType<typeof decodeDeepSeekHarnessModelRef>;
+    try {
+      requested = decodeDeepSeekHarnessModelRef(command.model);
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "invalidRequest") };
+    }
+
+    this.#configuring = true;
+    try {
+      try {
+        unwrapRpc(
+          await this.#client.sessions.selectModel({
+            sessionId: this.#nativeRef.nativeSessionId as SessionId,
+            provider: requested.provider,
+            model: requested.model,
+          }),
+          "session.selectModel",
+        );
+        const models = unwrapRpc(
+          await this.#client.sessions.models({
+            sessionId: this.#nativeRef.nativeSessionId as SessionId,
+          }),
+          "session.models",
+        );
+        if (
+          models.current.provider !== requested.provider ||
+          models.current.model !== requested.model
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "DeepSeek Harness did not activate the requested Model",
+              retryable: false,
+            },
+          };
+        }
+        this.#model = encodeDeepSeekHarnessModelRef(models.current);
+        this.#emit({
+          type: "session.state.changed",
+          state: { nativeRef: this.#nativeRef, effectiveModel: this.#model },
+        });
+        return { ok: true, value: { completed: true } };
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {

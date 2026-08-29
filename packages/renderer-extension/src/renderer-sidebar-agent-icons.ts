@@ -14,6 +14,13 @@ export const SIDEBAR_THREAD_ID_ATTRIBUTE = "data-app-action-sidebar-thread-id";
 export const SIDEBAR_THREAD_HOST_ID_ATTRIBUTE = "data-app-action-sidebar-thread-host-id";
 export const SIDEBAR_AGENT_ICON_ATTRIBUTE = "data-codexhost-sidebar-agent-icon";
 
+export interface RendererSidebarContractInspection {
+  rowCount: number;
+  titleOwnerCount: number;
+  resolvedThreadCount: number;
+  ambiguousThreadCount: number;
+}
+
 const OWNERSHIP_RETRY_DELAYS_MS = [100, 300, 800, 1_500, 3_000] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,6 +81,30 @@ export function threadIdFromSidebarRowElement(element: HTMLElement): string | nu
     fiber = isRecord(fiber.return) ? fiber.return : null;
   }
   return candidates.size === 1 ? (candidates.values().next().value ?? null) : null;
+}
+
+export function inspectRendererSidebarContract(
+  root: ParentNode = document,
+): RendererSidebarContractInspection {
+  const rows = [...root.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)];
+  let titleOwnerCount = 0;
+  let resolvedThreadCount = 0;
+  let ambiguousThreadCount = 0;
+  for (const row of rows) {
+    const titleTrigger = row.querySelector<HTMLElement>("[data-thread-title-trigger]");
+    const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
+    if (titleTrigger && title) titleOwnerCount += 1;
+    const attributes = sidebarThreadAttributes(row);
+    if (!attributes || attributes.taskKey.startsWith("client-new-thread:")) continue;
+    if (threadIdFromSidebarRowElement(row) === null) ambiguousThreadCount += 1;
+    else resolvedThreadCount += 1;
+  }
+  return {
+    rowCount: rows.length,
+    titleOwnerCount,
+    resolvedThreadCount,
+    ambiguousThreadCount,
+  };
 }
 
 export interface SidebarAgentIconRow {

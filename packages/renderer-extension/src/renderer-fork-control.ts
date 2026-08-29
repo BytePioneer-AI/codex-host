@@ -32,6 +32,12 @@ export interface RendererForkControl {
   dispose(): void;
 }
 
+export interface RendererForkContractInspection {
+  annotatedResponseCount: number;
+  candidateButtonCount: number;
+  verifiedButtonCount: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -93,6 +99,24 @@ export function rendererForkTargetFromButton(button: HTMLButtonElement): Rendere
     isProjectlessConversation: projectlessStates.has(true),
     threadId: threadId.data,
     turnId: turnId.data,
+  };
+}
+
+export function inspectRendererForkContract(
+  root: ParentNode = document,
+): RendererForkContractInspection {
+  const annotatedResponses = [
+    ...root.querySelectorAll<HTMLElement>(`[${RESPONSE_CONVERSATION_ATTRIBUTE}]`),
+  ];
+  const candidateButtons = annotatedResponses.flatMap((annotation) => [
+    ...annotation.querySelectorAll<HTMLButtonElement>("button"),
+  ]);
+  return {
+    annotatedResponseCount: annotatedResponses.length,
+    candidateButtonCount: candidateButtons.length,
+    verifiedButtonCount: candidateButtons.filter(
+      (button) => rendererForkTargetFromButton(button) !== null,
+    ).length,
   };
 }
 

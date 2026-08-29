@@ -44,9 +44,11 @@ export {
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
 export {
+  inspectRendererComposerContract,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
+export type { RendererComposerContractInspection } from "./renderer-composer-dom.js";
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
@@ -61,10 +63,12 @@ export {
   formatRendererTokenCount,
 } from "./renderer-usage-control.js";
 export {
+  inspectRendererForkContract,
   installRendererForkControl,
   rendererForkTargetFromButton,
 } from "./renderer-fork-control.js";
 export type {
+  RendererForkContractInspection,
   RendererForkControl,
   RendererForkDom,
   RendererForkTarget,
@@ -97,6 +101,7 @@ export {
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
+  inspectComposerModelContract,
   installCurrentRendererAdapter,
   isClaudeTransportModelId,
   isDeepSeekHarnessTransportModelId,
@@ -119,12 +124,28 @@ export type {
   RendererDraftPrewarmPolicy,
   RendererAdapterState,
   RendererAdapterStatus,
+  RendererComposerModelContractState,
 } from "./versioned-renderer-adapter.js";
+export {
+  inspectRendererSidebarContract,
+  SIDEBAR_AGENT_ICON_ATTRIBUTE,
+  SIDEBAR_THREAD_ROW_ATTRIBUTE,
+  SIDEBAR_THREAD_ROW_SELECTOR,
+} from "./renderer-sidebar-agent-icons.js";
+export type { RendererSidebarContractInspection } from "./renderer-sidebar-agent-icons.js";
 export type {
   ExternalModelControlView,
   ExternalPermissionModeControlView,
   PiModelControlView,
 } from "./renderer-composer-dom.js";
+export {
+  RENDERER_CONTRACT_AUDIT_SCHEMA_VERSION,
+  inspectRendererContracts,
+} from "./contract-audit.js";
+export type {
+  RendererContractAuditApi,
+  RendererContractAuditInspection,
+} from "./contract-audit.js";
 export {
   CLAUDE_PERMISSION_MODE_PREFERENCE_KEY,
   readClaudePermissionModePreference,
@@ -191,12 +212,14 @@ export type { RendererSettingsShell } from "./settings/shell.js";
 export {
   SETTINGS_HEADER_SURFACE_SELECTOR,
   SETTINGS_TRIGGER_ATTRIBUTE,
+  inspectRendererSettingsContract,
   installRendererSettingsHeaderTrigger,
   mountRendererSettingsTrigger,
   selectRendererSettingsHeaderSlot,
 } from "./settings/trigger.js";
 export type {
   RendererSettingsBounds,
+  RendererSettingsContractInspection,
   RendererSettingsHeaderSlotCandidate,
   RendererSettingsHeaderTriggerControl,
   RendererSettingsTriggerControl,

@@ -63,6 +63,20 @@ interface NativeControlState {
 type NativeModelControlState = NativeControlState;
 type NativePermissionModeControlState = NativeControlState;
 
+export interface RendererComposerContractInspection {
+  composerCount: number;
+  visibleComposerCount: number;
+  activeComposerCount: number;
+  modelCandidateCount: number;
+  verifiedModelCandidateCount: number;
+  permissionCandidateCount: number;
+  verifiedPermissionCandidateCount: number;
+  contextUsageCandidateCount: number;
+  verifiedContextUsageCandidateCount: number;
+  sendButtonCount: number;
+  trailingActionOwnerCount: number;
+}
+
 export interface ComposerAgentControl {
   composer: Element;
   root: HTMLElement;
@@ -336,6 +350,74 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
     ...composer.querySelectorAll<HTMLElement>('span[role="img"][aria-label]'),
   ].filter(isNativeContextUsageControlCandidate);
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+function contractElementVisible(element: Element): boolean {
+  const typed = element as HTMLElement;
+  const bounds = typed.getBoundingClientRect?.();
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
+  if (typed.hidden || typed.getAttribute?.("aria-hidden") === "true") return false;
+  const view = element.ownerDocument?.defaultView;
+  const style = view?.getComputedStyle?.(typed);
+  return !style || (style.display !== "none" && style.visibility !== "hidden");
+}
+
+export function inspectRendererComposerContract(
+  root: ParentNode = document,
+): RendererComposerContractInspection {
+  const composers = [...root.querySelectorAll<Element>(CODEX_COMPOSER_SELECTOR)];
+  const result: RendererComposerContractInspection = {
+    composerCount: composers.length,
+    visibleComposerCount: 0,
+    activeComposerCount: 0,
+    modelCandidateCount: 0,
+    verifiedModelCandidateCount: 0,
+    permissionCandidateCount: 0,
+    verifiedPermissionCandidateCount: 0,
+    contextUsageCandidateCount: 0,
+    verifiedContextUsageCandidateCount: 0,
+    sendButtonCount: 0,
+    trailingActionOwnerCount: 0,
+  };
+  for (const composer of composers) {
+    if (contractElementVisible(composer)) result.visibleComposerCount += 1;
+    const editors = [...composer.querySelectorAll<HTMLElement>(EDITOR_SELECTOR)].filter(
+      contractElementVisible,
+    );
+    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+    const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
+    if (editors.length === 1 && sendButton !== null) result.activeComposerCount += 1;
+    if (sendButton) {
+      result.sendButtonCount += 1;
+      if (trailingActionAnchor(sendButton).parentElement !== null) {
+        result.trailingActionOwnerCount += 1;
+      }
+    }
+    const modelCandidates = [
+      ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
+    ].filter((element) => !isOwnedRendererControl(element));
+    result.modelCandidateCount += modelCandidates.length;
+    result.verifiedModelCandidateCount += modelCandidates.filter(
+      isNativeModelControlCandidate,
+    ).length;
+    const permissionCandidates = [
+      ...composer.querySelectorAll<HTMLElement>(
+        'button[aria-haspopup="menu"][data-composer-navigation-target="permissions"]',
+      ),
+    ].filter((element) => !element.hasAttribute("data-codexhost-permission-mode-control"));
+    result.permissionCandidateCount += permissionCandidates.length;
+    result.verifiedPermissionCandidateCount += permissionCandidates.filter(
+      isNativePermissionModeControlCandidate,
+    ).length;
+    const contextCandidates = [
+      ...composer.querySelectorAll<HTMLElement>('span[role="img"][aria-label]'),
+    ].filter((element) => !isOwnedRendererControl(element));
+    result.contextUsageCandidateCount += contextCandidates.length;
+    result.verifiedContextUsageCandidateCount += contextCandidates.filter(
+      isNativeContextUsageControlCandidate,
+    ).length;
+  }
+  return result;
 }
 
 function captureNativeControl(element: HTMLElement | null): NativeControlState | null {

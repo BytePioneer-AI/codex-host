@@ -312,15 +312,19 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
     this.#reading = true;
     try {
-      const entries = await readAllDeepSeekHistory(
-        this.#client,
-        this.#nativeRef.nativeSessionId as SessionId,
-      );
+      const [entries, modelState] = await Promise.all([
+        readAllDeepSeekHistory(this.#client, this.#nativeRef.nativeSessionId as SessionId),
+        this.#client.sessions.models({
+          sessionId: this.#nativeRef.nativeSessionId as SessionId,
+        }),
+      ]);
+      const models = unwrapRpc(modelState, "session.models");
+      const model = encodeDeepSeekHarnessModelRef(models.current);
       const projection = projectDeepSeekHistory({
         harnessId: this.harnessId,
         sessionId: this.#nativeRef.nativeSessionId,
         entries,
-        fallbackModel: this.#model,
+        fallbackModel: model,
         toolOutputLimit: this.#toolOutputLimit,
       });
       this.#lastSeq = Math.max(this.#lastSeq, projection.lastSeq);
@@ -329,7 +333,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#usageBaseline = projection.usage;
       this.#usageByStep.clear();
       this.#latestUsageKey = undefined;
-      if (projection.effectiveModel) this.#model = projection.effectiveModel;
+      this.#model = model;
+      this.#thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
+      this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
       const usage = this.#withOutputSpeed(projection.usage);
       if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
         this.#usage = usage;
@@ -1376,7 +1382,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         const thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
         session = new DeepSeekHarnessSession({
           client: this.#connection.client,
-          model: projection.effectiveModel ?? model,
+          model,
           nativeSessionId: sessionId,
           lastSeq: projection.lastSeq,
           ...(thinkingOptionId ? { thinkingOptionId } : {}),

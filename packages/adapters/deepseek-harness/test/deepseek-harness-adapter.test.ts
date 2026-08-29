@@ -46,6 +46,7 @@ const MODEL_GROUPS = [
             { id: "low", name: "Low" },
             { id: "high", name: "High" },
           ],
+          defaultEffort: "high",
         },
       },
       {
@@ -129,7 +130,15 @@ class FakeConnection implements DeepSeekHostConnectionLike {
         model: string;
         reasoningEffort?: string;
       }) => {
-        this.currentModel = { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
+        const defaultEffort = MODEL_GROUPS.find((group) => group.id === provider)?.models.find(
+          (candidate) => candidate.id === model,
+        )?.reasoning.defaultEffort;
+        const effectiveEffort = reasoningEffort ?? defaultEffort;
+        this.currentModel = {
+          provider,
+          model,
+          ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
+        };
         return Promise.resolve(success({ selected: this.currentModel }));
       },
     );
@@ -253,6 +262,14 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       provider: "deepseek-official",
       model: "deepseek-v4-pro",
     });
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: expect.arrayContaining([
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ]),
+    });
 
     const turnId = hostTurnIdSchema.parse("host-turn-1");
     await expect(
@@ -358,6 +375,11 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           state: {
             nativeRef: { nativeSessionId: SESSION_ID },
             effectiveModel: model,
+            effectiveThinkingOptionId: "high",
+            availableThinkingOptions: expect.arrayContaining([
+              { id: "high", label: "High" },
+              { id: "max", label: "Max" },
+            ]),
           },
         },
       },
@@ -379,6 +401,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       status: "ready",
       capabilities: { configuration: { selectThinkingOption: true } },
       catalog: {
+        defaultThinkingOptionId: "high",
         thinkingOptions: [
           { id: "off", label: "Off" },
           { id: "low", label: "Low" },
@@ -389,6 +412,52 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           { supportedThinkingOptionIds: ["off", "low", "high"] },
           { supportedThinkingOptionIds: ["off", "low", "high", "max"] },
         ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("keeps current Model and Thinking state ahead of the last historical request", async () => {
+    const { adapter, connection } = fixture();
+    const current: ModelSelection = {
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+      reasoningEffort: "high",
+    };
+    const model = encodeDeepSeekHarnessModelRef(current);
+    connection.currentModel = current;
+    connection.history.set(SESSION_ID, [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "request/header", { header: { config: CURRENT_MODEL } }),
+      event(2, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ]);
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const expectedState = {
+      effectiveModel: model,
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: expect.arrayContaining([
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ]),
+    };
+
+    expect(session.initialState).toMatchObject(expectedState);
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        state: expectedState,
+        turns: [{ model: encodeDeepSeekHarnessModelRef(CURRENT_MODEL) }],
       },
     });
     await adapter.close();
@@ -423,6 +492,47 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       },
     });
     await session.close();
+    await adapter.close();
+  });
+
+  it("rejects Thinking selection when native readback differs without publishing state", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const output = session.outputs[Symbol.asyncIterator]().next();
+    connection.calls.models.mockResolvedValueOnce(
+      success<SessionModels>({
+        current: { ...CURRENT_MODEL, reasoningEffort: "low" },
+        routable: true,
+        groups: MODEL_GROUPS,
+        failures: [],
+      }),
+    );
+
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not activate the requested Thinking option",
+        retryable: false,
+      },
+    });
+    await session.close();
+    await expect(output).resolves.toEqual({ done: true, value: undefined });
     await adapter.close();
   });
 
@@ -493,11 +603,12 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       ok: false,
       error: { message: expect.stringContaining("Model is unavailable") },
     });
+    expect(connection.calls.models).toHaveBeenCalledTimes(1);
     await expect(session.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: { state: { effectiveModel: encodeDeepSeekHarnessModelRef(CURRENT_MODEL) } },
     });
-    expect(connection.calls.models).toHaveBeenCalledTimes(1);
+    expect(connection.calls.models).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
 
@@ -535,7 +646,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       ({ provider, model: modelId }: { provider: string; model: string }) =>
         new Promise((resolve) => {
           releaseSelection = () => {
-            connection.currentModel = { provider, model: modelId };
+            connection.currentModel = { provider, model: modelId, reasoningEffort: "high" };
             resolve(success({ selected: connection.currentModel }));
           };
         }),
@@ -567,12 +678,13 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       provider: "deepseek-official",
       model: "deepseek-v4-pro",
     });
-    connection.calls.models.mockResolvedValueOnce(
-      success<SessionModels>({
-        current: CURRENT_MODEL,
-        routable: true,
-        groups: MODEL_GROUPS,
-        failures: [],
+    connection.calls.selectModel.mockResolvedValueOnce(
+      success({
+        selected: {
+          provider: "deepseek-official",
+          model: "deepseek-v4-pro",
+          reasoningEffort: "high",
+        },
       }),
     );
 

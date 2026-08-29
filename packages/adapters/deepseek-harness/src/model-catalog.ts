@@ -119,12 +119,18 @@ export function normalizeDeepSeekModelCatalog(
   if (!models.some((model) => model.ref.id === defaultModel.id)) {
     models.unshift({ ref: defaultModel, label: `${selection.provider} / ${selection.model}` });
   }
-  const defaultThinkingOptionId = parseDeepSeekThinkingOptionId(selection.reasoningEffort);
+  const defaultReasoning = groups
+    .find((group) => group.id === selection.provider)
+    ?.models.find((model) => model.id === selection.model)?.reasoning;
+  const defaultThinkingOptionId = parseDeepSeekThinkingOptionId(
+    selection.reasoningEffort ?? defaultReasoning?.defaultEffort,
+  );
   return harnessModelCatalogSchema.parse({
     models,
     defaultModel,
     thinkingOptions,
-    ...(defaultThinkingOptionId && knownEffortIds.has(defaultThinkingOptionId)
+    ...(defaultThinkingOptionId &&
+    defaultReasoning?.efforts.some((effort) => effort.id === defaultThinkingOptionId)
       ? { defaultThinkingOptionId }
       : {}),
   });

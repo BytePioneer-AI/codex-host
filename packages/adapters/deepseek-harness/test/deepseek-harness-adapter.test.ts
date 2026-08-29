@@ -342,6 +342,120 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
+  it("exposes the command catalog and executes dsh.compact through the native prompt command seam", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(commands.list()).resolves.toMatchObject({
+      ok: true,
+      value: { commands: [{ id: "dsh.compact", invocation: "/compact" }] },
+    });
+    connection.calls.prompt.mockResolvedValueOnce(
+      success({ accepted: true, command: { kind: "success", text: "compacted" } }),
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const executing = commands.execute({
+      turnId: hostTurnIdSchema.parse("manual-compact"),
+      commandId: "dsh.compact",
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { kind: "event", event: { type: "turn.started", turnId: "manual-compact" } },
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        kind: "event",
+        event: {
+          type: "turn.completed",
+          turnId: "manual-compact",
+          outcome: { status: "succeeded" },
+        },
+      },
+    });
+    await expect(executing).resolves.toEqual({
+      ok: true,
+      value: { turnId: "manual-compact" },
+    });
+    expect(connection.calls.prompt).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      mode: "queue",
+      content: [{ type: "text", text: "/compact" }],
+    });
+    await adapter.close();
+  });
+
+  it("rejects unknown Harness commands and command arguments without touching the Host", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-x"),
+        commandId: "dsh.unknown",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-compact"),
+        commandId: "dsh.compact",
+        arguments: { text: "keep details" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("fails closed when DeepSeek Harness does not treat the invocation as a command", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-compact"),
+        commandId: "dsh.compact",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(connection.calls.prompt).toHaveBeenCalledTimes(1);
+    await adapter.close();
+  });
+
   it("preserves the confirmed Model when native selection fails", async () => {
     const { adapter, connection } = fixture();
     const session = await openCreated(adapter);

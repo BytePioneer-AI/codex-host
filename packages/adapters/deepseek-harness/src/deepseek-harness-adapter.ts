@@ -15,6 +15,9 @@ import {
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
@@ -51,6 +54,7 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  harnessCommandCatalogSchema,
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -143,6 +147,18 @@ interface ActiveTurn {
 }
 
 const deepSeekHarnessId = harnessIdSchema.parse("deepseek-harness");
+const deepSeekCommandCatalog = harnessCommandCatalogSchema.parse({
+  commands: [
+    {
+      id: "dsh.compact",
+      invocation: "/compact",
+      label: "Compact context",
+      description:
+        "Compact the current conversation context through the DeepSeek Harness command registry",
+      argumentMode: "none",
+    },
+  ],
+});
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const HISTORY_PAGE_MESSAGES = 100;
 const HISTORY_PAGE_LIMIT = 10_000;
@@ -220,6 +236,10 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       selectPermissionMode: false,
     },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  };
+  readonly commands: HarnessCommandCapability = {
+    list: () => Promise.resolve({ ok: true, value: deepSeekCommandCatalog }),
+    execute: (command) => this.#executeHarnessCommand(command),
   };
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
@@ -539,6 +559,79 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           state: { nativeRef: this.#nativeRef, effectiveModel: this.#model },
         });
         return { ok: true, value: { completed: true } };
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (command.commandId !== "dsh.compact") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `DeepSeek Harness does not expose command '${command.commandId}'`,
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active || this.#configuring || this.#reading) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message:
+            "DeepSeek Harness Session cannot execute a command while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    if (command.arguments && Object.keys(command.arguments).length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "DeepSeek Harness compact command does not accept arguments",
+          retryable: false,
+        },
+      };
+    }
+
+    this.#configuring = true;
+    try {
+      try {
+        const response = unwrapRpc(
+          await this.#client.sessions.prompt({
+            sessionId: this.#nativeRef.nativeSessionId as SessionId,
+            mode: "queue",
+            content: [{ type: "text", text: "/compact" }],
+          }),
+          "session.prompt",
+        );
+        if (!response.command) {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "DeepSeek Harness did not treat the invocation as a command",
+              retryable: false,
+            },
+          };
+        }
+        // Temporary command projection Turn: lifecycle events only, never persisted
+        // into the ordinary conversation history and carrying no native turn identity.
+        this.#emit({ type: "turn.started", turnId: command.turnId });
+        this.#emit({
+          type: "turn.completed",
+          turnId: command.turnId,
+          outcome: { status: "succeeded" },
+        });
+        return { ok: true, value: { turnId: command.turnId } };
       } catch (error) {
         return { ok: false, error: normalizedError(error, "nativeFailure") };
       }

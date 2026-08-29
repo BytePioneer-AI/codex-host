@@ -30,11 +30,12 @@ describe("Linux glibc release baseline", () => {
   });
 
   it("rejects a native executable that imports a newer glibc symbol", () => {
+    let inspection = 0;
     expect(() =>
       verifyLinuxGlibcBaseline({
         packageRoot: "/package",
-        inspect: (binary) =>
-          binary.endsWith("bin/codexhost")
+        inspect: () =>
+          inspection++ === 0
             ? "0000 w DF *UND* 0000 (GLIBC_2.39) pidfd_spawnp\n"
             : "0000 DF *UND* 0000 (GLIBC_2.35) stat\n",
       }),

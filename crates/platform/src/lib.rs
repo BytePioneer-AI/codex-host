@@ -81,9 +81,10 @@ pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
 /// Points at a portable/unpacked Codex Desktop installation root.
 ///
 /// Unlike the `CODEXHOST_PROBE_*` Gate A overrides, which must be supplied as a
-/// complete set, this one stands alone: it names the directory that holds
-/// `app/ChatGPT.exe` so that installations with no registered AppX package can
-/// still be discovered.
+/// complete set, this one stands alone: it names either the package directory
+/// that holds `app/ChatGPT.exe` or the `app` directory that directly holds
+/// `ChatGPT.exe`, so installations with no registered AppX package can still
+/// be discovered.
 pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

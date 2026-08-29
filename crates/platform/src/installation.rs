@@ -343,8 +343,8 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
 /// embeds the marketing version in the `<Identity Version="..."/>` attribute of
 /// its manifest; fall back to a placeholder when it cannot be parsed.
 #[cfg(target_os = "windows")]
-fn portable_package_version(install_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(install_root.join("AppxManifest.xml")).ok()?;
+fn portable_package_version(package_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(package_root.join("AppxManifest.xml")).ok()?;
     let identity = content.find("<Identity")?;
     let rest = &content[identity..];
     let marker = rest.find("Version=")?;
@@ -367,29 +367,45 @@ fn portable_package_version(install_root: &Path) -> Option<String> {
 ///
 /// This supports portable/unpacked installations (for example an MSIX that was
 /// extracted rather than installed) where no AppX package is registered for the
-/// current user, so the Windows PackageManager lookup would otherwise fail.
+/// current user, so the Windows PackageManager lookup would otherwise fail. The
+/// supplied directory may be the package root or its `app` payload directory.
 #[cfg(target_os = "windows")]
 pub fn discover_codex_desktop_from_root(
     install_root: &Path,
 ) -> Result<DesktopInstallation, PlatformError> {
-    let install_root = install_root.canonicalize().map_err(|error| {
+    let supplied_root = install_root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
             "Codex Desktop directory '{}' is unavailable: {error}",
             install_root.display()
         ))
     })?;
-    let desktop_executable = install_root.join("app/ChatGPT.exe");
-    let packaged_codex_cli = install_root.join("app/resources/codex.exe");
-    let asar_path = install_root.join("app/resources/app.asar");
-    if !desktop_executable.is_file() || !packaged_codex_cli.is_file() || !asar_path.is_file() {
+    let (package_root, app_root) = if supplied_root.join("app/ChatGPT.exe").is_file() {
+        (supplied_root.clone(), supplied_root.join("app"))
+    } else if supplied_root.join("ChatGPT.exe").is_file() {
+        let package_root = supplied_root
+            .parent()
+            .filter(|parent| parent.join("app") == supplied_root)
+            .unwrap_or(&supplied_root)
+            .to_path_buf();
+        (package_root, supplied_root.clone())
+    } else {
         return Err(PlatformError::NotFound(format!(
-            "Codex Desktop directory '{}' does not contain the required ChatGPT.exe, codex.exe, and app.asar resources",
-            install_root.display()
+            "Codex Desktop directory '{}' does not contain app/ChatGPT.exe or ChatGPT.exe",
+            supplied_root.display()
+        )));
+    };
+    let desktop_executable = app_root.join("ChatGPT.exe");
+    let packaged_codex_cli = app_root.join("resources/codex.exe");
+    let asar_path = app_root.join("resources/app.asar");
+    if !packaged_codex_cli.is_file() || !asar_path.is_file() {
+        return Err(PlatformError::NotFound(format!(
+            "Codex Desktop directory '{}' does not contain the required codex.exe and app.asar resources beside ChatGPT.exe",
+            supplied_root.display()
         )));
     }
     let executable_codex_cli = packaged_codex_cli.clone();
 
-    let version = portable_package_version(&install_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+    let version = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -400,7 +416,7 @@ pub fn discover_codex_desktop_from_root(
         build: version.clone(),
         version,
         asar_integrity: sha256_file(&asar_path)?,
-        install_root,
+        install_root: package_root,
         desktop_launcher: desktop_executable.clone(),
         desktop_executable,
         packaged_codex_cli,
@@ -590,6 +606,35 @@ mod windows_tests {
         );
 
         fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_app_directory_discovers_the_same_portable_installation() {
+        let (root, install_root) = portable_fixture(
+            "codexhost-windows-custom-app-directory",
+            Some(
+                b"<?xml version=\"1.0\"?><Package><Identity Name=\"OpenAI.Codex\" Version=\"2.5.1.0\"/></Package>",
+            ),
+        );
+        let app_root = install_root.join("app");
+
+        let installation =
+            super::discover_codex_desktop_from_root(&app_root).expect("portable app directory");
+
+        assert_eq!(
+            installation.install_root,
+            install_root.canonicalize().expect("canonical package root")
+        );
+        assert_eq!(
+            installation.desktop_executable,
+            app_root
+                .canonicalize()
+                .expect("canonical app root")
+                .join("ChatGPT.exe")
+        );
+        assert_eq!(installation.version, "2.5.1.0");
+
+        fs::remove_dir_all(root).expect("remove portable app-directory fixture");
     }
 
     #[test]

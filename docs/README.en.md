@@ -70,13 +70,13 @@ Then open `codexhost` again.
 
 **Windows** - Portable Codex Desktop
 
-If you use a portable/extracted Codex Desktop, set `CODEXHOST_INSTALL_ROOT` to the directory containing `app\ChatGPT.exe` before launching codexhost:
+For a portable/extracted Codex Desktop, set `CODEXHOST_INSTALL_ROOT` to the extracted Codex Desktop directory:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-Then open a new terminal and start codexhost.
+Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
 

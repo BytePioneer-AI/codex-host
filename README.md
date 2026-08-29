@@ -79,13 +79,13 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 **Windows** - 绿色解压版 Codex Desktop
 
-如使用绿色版本，启动前设置：
+如使用绿色版本，将 `CODEXHOST_INSTALL_ROOT` 设置为 Codex Desktop 的解压目录：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-然后重新打开终端并启动 codexhost。
+然后完全退出 Codex Desktop，重新打开终端并启动 codexhost。
 
 </details>
 

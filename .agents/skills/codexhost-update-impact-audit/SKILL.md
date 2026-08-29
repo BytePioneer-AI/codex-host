@@ -7,6 +7,8 @@ description: Diagnose whether a Codex Desktop update changed codexhost Composer/
 
 Audit before changing codexhost. Produce a verdict backed by bundle and live-Renderer evidence. Apply a fix only when the user explicitly requests one.
 
+可先运行 `npm run audit:codex-desktop` 辅助检测；该命令不能替代下面的语义对比、ownership 追踪、真实 Renderer 探测和必要的行为验证，后续步骤仍须继续执行。
+
 ## Guardrails
 
 - Read the repository `AGENTS.md` and record `git status`; preserve unrelated dirty-worktree changes.

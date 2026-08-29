@@ -29,6 +29,7 @@ import {
   type HostAgentMessageItem,
   type HostApprovalInteraction,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostFileChangeItem,
   type HostItem,
   type HostItemOutcome,
@@ -71,6 +72,7 @@ import {
 import {
   DeepSeekHarnessTransportError,
   DeepSeekHostConnection,
+  type DeepSeekCommandClient,
   type DeepSeekHostClient,
   type DeepSeekHostConnectionOptions,
   type DeepSeekHostSubscriber,
@@ -146,6 +148,13 @@ interface ActiveTurn {
   snapshots: HostItemSnapshot[];
 }
 
+interface ActiveCommand {
+  command: HarnessCommandInvocation;
+  abort: AbortController;
+  cancellationRequested: boolean;
+  item: HostContextCompactionItem;
+}
+
 const deepSeekHarnessId = harnessIdSchema.parse("deepseek-harness");
 const deepSeekCommandCatalog = harnessCommandCatalogSchema.parse({
   commands: [
@@ -159,6 +168,10 @@ const deepSeekCommandCatalog = harnessCommandCatalogSchema.parse({
     },
   ],
 });
+const emptyDeepSeekCommandCatalog = harnessCommandCatalogSchema.parse({ commands: [] });
+const DSH_COMPACT_BUSY =
+  "Compaction is unavailable because this process has an active compaction, or the agent is not idle.";
+const DSH_COMPACT_CANCELLED = "Compaction cancelled.";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const HISTORY_PAGE_MESSAGES = 100;
 const HISTORY_PAGE_LIMIT = 10_000;
@@ -184,6 +197,15 @@ function invalidState(message: string): HarnessError {
 
 function unsupported(message: string): HarnessError {
   return { code: "unsupported", message, retryable: false };
+}
+
+function commandFailure(operation: string, error: { code: string; message: string }): HarnessError {
+  const code = error.code === "session-not-found" ? "unavailable" : "nativeFailure";
+  return {
+    code,
+    message: `DeepSeek Harness '${operation}' failed: ${error.message}`,
+    retryable: code === "unavailable" || error.code === "internal",
+  };
 }
 
 function unwrapRpc<T>(response: RpcResponse<T>, operation: string): T {
@@ -238,7 +260,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
   };
   readonly commands: HarnessCommandCapability = {
-    list: () => Promise.resolve({ ok: true, value: deepSeekCommandCatalog }),
+    list: () => this.#listHarnessCommands(),
     execute: (command) => this.#executeHarnessCommand(command),
   };
   readonly initialState: HarnessSessionState;
@@ -247,11 +269,13 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #client: DeepSeekHostClient;
+  readonly #commandClient: DeepSeekCommandClient;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
   readonly #toolOutputLimit: number;
   readonly #unsubscribe: () => void;
   #active: ActiveTurn | null = null;
+  #activeCommand: ActiveCommand | null = null;
   #closePromise: Promise<void> | null = null;
   #closed = false;
   #configuring = false;
@@ -280,6 +304,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     unsubscribe(): void;
   }) {
     this.#client = input.client;
+    this.#commandClient = input.client.commands;
     this.#model = input.model;
     this.#onClosed = input.onClosed;
     this.#toolOutputLimit = input.toolOutputLimit;
@@ -303,7 +328,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (this.#closed) {
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     }
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -383,7 +408,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         error: unsupported(`DeepSeek Harness does not support '${command.type}'`),
       };
     }
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -483,6 +508,15 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 
   async #performClose(): Promise<void> {
     if (this.#closed) return;
+    const activeCommand = this.#activeCommand;
+    if (activeCommand) {
+      activeCommand.cancellationRequested = true;
+      activeCommand.abort.abort(new Error("codexhost Session closed"));
+      this.#finishCommand(activeCommand, {
+        status: "cancelled",
+        reason: "DeepSeek Harness command was cancelled because the Session closed",
+      });
+    }
     const active = this.#active;
     if (active) {
       for (const pending of active.interactions.values()) {
@@ -505,7 +539,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -567,9 +601,28 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
   }
 
+  async #listHarnessCommands(): Promise<HarnessResult<typeof deepSeekCommandCatalog>> {
+    if (this.#closed) {
+      return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
+    }
+    try {
+      const result = await this.#commandClient.list(this.#nativeRef.nativeSessionId as SessionId);
+      if (!result.ok) return { ok: false, error: commandFailure("commands/list", result.error) };
+      const available = result.value.some(
+        (descriptor) => descriptor.name === "compact" && descriptor.input === undefined,
+      );
+      return { ok: true, value: available ? deepSeekCommandCatalog : emptyDeepSeekCommandCatalog };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "unavailable") };
+    }
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#closed) {
+      return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
+    }
     if (command.commandId !== "dsh.compact") {
       return {
         ok: false,
@@ -580,7 +633,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         },
       };
     }
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -602,45 +655,106 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       };
     }
 
-    this.#configuring = true;
+    const active: ActiveCommand = {
+      command,
+      abort: new AbortController(),
+      cancellationRequested: false,
+      item: { type: "contextCompaction", itemId: this.#newItemId() },
+    };
+    this.#activeCommand = active;
+    this.#emit({ type: "turn.started", turnId: command.turnId });
+    this.#emit({ type: "item.started", turnId: command.turnId, item: active.item });
+    void this.#runHarnessCommand(active);
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  async #runHarnessCommand(active: ActiveCommand): Promise<void> {
     try {
-      try {
-        const response = unwrapRpc(
-          await this.#client.sessions.prompt({
-            sessionId: this.#nativeRef.nativeSessionId as SessionId,
-            mode: "queue",
-            content: [{ type: "text", text: "/compact" }],
-          }),
-          "session.prompt",
-        );
-        if (!response.command) {
-          return {
-            ok: false,
-            error: {
-              code: "nativeFailure",
-              message: "DeepSeek Harness did not treat the invocation as a command",
-              retryable: false,
-            },
-          };
+      const response = await this.#commandClient.execute(
+        this.#nativeRef.nativeSessionId as SessionId,
+        "/compact",
+        active.abort.signal,
+      );
+      if (this.#activeCommand !== active) return;
+      if (!response.ok) {
+        if (active.cancellationRequested || response.error.code === "cancelled") {
+          this.#finishCommand(active, {
+            status: "cancelled",
+            reason: "DeepSeek Harness context compaction was cancelled",
+          });
+        } else {
+          this.#finishCommand(active, {
+            status: "failed",
+            error: commandFailure("commands/execute", response.error),
+          });
         }
-        // Temporary command projection Turn: lifecycle events only, never persisted
-        // into the ordinary conversation history and carrying no native turn identity.
-        this.#emit({ type: "turn.started", turnId: command.turnId });
-        this.#emit({
-          type: "turn.completed",
-          turnId: command.turnId,
-          outcome: { status: "succeeded" },
-        });
-        return { ok: true, value: { turnId: command.turnId } };
-      } catch (error) {
-        return { ok: false, error: normalizedError(error, "nativeFailure") };
+        return;
       }
-    } finally {
-      this.#configuring = false;
+      const execution = response.value;
+      if (!execution) {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "DeepSeek Harness did not resolve the registered /compact command",
+            retryable: false,
+          },
+        });
+        return;
+      }
+      if (execution.result.kind === "success") {
+        this.#finishCommand(active, { status: "succeeded" });
+      } else if (active.cancellationRequested || execution.result.text === DSH_COMPACT_CANCELLED) {
+        this.#finishCommand(active, {
+          status: "cancelled",
+          reason: execution.result.text,
+        });
+      } else {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: {
+            code: execution.result.text === DSH_COMPACT_BUSY ? "sessionBusy" : "nativeFailure",
+            message: execution.result.text,
+            retryable: true,
+          },
+        });
+      }
+    } catch (error) {
+      if (this.#activeCommand !== active) return;
+      if (active.cancellationRequested || active.abort.signal.aborted) {
+        this.#finishCommand(active, {
+          status: "cancelled",
+          reason: "DeepSeek Harness context compaction was cancelled",
+        });
+      } else {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: normalizedError(error, "nativeFailure"),
+        });
+      }
     }
   }
 
+  #finishCommand(active: ActiveCommand, outcome: HostItemOutcome): void {
+    if (this.#activeCommand !== active) return;
+    this.#activeCommand = null;
+    this.#emit({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item: active.item, outcome },
+    });
+    this.#emit({ type: "turn.completed", turnId: active.command.turnId, outcome });
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
+    const activeCommand = this.#activeCommand;
+    if (activeCommand?.command.turnId === command.turnId) {
+      if (!activeCommand.cancellationRequested) {
+        activeCommand.cancellationRequested = true;
+        activeCommand.abort.abort(new Error("DeepSeek Harness command cancelled by user"));
+      }
+      return { ok: true, value: { cancellationRequested: true } };
+    }
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
       return { ok: false, error: invalidState("DeepSeek Harness cancel requires the active Turn") };
@@ -1141,6 +1255,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 
   #fault(error: HarnessError): void {
     if (this.#closed) return;
+    const activeCommand = this.#activeCommand;
+    if (activeCommand) {
+      activeCommand.abort.abort(new Error(error.message));
+      this.#finishCommand(activeCommand, { status: "failed", error });
+    }
     const active = this.#active;
     if (active) {
       const outcome: HostItemOutcome = { status: "failed", error };

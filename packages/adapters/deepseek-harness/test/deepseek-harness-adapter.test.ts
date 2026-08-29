@@ -20,6 +20,7 @@ import {
   type DeepSeekHostConnectionLike,
 } from "../src/deepseek-harness-adapter.js";
 import type {
+  DeepSeekCommandExecution,
   DeepSeekHostClient,
   DeepSeekHostSubscriber,
   DeepSeekMuxEnvelope,
@@ -47,6 +48,10 @@ function success<T>(value: T) {
   return { rpcId: RpcId("response"), result: { ok: true as const, value } };
 }
 
+function commandSuccess<T>(value: T) {
+  return { ok: true as const, value };
+}
+
 function event(seq: number, type: string, data: Record<string, unknown>): HistoryEntry {
   return {
     event: { type, seq, time: seq, data } as HistoryEntry["event"],
@@ -63,6 +68,8 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     models: vi.fn(),
     selectModel: vi.fn(),
     prompt: vi.fn(),
+    commandList: vi.fn(),
+    commandExecute: vi.fn(),
     cancel: vi.fn(),
     respond: vi.fn(),
   };
@@ -104,10 +111,19 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       },
     );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
+    this.calls.commandList.mockResolvedValue(
+      commandSuccess([{ name: "compact", description: "Compact older conversation history" }]),
+    );
+    this.calls.commandExecute.mockResolvedValue(commandSuccess(undefined));
     this.calls.cancel.mockResolvedValue(success({ accepted: true }));
     this.calls.respond.mockResolvedValue({ accepted: true });
+    const commands = {
+      list: this.calls.commandList,
+      execute: this.calls.commandExecute,
+    };
     this.client = {
       sessions,
+      commands,
       host: {
         describe: vi.fn().mockResolvedValue(
           success({
@@ -177,6 +193,12 @@ async function collectUntilTurn(session: Awaited<ReturnType<typeof openCreated>>
     if (output.kind === "event" && output.event.type === "turn.completed") return outputs;
   }
   throw new Error("Output stream ended before Turn completion");
+}
+
+async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
+  const next = await iterator.next();
+  if (next.done || next.value.kind !== "event") throw new Error("Expected a Harness event");
+  return next.value.event;
 }
 
 async function openCreated(adapter: DeepSeekHarnessAdapter) {
@@ -342,7 +364,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
-  it("exposes the command catalog and executes dsh.compact through the native prompt command seam", async () => {
+  it("discovers and executes dsh.compact through the native Remote command service", async () => {
     const { adapter, connection } = fixture();
     const opened = await adapter.open({
       kind: "resume",
@@ -362,54 +384,90 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       ok: true,
       value: { commands: [{ id: "dsh.compact", invocation: "/compact" }] },
     });
-    connection.calls.prompt.mockResolvedValueOnce(
-      success({ accepted: true, command: { kind: "success", text: "compacted" } }),
+    expect(connection.calls.commandList).toHaveBeenCalledWith(SESSION_ID);
+    let resolveExecution:
+      ((value: { ok: true; value: DeepSeekCommandExecution }) => void) | undefined;
+    connection.calls.commandExecute.mockImplementationOnce(
+      () =>
+        new Promise<{ ok: true; value: DeepSeekCommandExecution }>((resolve) => {
+          resolveExecution = resolve;
+        }),
     );
     const iterator = session.outputs[Symbol.asyncIterator]();
-    const executing = commands.execute({
-      turnId: hostTurnIdSchema.parse("manual-compact"),
-      commandId: "dsh.compact",
+    const turnId = hostTurnIdSchema.parse("manual-compact");
+    await expect(
+      commands.execute({
+        turnId,
+        commandId: "dsh.compact",
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started") throw new Error("Expected compaction Item start");
+    expect(started).toMatchObject({
+      type: "item.started",
+      turnId,
+      item: { type: "contextCompaction" },
     });
-    await expect(iterator.next()).resolves.toMatchObject({
-      done: false,
-      value: { kind: "event", event: { type: "turn.started", turnId: "manual-compact" } },
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
     });
-    await expect(iterator.next()).resolves.toMatchObject({
-      done: false,
-      value: {
-        kind: "event",
-        event: {
-          type: "turn.completed",
-          turnId: "manual-compact",
-          outcome: { status: "succeeded" },
-        },
-      },
+
+    resolveExecution?.(
+      commandSuccess({
+        commandId: "native-command-1",
+        result: { kind: "success", text: "compacted" },
+      }),
+    );
+    expect(await nextEvent(iterator)).toEqual({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: started.item, outcome: { status: "succeeded" } },
     });
-    await expect(executing).resolves.toEqual({
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+      SESSION_ID,
+      "/compact",
+      expect.any(AbortSignal),
+    );
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await expect(session.readSnapshot()).resolves.toMatchObject({
       ok: true,
-      value: { turnId: "manual-compact" },
+      value: { turns: [] },
     });
-    expect(connection.calls.prompt).toHaveBeenCalledWith({
-      sessionId: SESSION_ID,
-      mode: "queue",
-      content: [{ type: "text", text: "/compact" }],
+    await adapter.close();
+  });
+
+  it("hides dsh.compact when the native deployment does not advertise the argument-free command", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.commandList.mockResolvedValueOnce(
+      commandSuccess([
+        {
+          name: "compact",
+          description: "Different deployment contract",
+          input: { hint: "<instructions>" },
+        },
+      ]),
+    );
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(commands.list()).resolves.toEqual({
+      ok: true,
+      value: { commands: [] },
     });
     await adapter.close();
   });
 
   it("rejects unknown Harness commands and command arguments without touching the Host", async () => {
     const { adapter, connection } = fixture();
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd: "/workspace",
-      nativeRef: {
-        harnessId: adapter.harnessId,
-        nativeSessionId: SESSION_ID,
-        formatVersion: 1,
-      },
-    });
-    if (!opened.ok) throw new Error(opened.error.message);
-    const session = opened.value;
+    const session = await openCreated(adapter);
     const commands = session.commands;
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
 
@@ -426,33 +484,105 @@ describe("DeepSeekHarnessAdapter local Host", () => {
         arguments: { text: "keep details" },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(connection.calls.commandExecute).not.toHaveBeenCalled();
     expect(connection.calls.prompt).not.toHaveBeenCalled();
     await adapter.close();
   });
 
-  it("fails closed when DeepSeek Harness does not treat the invocation as a command", async () => {
+  it("fails the temporary Turn when the native command does not resolve", async () => {
     const { adapter, connection } = fixture();
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd: "/workspace",
-      nativeRef: {
-        harnessId: adapter.harnessId,
-        nativeSessionId: SESSION_ID,
-        formatVersion: 1,
-      },
-    });
-    if (!opened.ok) throw new Error(opened.error.message);
-    const session = opened.value;
+    const session = await openCreated(adapter);
     const commands = session.commands;
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("missing-compact");
 
-    await expect(
-      commands.execute({
-        turnId: hostTurnIdSchema.parse("manual-compact"),
-        commandId: "dsh.compact",
+    await expect(commands.execute({ turnId, commandId: "dsh.compact" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const started = await nextEvent(iterator);
+    expect(started.type).toBe("item.started");
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed", error: { code: "nativeFailure" } } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "nativeFailure" } },
+    });
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("projects the native compact busy result as a failed temporary Turn", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "native-command-1",
+        result: {
+          kind: "error",
+          text: "Compaction is unavailable because this process has an active compaction, or the agent is not idle.",
+        },
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
-    expect(connection.calls.prompt).toHaveBeenCalledTimes(1);
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("busy-compact");
+
+    await commands.execute({ turnId, commandId: "dsh.compact" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed", error: { code: "sessionBusy" } } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "sessionBusy" } },
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({ ok: true });
+    await adapter.close();
+  });
+
+  it("cancels a running native compact command through its AbortSignal", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    let commandSignal: AbortSignal | undefined;
+    connection.calls.commandExecute.mockImplementationOnce(
+      (_sessionId: SessionId, _line: string, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          commandSignal = signal;
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("cancel-compact");
+
+    await commands.execute({
+      turnId,
+      commandId: "dsh.compact",
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(commandSignal?.aborted).toBe(true);
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
     await adapter.close();
   });
 

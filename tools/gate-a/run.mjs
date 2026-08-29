@@ -20,8 +20,8 @@ const gatePlatform = process.platform === "win32" ? "windows" : process.platform
 if (!["windows", "darwin", "linux"].includes(gatePlatform)) {
   throw new Error("Gate A currently supports Windows, macOS, and Linux only");
 }
-if (gatePlatform === "linux" && process.arch !== "x64") {
-  throw new Error("Gate A Linux support currently requires x64");
+if (gatePlatform === "linux" && !["x64", "arm64"].includes(process.arch)) {
+  throw new Error("Gate A Linux support currently requires x64 or arm64");
 }
 const platformName = gatePlatform === "darwin" ? "macos" : gatePlatform;
 const launcherPath = path.join(repositoryRoot, "target", "debug", `codexhost${executableSuffix}`);
@@ -213,7 +213,7 @@ function writeGateReport({
             platform: "linux",
             gate: "linux-codex-transparent-proxy",
             linuxVersion: `${os.type()} ${os.release()}`,
-            architecture: "x64",
+            architecture: os.arch(),
           };
   const report = gateReportSchema.parse({
     schemaVersion: 1,
@@ -458,12 +458,18 @@ function finalize() {
   if (platformName === "linux" && interactive.linuxVersion !== expectedSystemVersion) {
     throw new Error("interactive evidence Linux version does not match the current host");
   }
+  if (platformName === "linux" && interactive.architecture !== os.arch()) {
+    throw new Error("interactive evidence Linux architecture does not match the current host");
+  }
   const invocationPath = invocationEvidencePath;
   const invocation = probeInvocationSchema.parse(
     JSON.parse(fs.readFileSync(invocationPath, "utf8")),
   );
   if (invocation.desktopVersion !== inspection.desktop_version) {
     throw new Error("reviewed Shim evidence Desktop version does not match the installed version");
+  }
+  if (platformName === "linux" && invocation.architecture !== os.arch()) {
+    throw new Error("reviewed Shim evidence Linux architecture does not match the current host");
   }
   const { report, outputPath } = writeGateReport({
     inspection,
@@ -481,7 +487,7 @@ function finalize() {
     impact: `${platformName === "linux" ? "Linux ChatGPT" : "Windows Codex"} Desktop transparent proxy launch, protocol forwarding, interaction, and lifecycle invariants passed for the recorded versions.`,
     nextDecision:
       platformName === "linux"
-        ? "The Linux Gate may be used as verified evidence for Linux x64 release readiness."
+        ? `The Linux Gate may be used as verified evidence for Linux ${interactive.architecture} release readiness.`
         : "Gate A may be used as the verified native boundary for a separately proposed Protocol Core change.",
   });
   console.log(JSON.stringify(report, null, 2));

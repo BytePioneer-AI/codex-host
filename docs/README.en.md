@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 **Use npm**
 
-> Supports macOS, Windows, and [x64 Linux](linux.md).
+> Supports macOS, Windows, and [x64/ARM64 Linux](linux.md).
 
 ```bash
 npm install -g @codexhost/cli

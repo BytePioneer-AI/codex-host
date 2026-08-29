@@ -41,6 +41,7 @@ describe("npm registry publishing", () => {
       `codexhost-cli-${version}-windows-x64.tgz`,
       `codexhost-cli-${version}-windows-arm64.tgz`,
       `codexhost-cli-${version}-linux-x64.tgz`,
+      `codexhost-cli-${version}-linux-arm64.tgz`,
       `codexhost-cli-${version}.tgz`,
     ];
     try {
@@ -53,6 +54,7 @@ describe("npm registry publishing", () => {
         "@codexhost/cli-win32-x64",
         "@codexhost/cli-win32-arm64",
         "@codexhost/cli-linux-x64",
+        "@codexhost/cli-linux-arm64",
         "@codexhost/cli",
       ]);
       expect(plan.at(-1).kind).toBe("meta");

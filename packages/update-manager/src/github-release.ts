@@ -10,7 +10,7 @@ const RELEASE_NOTES_URL_PATTERN =
 const DOWNLOAD_URL_PREFIX = "https://github.com/BytePioneer-AI/codex-host/releases/download/";
 
 export type InstallerReleaseTarget = "macos-arm64" | "macos-x64" | "windows-x64" | "windows-arm64";
-export type ReleaseTarget = InstallerReleaseTarget | "linux-x64";
+export type ReleaseTarget = InstallerReleaseTarget | "linux-x64" | "linux-arm64";
 
 export interface CodexhostLatestRelease {
   version: string;

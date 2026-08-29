@@ -51,3 +51,36 @@ jobs:
           node scripts/release/smoke-npm-package.mjs
           --target linux-x64
           --version 0.1.6-ci.0
+
+  check-linux-arm64:
+    name: Check Linux ARM64
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check
+        run: npm run check
+
+      - name: Smoke-test Linux ARM64 npm package
+        run: >
+          node scripts/release/smoke-npm-package.mjs
+          --target linux-arm64
+          --version 0.1.6-ci.0

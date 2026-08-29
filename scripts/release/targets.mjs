@@ -57,6 +57,13 @@ export const RELEASE_TARGETS = Object.freeze({
     packageArchitecture: "x64",
     executableSuffix: "",
   }),
+  "linux-arm64": Object.freeze({
+    id: "linux-arm64",
+    hostPlatform: "linux",
+    rustTarget: "aarch64-unknown-linux-gnu",
+    packageArchitecture: "arm64",
+    executableSuffix: "",
+  }),
 });
 
 export function supportedReleaseTargets() {
@@ -94,6 +101,7 @@ export function hostReleaseTargetId(platform = process.platform, arch = process.
   if (platform === "win32" && arch === "x64") return "windows-x64";
   if (platform === "win32" && arch === "arm64") return "windows-arm64";
   if (platform === "linux" && arch === "x64") return "linux-x64";
+  if (platform === "linux" && arch === "arm64") return "linux-arm64";
   throw new Error(`unsupported npm release host: ${platform}/${arch}`);
 }
 

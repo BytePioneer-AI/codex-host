@@ -61,26 +61,29 @@ describe("Gate A raw capture", () => {
     });
   });
 
-  it("sanitizes a platform-discriminated Linux invocation", () => {
-    const record = invocationRecord({
-      platform: "linux",
-      architecture: "x64",
-      process_group_id: 42,
-      launch_mode: "direct-executable",
-      cwd: "/home/alice/project",
-      install_root: "/usr/lib/chatgpt",
-      stock_codex_path: "/usr/lib/chatgpt/resources/codex",
-    });
-    const capture = sanitizeCapture(record);
-    expect(capture).toMatchObject({
-      platform: "linux",
-      architecture: "x64",
-      processGroupId: 42,
-      launchMode: "direct-executable",
-      cwd: "<WORKING_DIRECTORY>",
-      stockCodexPath: "<STOCK_CODEX>",
-    });
-  });
+  it.each(["x64", "arm64"])(
+    "sanitizes a platform-discriminated Linux %s invocation",
+    (architecture) => {
+      const record = invocationRecord({
+        platform: "linux",
+        architecture,
+        process_group_id: 42,
+        launch_mode: "direct-executable",
+        cwd: "/home/alice/project",
+        install_root: "/usr/lib/chatgpt",
+        stock_codex_path: "/usr/lib/chatgpt/resources/codex",
+      });
+      const capture = sanitizeCapture(record);
+      expect(capture).toMatchObject({
+        platform: "linux",
+        architecture,
+        processGroupId: 42,
+        launchMode: "direct-executable",
+        cwd: "<WORKING_DIRECTORY>",
+        stockCodexPath: "<STOCK_CODEX>",
+      });
+    },
+  );
 
   it("redacts sensitive argument values", () => {
     const record = invocationRecord({

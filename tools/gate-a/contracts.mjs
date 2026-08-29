@@ -28,7 +28,7 @@ export const probeInvocationSchema = z.discriminatedUnion("platform", [
   }),
   invocationBase.extend({
     platform: z.literal("linux"),
-    architecture: z.literal("x64"),
+    architecture: z.enum(["x64", "arm64"]),
     processGroupId: z.number().int().positive(),
     launchMode: z.literal("direct-executable"),
   }),
@@ -173,7 +173,7 @@ export const desktopInteractiveEvidenceSchema = z.discriminatedUnion("platform",
   interactiveBase.extend({
     platform: z.literal("linux"),
     linuxVersion: z.string(),
-    architecture: z.literal("x64"),
+    architecture: z.enum(["x64", "arm64"]),
     launchMode: z.literal("direct-executable"),
     scenarios: linuxInteractiveScenariosSchema,
   }),
@@ -209,6 +209,6 @@ export const gateReportSchema = z.discriminatedUnion("platform", [
     platform: z.literal("linux"),
     gate: z.literal("linux-codex-transparent-proxy"),
     linuxVersion: z.string(),
-    architecture: z.literal("x64"),
+    architecture: z.enum(["x64", "arm64"]),
   }),
 ]);

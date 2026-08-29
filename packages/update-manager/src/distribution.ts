@@ -63,9 +63,14 @@ export function parseDistributionMetadata(value: unknown): DistributionMetadata 
   if (
     metadata.schemaVersion !== 1 ||
     (metadata.distribution !== "npm" && metadata.distribution !== "installer") ||
-    !["macos-arm64", "macos-x64", "windows-x64", "windows-arm64", "linux-x64"].includes(
-      String(metadata.target),
-    ) ||
+    ![
+      "macos-arm64",
+      "macos-x64",
+      "windows-x64",
+      "windows-arm64",
+      "linux-x64",
+      "linux-arm64",
+    ].includes(String(metadata.target)) ||
     typeof metadata.version !== "string"
   ) {
     throw new Error("distribution metadata is invalid");
@@ -96,6 +101,7 @@ function expectedTarget(platform: NodeJS.Platform, architecture: string): Releas
   if (platform === "win32" && architecture === "arm64") return "windows-arm64";
   if (platform === "win32" && architecture === "x64") return "windows-x64";
   if (platform === "linux" && architecture === "x64") return "linux-x64";
+  if (platform === "linux" && architecture === "arm64") return "linux-arm64";
   throw new Error(`unsupported update host ${platform}/${architecture}`);
 }
 

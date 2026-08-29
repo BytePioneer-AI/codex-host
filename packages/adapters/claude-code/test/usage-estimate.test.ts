@@ -18,9 +18,26 @@ describe("Claude request cost estimate", () => {
   });
 
   it("does not price an unknown model or third-party Provider", () => {
+    const usageWithoutModel = {
+      requestId: usage.requestId,
+      provider: usage.provider,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+    };
+    const usageWithoutProvider = {
+      requestId: usage.requestId,
+      model: usage.model,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+    };
+
     expect(estimateClaudeRequestCostUsd({ ...usage, model: "custom-model" })).toBeUndefined();
     expect(estimateClaudeRequestCostUsd({ ...usage, provider: "bedrock" })).toBeUndefined();
-    expect(estimateClaudeRequestCostUsd({ ...usage, provider: undefined })).toBeUndefined();
-    expect(estimateClaudeRequestCostUsd({ ...usage, model: undefined })).toBeUndefined();
+    expect(estimateClaudeRequestCostUsd(usageWithoutProvider)).toBeUndefined();
+    expect(estimateClaudeRequestCostUsd(usageWithoutModel)).toBeUndefined();
   });
 });

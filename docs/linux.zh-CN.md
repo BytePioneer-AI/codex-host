@@ -17,9 +17,9 @@ codexhost
 
 运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、ARM64，以及 Linux installer/self-update 包。
 
-## 兼容性警告
+## Renderer 兼容性
 
-Desktop Controller 报告警告或能力降级时，codexhost 会在启动受管会话前显示 Desktop 和 codexhost 版本、能力、原因及观察到的身份。交互式终端可选择：本次继续、继续并记住这一条警告、打开最新发布、启动原生 ChatGPT，或取消。非交互启动默认取消；只有明确选择“继续并记住”才会写入确认记录。
+Renderer 集成失败会在后台恢复，不会显示兼容弹窗，也不会写入本地警告确认。外部 Agent 集成不可用时，受管 Desktop 仍可通过官方 Codex 路由使用。Controller 的首次握手仍会对格式错误或不受支持的 readiness 输出按失败关闭处理。
 
 ## 进程所有权
 
@@ -32,4 +32,4 @@ codexhost inspect
 codexhost --version
 ```
 
-`inspect` 会报告识别出的包身份、版本、启动器、可执行文件和运行进程 ID。ChatGPT App 更新后，如果兼容检查提示 Desktop 身份不受支持，请先升级 codexhost。
+`inspect` 会报告识别出的包身份、版本、启动器、可执行文件和运行进程 ID。ChatGPT App 更新后，可用它确认 codexhost 仍能识别已安装的 Desktop。受支持的 Renderer 表面暂时不可用时，集成会自动重试。

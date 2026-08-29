@@ -19,22 +19,10 @@ export interface DesktopControllerOptions {
   attachmentNonce: string;
 }
 
-export type DesktopControllerCompatibilityState = "compatible" | "degraded";
-
-export interface DesktopControllerCompatibilityIssue {
-  capability:
-    | "permission-control"
-    | "sidebar-decoration"
-    | "fork-control"
-    | "usage-surface"
-    | "settings-surface";
-  reason: "capability-unavailable";
-}
-
 export interface DesktopControllerReadiness {
   schemaVersion: 2;
-  state: DesktopControllerCompatibilityState;
-  issues: DesktopControllerCompatibilityIssue[];
+  state: "compatible";
+  issues: [];
 }
 
 export interface DesktopControllerDependencies {
@@ -71,38 +59,12 @@ function startupTrace(stage: string, detail?: unknown): void {
   );
 }
 
-function validCompatibilityIssue(
-  state: DesktopControllerCompatibilityState,
-  issue: DesktopControllerCompatibilityIssue,
-): boolean {
-  const keys = Object.keys(issue);
-  if (state === "degraded") {
-    return (
-      [
-        "permission-control",
-        "sidebar-decoration",
-        "fork-control",
-        "usage-surface",
-        "settings-surface",
-      ].includes(issue.capability) &&
-      issue.reason === "capability-unavailable" &&
-      keys.length === 2
-    );
-  }
-  return false;
-}
-
 export function serializeDesktopControllerReadiness(readiness: DesktopControllerReadiness): string {
   if (
     readiness.schemaVersion !== 2 ||
-    !["compatible", "degraded"].includes(readiness.state) ||
+    readiness.state !== "compatible" ||
     !Array.isArray(readiness.issues) ||
-    readiness.issues.length > 1 ||
-    (readiness.state === "compatible" && readiness.issues.length !== 0) ||
-    (readiness.state !== "compatible" &&
-      (readiness.issues.length !== 1 ||
-        !readiness.issues[0] ||
-        !validCompatibilityIssue(readiness.state, readiness.issues[0]))) ||
+    readiness.issues.length !== 0 ||
     Object.keys(readiness).length !== 3
   ) {
     throw new Error("Desktop Controller readiness is invalid");
@@ -334,11 +296,6 @@ export async function runDesktopController(
         useSession(async () => {
           const current = await recoverSession();
           await current.activateDesktop();
-        }),
-      compatibilityUpdate: () =>
-        useSession(async () => {
-          const current = await recoverSession();
-          return current.requestCompatibilityUpdate();
         }),
     });
     startupTrace("attachment server ready");

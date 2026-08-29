@@ -3,9 +3,7 @@
 ## Purpose
 
 Define non-blocking managed Desktop startup, background Renderer integration recovery, bounded attachment behavior during recovery, and official Codex fallback while external Agent capabilities are unavailable.
-
 ## Requirements
-
 ### Requirement: Managed Desktop startup SHALL survive Renderer capability unavailability
 The Desktop Controller SHALL treat initial Title Policy, Agent routing, Draft routing, and unclassified Renderer inspection failures as recoverable internal installation states. It MUST NOT emit those failures as blocking compatibility readiness, exit solely because of them, or cause the Launcher to show a compatibility-boundary dialog.
 
@@ -43,7 +41,7 @@ The Controller SHALL serialize complete Session installation and use. While no v
 - **AND** it SHALL retry complete installation without producing a blocking compatibility result
 
 ### Requirement: Controller attachment SHALL remain bounded during recovery
-The Controller SHALL start its authenticated loopback attachment server even when no Renderer Session is currently available. Attach, compatibility-update, and shutdown operations SHALL remain serialized and MUST NOT claim success unless the required Session operation completes.
+The Controller SHALL start its authenticated loopback attachment server even when no Renderer Session is currently available. The authenticated `ATTACH` operation SHALL remain serialized and MUST NOT claim success unless the required Session operation completes. Unsupported commands, including the retired compatibility-update operation, SHALL be rejected.
 
 #### Scenario: Attach arrives while installation is unavailable
 - **WHEN** a valid attachment request arrives while the Controller has no Session
@@ -57,3 +55,21 @@ A managed Host request without a valid external transport carrier SHALL continue
 - **WHEN** Renderer integration is unavailable and Desktop emits a request without an external transport carrier
 - **THEN** Host SHALL route the request to official Codex
 - **AND** MUST NOT create a Pi or Claude Code Native Session
+
+### Requirement: Non-blocking recovery SHALL NOT expose a compatibility-dialog control path
+The production Launcher, Controller attachment protocol, Renderer Control Session, and Renderer binding SHALL NOT expose a compatibility-dialog-specific warning acknowledgement or update command. Removing that path MUST NOT remove the normal Settings update operations or runtime Renderer recovery.
+
+#### Scenario: Controlled instance attachment protocol is used
+- **WHEN** a Launcher attaches to an existing controlled Desktop
+- **THEN** the authenticated Controller protocol SHALL support bounded Desktop activation
+- **AND** SHALL NOT accept a compatibility-dialog-specific update request
+
+#### Scenario: User checks for updates in Settings
+- **WHEN** the Renderer Settings update page invokes the fixed update operations
+- **THEN** Host update check, start, and status operations SHALL remain available
+- **AND** their behavior SHALL NOT depend on a Launcher compatibility dialog
+
+#### Scenario: Renderer integration is unavailable
+- **WHEN** Title, Agent, Draft, or inspection installation fails
+- **THEN** Controller SHALL retain background recovery and official Codex fallback
+- **AND** SHALL NOT display, request, or persist a compatibility warning acknowledgement

@@ -147,13 +147,6 @@ pub(crate) fn runtime_directory() -> io::Result<PathBuf> {
     secure_child_directory(user_state_base()?, true)
 }
 
-/// Durable user state for explicit compatibility acknowledgements. Unlike a
-/// runtime descriptor, this survives an XDG runtime-directory cleanup.
-#[cfg(target_os = "linux")]
-pub(crate) fn state_directory() -> io::Result<PathBuf> {
-    secure_child_directory(user_state_base()?, true)
-}
-
 #[cfg(target_os = "linux")]
 fn verify_private_file(file: &File, repair_mode: bool) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -179,8 +172,8 @@ fn verify_private_file(file: &File, repair_mode: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Opens a guard, descriptor, acknowledgement, or replacement file only after
-/// its parent is an owned `0700` directory. The final name is resolved relative
+/// Opens a guard, descriptor, or replacement file only after its parent is an
+/// owned `0700` directory. The final name is resolved relative
 /// to that opened directory with `O_NOFOLLOW`, so symlinks are never accepted.
 #[cfg(target_os = "linux")]
 pub(crate) fn open_secure_file(path: &Path, how: SecureFileOpen) -> io::Result<File> {

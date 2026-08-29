@@ -63,36 +63,28 @@ The change SHALL record real Windows user behavior without persisting PIDs, port
 - **WHEN** validation covers official-first launch, clean codexhost launch, controlled repeat/double launch, official reactivation, stale recovery, and user quit
 - **THEN** it MUST record controlled reuse separately from the explicit full-quit behavior for an independently started official Desktop
 
-### Requirement: 首次 Controller readiness SHALL 携带严格兼容 warning
-Launcher与首次Desktop Controller之间的readiness协议 SHALL 使用有版本、单行、严格且有界的结构化结果。成功结果 MAY携带已完成生产安装后的兼容warning；warning MUST NOT通过异常文本、stderr匹配或空stdout推断。已发布实例的nonce-authenticated Attachment Server协议保持不变。
+### Requirement: 首次 Controller readiness SHALL 使用严格compatible结果
+Launcher与首次Desktop Controller之间的readiness协议 SHALL使用有版本、单行、严格且有界的结构化结果。当前生产成功结果 MUST为`compatible`且issues为空，MUST NOT携带兼容warning、降级能力或用户决策数据。已发布实例的nonce-authenticated Attachment Server协议 SHALL保留受控实例激活能力，但 SHALL NOT提供兼容弹窗专用更新命令。
 
-#### Scenario: Controller无warning地ready
-- **WHEN** Controller完成Title Policy、Renderer ownership、Draft Prewarm Policy和Renderer Adapter安装且没有warning
-- **THEN** Controller SHALL返回结构化ready与空warnings
-- **AND** Launcher SHALL继续现有Runtime Descriptor发布和detach流程
+#### Scenario: Controller ready
+- **WHEN** Controller已启动Attachment Server并进入受管监督
+- **THEN** Controller SHALL返回Schema version 2、state `compatible`与空issues
+- **AND** Launcher SHALL继续Runtime Descriptor发布和detach流程而不显示兼容提示
 
-#### Scenario: Controller带未评审身份warning地ready
-- **WHEN** Controller完成全部必要生产安装但标题服务身份未评审
-- **THEN** Controller SHALL返回结构化ready及一个有界枚举warning
-- **AND** Launcher SHALL在处理该warning前保持本次Controller和Desktop受监督
-
-#### Scenario: readiness结果malformed
-- **WHEN** Controller stdout包含未知Schema、未知字段、未知warning枚举、超长值、多行或malformed JSON
+#### Scenario: readiness结果包含旧warning
+- **WHEN** Controller stdout包含`compatible-with-warning`、`degraded`、非空issues、未知Schema、未知字段、多行或malformed JSON
 - **THEN** Launcher SHALL将其视为技术启动错误
 - **AND** MUST NOT把它降级为可继续的兼容warning
 
-### Requirement: Launcher SHALL 在用户决定后发布或放弃受管运行状态
-Launcher SHALL在兼容warning已确认、被本地相同指纹确认抑制或用户选择获取最新版后，才发布本次Runtime Descriptor并detach。用户选择原版Codex时，Launcher MUST放弃本次受管状态并完成有界清理后启动官方Desktop。
+### Requirement: Launcher SHALL 在严格readiness后发布受管运行状态
+Launcher SHALL在收到有效的compatible-only readiness并完成既有Host chain检查后发布本次Runtime Descriptor并detach。Launcher MUST NOT等待兼容warning确认、写入兼容确认、调用兼容专用更新检查或因Renderer兼容状态切换原版Codex。
 
-#### Scenario: warning已被相同指纹确认
-- **WHEN** Controller返回warning且Launcher找到完全匹配的有效本地确认
-- **THEN** Launcher SHALL不重复提示并继续发布受管运行状态
+#### Scenario: 有效readiness
+- **WHEN** Controller返回严格有效的compatible-only readiness且Host chain ready
+- **THEN** Launcher SHALL发布受管Runtime Descriptor并完成正常后台监督
+- **AND** SHALL不显示兼容弹窗
 
-#### Scenario: 用户打开Releases后继续
-- **WHEN** 用户从warning提示选择获取最新版
-- **THEN** Launcher SHALL打开固定Releases页面、记录本次确认并继续发布当前受管运行状态
-
-#### Scenario: 原版Codex启动前清理
-- **WHEN** 用户选择使用原版Codex
-- **THEN** Launcher SHALL确保本次Controller、Shim、Host和受管Desktop已停止且Runtime Descriptor未发布
-- **AND** 官方Desktop新进程 MUST NOT继承 `CODEX_CLI_PATH` 或任何 `CODEXHOST_*` 受管环境
+#### Scenario: Renderer集成仍在恢复
+- **WHEN** Controller内部Renderer Session不可用但已按非阻塞策略返回有效readiness
+- **THEN** Launcher SHALL继续受管启动
+- **AND** Renderer恢复 SHALL由Controller后台处理而不是Launcher用户决策处理

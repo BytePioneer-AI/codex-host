@@ -21,13 +21,6 @@ use crate::runtime_instance::{
     try_acquire_launcher_guard,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CompatibilityUpdateOutcome {
-    UpdateStarted,
-    Current,
-    Unavailable,
-}
-
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
     pub(super) inspector_endpoint: String,
@@ -111,39 +104,6 @@ pub(super) fn wait_for_host_chain(
         thread::sleep(Duration::from_millis(100));
     }
     Ok(false)
-}
-
-fn compatibility_update_outcome(
-    response: &str,
-) -> Result<CompatibilityUpdateOutcome, Box<dyn Error>> {
-    match response.trim_end() {
-        "update-started" => Ok(CompatibilityUpdateOutcome::UpdateStarted),
-        "current" => Ok(CompatibilityUpdateOutcome::Current),
-        "unavailable" => Ok(CompatibilityUpdateOutcome::Unavailable),
-        "rejected" => Err("Desktop Controller rejected the compatibility update nonce".into()),
-        "failed" => Err("Desktop Controller could not check for a compatibility update".into()),
-        _ => Err("compatibility update returned an invalid response".into()),
-    }
-}
-
-pub(super) fn request_compatibility_update(
-    control: &RuntimeControl,
-) -> Result<CompatibilityUpdateOutcome, Box<dyn Error>> {
-    let mut stream = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", control.attachment_port)
-            .parse()
-            .expect("valid loopback socket address"),
-        Duration::from_secs(2),
-    )?;
-    stream.set_read_timeout(Some(Duration::from_secs(25)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    writeln!(stream, "COMPATIBILITY_UPDATE {}", control.nonce)?;
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
-    if response.len() > 32 {
-        return Err("Desktop Controller compatibility update response is too long".into());
-    }
-    compatibility_update_outcome(&response)
 }
 
 pub(super) fn publish_runtime_descriptor(
@@ -234,54 +194,4 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
 #[cfg(not(target_os = "windows"))]
 pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsString;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
-    use super::{CompatibilityUpdateOutcome, RuntimeControl, request_compatibility_update};
-
-    fn request(response: &'static str) -> Result<CompatibilityUpdateOutcome, String> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fixture server");
-        let port = listener.local_addr().expect("fixture address").port();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept fixture request");
-            let mut line = String::new();
-            BufReader::new(stream.try_clone().expect("clone fixture stream"))
-                .read_line(&mut line)
-                .expect("read fixture request");
-            assert_eq!(
-                line,
-                "COMPATIBILITY_UPDATE 0123456789abcdef0123456789abcdef\n"
-            );
-            writeln!(stream, "{response}").expect("write fixture response");
-        });
-        let control = RuntimeControl {
-            inspector_endpoint: "http://127.0.0.1:1".into(),
-            inspector_argument: OsString::from("--inspect=127.0.0.1:1"),
-            attachment_port: port,
-            nonce: "0123456789abcdef0123456789abcdef".into(),
-        };
-        let outcome = request_compatibility_update(&control).map_err(|error| error.to_string());
-        server.join().expect("join fixture server");
-        outcome
-    }
-
-    #[test]
-    fn parses_only_fixed_compatibility_update_outcomes() {
-        assert_eq!(
-            request("update-started"),
-            Ok(CompatibilityUpdateOutcome::UpdateStarted)
-        );
-        assert_eq!(request("current"), Ok(CompatibilityUpdateOutcome::Current));
-        assert_eq!(
-            request("unavailable"),
-            Ok(CompatibilityUpdateOutcome::Unavailable)
-        );
-        assert!(request("unexpected private detail").is_err());
-    }
 }

@@ -38,12 +38,10 @@ describe("Controller attachment server", () => {
   it("accepts only the exact nonce and invokes the attachment callback", async () => {
     const port = await availablePort();
     const attach = vi.fn(async () => {});
-    const compatibilityUpdate = vi.fn(async () => "current" as const);
     const server = await startControllerAttachmentServer({
       port,
       nonce,
       attach,
-      compatibilityUpdate,
     });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
@@ -54,23 +52,15 @@ describe("Controller attachment server", () => {
     }
   });
 
-  it("runs only the authenticated fixed compatibility update operation", async () => {
+  it("rejects the retired compatibility update command", async () => {
     const port = await availablePort();
-    const compatibilityUpdate = vi.fn(async () => "update-started" as const);
     const server = await startControllerAttachmentServer({
       port,
       nonce,
       attach: async () => {},
-      compatibilityUpdate,
     });
     try {
-      await expect(request(port, `COMPATIBILITY_UPDATE ${nonce}\n`)).resolves.toBe(
-        "update-started\n",
-      );
-      await expect(request(port, `COMPATIBILITY_UPDATE ${"0".repeat(32)}\n`)).resolves.toBe(
-        "rejected\n",
-      );
-      expect(compatibilityUpdate).toHaveBeenCalledOnce();
+      await expect(request(port, `COMPATIBILITY_UPDATE ${nonce}\n`)).resolves.toBe("rejected\n");
     } finally {
       await server.close();
     }
@@ -84,7 +74,6 @@ describe("Controller attachment server", () => {
       attach: async () => {
         throw new Error("private detail");
       },
-      compatibilityUpdate: async () => "unavailable",
     });
     try {
       await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("failed\n");
@@ -99,7 +88,6 @@ describe("Controller attachment server", () => {
       port,
       nonce,
       attach: async () => {},
-      compatibilityUpdate: async () => "unavailable",
     });
     try {
       await expect(request(port, `SHUTDOWN ${nonce}\n`)).resolves.toBe("rejected\n");

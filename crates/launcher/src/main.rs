@@ -31,32 +31,23 @@ use active_update::update_waiting_for_launcher_exit;
 use codexhost_platform::{
     APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
 };
-#[cfg(not(target_os = "linux"))]
-use codexhost_platform::{CompatibilityChoice, prompt_compatibility_warning};
 use codexhost_platform::{
-    CompatibilityPrompt, CompatibilityUpdateAvailability, DesktopIdentity, DesktopInstallation,
-    DesktopLaunchMode, SupervisedChild, canonical_existing_file, configure_background_command,
-    desktop_root_process_ids_for_installation, discover_codex_desktop, launch_stock_desktop,
-    node_entrypoint_path, open_latest_codexhost_release, spawn_supervised,
+    DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
+    canonical_existing_file, configure_background_command,
+    desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
+    spawn_supervised,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::{DesktopSession, launch_desktop_session};
-#[cfg(target_os = "linux")]
-use codexhost_platform::{LinuxCompatibilityChoice, prompt_linux_compatibility_warning};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
     prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
-use compatibility::{
-    CompatibilityAcknowledgementKey, CompatibilityState, ControllerReadiness,
-    MAX_CONTROLLER_READINESS_LINE_BYTES, acknowledgement_matches, default_acknowledgement_path,
-    parse_controller_readiness_line, write_acknowledgement,
-};
+use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
-    CompatibilityUpdateOutcome, LauncherOwnership, RuntimeControl, acquire_launcher_ownership,
-    allocate_runtime_control, endpoint_ready, publish_runtime_descriptor,
-    request_compatibility_update, stop_stale_launcher, wait_for_host_chain,
+    LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
+    endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
 use runtime_instance::{
@@ -91,7 +82,6 @@ const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
-const CODEXHOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
 
@@ -465,7 +455,7 @@ fn read_bounded_controller_line(mut input: impl Read) -> std::io::Result<Vec<u8>
 fn wait_for_controller_ready(
     controller: &mut SupervisedChild,
     timeout: Duration,
-) -> Result<ControllerReadiness, Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     let stdout = controller
         .take_stdout()
         .ok_or("Desktop Controller stdout is unavailable")?;
@@ -477,6 +467,7 @@ fn wait_for_controller_ready(
         .recv_timeout(timeout)
         .map_err(|_| "Desktop Controller did not become ready before timeout")??;
     parse_controller_readiness_line(&line)
+        .map(|_| ())
         .map_err(|error| format!("Desktop Controller returned invalid readiness: {error}").into())
 }
 
@@ -484,7 +475,7 @@ fn start_desktop_controller(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
     environment: &[(OsString, OsString)],
-) -> Result<(SupervisedChild, ControllerReadiness), Box<dyn Error>> {
+) -> Result<SupervisedChild, Box<dyn Error>> {
     startup_trace("spawning Desktop Controller");
     let mut controller = spawn_supervised(&mut desktop_controller_command(
         options,
@@ -493,9 +484,9 @@ fn start_desktop_controller(
     ))?;
     startup_trace("waiting for Desktop Controller readiness");
     match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
-        Ok(readiness) => {
+        Ok(()) => {
             startup_trace("Desktop Controller ready");
-            Ok((controller, readiness))
+            Ok(controller)
         }
         Err(error) => {
             let _ = controller.force_terminate();
@@ -622,173 +613,6 @@ fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<d
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompatibilityLaunchDecision {
-    ContinueManaged,
-    LaunchStock,
-    #[cfg(target_os = "linux")]
-    Cancel,
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_linux_compatibility_choice(
-    choice: LinuxCompatibilityChoice,
-    acknowledgement_path: &Path,
-    acknowledgement: &CompatibilityAcknowledgementKey,
-) -> Result<CompatibilityLaunchDecision, Box<dyn Error>> {
-    match choice {
-        LinuxCompatibilityChoice::ContinueOnce => Ok(CompatibilityLaunchDecision::ContinueManaged),
-        LinuxCompatibilityChoice::ContinueAndRemember => {
-            write_acknowledgement(acknowledgement_path, acknowledgement)?;
-            Ok(CompatibilityLaunchDecision::ContinueManaged)
-        }
-        LinuxCompatibilityChoice::OpenLatestRelease => {
-            open_latest_codexhost_release()?;
-            Ok(CompatibilityLaunchDecision::Cancel)
-        }
-        LinuxCompatibilityChoice::OpenStockCodex => Ok(CompatibilityLaunchDecision::LaunchStock),
-        LinuxCompatibilityChoice::Cancel => Ok(CompatibilityLaunchDecision::Cancel),
-    }
-}
-
-fn handle_compatibility_result(
-    installation: &DesktopInstallation,
-    readiness: &ControllerReadiness,
-    control: &RuntimeControl,
-) -> Result<CompatibilityLaunchDecision, Box<dyn Error>> {
-    if readiness.state() == CompatibilityState::Compatible {
-        return Ok(CompatibilityLaunchDecision::ContinueManaged);
-    }
-    let issue = readiness
-        .issue()
-        .ok_or("Desktop Controller compatibility result is missing its issue")?;
-
-    #[cfg(target_os = "linux")]
-    {
-        let acknowledgement = CompatibilityAcknowledgementKey::new(installation, issue)?;
-        let acknowledgement_path = default_acknowledgement_path()?;
-        if acknowledgement_matches(&acknowledgement_path, &acknowledgement) {
-            return Ok(CompatibilityLaunchDecision::ContinueManaged);
-        }
-        let update_availability = match request_compatibility_update(control) {
-            Ok(CompatibilityUpdateOutcome::UpdateStarted) => {
-                eprintln!(
-                    "codexhost compatibility update started: capability={} reason={}",
-                    issue.capability_code(),
-                    issue.reason_code(),
-                );
-                CompatibilityUpdateAvailability::Started
-            }
-            Ok(CompatibilityUpdateOutcome::Current) => CompatibilityUpdateAvailability::Current,
-            Ok(CompatibilityUpdateOutcome::Unavailable) => {
-                CompatibilityUpdateAvailability::Unavailable
-            }
-            Err(error) => {
-                eprintln!("codexhost compatibility update check unavailable: {error}");
-                CompatibilityUpdateAvailability::Unavailable
-            }
-        };
-        eprintln!(
-            "codexhost compatibility result: state={:?} capability={} reason={} desktop_version={} codexhost_version={CODEXHOST_VERSION}",
-            readiness.state(),
-            issue.capability_code(),
-            issue.reason_code(),
-            installation.version,
-        );
-        let prompt = CompatibilityPrompt {
-            desktop_version: &installation.version,
-            codexhost_version: CODEXHOST_VERSION,
-            capability: issue.capability_code(),
-            reason_code: issue.reason_code(),
-            observed_identity: issue.observed_identity.as_deref(),
-            update_availability,
-            degraded: readiness.state() == CompatibilityState::Degraded,
-        };
-        resolve_linux_compatibility_choice(
-            prompt_linux_compatibility_warning(&prompt),
-            &acknowledgement_path,
-            &acknowledgement,
-        )
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let update_availability = match request_compatibility_update(control) {
-            Ok(CompatibilityUpdateOutcome::UpdateStarted) => {
-                eprintln!(
-                    "codexhost compatibility update started: capability={} reason={}",
-                    issue.capability_code(),
-                    issue.reason_code(),
-                );
-                CompatibilityUpdateAvailability::Started
-            }
-            Ok(CompatibilityUpdateOutcome::Current) => CompatibilityUpdateAvailability::Current,
-            Ok(CompatibilityUpdateOutcome::Unavailable) => {
-                CompatibilityUpdateAvailability::Unavailable
-            }
-            Err(error) => {
-                eprintln!("codexhost compatibility update check unavailable: {error}");
-                CompatibilityUpdateAvailability::Unavailable
-            }
-        };
-        let acknowledgement = Some(CompatibilityAcknowledgementKey::new(installation, issue)?);
-        let acknowledgement_path = default_acknowledgement_path().ok();
-        if acknowledgement.as_ref().is_some_and(|key| {
-            acknowledgement_path
-                .as_deref()
-                .is_some_and(|path| acknowledgement_matches(path, key))
-        }) {
-            return Ok(CompatibilityLaunchDecision::ContinueManaged);
-        }
-        eprintln!(
-            "codexhost compatibility result: state={:?} capability={} reason={} desktop_version={} codexhost_version={CODEXHOST_VERSION}",
-            readiness.state(),
-            issue.capability_code(),
-            issue.reason_code(),
-            installation.version,
-        );
-        let choice = prompt_compatibility_warning(&CompatibilityPrompt {
-            desktop_version: &installation.version,
-            codexhost_version: CODEXHOST_VERSION,
-            capability: issue.capability_code(),
-            reason_code: issue.reason_code(),
-            observed_identity: issue.observed_identity.as_deref(),
-            update_availability,
-            degraded: readiness.state() == CompatibilityState::Degraded,
-        });
-        if update_availability == CompatibilityUpdateAvailability::Started {
-            return Ok(CompatibilityLaunchDecision::ContinueManaged);
-        }
-        match choice {
-            CompatibilityChoice::ContinueCodexhost => {
-                if let (Some(path), Some(key)) =
-                    (acknowledgement_path.as_deref(), acknowledgement.as_ref())
-                {
-                    let _ = write_acknowledgement(path, key);
-                }
-                Ok(CompatibilityLaunchDecision::ContinueManaged)
-            }
-            CompatibilityChoice::OpenLatestRelease => {
-                if let Err(error) = open_latest_codexhost_release() {
-                    eprintln!("codexhost could not open the fixed Releases page: {error}");
-                }
-                if let (Some(path), Some(key)) =
-                    (acknowledgement_path.as_deref(), acknowledgement.as_ref())
-                {
-                    let _ = write_acknowledgement(path, key);
-                }
-                Ok(CompatibilityLaunchDecision::ContinueManaged)
-            }
-            CompatibilityChoice::OpenStockCodex => Ok(CompatibilityLaunchDecision::LaunchStock),
-        }
-    }
-}
-
-fn notify_stock_launch() -> Result<(), Box<dyn Error>> {
-    emit_ready_line(&mut std::io::stdout())?;
-    Ok(())
-}
-
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn supervise_desktop(
     installation: &DesktopInstallation,
@@ -812,7 +636,7 @@ fn supervise_desktop(
         Duration::from_secs(30),
     )?;
     startup_trace("Codex Desktop launched");
-    let (mut controller, readiness) = start_desktop_controller(options, control, environment)?;
+    let mut controller = start_desktop_controller(options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
     startup_trace("waiting for Host chain");
     if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
@@ -821,26 +645,6 @@ fn supervise_desktop(
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
     startup_trace("Host chain ready");
-    let compatibility = match handle_compatibility_result(installation, &readiness, control) {
-        Ok(decision) => decision,
-        Err(error) => {
-            let _ = stop_desktop_controller(&mut controller);
-            let _ = desktop.shutdown(Duration::from_secs(2));
-            return Err(error);
-        }
-    };
-    if compatibility != CompatibilityLaunchDecision::ContinueManaged {
-        stop_desktop_controller(&mut controller)?;
-        desktop.shutdown(Duration::from_secs(2))?;
-        desktop.cleanup_escaped(Duration::from_secs(2))?;
-        desktop.disarm_cleanup();
-        if compatibility == CompatibilityLaunchDecision::LaunchStock {
-            let _stock = launch_stock_desktop(installation)?;
-            notify_stock_launch()?;
-            return Ok(());
-        }
-        return Err("codexhost launch cancelled by compatibility choice".into());
-    }
     let _runtime = publish_runtime_descriptor(descriptor_path, control)?;
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
@@ -900,8 +704,7 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
-    let (mut controller, readiness) = match start_desktop_controller(options, control, environment)
-    {
+    let mut controller = match start_desktop_controller(options, control, environment) {
         Ok(started) => started,
         Err(error) => {
             let _ = desktop.kill();
@@ -917,26 +720,6 @@ fn supervise_desktop(
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
     startup_trace("Host chain ready");
-    let compatibility = match handle_compatibility_result(installation, &readiness, control) {
-        Ok(decision) => decision,
-        Err(error) => {
-            let _ = stop_desktop_controller(&mut controller);
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err(error);
-        }
-    };
-    if compatibility != CompatibilityLaunchDecision::ContinueManaged {
-        stop_desktop_controller(&mut controller)?;
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        if compatibility == CompatibilityLaunchDecision::LaunchStock {
-            let _stock = launch_stock_desktop(installation)?;
-            notify_stock_launch()?;
-            return Ok(());
-        }
-        return Err("codexhost launch cancelled by compatibility choice".into());
-    }
     let _runtime = match publish_runtime_descriptor(descriptor_path, control) {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -1410,116 +1193,6 @@ mod tests {
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
         parse_launch_options, read_bounded_controller_line,
     };
-    #[cfg(target_os = "linux")]
-    use crate::compatibility::{
-        CompatibilityAcknowledgementKey, CompatibilityCapability, CompatibilityIssue,
-        CompatibilityReason, CompatibilityState, ControllerReadiness,
-    };
-    #[cfg(target_os = "linux")]
-    use codexhost_platform::{DesktopIdentity, DesktopInstallation, LinuxCompatibilityChoice};
-
-    #[cfg(target_os = "linux")]
-    fn linux_installation() -> DesktopInstallation {
-        DesktopInstallation {
-            identity: DesktopIdentity::LinuxPackage {
-                package_name: "chatgpt".into(),
-                brand: "chatgpt".into(),
-                flavor: "prod".into(),
-            },
-            version: "26.803.81509".into(),
-            build: "26.803.81509".into(),
-            asar_integrity: format!("sha256:{}", "0".repeat(64)),
-            install_root: "/usr/lib/chatgpt".into(),
-            desktop_launcher: "/usr/bin/chatgpt".into(),
-            desktop_executable: "/usr/lib/chatgpt/ChatGPT".into(),
-            packaged_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
-            executable_codex_cli: "/usr/lib/chatgpt/resources/codex".into(),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn warning_readiness() -> ControllerReadiness {
-        ControllerReadiness {
-            schema_version: 2,
-            state: CompatibilityState::CompatibleWithWarning,
-            issues: vec![CompatibilityIssue {
-                capability: CompatibilityCapability::TitleIsolation,
-                reason: CompatibilityReason::UnreviewedTitleServiceIdentity,
-                observed_identity: Some("futureTitleService".into()),
-            }],
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_warning_defaults_to_cancel_without_a_tty_or_acknowledgement() {
-        let control = runtime_control();
-        let outcome = super::handle_compatibility_result(
-            &linux_installation(),
-            &warning_readiness(),
-            &control,
-        )
-        .expect("non-interactive warning decision");
-        assert_eq!(outcome, super::CompatibilityLaunchDecision::Cancel);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_compatibility_only_persists_explicit_remember_choice() {
-        let directory = std::env::temp_dir().join(format!(
-            "codexhost-compatibility-choice-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).expect("create fixture directory");
-        let path = directory.join("acknowledgement.json");
-        let installation = linux_installation();
-        let readiness = warning_readiness();
-        let acknowledgement = CompatibilityAcknowledgementKey::new(
-            &installation,
-            readiness.issue().expect("warning issue"),
-        )
-        .expect("acknowledgement key");
-
-        assert_eq!(
-            super::resolve_linux_compatibility_choice(
-                LinuxCompatibilityChoice::ContinueOnce,
-                &path,
-                &acknowledgement,
-            )
-            .expect("continue once"),
-            super::CompatibilityLaunchDecision::ContinueManaged
-        );
-        assert!(!path.exists());
-        assert_eq!(
-            super::resolve_linux_compatibility_choice(
-                LinuxCompatibilityChoice::Cancel,
-                &path,
-                &acknowledgement,
-            )
-            .expect("cancel"),
-            super::CompatibilityLaunchDecision::Cancel
-        );
-        assert!(!path.exists());
-        assert_eq!(
-            super::resolve_linux_compatibility_choice(
-                LinuxCompatibilityChoice::ContinueAndRemember,
-                &path,
-                &acknowledgement,
-            )
-            .expect("remember choice"),
-            super::CompatibilityLaunchDecision::ContinueManaged
-        );
-        assert!(crate::compatibility::acknowledgement_matches(
-            &path,
-            &acknowledgement
-        ));
-        std::fs::remove_dir_all(directory).expect("remove fixture directory");
-    }
-
     #[test]
     fn ready_line_is_the_exact_wrapper_protocol() {
         let mut output = Vec::new();

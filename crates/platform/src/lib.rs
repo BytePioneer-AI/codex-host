@@ -14,8 +14,6 @@ mod desktop_launch;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
-#[cfg(target_os = "macos")]
-mod macos_ui;
 mod process;
 mod process_supervision;
 mod process_termination;
@@ -45,8 +43,6 @@ pub use installation::discover_codex_desktop_from_root;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 #[cfg(target_os = "macos")]
-pub use macos_ui::prompt_compatibility_warning;
-#[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
     ProcessSnapshot, descendant_executable_exists, desktop_process_ids_for_installation,
@@ -68,8 +64,7 @@ pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 pub use windows_desktop::resume_packaged_application;
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
-    RunningDesktopChoice, hide_console_window, prompt_compatibility_warning,
-    prompt_running_desktop, show_error_dialog,
+    RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
 };
 
 pub const CRATE_NAME: &str = "codexhost-platform";
@@ -90,53 +85,6 @@ pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
 /// `app/ChatGPT.exe` so that installations with no registered AppX package can
 /// still be discovered.
 pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompatibilityChoice {
-    ContinueCodexhost,
-    OpenLatestRelease,
-    OpenStockCodex,
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinuxCompatibilityChoice {
-    ContinueOnce,
-    ContinueAndRemember,
-    OpenLatestRelease,
-    OpenStockCodex,
-    Cancel,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompatibilityUpdateAvailability {
-    Started,
-    Current,
-    Unavailable,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct CompatibilityPrompt<'a> {
-    pub desktop_version: &'a str,
-    pub codexhost_version: &'a str,
-    pub capability: &'a str,
-    pub reason_code: &'a str,
-    pub observed_identity: Option<&'a str>,
-    pub update_availability: CompatibilityUpdateAvailability,
-    pub degraded: bool,
-}
-
-#[cfg(target_os = "linux")]
-mod linux_ui;
-
-#[cfg(target_os = "linux")]
-pub use linux_ui::prompt_linux_compatibility_warning;
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-#[must_use]
-pub fn prompt_compatibility_warning(_prompt: &CompatibilityPrompt<'_>) -> CompatibilityChoice {
-    CompatibilityChoice::OpenStockCodex
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopLaunchMode {

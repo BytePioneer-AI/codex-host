@@ -56,8 +56,6 @@ export {
   serializeDesktopControllerReadiness,
 } from "./production-controller.js";
 export type {
-  DesktopControllerCompatibilityIssue,
-  DesktopControllerCompatibilityState,
   DesktopControllerDependencies,
   DesktopControllerOptions,
   DesktopControllerReadiness,

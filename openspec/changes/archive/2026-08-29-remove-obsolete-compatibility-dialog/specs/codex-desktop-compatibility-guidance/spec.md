@@ -1,9 +1,5 @@
-# codex-desktop-compatibility-guidance Specification
+## MODIFIED Requirements
 
-## Purpose
-
-定义 Codex Desktop 私有结构仅内部标识未评审时的可继续提示、固定操作、本地确认和脱敏诊断边界。
-## Requirements
 ### Requirement: Recoverable Renderer installation failures SHALL NOT be compatibility guidance
 Launcher compatibility guidance SHALL NOT present Title Policy structure failure、Agent routing structure failure、Draft routing structure failure或未分类inspection failure为用户可见兼容问题。这些失败 MUST NOT触发兼容弹窗、兼容专用更新入口、自动切换原版Codex或本地兼容确认写入。
 
@@ -11,14 +7,6 @@ Launcher compatibility guidance SHALL NOT present Title Policy structure failure
 - **WHEN** 当前Controller无法完成Title、Agent、Draft或inspection安装但保持运行重试
 - **THEN** Launcher SHALL继续受管codexhost启动且不显示兼容弹窗
 - **AND** SHALL NOT因该状态调用兼容专用更新检查、写入兼容确认或自动切换原版Codex
-
-### Requirement: Production readiness SHALL omit removed blocking outcomes
-当前生产Controller payload SHALL NOT序列化`incompatible`或`detection-failed`，也 SHALL NOT输出`title-isolation-structure-unavailable`、`agent-routing-structure-unavailable`、`draft-routing-structure-unavailable`或`inspection-failed`issue。
-
-#### Scenario: 初始安装抛出结构错误
-- **WHEN** Renderer Session初始安装失败
-- **THEN** 该错误 SHALL成为Controller内部恢复状态而不是readiness issue
-- **AND** 首个生产readiness行 SHALL不包含已删除capability或reason
 
 ### Requirement: 兼容诊断 SHALL 有界且脱敏
 技术诊断 SHALL只包含 Desktop/codexhost版本、能力、稳定reason code以及必要结构状态。Launcher MUST NOT为Renderer兼容状态生成用户提示或持久化确认。诊断 MUST NOT包含Prompt、Transcript、Model值、Thread/Request ID、函数源码、凭据或用户路径。
@@ -28,3 +16,20 @@ Launcher compatibility guidance SHALL NOT present Title Policy structure failure
 - **THEN** 技术日志 SHALL使用有界稳定状态定位失败阶段
 - **AND** Launcher SHALL不显示兼容弹窗或保存兼容确认
 - **AND** 所有未声明的运行时业务数据 SHALL被省略
+
+## REMOVED Requirements
+
+### Requirement: 未评审内部标识 SHALL 显示可继续的兼容提示
+**Reason**: 压缩内部标识不是可靠的语义兼容信号，生产Controller已不再生成该warning，并采用运行时结构探测与后台恢复。
+
+**Migration**: Codex Desktop更新由运行时fail-closed探测和维护者更新影响审计处理，不向用户显示兼容提示。
+
+### Requirement: 兼容提示 SHALL 提供三个固定操作
+**Reason**: 兼容提示不再存在，其专用继续、更新和切换原版操作没有生产触发路径。
+
+**Migration**: 正常codexhost更新继续通过Settings更新界面提供；官方Codex fallback和独立启动行为保持现有非弹窗路径。
+
+### Requirement: 相同 warning 确认 SHALL 按本地指纹记忆
+**Reason**: 生产Controller不再生成warning，因此本地确认文件没有可达消费者。
+
+**Migration**: 新版本停止读取和写入旧确认文件；现有本地文件无需迁移或主动删除。

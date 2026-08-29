@@ -17,9 +17,9 @@ The first Linux release intentionally supports the official ChatGPT `.deb` and `
 
 The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, ARM64, and Linux installer/self-update packages are not supported yet.
 
-## Compatibility warnings
+## Renderer compatibility
 
-When the Desktop Controller reports a warning or degraded capability, codexhost shows the Desktop and codexhost versions, capability, reason, and observed identity before it launches the managed session. On an interactive terminal you can continue once, continue and remember that exact warning, open the latest release, launch stock ChatGPT, or cancel. Non-interactive launches cancel by default; only **Continue and remember** writes an acknowledgement.
+Renderer integration failures are recovered in the background and do not display compatibility dialogs or write local warning acknowledgements. While an external Agent integration is unavailable, the managed Desktop remains usable with official Codex routing. The initial Controller handshake still fails closed on malformed or unsupported readiness output.
 
 ## Process ownership
 
@@ -32,4 +32,4 @@ codexhost inspect
 codexhost --version
 ```
 
-`inspect` reports the recognized package identity, version, launcher, executable, and running process IDs. After a ChatGPT App update, upgrade codexhost before continuing if the compatibility check reports an unsupported Desktop identity.
+`inspect` reports the recognized package identity, version, launcher, executable, and running process IDs. After a ChatGPT App update, use it to confirm that codexhost still recognizes the installed Desktop. Renderer integration retries automatically when a supported surface is temporarily unavailable.

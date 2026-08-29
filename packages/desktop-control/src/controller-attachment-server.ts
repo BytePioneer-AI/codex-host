@@ -10,7 +10,6 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
-  compatibilityUpdate(): Promise<"update-started" | "current" | "unavailable">;
 }
 
 function validPort(value: number): boolean {
@@ -30,10 +29,7 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function respond(
-  socket: Socket,
-  value: "ready" | "rejected" | "failed" | "update-started" | "current" | "unavailable",
-): void {
+function respond(socket: Socket, value: "ready" | "rejected" | "failed"): void {
   socket.end(`${value}\n`);
 }
 
@@ -68,14 +64,6 @@ export async function startControllerAttachmentServer(
       if (line === `ATTACH ${options.nonce}`) {
         void options.attach().then(
           () => respond(socket, "ready"),
-          () => respond(socket, "failed"),
-        );
-        return;
-      }
-      if (line === `COMPATIBILITY_UPDATE ${options.nonce}`) {
-        socket.setTimeout(20_000);
-        void options.compatibilityUpdate().then(
-          (outcome) => respond(socket, outcome),
           () => respond(socket, "failed"),
         );
         return;

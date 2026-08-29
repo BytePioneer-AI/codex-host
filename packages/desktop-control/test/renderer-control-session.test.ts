@@ -215,11 +215,7 @@ describe("Renderer Control Session", () => {
         calls.push("reload");
         binding = null;
       },
-      async execute(_inspector: unknown, _rendererId: number, source: string) {
-        if (source.includes("requestCompatibilityUpdate")) {
-          calls.push("compatibility-update");
-          return "current";
-        }
+      async execute() {
         calls.push("inject");
         binding = readyBinding();
         return null;
@@ -257,10 +253,6 @@ describe("Renderer Control Session", () => {
       reason: "ready",
       requiresRendererReload: true,
     });
-
-    calls.length = 0;
-    await expect(session.requestCompatibilityUpdate()).resolves.toBe("current");
-    expect(calls).toEqual(["compatibility-update"]);
 
     calls.length = 0;
     await expect(session.ensureInstalled()).resolves.toMatchObject({ renderer: { id: 17 } });

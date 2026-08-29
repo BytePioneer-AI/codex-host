@@ -1,102 +1,56 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+
+import {
+  resolveHarnessExecutable,
+  targetPath,
+  VERSION_MANAGER_ROOTS,
+  type HarnessDiscoveryDependencies,
+  type HarnessDiscoverySpec,
+} from "@codexhost/harness-discovery";
+
+export { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
 
 export class ClaudeCodeExecutableError extends Error {
   readonly code = "CLAUDE_NOT_FOUND";
 }
 
-function pathValue(environment: NodeJS.ProcessEnv): string {
-  const key = Object.keys(environment).find((name) => name.toLowerCase() === "path");
-  return key ? (environment[key] ?? "") : "";
-}
+const CLAUDE_NPM_PACKAGE_BIN = "node_modules/@anthropic-ai/claude-code/bin";
 
-function candidates(
-  command: string,
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-): string[] {
-  if (path.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return [command];
-  }
-  const delimiter = platform === "win32" ? ";" : ":";
-  const extensions =
-    platform === "win32" && path.extname(command) === ""
-      ? (environment.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
-      : [""];
-  return pathValue(environment)
-    .split(delimiter)
-    .filter(Boolean)
-    .flatMap((directory) =>
-      extensions.map((extension) => path.join(directory, command + extension)),
+export const claudeCodeDiscoverySpec: HarnessDiscoverySpec = {
+  id: "claude-code",
+  command: "claude",
+  commandEnvironmentVariable: "CODEXHOST_CLAUDE_COMMAND",
+  installRoots: {
+    posix: [
+      "~/.npm-global/bin",
+      "~/.local/bin",
+      "~/.claude/local",
+      VERSION_MANAGER_ROOTS,
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ],
+    windows: [
+      `\${APPDATA}/npm/${CLAUDE_NPM_PACKAGE_BIN}`,
+      "${APPDATA}/npm",
+      "~/.local/bin",
+      VERSION_MANAGER_ROOTS,
+    ],
+  },
+  // Prefer Claude Code's native binary over the npm CMD shim beside it: the
+  // shim spawns an extra cmd.exe and loses signal handling.
+  runnableCandidate: (candidate, { platform, isExecutable }) => {
+    const pathFlavor = targetPath(platform);
+    if (platform !== "win32" || pathFlavor.basename(candidate).toLowerCase() !== "claude.cmd") {
+      return candidate;
+    }
+    const native = pathFlavor.join(
+      pathFlavor.dirname(candidate),
+      ...CLAUDE_NPM_PACKAGE_BIN.split("/"),
+      "claude.exe",
     );
-}
-
-function isExecutable(candidate: string, platform: NodeJS.Platform): boolean {
-  try {
-    fs.accessSync(candidate, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
-    return fs.statSync(candidate).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function claudeNpmNativeExecutable(npmDirectory: string): string {
-  return path.join(
-    npmDirectory,
-    "node_modules",
-    "@anthropic-ai",
-    "claude-code",
-    "bin",
-    "claude.exe",
-  );
-}
-
-function runnableCandidate(candidate: string, platform: NodeJS.Platform): string | undefined {
-  if (platform === "win32" && path.basename(candidate).toLowerCase() === "claude.cmd") {
-    const nativeExecutable = claudeNpmNativeExecutable(path.dirname(candidate));
-    return isExecutable(nativeExecutable, platform) ? nativeExecutable : undefined;
-  }
-  return candidate;
-}
-
-function nvmCandidates(homeDirectory: string): string[] {
-  const versionsDirectory = path.join(homeDirectory, ".nvm", "versions", "node");
-  try {
-    return fs
-      .readdirSync(versionsDirectory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
-      .map((version) => path.join(versionsDirectory, version, "bin", "claude"));
-  } catch {
-    return [];
-  }
-}
-
-function userInstallCandidates(
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-  homeDirectory: string,
-): string[] {
-  if (platform === "win32") {
-    const appData = environment.APPDATA ?? path.join(homeDirectory, "AppData", "Roaming");
-    return [
-      claudeNpmNativeExecutable(path.join(appData, "npm")),
-      path.join(appData, "npm", "claude.cmd"),
-      path.join(homeDirectory, ".local", "bin", "claude.exe"),
-      path.join(homeDirectory, ".local", "bin", "claude.cmd"),
-    ];
-  }
-  return [
-    path.join(homeDirectory, ".npm-global", "bin", "claude"),
-    path.join(homeDirectory, ".local", "bin", "claude"),
-    path.join(homeDirectory, ".claude", "local", "claude"),
-    ...nvmCandidates(homeDirectory),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ];
-}
+    return isExecutable(native) ? native : undefined;
+  },
+};
 
 export function resolveClaudeCodeExecutable(
   input: {
@@ -105,40 +59,21 @@ export function resolveClaudeCodeExecutable(
     homeDirectory?: string;
     platform?: NodeJS.Platform;
   } = {},
+  dependencies: HarnessDiscoveryDependencies = {},
 ): string {
-  const environment = input.environment ?? process.env;
   const platform = input.platform ?? process.platform;
-  const configuredCommand = input.command ?? environment.CODEXHOST_CLAUDE_COMMAND;
-  const command = configuredCommand ?? "claude";
-  const homeDirectory =
-    input.homeDirectory ?? environment.HOME ?? environment.USERPROFILE ?? os.homedir();
-  const resolutionCandidates = [
-    ...candidates(command, platform, environment),
-    ...(configuredCommand ? [] : userInstallCandidates(platform, environment, homeDirectory)),
-  ];
-  const executable = resolutionCandidates
-    .map((candidate) => runnableCandidate(candidate, platform))
-    .find(
-      (candidate): candidate is string =>
-        candidate !== undefined && isExecutable(candidate, platform),
-    );
-  if (!executable) throw new ClaudeCodeExecutableError("Claude Code is not installed");
-  return path.resolve(executable);
-}
-
-export function withNodeRuntimeOnPath(
-  environment: NodeJS.ProcessEnv,
-  runtimeExecutable = process.execPath,
-  platform = process.platform,
-): NodeJS.ProcessEnv {
-  const pathKey = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
-  const delimiter = platform === "win32" ? ";" : ":";
-  const runtimeDirectory = path.dirname(runtimeExecutable);
-  const directories = (environment[pathKey] ?? "").split(delimiter).filter(Boolean);
-  const equal =
-    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
-  if (!directories.some((directory) => equal(directory) === equal(runtimeDirectory))) {
-    directories.unshift(runtimeDirectory);
-  }
-  return { ...environment, [pathKey]: directories.join(delimiter) };
+  const resolution = resolveHarnessExecutable(
+    claudeCodeDiscoverySpec,
+    {
+      ...(input.command ? { command: input.command } : {}),
+      environment: input.environment ?? process.env,
+      ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
+      platform,
+    },
+    dependencies,
+  );
+  if (!resolution) throw new ClaudeCodeExecutableError("Claude Code is not installed");
+  return targetPath(platform).isAbsolute(resolution.executable)
+    ? resolution.executable
+    : path.resolve(resolution.executable);
 }

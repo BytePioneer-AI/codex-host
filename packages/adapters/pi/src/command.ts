@@ -1,6 +1,10 @@
-import { accessSync, constants, readdirSync, statSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import {
+  resolveHarnessExecutable,
+  VERSION_MANAGER_ROOTS,
+  type HarnessDiscoverySpec,
+} from "@codexhost/harness-discovery";
+
+export { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
 
 export interface PiExecutableDependencies {
   platform: NodeJS.Platform;
@@ -8,83 +12,21 @@ export interface PiExecutableDependencies {
   isExecutable(filePath: string): boolean;
 }
 
-function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
-  return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-}
-
-function isExecutable(filePath: string, platform: NodeJS.Platform): boolean {
-  try {
-    accessSync(filePath, platform === "win32" ? constants.F_OK : constants.X_OK);
-    return statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function pathCandidates(
-  command: string,
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-): string[] {
-  const targetPath = platform === "win32" ? path.win32 : path.posix;
-  if (targetPath.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return [command];
-  }
-  const extensions =
-    platform === "win32" && targetPath.extname(command) === ""
-      ? (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
-          .split(";")
-          .map((extension) => extension.trim())
-          .filter(Boolean)
-      : [""];
-  return (environmentValue(environment, "PATH") ?? "")
-    .split(targetPath.delimiter)
-    .map((directory) => directory.trim().replace(/^"|"$/gu, ""))
-    .filter(Boolean)
-    .flatMap((directory) =>
-      extensions.map((extension) => targetPath.join(directory, command + extension)),
-    );
-}
-
-function nvmCandidates(
-  homeDirectory: string,
-  executableName: string,
-  targetPath: typeof path,
-): string[] {
-  const versionsDirectory = targetPath.join(homeDirectory, ".nvm", "versions", "node");
-  try {
-    return readdirSync(versionsDirectory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
-      .map((version) => targetPath.join(versionsDirectory, version, "bin", executableName));
-  } catch {
-    return [];
-  }
-}
-
-function userInstallCandidates(
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-  homeDirectory: string,
-): string[] {
-  const targetPath = platform === "win32" ? path.win32 : path.posix;
-  if (platform === "win32") {
-    const appData = environment.APPDATA ?? targetPath.join(homeDirectory, "AppData", "Roaming");
-    return [
-      targetPath.join(appData, "npm", "pi.cmd"),
-      targetPath.join(homeDirectory, ".local", "bin", "pi.exe"),
-      targetPath.join(homeDirectory, ".local", "bin", "pi.cmd"),
-    ];
-  }
-  return [
-    targetPath.join(homeDirectory, ".npm-global", "bin", "pi"),
-    targetPath.join(homeDirectory, ".local", "bin", "pi"),
-    ...nvmCandidates(homeDirectory, "pi", targetPath),
-    "/opt/homebrew/bin/pi",
-    "/usr/local/bin/pi",
-  ];
-}
+export const piDiscoverySpec: HarnessDiscoverySpec = {
+  id: "pi",
+  command: "pi",
+  commandEnvironmentVariable: "PI_COMMAND",
+  installRoots: {
+    posix: [
+      "~/.npm-global/bin",
+      "~/.local/bin",
+      VERSION_MANAGER_ROOTS,
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ],
+    windows: ["${APPDATA}/npm", "~/.local/bin", VERSION_MANAGER_ROOTS],
+  },
+};
 
 export function resolvePiExecutable(
   input: {
@@ -93,36 +35,15 @@ export function resolvePiExecutable(
   },
   dependencies: Partial<PiExecutableDependencies> = {},
 ): string {
-  const platform = dependencies.platform ?? process.platform;
-  const configuredCommand = input.command ?? input.environment.PI_COMMAND;
-  const command = configuredCommand ?? "pi";
-  const homeDirectory =
-    dependencies.homeDirectory ??
-    input.environment.HOME ??
-    input.environment.USERPROFILE ??
-    os.homedir();
-  const candidates = [
-    ...pathCandidates(command, platform, input.environment),
-    ...(configuredCommand ? [] : userInstallCandidates(platform, input.environment, homeDirectory)),
-  ];
-  const check =
-    dependencies.isExecutable ?? ((candidate: string) => isExecutable(candidate, platform));
-  return candidates.find(check) ?? command;
-}
-
-export function withNodeRuntimeOnPath(
-  environment: NodeJS.ProcessEnv,
-  runtimeExecutable = process.execPath,
-  platform = process.platform,
-): NodeJS.ProcessEnv {
-  const pathKey = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
-  const delimiter = platform === "win32" ? ";" : ":";
-  const runtimeDirectory = path.dirname(runtimeExecutable);
-  const directories = (environment[pathKey] ?? "").split(delimiter).filter(Boolean);
-  const equal =
-    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
-  if (!directories.some((directory) => equal(directory) === equal(runtimeDirectory))) {
-    directories.unshift(runtimeDirectory);
-  }
-  return { ...environment, [pathKey]: directories.join(delimiter) };
+  const resolution = resolveHarnessExecutable(
+    piDiscoverySpec,
+    {
+      ...(input.command ? { command: input.command } : {}),
+      environment: input.environment,
+      ...(dependencies.platform ? { platform: dependencies.platform } : {}),
+      ...(dependencies.homeDirectory ? { homeDirectory: dependencies.homeDirectory } : {}),
+    },
+    { ...(dependencies.isExecutable ? { isExecutable: dependencies.isExecutable } : {}) },
+  );
+  return resolution?.executable ?? input.command ?? input.environment.PI_COMMAND ?? "pi";
 }

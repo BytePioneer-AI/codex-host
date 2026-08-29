@@ -1,5 +1,5 @@
 {
-  "name": "@codexhost/adapter-pi",
+  "name": "@codexhost/harness-discovery",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,10 +15,5 @@
   "scripts": {
     "build": "tsc -b"
   },
-  "dependencies": {
-    "@codexhost/harness-adapter": "0.0.0",
-    "@codexhost/harness-discovery": "0.0.0",
-    "@codexhost/shared-contracts": "0.0.0",
-    "diff": "8.0.2"
-  }
+  "dependencies": {}
 }

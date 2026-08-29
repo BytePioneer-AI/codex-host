@@ -8,8 +8,15 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "references": [
-    { "path": "../../shared-contracts/tsconfig.json" },
-    { "path": "../../harness-adapter/tsconfig.json" }
+    {
+      "path": "../../shared-contracts/tsconfig.json"
+    },
+    {
+      "path": "../../harness-adapter/tsconfig.json"
+    },
+    {
+      "path": "../../harness-discovery/tsconfig.json"
+    }
   ],
   "include": ["src/**/*.ts"]
 }

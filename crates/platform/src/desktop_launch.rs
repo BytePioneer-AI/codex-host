@@ -813,7 +813,10 @@ mod tests {
         desktop_launch_command, is_managed_desktop_root, launch_desktop_session,
         select_managed_desktop_root, stock_desktop_command,
     };
-    use crate::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
+    use crate::process::{
+        ObservedProcessTree, ProcessSnapshot, process_snapshot, same_process_instance,
+        unix_process_snapshot,
+    };
     use crate::process_exists;
     use crate::temporary_directory;
     #[cfg(target_os = "macos")]
@@ -1325,7 +1328,11 @@ mod tests {
             armed: true,
         };
         let observed = session.observe().expect("observe fake process tree");
-        assert!(observed.iter().any(|process| process.id == child_id));
+        let child_snapshot = observed
+            .iter()
+            .find(|process| process.id == child_id)
+            .cloned()
+            .expect("observe fake child");
 
         session.launch_process.kill().expect("kill fake root");
         let _ = session.launch_process.wait().expect("reap fake root");
@@ -1333,7 +1340,10 @@ mod tests {
             .cleanup_escaped(Duration::from_secs(2))
             .expect("clean fake escaped child");
         assert!(cleaned.contains(&child_id));
-        assert!(!process_exists(child_id));
+        assert!(
+            !process_snapshot(child_id)
+                .is_ok_and(|current| same_process_instance(&child_snapshot, &current))
+        );
         session.disarm_cleanup();
     }
 }

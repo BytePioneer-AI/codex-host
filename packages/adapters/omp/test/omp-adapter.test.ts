@@ -196,6 +196,24 @@ function historyTurn(input: {
   ];
 }
 
+describe("OMP Adapter inspection", () => {
+  it("reports a missing executable as not installed", async () => {
+    const transport = new FakeOmpTransport();
+    vi.spyOn(transport, "start").mockRejectedValueOnce(
+      Object.assign(new Error("spawn omp ENOENT"), { code: "ENOENT" }),
+    );
+    const close = vi.spyOn(transport, "close");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled", retryable: false, stage: "startup" },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+});
+
 describe("OMP Adapter Fork", () => {
   it("forks the requested completed prefix from the next OMP User Entry", async () => {
     const firstTurn = historyTurn({

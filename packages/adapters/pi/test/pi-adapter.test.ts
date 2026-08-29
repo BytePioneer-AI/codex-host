@@ -318,6 +318,26 @@ async function nextInteraction(
 }
 
 describe("Pi HarnessAdapter Session", () => {
+  it("reports a missing executable as not installed", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+      const transport = new FakePiTransport();
+      transport.options = options;
+      transport.start.mockRejectedValueOnce(
+        Object.assign(new Error("spawn pi ENOENT"), { code: "ENOENT" }),
+      );
+      transports.push(transport);
+      return transport;
+    });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled", retryable: false, stage: "startup" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
   it("inspects the native catalog through an ephemeral transport and closes it", async () => {
     const { adapter, dependencies, transports } = fixture();
 

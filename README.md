@@ -31,6 +31,16 @@
 </p>
 </div>
 
+<p align="center">
+  <strong>快速导航：</strong>
+  <a href="#界面预览">界面预览</a> •
+  <a href="#快速使用">快速使用</a> •
+  <a href="#功能状态">功能状态</a> •
+  <a href="#远程连接-harness">远程连接</a> •
+  <a href="#加入交流群">加入交流群</a> •
+  <a href="#开发">开发</a>
+</p>
+
 ## 界面预览
 
 无需切换应用，**Pi、Claude Code、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
@@ -133,7 +143,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
 
 <details>
-<summary><h3>远程 Harness</h3></summary>
+<summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
+
 
 在本机的 Codex Desktop 中使用远程节点上的 Harness，在远程机器执行任务，同时继续使用 Codex Desktop 的统一界面。两端需要安装相同版本的 codexhost。
 
@@ -186,6 +197,27 @@ CodexHost 尽量不走这条路：
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 
 </details>
+
+## 加入交流群
+
+<table align="center">
+  <tr>
+    <td>
+      <strong>加入交流群</strong><br />
+      <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码加入微信群交流。</sub>
+      <ul>
+        <li><sub>安装问题可以加群询问</sub></li>
+        <li><sub>功能建议与反馈</sub></li>
+        <li><sub>开发问题讨论</sub></li>
+        <li><sub>Bug 问题建议提交 <strong>issue</strong></sub></li>
+      </ul>
+      <sub><strong>欢迎一起贡献~ </strong></sub>
+    </td>
+    <td align="center">
+      <img src="docs/imgs/wechat-qrcode.jpg" alt="CodexHost 交流群二维码" width="180" />
+    </td>
+  </tr>
+</table>
 
 ### 开发
 

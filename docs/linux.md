@@ -9,7 +9,7 @@ codexhost
 
 ## Supported environment
 
-The first Linux release intentionally supports the official ChatGPT `.deb` and `.rpm` packages on x86-64. codexhost verifies the production package metadata and these packaged entry points:
+The first Linux release intentionally supports the official ChatGPT `.deb` and `.rpm` packages on x86-64. The codexhost Linux x64 native binaries use glibc 2.35 as their release baseline and can load on systems with glibc 2.35 or newer; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata and these packaged entry points:
 
 - launcher: `/usr/bin/chatgpt`
 - installation: `/usr/lib/chatgpt`

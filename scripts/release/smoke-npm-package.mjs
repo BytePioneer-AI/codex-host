@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { verifyLinuxGlibcBaseline } from "./linux-glibc.mjs";
 import {
   NPM_PLATFORM_PACKAGE_NAMES,
   npmTarballFileName,
@@ -34,6 +35,11 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
     throw new Error(`${targetName} package smoke requires ${target.hostPlatform}`);
   }
   const platform = await prepareNpmPackage({ root, target, version, skipBuild: false });
+  if (target.hostPlatform === "linux") {
+    for (const result of verifyLinuxGlibcBaseline({ packageRoot: platform.packageRoot })) {
+      console.log(`${result.relative}: GLIBC_${result.maximum}`);
+    }
+  }
   const platformTarball = await packNpmPackage({
     packageRoot: platform.packageRoot,
     outputRoot: platform.outputRoot,

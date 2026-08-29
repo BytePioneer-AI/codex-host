@@ -68,6 +68,7 @@ describe("platform packagers", () => {
     expect(workflow).toContain("Build installer package");
     expect(workflow).toContain("if: runner.os != 'Linux'");
     expect(workflow).toContain("target: linux-x64");
+    expect(workflow).toContain("runner: ubuntu-22.04");
     expect(workflow).toContain("rustTarget: x86_64-unknown-linux-gnu");
     expect(workflow).toContain("Build npm package");
     expect(workflow).toContain("release:npm:meta");

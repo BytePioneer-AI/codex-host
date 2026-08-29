@@ -9,7 +9,7 @@ codexhost
 
 ## 支持范围
 
-首个 Linux 版本有意只支持 x86-64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 会验证生产包元数据和以下包内入口：
+首个 Linux 版本有意只支持 x86-64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 的 Linux x64 原生二进制以 glibc 2.35 为发布基线，可在使用 glibc 2.35 或更新版本的系统上装载；官方 ChatGPT App 自身的发行版支持范围仍以 OpenAI 文档为准。codexhost 会验证生产包元数据和以下包内入口：
 
 - 启动器：`/usr/bin/chatgpt`
 - 安装目录：`/usr/lib/chatgpt`

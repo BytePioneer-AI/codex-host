@@ -74,6 +74,41 @@ describe("DeepSeek local Host connection", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it("retries after a failed connection attempt", async () => {
+    let ready = false;
+    const dependencies: DeepSeekHostConnectionDependencies = {
+      createClient: () =>
+        fakeClient(() =>
+          ready
+            ? Promise.resolve(
+                success({
+                  version: "0.0.1",
+                  cwd: "/workspace",
+                  provider: "deepseek-official",
+                  model: "deepseek-v4-flash",
+                  attachedSessions: 0,
+                  canOpenPath: false,
+                }),
+              )
+            : Promise.reject(new TypeError("fetch failed")),
+        ),
+      spawn: vi.fn(),
+      sleep: () => Promise.resolve(),
+    };
+    const connection = new DeepSeekHostConnection(
+      {
+        command: "/missing/dsh",
+        endpoint: "http://127.0.0.1:43123",
+      },
+      dependencies,
+    );
+
+    await expect(connection.connect()).rejects.toMatchObject({ code: "notInstalled" });
+    ready = true;
+    await expect(connection.connect()).resolves.toBeUndefined();
+    await connection.close();
+  });
+
   it("starts a configured local dsh Web profile and stops only that managed process", async () => {
     const executableDirectory = mkdtempSync(path.join(os.tmpdir(), "codexhost-dsh-command-"));
     const executable = path.join(executableDirectory, "dsh");

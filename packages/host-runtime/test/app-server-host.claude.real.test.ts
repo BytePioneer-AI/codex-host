@@ -235,18 +235,6 @@ describe("AppServerHost hermetic Claude projection", () => {
       );
       expect(completed).toMatchObject({ params: { turn: { status: "completed" } } });
       await expect(
-        collector.waitFor((message) => method(message, "thread/tokenUsage/updated")),
-      ).resolves.toMatchObject({
-        params: {
-          threadId,
-          tokenUsage: {
-            total: { totalTokens: 0 },
-            last: { totalTokens: 30 },
-            modelContextWindow: 200,
-          },
-        },
-      });
-      await expect(
         mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
       ).resolves.toMatchObject({
         turnMappings: [

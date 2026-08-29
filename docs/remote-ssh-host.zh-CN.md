@@ -7,7 +7,7 @@ Codex Desktop 可以通过原生 SSH 工作流打开另一台机器上的项目�
 ## 前置条件
 
 - 客户端已安装 Codex Desktop 和 codexhost。
-- macOS 或 Linux SSH 开发机已安装 Codex CLI，以及与客户端相同版本的 codexhost。
+- macOS 或 x64/ARM64 Linux SSH 开发机已安装 Codex CLI，以及与客户端相同版本的 codexhost。
 - 目标 Harness 已在 SSH 开发机安装并登录。Claude Code 请在开发机完成正常登录，不要把账号文件复制到客户端。
 - 启用 codexhost 前，Codex Desktop 原生 SSH 工作区已经可以正常使用。
 

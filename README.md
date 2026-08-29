@@ -57,7 +57,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 **使用 npm**
 
-> 支持 macOS、Windows 和 [x64 Linux](docs/linux.zh-CN.md)。
+> 支持 macOS、Windows 和 [x64/ARM64 Linux](docs/linux.zh-CN.md)。
 
 ```bash
 npm install -g @codexhost/cli

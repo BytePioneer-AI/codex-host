@@ -45,7 +45,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 **npm 사용**
 
-> macOS, Windows 및 [x64 Linux](linux.md)를 지원합니다.
+> macOS, Windows 및 [x64/ARM64 Linux](linux.md)를 지원합니다.
 
 ```bash
 npm install -g @codexhost/cli

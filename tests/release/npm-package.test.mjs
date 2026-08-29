@@ -256,7 +256,7 @@ describe("npm package release", () => {
     expect(hostReleaseTargetId("win32", "x64")).toBe("windows-x64");
     expect(hostReleaseTargetId("win32", "arm64")).toBe("windows-arm64");
     expect(hostReleaseTargetId("linux", "x64")).toBe("linux-x64");
-    expect(() => hostReleaseTargetId("linux", "arm64")).toThrow("unsupported npm release host");
+    expect(hostReleaseTargetId("linux", "arm64")).toBe("linux-arm64");
   });
 
   it("defaults the npm release target to the current host", () => {
@@ -353,6 +353,7 @@ describe("npm package release", () => {
     const source = createNpmBinLauncherSource({ version: "0.1.0" });
     expect(source).toContain('"darwin-arm64": "@codexhost/cli-darwin-arm64"');
     expect(source).toContain('"linux-x64": "@codexhost/cli-linux-x64"');
+    expect(source).toContain('"linux-arm64": "@codexhost/cli-linux-arm64"');
     expect(source).toContain("require.resolve");
     expect(source).toContain("--omit=optional");
     expect(source).toContain('launchArguments = ["launch"]');
@@ -517,6 +518,7 @@ describe("npm package release", () => {
       "@codexhost/cli-win32-x64",
       "@codexhost/cli-win32-arm64",
       "@codexhost/cli-linux-x64",
+      "@codexhost/cli-linux-arm64",
     ]);
     expect(source).toContain("publishConfig");
     expect(source).toContain('access: "public"');
@@ -531,6 +533,9 @@ describe("npm package release", () => {
     );
     expect(npmTarballFileName({ version: "0.1.0", target: releaseTarget("linux-x64") })).toBe(
       "codexhost-cli-0.1.0-linux-x64.tgz",
+    );
+    expect(npmTarballFileName({ version: "0.1.0", target: releaseTarget("linux-arm64") })).toBe(
+      "codexhost-cli-0.1.0-linux-arm64.tgz",
     );
   });
 });

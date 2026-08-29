@@ -11,13 +11,20 @@ import {
   supportedReleaseTargets,
 } from "../../scripts/release/targets.mjs";
 
-const expectedTargets = ["macos-arm64", "macos-x64", "windows-x64", "windows-arm64", "linux-x64"];
+const expectedTargets = [
+  "macos-arm64",
+  "macos-x64",
+  "windows-x64",
+  "windows-arm64",
+  "linux-x64",
+  "linux-arm64",
+];
 
 describe("release targets", () => {
   it("defines the complete release target matrix", () => {
     expect(supportedReleaseTargets()).toEqual(expectedTargets);
     expect(installerReleaseTargets()).toEqual(
-      expectedTargets.filter((target) => target !== "linux-x64"),
+      expectedTargets.filter((target) => !target.startsWith("linux-")),
     );
     expect(NODE_VERSION).toBe("24.13.1");
     expect(Object.values(RELEASE_TARGETS).map((target) => target.rustTarget)).toEqual([
@@ -26,6 +33,7 @@ describe("release targets", () => {
       "x86_64-pc-windows-msvc",
       "aarch64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
     ]);
     expect(Object.values(RELEASE_TARGETS).map((target) => target.installerArchitecture)).toEqual([
       "arm64",
@@ -33,10 +41,11 @@ describe("release targets", () => {
       "x64",
       "arm64",
       undefined,
+      undefined,
     ]);
     for (const target of Object.values(RELEASE_TARGETS)) {
       if (target.packageArchitecture !== undefined) {
-        expect(target.packageArchitecture).toBe("x64");
+        expect(["x64", "arm64"]).toContain(target.packageArchitecture);
         expect(target.nodeArchive).toBeUndefined();
         expect(target.nodeArchiveSha256).toBeUndefined();
       } else {
@@ -78,6 +87,9 @@ describe("release targets", () => {
       "unknown release option",
     );
     expect(() => parseReleaseArguments(["--target", "linux-x64"], "linux")).toThrow(
+      "has no installer",
+    );
+    expect(() => parseReleaseArguments(["--target", "linux-arm64"], "linux")).toThrow(
       "has no installer",
     );
   });

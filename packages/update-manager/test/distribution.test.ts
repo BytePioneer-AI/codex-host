@@ -109,52 +109,58 @@ describe("installed update context", () => {
     ).resolves.toMatchObject({ installation: { kind: "npm", options: { packageRoot } } });
   });
 
-  it("resolves a Linux npm installation without enabling installer updates", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-linux-npm-distribution-"));
-    roots.push(root);
-    const packageRoot = path.join(root, "platform-package");
-    const host = path.join(packageRoot, "app", "host-runtime.mjs");
-    const environment = runtimeEnvironment(root);
-    Object.assign(environment, {
-      [UPDATE_RUNTIME_ENV.npmNodePath]: path.join(root, "node"),
-      [UPDATE_RUNTIME_ENV.npmCliPath]: path.join(root, "npm-cli.js"),
-      [UPDATE_RUNTIME_ENV.npmLauncherPath]: path.join(root, "codexhost.js"),
-      [UPDATE_RUNTIME_ENV.npmPackageRoot]: packageRoot,
-    });
-    await Promise.all([
-      file(host),
-      file(path.join(packageRoot, "libexec", "codexhost-updater")),
-      file(path.join(root, "bin", "codexhost")),
-      file(path.join(root, "node")),
-      file(path.join(root, "npm-cli.js")),
-      file(path.join(root, "codexhost.js")),
-      file(
-        path.join(packageRoot, "app", "codexhost-distribution.json"),
-        JSON.stringify({
-          schemaVersion: 1,
-          version: "1.2.3",
-          distribution: "npm",
-          target: "linux-x64",
-        }),
-      ),
-    ]);
+  it.each([
+    ["linux-x64", "x64"],
+    ["linux-arm64", "arm64"],
+  ] as const)(
+    "resolves a %s npm installation without enabling installer updates",
+    async (target, architecture) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-linux-npm-distribution-"));
+      roots.push(root);
+      const packageRoot = path.join(root, "platform-package");
+      const host = path.join(packageRoot, "app", "host-runtime.mjs");
+      const environment = runtimeEnvironment(root);
+      Object.assign(environment, {
+        [UPDATE_RUNTIME_ENV.npmNodePath]: path.join(root, "node"),
+        [UPDATE_RUNTIME_ENV.npmCliPath]: path.join(root, "npm-cli.js"),
+        [UPDATE_RUNTIME_ENV.npmLauncherPath]: path.join(root, "codexhost.js"),
+        [UPDATE_RUNTIME_ENV.npmPackageRoot]: packageRoot,
+      });
+      await Promise.all([
+        file(host),
+        file(path.join(packageRoot, "libexec", "codexhost-updater")),
+        file(path.join(root, "bin", "codexhost")),
+        file(path.join(root, "node")),
+        file(path.join(root, "npm-cli.js")),
+        file(path.join(root, "codexhost.js")),
+        file(
+          path.join(packageRoot, "app", "codexhost-distribution.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            version: "1.2.3",
+            distribution: "npm",
+            target,
+          }),
+        ),
+      ]);
 
-    await expect(
-      resolveInstalledUpdateContext({
-        hostRuntimePath: host,
-        environment,
-        platform: "linux",
-        architecture: "x64",
-        stateDirectory: path.join(root, "state"),
-      }),
-    ).resolves.toMatchObject({
-      metadata: { target: "linux-x64" },
-      common: {
-        runtimeDescriptorPath: environment[UPDATE_RUNTIME_ENV.runtimeDescriptorPath],
-      },
-      installation: { kind: "npm", options: { packageRoot } },
-    });
-  });
+      await expect(
+        resolveInstalledUpdateContext({
+          hostRuntimePath: host,
+          environment,
+          platform: "linux",
+          architecture,
+          stateDirectory: path.join(root, "state"),
+        }),
+      ).resolves.toMatchObject({
+        metadata: { target },
+        common: {
+          runtimeDescriptorPath: environment[UPDATE_RUNTIME_ENV.runtimeDescriptorPath],
+        },
+        installation: { kind: "npm", options: { packageRoot } },
+      });
+    },
+  );
 
   it("rejects unknown metadata and target mismatch", async () => {
     expect(() =>

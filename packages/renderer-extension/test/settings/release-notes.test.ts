@@ -143,7 +143,7 @@ describe("Release notes Markdown", () => {
   it("renders release-note blockquotes and does not create unsafe links", () => {
     const root = render(
       [
-        "> **Note / 提示**: Linux x64 users install via npm.",
+        "> **Note / 提示**: Linux x64/ARM64 users install via npm.",
         ">",
         "> See [the release](javascript:alert(1)).",
         "---",

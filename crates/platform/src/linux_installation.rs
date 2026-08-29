@@ -13,6 +13,17 @@ const LINUX_PACKAGE_NAME: &str = "chatgpt";
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
 const ELF_MACHINE_X86_64: u16 = 62;
+const ELF_MACHINE_AARCH64: u16 = 183;
+
+fn expected_elf_machine() -> Option<(u16, &'static str)> {
+    if cfg!(target_arch = "x86_64") {
+        Some((ELF_MACHINE_X86_64, "x86-64"))
+    } else if cfg!(target_arch = "aarch64") {
+        Some((ELF_MACHINE_AARCH64, "ARM64"))
+    } else {
+        None
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,7 +35,11 @@ struct LinuxPackageMetadata {
     version: String,
 }
 
-fn canonical_linux_x64_elf(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
+fn canonical_linux_elf(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
+    let (expected_machine, architecture) =
+        expected_elf_machine().ok_or(PlatformError::Unsupported(
+            "official ChatGPT Linux packages are unsupported on this architecture",
+        ))?;
     let canonical = canonical_unix_executable(path, label)?;
     let mut header = [0_u8; 20];
     File::open(&canonical)?
@@ -39,10 +54,10 @@ fn canonical_linux_x64_elf(path: &Path, label: &str) -> Result<PathBuf, Platform
     if header[..4] != ELF_MAGIC
         || header[4] != ELF_CLASS_64
         || header[5] != 1
-        || machine != ELF_MACHINE_X86_64
+        || machine != expected_machine
     {
         return Err(PlatformError::Invalid(format!(
-            "{label} '{}' is not a little-endian x86-64 ELF executable",
+            "{label} '{}' is not a little-endian {architecture} ELF executable",
             path.display()
         )));
     }
@@ -102,11 +117,11 @@ fn linux_installation(
     }
 
     let desktop_executable =
-        canonical_linux_x64_elf(&install_root.join("ChatGPT"), "Desktop executable")?;
+        canonical_linux_elf(&install_root.join("ChatGPT"), "Desktop executable")?;
     let packaged_launcher =
         canonical_unix_executable(&install_root.join("codex-launcher"), "Desktop launcher")?;
     let packaged_codex_cli =
-        canonical_linux_x64_elf(&install_root.join("resources/codex"), "Codex CLI")?;
+        canonical_linux_elf(&install_root.join("resources/codex"), "Codex CLI")?;
     if !desktop_executable.starts_with(&install_root)
         || !packaged_launcher.starts_with(&install_root)
         || !packaged_codex_cli.starts_with(&install_root)
@@ -178,21 +193,27 @@ mod tests {
     use super::linux_installation;
     use crate::{DesktopIdentity, PlatformError, temporary_directory};
 
-    fn elf_x64() -> Vec<u8> {
+    fn elf(machine: u16) -> Vec<u8> {
         let mut header = vec![0_u8; 20];
         header[..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
         header[4] = 2;
         header[5] = 1;
-        header[18..20].copy_from_slice(&62_u16.to_le_bytes());
+        header[18..20].copy_from_slice(&machine.to_le_bytes());
         header
+    }
+
+    fn native_elf() -> Vec<u8> {
+        elf(super::expected_elf_machine()
+            .expect("supported test architecture")
+            .0)
     }
 
     fn fixture(brand: &str, flavor: &str) -> std::path::PathBuf {
         let root = temporary_directory("codexhost-linux-installation");
         fs::create_dir_all(root.join("resources")).expect("create resources");
-        fs::write(root.join("ChatGPT"), elf_x64()).expect("write Desktop");
+        fs::write(root.join("ChatGPT"), native_elf()).expect("write Desktop");
         fs::write(root.join("codex-launcher"), b"launcher").expect("write Desktop launcher");
-        fs::write(root.join("resources/codex"), elf_x64()).expect("write CLI");
+        fs::write(root.join("resources/codex"), native_elf()).expect("write CLI");
         fs::write(root.join("resources/app.asar"), b"asar").expect("write app.asar");
         fs::write(
             root.join("resources/linux-package-metadata.json"),
@@ -286,9 +307,13 @@ mod tests {
 
         let wrong_architecture = fixture("chatgpt", "prod");
         let wrong_architecture_launcher = launcher(&wrong_architecture);
-        let mut arm64 = elf_x64();
-        arm64[18..20].copy_from_slice(&183_u16.to_le_bytes());
-        fs::write(wrong_architecture.join("ChatGPT"), arm64).expect("write ARM64 Desktop");
+        let wrong_machine = if cfg!(target_arch = "aarch64") {
+            62
+        } else {
+            183
+        };
+        fs::write(wrong_architecture.join("ChatGPT"), elf(wrong_machine))
+            .expect("write wrong-architecture Desktop");
         assert!(matches!(
             linux_installation(&wrong_architecture, &wrong_architecture_launcher),
             Err(PlatformError::Invalid(_))
@@ -296,10 +321,25 @@ mod tests {
         fs::remove_dir_all(wrong_architecture).expect("remove wrong architecture fixture");
         fs::remove_file(wrong_architecture_launcher).expect("remove wrong architecture launcher");
 
+        let wrong_cli_architecture = fixture("chatgpt", "prod");
+        let wrong_cli_architecture_launcher = launcher(&wrong_cli_architecture);
+        fs::write(
+            wrong_cli_architecture.join("resources/codex"),
+            elf(wrong_machine),
+        )
+        .expect("write wrong-architecture CLI");
+        assert!(matches!(
+            linux_installation(&wrong_cli_architecture, &wrong_cli_architecture_launcher),
+            Err(PlatformError::Invalid(_))
+        ));
+        fs::remove_dir_all(wrong_cli_architecture).expect("remove wrong CLI architecture fixture");
+        fs::remove_file(wrong_cli_architecture_launcher)
+            .expect("remove wrong CLI architecture launcher");
+
         let escaped = fixture("chatgpt", "prod");
         let escaped_launcher = launcher(&escaped);
         let external = escaped.parent().expect("parent").join("external-codex");
-        fs::write(&external, elf_x64()).expect("write external CLI");
+        fs::write(&external, native_elf()).expect("write external CLI");
         fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
             .expect("make external executable");
         fs::remove_file(escaped.join("resources/codex")).expect("remove CLI");

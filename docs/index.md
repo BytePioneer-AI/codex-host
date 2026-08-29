@@ -23,7 +23,7 @@
 
 | 文档 | 作用 |
 |---|---|
-| [`linux.zh-CN.md`](linux.zh-CN.md) | 说明 x64 Linux 上安装、兼容性、进程所有权和诊断方法。 |
+| [`linux.zh-CN.md`](linux.zh-CN.md) | 说明 x64/ARM64 Linux 上安装、兼容性、进程所有权和诊断方法。 |
 | [`linux.md`](linux.md) | 提供 Linux 安装与诊断说明的英文版本。 |
 | [`remote-ssh-host.zh-CN.md`](remote-ssh-host.zh-CN.md) | 说明通过 Codex Desktop 原生 SSH 工作流使用远程机器上的 Harness。 |
 | [`remote-ssh-host.md`](remote-ssh-host.md) | 提供 SSH 远程 Harness Host 使用说明的英文版本。 |

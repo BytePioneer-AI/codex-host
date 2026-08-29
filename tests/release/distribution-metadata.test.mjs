@@ -65,12 +65,12 @@ describe("release distribution metadata", () => {
         target: "linux-x64",
       }),
     ).toMatchObject({ target: "linux-x64" });
-    expect(() =>
+    expect(
       createDistributionMetadata({
         version: "1.2.3",
         distribution: "npm",
         target: "linux-arm64",
       }),
-    ).toThrow("target is invalid");
+    ).toMatchObject({ target: "linux-arm64" });
   });
 });

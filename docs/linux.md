@@ -1,6 +1,6 @@
 # Linux support
 
-codexhost supports x64 Linux through the npm package. Install the official ChatGPT App first, then install codexhost:
+codexhost supports x64 and ARM64 Linux through the npm package. Install the official ChatGPT App matching the current architecture first, then install codexhost:
 
 ```bash
 npm install -g @codexhost/cli
@@ -9,13 +9,13 @@ codexhost
 
 ## Supported environment
 
-The first Linux release intentionally supports the official ChatGPT `.deb` and `.rpm` packages on x86-64. The codexhost Linux x64 native binaries use glibc 2.35 as their release baseline and can load on systems with glibc 2.35 or newer; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata and these packaged entry points:
+The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x86-64 and ARM64. The codexhost Linux native binaries use glibc 2.35 as their release baseline and can load on systems with glibc 2.35 or newer; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata, native ELF architecture, and these packaged entry points:
 
 - launcher: `/usr/bin/chatgpt`
 - installation: `/usr/lib/chatgpt`
 - Desktop executable: `/usr/lib/chatgpt/ChatGPT`
 
-The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, ARM64, and Linux installer/self-update packages are not supported yet.
+The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, cross-architecture execution, and codexhost Linux installer packages are not supported. codexhost is installed and updated through npm on Linux.
 
 ## Renderer compatibility
 

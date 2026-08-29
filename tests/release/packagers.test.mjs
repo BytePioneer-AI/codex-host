@@ -70,6 +70,9 @@ describe("platform packagers", () => {
     expect(workflow).toContain("target: linux-x64");
     expect(workflow).toContain("runner: ubuntu-22.04");
     expect(workflow).toContain("rustTarget: x86_64-unknown-linux-gnu");
+    expect(workflow).toContain("target: linux-arm64");
+    expect(workflow).toContain("runner: ubuntu-22.04-arm");
+    expect(workflow).toContain("rustTarget: aarch64-unknown-linux-gnu");
     expect(workflow).toContain("Build npm package");
     expect(workflow).toContain("release:npm:meta");
     expect(workflow).toContain("release:npm:publish");

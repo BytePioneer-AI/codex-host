@@ -7,7 +7,7 @@ This path keeps the native Codex Desktop UI and SSH transport. It does not turn 
 ## Prerequisites
 
 - Codex Desktop and codexhost on the client machine.
-- Codex CLI and the same codexhost version on a macOS or Linux SSH host.
+- Codex CLI and the same codexhost version on a macOS or x64/ARM64 Linux SSH host.
 - The desired Harness installed and authenticated on the SSH host. For Claude Code, run its normal login there; do not copy its account files to the client.
 - A working Codex Desktop SSH workspace before enabling codexhost.
 

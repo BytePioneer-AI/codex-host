@@ -1,6 +1,6 @@
 # Linux 支持
 
-codexhost 通过 npm 包支持 x64 Linux。请先安装官方 ChatGPT App，再安装 codexhost：
+codexhost 通过 npm 包支持 x64 和 ARM64 Linux。请先安装与当前架构匹配的官方 ChatGPT App，再安装 codexhost：
 
 ```bash
 npm install -g @codexhost/cli
@@ -9,13 +9,13 @@ codexhost
 
 ## 支持范围
 
-首个 Linux 版本有意只支持 x86-64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 的 Linux x64 原生二进制以 glibc 2.35 为发布基线，可在使用 glibc 2.35 或更新版本的系统上装载；官方 ChatGPT App 自身的发行版支持范围仍以 OpenAI 文档为准。codexhost 会验证生产包元数据和以下包内入口：
+Linux 版本支持 x86-64 和 ARM64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 的 Linux 原生二进制以 glibc 2.35 为发布基线，可在使用 glibc 2.35 或更新版本的系统上装载；官方 ChatGPT App 自身的发行版支持范围仍以 OpenAI 文档为准。codexhost 会验证生产包元数据、当前架构的 ELF 身份和以下包内入口：
 
 - 启动器：`/usr/bin/chatgpt`
 - 安装目录：`/usr/lib/chatgpt`
 - Desktop 可执行文件：`/usr/lib/chatgpt/ChatGPT`
 
-运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、ARM64，以及 Linux installer/self-update 包。
+运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、跨架构执行，以及 codexhost Linux installer 包。codexhost 在 Linux 上通过 npm 安装和更新。
 
 ## Renderer 兼容性
 

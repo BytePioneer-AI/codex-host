@@ -15,6 +15,16 @@ export type {
   CdpSocketFactory,
   CdpTarget,
 } from "./cdp-client.js";
+export {
+  DESKTOP_CONTRACT_AUDIT_SCHEMA_VERSION,
+  inspectDesktopContracts,
+  validateRendererContractAuditInspection,
+} from "./contract-audit.js";
+export type {
+  DesktopContractAuditObservation,
+  InspectDesktopContractsOptions,
+  RendererContractAuditInspection,
+} from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
 export {
   activateElectronDesktop,

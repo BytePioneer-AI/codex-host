@@ -577,6 +577,19 @@ export function findComposerModelTarget(composer: Element): readonly unknown[] |
   return ["default", draftIds.values().next().value];
 }
 
+export type RendererComposerModelContractState = "draft" | "conversation" | "missing" | "ambiguous";
+
+export function inspectComposerModelContract(
+  composer: Element,
+): RendererComposerModelContractState {
+  const target = findComposerModelTarget(composer);
+  if (target?.[0] === "default") return "draft";
+  if (target?.[0] === "conversation") return "conversation";
+  const domIdentity = findComposerDomIdentity(composer);
+  if (domIdentity.kind === "ambiguous") return "ambiguous";
+  return "missing";
+}
+
 export function isMainProcessTitlePolicyReady(value: unknown): boolean {
   return isRecord(value) && value.state === "ready";
 }

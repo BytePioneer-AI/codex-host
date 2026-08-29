@@ -46,6 +46,12 @@ interface RendererSettingsHeaderInsertionPoint {
   before: ChildNode | null;
 }
 
+export interface RendererSettingsContractInspection {
+  headerCount: number;
+  visibleHeaderCount: number;
+  insertionPointCount: number;
+}
+
 function measuredBounds(element: Element): RendererSettingsBounds {
   const bounds = element.getBoundingClientRect();
   return {
@@ -82,6 +88,29 @@ export function selectRendererSettingsHeaderSlot<T>(
       left.bounds.left - right.bounds.left,
   );
   return eligible[0]?.value ?? null;
+}
+
+export function inspectRendererSettingsContract(
+  ownerDocument: Document = document,
+): RendererSettingsContractInspection {
+  const headers = [
+    ...ownerDocument.querySelectorAll<HTMLElement>(SETTINGS_APPLICATION_HEADER_SELECTOR),
+  ];
+  const visibleHeaders = headers.filter((header) => {
+    const bounds = measuredBounds(header);
+    return bounds.width > 0 && bounds.height > 0;
+  });
+  const insertionPointCount = visibleHeaders.filter((header) =>
+    [...header.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SLOT_SELECTOR)].some((slot) => {
+      const bounds = measuredBounds(slot);
+      return bounds.width > 0 && bounds.height > 0;
+    }),
+  ).length;
+  return {
+    headerCount: headers.length,
+    visibleHeaderCount: visibleHeaders.length,
+    insertionPointCount,
+  };
 }
 
 function findRendererSettingsHeaderInsertionPoint(

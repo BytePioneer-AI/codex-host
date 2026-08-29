@@ -52,6 +52,19 @@ describe("production Renderer release chain", () => {
     ).toThrow("invalid selection");
   });
 
+  it("builds the local audit entry without packaging it in production", async () => {
+    const [rendererManifest, auditEntry, releaseBuilder] = await Promise.all([
+      source("packages/renderer-extension/package.json"),
+      source("packages/renderer-extension/src/audit-entry.ts"),
+      source("scripts/release/prepare-payload.mjs"),
+    ]);
+
+    expect(rendererManifest).toContain("src/audit-entry.ts");
+    expect(rendererManifest).toContain("dist/contract-audit.js");
+    expect(auditEntry).toContain("__codexhostContractAuditV1");
+    expect(releaseBuilder).not.toContain("contract-audit.js");
+  });
+
   it("builds and packages executable production entries", async () => {
     const [rendererManifest, releaseBuilder] = await Promise.all([
       source("packages/renderer-extension/package.json"),

@@ -219,7 +219,7 @@ CodexHost 尽量不走这条路：
   </tr>
 </table>
 
-### 开发
+## 开发
 
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 

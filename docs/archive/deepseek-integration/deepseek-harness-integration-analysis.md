@@ -42,7 +42,7 @@ codexhost 的 Harness 定义是拥有 Agent Loop、上下文组织、工具、�
 - `Thread -> Harness` 所有权被错误表示；
 - Provider 凭据与 Harness 安装状态被混为一谈。
 
-因此边界必须是独立的 `packages/adapters/deepseek-harness`，Harness-specific wire details 只存在于这个包内，符合仓库 [领域术语表](../领域术语表.md) 和 Adapter 边界规则。
+因此边界必须是独立的 `packages/adapters/deepseek-harness`，Harness-specific wire details 只存在于这个包内，符合仓库 [领域术语表](../../领域术语表.md) 和 Adapter 边界规则。
 
 ## 3. 接口选择
 
@@ -240,7 +240,7 @@ MVP 在没有实时交互 bridge 时必须使用确定性的 `never` 或只提�
 
 ### Protocol Core
 
-在 [`model-routing.ts`](../../packages/protocol-core/src/model-routing.ts) 增加：
+在 [`model-routing.ts`](../../../packages/protocol-core/src/model-routing.ts) 增加：
 
 - `DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native"`
 - `EXTERNAL_HARNESS_IDS` 的 `deepseek-harness`
@@ -251,7 +251,7 @@ MVP 在没有实时交互 bridge 时必须使用确定性的 `never` 或只提�
 
 ### Host Runtime
 
-在 [`adapter-composition.ts`](../../packages/host-runtime/src/adapter-composition.ts) 注册 Adapter，并增加显式环境变量：
+在 [`adapter-composition.ts`](../../../packages/host-runtime/src/adapter-composition.ts) 注册 Adapter，并增加显式环境变量：
 
 - `CODEXHOST_DEEPSEEK_HARNESS_COMMAND`
 - `CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT`

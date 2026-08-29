@@ -9,7 +9,7 @@
 
 相关兼容性债务记录见：
 
-- `docs/codex-desktop-26.814-compatibility-debt.md`
+- `docs/archive/codex-desktop-incidents/26.814-compatibility-debt.md`
 
 ## 一、先建立分层模型
 

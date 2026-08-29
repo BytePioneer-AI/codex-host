@@ -1,5 +1,7 @@
 # ACP 层后续开发说明
 
+> 状态：尚未触发；当前仍只有 Grok 使用生产 ACP Transport。
+
 ## 背景
 
 codexhost 已通过 ACP v1 接入 Grok CLI。当前调用链是：
@@ -230,8 +232,8 @@ ACP 能够传输 Session、Prompt 和流式 Update，不等于它已经提供 co
 - `packages/adapters/grok/src/grok-usage.ts`：标准 ACP 与 Grok Usage 映射
 - `packages/adapters/grok/src/grok-history.ts`：Grok Native history 到 Snapshot 和稳定 Turn identity 的映射
 - `packages/adapters/grok/test/grok-adapter.test.ts`：当前 Adapter 测试入口
-- `docs/grok-cli-adapter-integration.md`：Grok 接入背景和能力分析
-- `openspec/changes/integrate-grok-cli-acp-mvp/design.md`：MVP 的架构决策
+- `docs/archive/grok-integration/grok-cli-adapter-integration.md`：已归档的 Grok 接入背景和能力分析
+- `openspec/changes/archive/2026-08-20-integrate-grok-cli-acp-mvp/design.md`：已归档的 MVP 架构决策
 
 ## 决策摘要
 

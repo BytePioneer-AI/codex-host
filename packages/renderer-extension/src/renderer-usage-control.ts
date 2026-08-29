@@ -11,6 +11,7 @@ export interface RendererUsageControl {
   popover: HTMLDivElement;
   anchor: HTMLElement | null;
   label: HTMLSpanElement;
+  onOpen: (() => void) | null;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
 }
@@ -274,16 +275,20 @@ function closePopover(control: Pick<RendererUsageControl, "trigger" | "popover">
   control.trigger.setAttribute("aria-expanded", "false");
 }
 
-function openPopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function openPopover(control: Pick<RendererUsageControl, "trigger" | "popover" | "onOpen">): void {
+  const wasOpen = control.trigger.getAttribute("aria-expanded") === "true";
   positionPopover(control);
   control.popover.hidden = false;
   if (typeof control.popover.showPopover === "function" && !popoverIsOpen(control.popover)) {
     control.popover.showPopover();
   }
   control.trigger.setAttribute("aria-expanded", "true");
+  if (!wasOpen) control.onOpen?.();
 }
 
-function togglePopover(control: Pick<RendererUsageControl, "trigger" | "popover">): void {
+function togglePopover(
+  control: Pick<RendererUsageControl, "trigger" | "popover" | "onOpen">,
+): void {
   if (control.trigger.getAttribute("aria-expanded") === "true") closePopover(control);
   else openPopover(control);
 }
@@ -359,6 +364,7 @@ export function mountRendererUsageControl(composerId: string): RendererUsageCont
     popover,
     anchor: null,
     label,
+    onOpen: null,
     dispose() {
       closePopover(control);
       if (closeTimer !== null) window.clearTimeout(closeTimer);

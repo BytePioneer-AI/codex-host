@@ -36,8 +36,9 @@ function assistantBlocks(
   return {
     type: "assistant",
     uuid,
+    request_id: uuid,
     parent_tool_use_id: parentToolUseId,
-    message: { id: uuid, content, ...(usage ? { usage } : {}) },
+    message: { id: uuid, model: "claude-sonnet-4-6", content, ...(usage ? { usage } : {}) },
     ...(error ? { error } : {}),
   };
 }
@@ -186,7 +187,10 @@ describe("Claude native Turn interpretation", () => {
           messageId,
           checkpointId: "tool-checkpoint",
           lastRequestUsage: {
+            requestId: messageId,
+            model: "claude-sonnet-4-6",
             inputTokens: 2_695,
+            outputTokens: 115,
             cacheCreationInputTokens: 0,
             cacheReadInputTokens: 19_968,
           },
@@ -1071,6 +1075,7 @@ describe("Claude native Turn interpretation", () => {
         ],
         lastRequestUsage: {
           inputTokens: 10,
+          outputTokens: 45,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 990,
         },
@@ -1094,7 +1099,10 @@ describe("Claude native Turn interpretation", () => {
       messageId: "assistant-with-usage",
       checkpointId: "assistant-with-usage",
       lastRequestUsage: {
+        requestId: "assistant-with-usage",
+        model: "claude-sonnet-4-6",
         inputTokens: 10,
+        outputTokens: 5,
         cacheCreationInputTokens: 20,
         cacheReadInputTokens: 70,
       },

@@ -17,6 +17,7 @@ import type {
 } from "../src/transport.js";
 
 class FakeQuery {
+  readonly accountInfo = vi.fn(async () => ({ apiProvider: "firstParty" as const }));
   readonly initializationResult = vi.fn(async () => ({
     models: [
       {
@@ -38,9 +39,6 @@ class FakeQuery {
       maxTokens: 200,
       model: "runtime-model",
     }),
-  );
-  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = vi.fn(
-    async (): Promise<unknown> => ({ rate_limits_available: false, rate_limits: null }),
   );
   readonly setModel = vi.fn(async () => undefined);
   readonly applyFlagSettings = vi.fn(async () => undefined);
@@ -253,126 +251,6 @@ describe("ClaudeSdkTransport plan-limit forwarding", () => {
     completeTurn(value.fakeQuery);
     await turn;
     expect(value.onPlanLimit).not.toHaveBeenCalled();
-    await value.transport.close();
-  });
-});
-
-describe("ClaudeSdkTransport Session Usage pull", () => {
-  it("returns null before the transport has started", async () => {
-    const value = fixture();
-    await expect(value.transport.getSessionUsage()).resolves.toBeNull();
-    expect(
-      value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET,
-    ).not.toHaveBeenCalled();
-  });
-
-  it("pulls current Session cost and token totals from the /usage control channel", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
-      {
-        session: {
-          total_cost_usd: 1.373,
-          model_usage: {
-            "claude-opus": { inputTokens: 100, outputTokens: 40 },
-            "claude-haiku": { inputTokens: 20, outputTokens: 5 },
-          },
-        },
-      },
-    );
-    await expect(value.transport.getSessionUsage()).resolves.toEqual({
-      totalCostUsd: 1.373,
-      inputTokens: 120,
-      outputTokens: 45,
-    });
-    await value.transport.close();
-  });
-
-  it("retains a valid Session cost when per-model token totals are malformed", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
-      {
-        session: {
-          total_cost_usd: 0.5,
-          model_usage: { "claude-opus": { inputTokens: 10, outputTokens: -1 } },
-        },
-      },
-    );
-    await expect(value.transport.getSessionUsage()).resolves.toEqual({ totalCostUsd: 0.5 });
-    await value.transport.close();
-  });
-});
-
-describe("ClaudeSdkTransport plan-limit pull", () => {
-  it("returns null before the transport has started", async () => {
-    const value = fixture();
-    await expect(value.transport.getPlanLimit()).resolves.toBeNull();
-    expect(
-      value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET,
-    ).not.toHaveBeenCalled();
-  });
-
-  it("pulls both plan windows on demand from the /usage control channel", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
-      {
-        rate_limits_available: true,
-        rate_limits: {
-          five_hour: { utilization: 62, resets_at: "2026-08-25T16:10:00.000Z" },
-          seven_day: { utilization: 18, resets_at: "2026-08-28T18:00:00.000Z" },
-        },
-      },
-    );
-    await expect(value.transport.getPlanLimit()).resolves.toEqual({
-      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_787_674_200 },
-      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_787_940_000 },
-    });
-    await value.transport.close();
-  });
-
-  it("returns null for an API-key Session where plan limits do not apply", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
-      { rate_limits_available: false, rate_limits: null },
-    );
-    await expect(value.transport.getPlanLimit()).resolves.toBeNull();
-    await value.transport.close();
-  });
-
-  it("omits a window with an invalid utilization instead of failing the whole answer", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValueOnce(
-      {
-        rate_limits_available: true,
-        rate_limits: {
-          five_hour: { utilization: null, resets_at: null },
-          seven_day: { utilization: 18, resets_at: null },
-        },
-      },
-    );
-    await expect(value.transport.getPlanLimit()).resolves.toEqual({
-      sevenDay: { utilizationPercent: 18 },
-    });
-    await value.transport.close();
-  });
-
-  it("propagates a control-channel failure to the caller", async () => {
-    const value = fixture();
-    await value.transport.start();
-
-    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockRejectedValueOnce(
-      new Error("usage query unavailable"),
-    );
-    await expect(value.transport.getPlanLimit()).rejects.toThrow("usage query unavailable");
     await value.transport.close();
   });
 });

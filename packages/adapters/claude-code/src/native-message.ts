@@ -161,25 +161,58 @@ function parseResultModelUsage(
   return usage;
 }
 
-function parseLastRequestUsage(value: unknown):
+function parseLastRequestUsage(
+  value: unknown,
+  attribution: {
+    requestId?: unknown;
+    model?: unknown;
+    provider?: unknown;
+  } = {},
+):
   | {
+      requestId?: string;
+      model?: string;
+      provider?: string;
       inputTokens: number;
+      outputTokens: number;
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
     }
   | undefined {
   if (!isRecord(value)) return undefined;
   const inputTokens = value.input_tokens;
+  const outputTokens = value.output_tokens;
   const cacheCreationInputTokens = value.cache_creation_input_tokens;
   const cacheReadInputTokens = value.cache_read_input_tokens;
   if (
     !safeNonNegativeInteger(inputTokens) ||
+    !safeNonNegativeInteger(outputTokens) ||
     !safeNonNegativeInteger(cacheCreationInputTokens) ||
     !safeNonNegativeInteger(cacheReadInputTokens)
   ) {
     return undefined;
   }
-  return { inputTokens, cacheCreationInputTokens, cacheReadInputTokens };
+  const requestId = boundedString(attribution.requestId, 500);
+  const model = boundedString(attribution.model, 500);
+  const provider = boundedString(attribution.provider, 100);
+  return {
+    ...(requestId ? { requestId } : {}),
+    ...(model ? { model } : {}),
+    ...(provider ? { provider } : {}),
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+  };
+}
+
+function assistantRequestUsage(message: Record<string, unknown>, provider?: string) {
+  if (!isRecord(message.message)) return undefined;
+  return parseLastRequestUsage(message.message.usage, {
+    requestId: message.message.id ?? message.request_id,
+    model: message.message.model,
+    provider: message.provider ?? message.message.provider ?? provider,
+  });
 }
 
 function parseResultUsageEvent(
@@ -362,6 +395,7 @@ export interface ClaudeNativeMessageResult {
 }
 
 export class ClaudeNativeTurnAccumulator {
+  readonly #provider: string | undefined;
   #activeRootStreamMessageId: string | null = null;
   #assistantErrors: string[] = [];
   #cancelRequested = false;
@@ -373,6 +407,10 @@ export class ClaudeNativeTurnAccumulator {
   #protocolConflict = false;
   #textConflict = false;
   #tools = new Map<string, ActiveNativeTool>();
+
+  constructor(options: { provider?: string } = {}) {
+    this.#provider = options.provider;
+  }
 
   requestCancel(): void {
     this.#cancelRequested = true;
@@ -620,9 +658,7 @@ export class ClaudeNativeTurnAccumulator {
     const state = this.#messageState(messageId);
     if (state.completed) {
       this.#consumeToolUseBlocks(message, events, true);
-      const usage = isRecord(message.message)
-        ? parseLastRequestUsage(message.message.usage)
-        : undefined;
+      const usage = assistantRequestUsage(message, this.#provider);
       if (usage && !state.usagePublished) {
         state.usagePublished = true;
         events.push({
@@ -655,9 +691,7 @@ export class ClaudeNativeTurnAccumulator {
     this.#consumeToolUseBlocks(message, events, false);
 
     if (!this.#protocolConflict && !this.#textConflict) {
-      const usage = isRecord(message.message)
-        ? parseLastRequestUsage(message.message.usage)
-        : undefined;
+      const usage = assistantRequestUsage(message, this.#provider);
       state.usagePublished = usage !== undefined;
       events.push({
         type: "message.completed",

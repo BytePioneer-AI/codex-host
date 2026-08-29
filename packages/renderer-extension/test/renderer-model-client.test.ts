@@ -226,13 +226,17 @@ describe("Renderer fixed Model request client", () => {
       permissionModeId,
     });
     await expect(
-      client.inspectThreadUsage({ threadId: hostThreadIdSchema.parse("thread-1") }),
+      client.inspectThreadUsage({
+        threadId: hostThreadIdSchema.parse("thread-1"),
+        refresh: "exact",
+      }),
     ).resolves.toEqual({
       threadId: "thread-1",
       usage: { cacheHitRatePercent: 99.9, totalCostUsd: 0.168 },
     });
     expect(sendRequest).toHaveBeenNthCalledWith(8, THREAD_USAGE_INSPECT_METHOD, {
       threadId: "thread-1",
+      refresh: "exact",
     });
     const onUsage = vi.fn();
     const unsubscribe = client.subscribeThreadUsage?.(onUsage);

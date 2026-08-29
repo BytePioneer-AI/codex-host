@@ -37,6 +37,9 @@ const { outputFiles } = await build({
         document.body.append(toolbar);
 
         const usage = mountRendererUsageControl("usage-composer");
+        let exactRefreshes = 0;
+        usage.onOpen = () => { exactRefreshes += 1; };
+        globalThis.rendererUsageExactRefreshes = () => exactRefreshes;
         const credits = mountRendererCreditsControl("usage-composer");
         usage.place(model);
         credits.place(plus);
@@ -113,7 +116,7 @@ test("renders Usage immediately to the left of the model control", async ({ page
     "aria-label",
     "Thread Usage: CH 99.9% · $0.822",
   );
-  await expect(usage.locator("button")).toHaveClass(/text-token-text-tertiary/u);
+  await expect(usage.locator("button")).toHaveClass(/codexhost-trigger-chip/u);
   await expect(usage.locator("svg")).toHaveCount(0);
   const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
   if (!usageBox || !modelBox) throw new Error("Usage geometry is unavailable");
@@ -147,6 +150,23 @@ test("renders Usage immediately to the left of the model control", async ({ page
   await expect(popover).toContainText("87k / 6.7k");
   await expect(popover).toContainText("Session cost estimate");
   await expect(popover).toContainText("$0.822");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const reads = Reflect.get(globalThis, "rendererUsageExactRefreshes");
+        return typeof reads === "function" ? reads() : -1;
+      }),
+    )
+    .toBe(1);
+  await usage.hover();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const reads = Reflect.get(globalThis, "rendererUsageExactRefreshes");
+        return typeof reads === "function" ? reads() : -1;
+      }),
+    )
+    .toBe(1);
 });
 
 test("keeps Usage in place and shows credits after the leading composer control", async ({
@@ -186,7 +206,7 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 47%");
   await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
   await expect(trigger).toHaveCSS("max-width", "180px");
-  await expect(credits.locator("xpath=preceding-sibling::*[1]")).toHaveAttribute(
+  await expect(credits.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "aria-label",
     "Add files",
   );

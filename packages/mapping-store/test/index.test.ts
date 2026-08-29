@@ -532,7 +532,7 @@ describe("mapping-store package", () => {
     const records = await store.listThreads();
     expect(records).toHaveLength(1);
     expect(JSON.stringify(records)).not.toMatch(
-      /prompt|transcript|toolOutput|diff|usage|apiKey|accessToken/iu,
+      /"(?:prompt|transcript|toolOutput|diff|usage|cost|context|requestId|refreshCache|apiKey|accessToken)"/iu,
     );
     const returned = records[0];
     if (!returned) throw new Error("Expected one enumerated record");

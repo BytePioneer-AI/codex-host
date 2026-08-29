@@ -52,7 +52,11 @@ export type ClaudeInteractionResponse =
   | { type: "question"; requestId: string; cancelled: true };
 
 export interface ClaudeLastRequestUsage {
+  requestId?: string;
+  model?: string;
+  provider?: string;
   inputTokens: number;
+  outputTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
 }
@@ -135,45 +139,19 @@ export interface ClaudeTransportContextUsage {
   model: string;
 }
 
-export interface ClaudeTransportSessionUsage {
-  totalCostUsd?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-}
-
 export interface ClaudePlanLimitWindow {
   utilizationPercent: number;
   resetsAtUnix?: number;
 }
 
 /**
- * Claude.ai subscription plan-window utilization. Arrives two ways: pushed via
- * `rate_limit_event` whenever the CLI makes a real API call (regardless of
- * whether a Turn is active on the transport), or pulled on demand through
- * `getPlanLimit()`. Either source can report both windows at once (Claude Code
- * groups them under `rate_limit_info.unifiedWindows` / `rate_limits`), so both
- * are optional on the same event rather than modeled as one event per window.
+ * Claude.ai subscription plan-window utilization from stable `rate_limit_event`
+ * pushes. Both windows are optional because one event may report either or both.
  */
 export interface ClaudePlanLimitEvent {
   fiveHour?: ClaudePlanLimitWindow;
   sevenDay?: ClaudePlanLimitWindow;
 }
-
-/**
- * Which of the two channels above an observation arrived on. These are not
- * equally trustworthy, and the Adapter arbitrates between them by source:
- *
- * - `"pull"` answers "what is the utilization right now?", asked on demand.
- * - `"push"` rides along on whatever API call the CLI happened to make, so it
- *   reports the account state as of *that Session's* last request. An idle
- *   Session's push can therefore carry a value from hours ago, and two
- *   concurrent Sessions routinely disagree.
- *
- * Letting both write the Adapter's account-wide cache made the credits pill
- * flip between an active Session's current value and an idle Session's stale
- * one. See `ClaudeCodeAdapter#recordPlanLimit` for the resulting rules.
- */
-export type ClaudePlanLimitSource = "push" | "pull";
 
 export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
@@ -193,16 +171,6 @@ export interface ClaudeTurnTransport {
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
-  /** Pulls the cost and token totals accumulated by the current Session. */
-  getSessionUsage(): Promise<ClaudeTransportSessionUsage | null>;
-  /**
-   * Asks the CLI's `/usage` control channel for the plan-window utilization
-   * right now, instead of waiting for the next `rate_limit_event` to arrive on
-   * its own. Uses an Anthropic SDK API explicitly marked experimental — `null`
-   * on anything short of a clean, available answer (not started, API-key
-   * Session, control-channel error, or a future SDK that drops the method).
-   */
-  getPlanLimit(): Promise<ClaudePlanLimitEvent | null>;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;

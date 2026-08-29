@@ -95,6 +95,7 @@ export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema
 export const threadUsageInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
+    refresh: z.literal("exact").optional(),
   })
   .strict();
 

@@ -26,9 +26,7 @@ import type {
   ClaudeInteractionResponse,
   ClaudeModelInspector,
   ClaudePlanLimitEvent,
-  ClaudePlanLimitWindow,
   ClaudeQuestion,
-  ClaudeTransportSessionUsage,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -144,10 +142,6 @@ function permissionModeFromMessage(value: unknown): ClaudePermissionMode | undef
   return isClaudePermissionMode(value.permissionMode) ? value.permissionMode : undefined;
 }
 
-function safeNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   if (!isRecord(value)) throw new Error("Claude SDK context Usage is invalid");
   const usedTokens = value.totalTokens;
@@ -167,62 +161,6 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
     throw new Error("Claude SDK context Usage contains invalid values");
   }
   return { usedTokens, maxTokens, model };
-}
-
-function parseUsageQueryWindow(value: unknown): ClaudePlanLimitWindow | undefined {
-  if (!isRecord(value)) return undefined;
-  const utilization = value.utilization;
-  if (typeof utilization !== "number" || !Number.isFinite(utilization) || utilization < 0) {
-    return undefined;
-  }
-  const utilizationPercent = Math.min(100, Math.max(0, utilization));
-  const resetsAt = value.resets_at;
-  const resetsAtMs = typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
-  const resetsAtUnix = Number.isFinite(resetsAtMs) ? Math.floor(resetsAtMs / 1000) : undefined;
-  return { utilizationPercent, ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}) };
-}
-
-/**
- * Parses the response from `Query#usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` —
- * the on-demand pull counterpart to the `rate_limit_event` push in native-message.ts. Utilization
- * here already arrives as a 0-100 percent (unlike the 0-1 fraction on the native event), and
- * `resets_at` is an ISO 8601 string rather than a Unix-seconds number.
- */
-function parseUsageQueryPlanLimit(value: unknown): ClaudePlanLimitEvent | null {
-  if (!isRecord(value) || value.rate_limits_available !== true) return null;
-  const rateLimits = value.rate_limits;
-  if (!isRecord(rateLimits)) return null;
-  const fiveHour = parseUsageQueryWindow(rateLimits.five_hour);
-  const sevenDay = parseUsageQueryWindow(rateLimits.seven_day);
-  if (!fiveHour && !sevenDay) return null;
-  return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
-}
-
-function parseUsageQuerySession(value: unknown): ClaudeTransportSessionUsage | null {
-  if (!isRecord(value) || !isRecord(value.session)) return null;
-  const session = value.session;
-  const totalCostUsd = session.total_cost_usd;
-  if (typeof totalCostUsd !== "number" || !Number.isFinite(totalCostUsd) || totalCostUsd < 0) {
-    return null;
-  }
-  const modelUsage = session.model_usage;
-  if (!isRecord(modelUsage)) return { totalCostUsd };
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const entry of Object.values(modelUsage)) {
-    if (
-      !isRecord(entry) ||
-      !safeNonNegativeInteger(entry.inputTokens) ||
-      !safeNonNegativeInteger(entry.outputTokens)
-    ) {
-      return { totalCostUsd };
-    }
-    inputTokens += entry.inputTokens;
-    outputTokens += entry.outputTokens;
-  }
-  return Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)
-    ? { totalCostUsd, inputTokens, outputTokens }
-    : { totalCostUsd };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -408,6 +346,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
   #interactionOrdinal = 0;
+  #provider: string | undefined;
   #query: Query | null = null;
   #started = false;
 
@@ -476,6 +415,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#query = activeQuery;
     try {
       await activeQuery.initializationResult();
+      this.#provider = (await activeQuery.accountInfo().catch(() => undefined))?.apiProvider;
     } catch (error) {
       activeQuery.close();
       this.#query = null;
@@ -489,22 +429,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage());
-  }
-
-  async getSessionUsage(): Promise<ClaudeTransportSessionUsage | null> {
-    const activeQuery = this.#query;
-    if (!this.#started || !activeQuery) return null;
-    return parseUsageQuerySession(
-      await activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
-    );
-  }
-
-  async getPlanLimit(): Promise<ClaudePlanLimitEvent | null> {
-    const activeQuery = this.#query;
-    if (!this.#started || !activeQuery) return null;
-    return parseUsageQueryPlanLimit(
-      await activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
-    );
   }
 
   getPermissionMode(): ClaudePermissionMode {
@@ -575,7 +499,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (this.#active) return Promise.reject(new Error("Claude SDK transport is busy"));
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
       this.#active = {
-        accumulator: new ClaudeNativeTurnAccumulator(),
+        accumulator: new ClaudeNativeTurnAccumulator(
+          this.#provider ? { provider: this.#provider } : {},
+        ),
         controlRequestIds: new Set(),
         interactions: new Map(),
         onEvent,
@@ -820,7 +746,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         }
         if (this.#idleLive && this.#idleHandler) {
           const idle =
-            this.#idleAccumulator ?? (this.#idleAccumulator = new ClaudeNativeTurnAccumulator());
+            this.#idleAccumulator ??
+            (this.#idleAccumulator = new ClaudeNativeTurnAccumulator(
+              this.#provider ? { provider: this.#provider } : {},
+            ));
           const interpreted = idle.consume(message);
           for (const event of interpreted.events) this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
@@ -833,7 +762,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         const autonomous =
           this.#autonomous ??
           (this.#autonomous = {
-            accumulator: new ClaudeNativeTurnAccumulator(),
+            accumulator: new ClaudeNativeTurnAccumulator(
+              this.#provider ? { provider: this.#provider } : {},
+            ),
             events: [],
             nativeTurnKey: null,
           });

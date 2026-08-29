@@ -77,10 +77,8 @@ import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
-// Mirrors PLAN_LIMIT_TTL_MS in the Claude Code Adapter: how long a pulled
-// account-quota reading is served before `account/rateLimits/read` is re-asked.
-// Sized to keep a running Turn's quota current, since Usage is re-inspected by
-// token-usage activity rather than on a timer. See that constant for why.
+// Native Codex account quota is still pulled through its official API; keep
+// that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
 
 function delay(milliseconds: number): Promise<void> {
@@ -191,12 +189,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isCreditsAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
   credits(): unknown;
-  refreshCredits(): Promise<unknown>;
+  refreshCredits?: () => Promise<unknown>;
 } {
-  return (
-    typeof (adapter as { credits?: unknown }).credits === "function" &&
-    typeof (adapter as { refreshCredits?: unknown }).refreshCredits === "function"
-  );
+  return typeof (adapter as { credits?: unknown }).credits === "function";
 }
 
 function projectAccountCredits(value: unknown): AccountCreditsSnapshot | null {
@@ -1147,6 +1142,12 @@ export class AppServerHost {
       return;
     }
     if (resolution.kind === "official") {
+      if (params.data.refresh !== undefined) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Exact Usage refresh is only available for External Threads"),
+        );
+        return;
+      }
       // A native Codex thread may have no token-usage observation yet, but its
       // account quota is still useful to the Credits pill. Start a refresh for
       // that case without blocking the first inspection; subsequent renderer
@@ -1165,8 +1166,9 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
+    if (params.data.refresh === "exact") void resolution.thread.session.refreshUsage?.();
     const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
-    if (adapter && isCreditsAdapter(adapter)) void adapter.refreshCredits();
+    if (adapter && isCreditsAdapter(adapter)) void adapter.refreshCredits?.();
     const credits =
       adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
     const result = threadUsageInspectionSchema.parse({

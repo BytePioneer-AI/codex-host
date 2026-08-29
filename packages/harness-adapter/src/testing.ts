@@ -159,6 +159,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
+  usageRefreshes = 0;
   usageFailures = 0;
   readonly #catalog: HarnessModelCatalog;
   readonly #permissionModes: HarnessPermissionModeCatalog | undefined;
@@ -277,6 +278,11 @@ export class FakeHarnessSession implements HarnessSession {
 
   publishUsageOnNextTurn(usage: HostUsage | null): void {
     this.#nextTurnUsage = usage === null ? null : parseHostUsage(usage);
+  }
+
+  async refreshUsage(): Promise<void> {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.usageRefreshes += 1;
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {

@@ -24,7 +24,6 @@ import type {
   ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
   ClaudeTransportContextUsage,
-  ClaudeTransportSessionUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
   ClaudeTurnTransport,
@@ -47,18 +46,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
-  sessionUsage: ClaudeTransportSessionUsage | null = null;
-  planLimitOnDemand: ClaudePlanLimitEvent | null = null;
   permissionMode: ClaudePermissionMode;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly getContextUsage = vi.fn(
     async (): Promise<ClaudeTransportContextUsage | null> => this.contextUsage,
-  );
-  readonly getSessionUsage = vi.fn(
-    async (): Promise<ClaudeTransportSessionUsage | null> => this.sessionUsage,
-  );
-  readonly getPlanLimit = vi.fn(
-    async (): Promise<ClaudePlanLimitEvent | null> => this.planLimitOnDemand,
   );
   readonly setModel = vi.fn(async () => undefined);
   readonly setThinkingOption = vi.fn(async () => undefined);
@@ -1172,10 +1163,6 @@ describe("Claude Code HarnessAdapter", () => {
       turnId: "manual-compact",
       outcome: { status: "succeeded" },
     });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "session.usage.changed",
-      observedForTurnId: "manual-compact",
-    });
     expect(transport.compactCalls).toEqual([
       {
         userMessageId: expect.any(String),
@@ -1479,12 +1466,7 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "automatic-compaction",
-      usage: { contextUsedTokens: 30, contextWindowTokens: 200 },
-    });
-    expect(transport.getContextUsage).toHaveBeenCalledOnce();
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
     await session.close();
   });
 
@@ -3182,430 +3164,59 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("publishes context Usage after every completed Assistant response", async () => {
+  it("does not query Context automatically at Assistant, Tool, or Turn boundaries", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
 
-    await session.execute(textTurn("usage-during-turn"));
+    await session.execute(textTurn("passive-usage"));
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
 
-    transport.contextUsage = { usedTokens: 60, maxTokens: 200, model: "runtime-default" };
-    transport.delta("working", "assistant-usage");
-    await nextEvent(iterator);
-    transport.event({ type: "message.completed", messageId: "assistant-usage" });
-
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-during-turn",
-      usage: { contextUsedTokens: 60, contextWindowTokens: 200 },
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-usage",
+      lastRequestUsage: {
+        requestId: "request-usage",
+        model: "claude-sonnet-4-6",
+        provider: "firstParty",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 70,
+      },
     });
-    expect(transport.getContextUsage).toHaveBeenCalledOnce();
-
-    transport.finish({ status: "succeeded" });
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    await session.close();
-  });
-
-  it("refreshes Context after a Tool result while the Turn remains active", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("usage-tool-boundary"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.contextUsage = { usedTokens: 40, maxTokens: 200, model: "runtime-default" };
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { cacheHitRatePercent: 70, inputTokens: 100, outputTokens: 5 },
+    });
 
     transport.event({
       type: "tool.started",
       callId: "tool-1",
       toolName: "Read",
-      arguments: { file_path: "large.txt" },
+      arguments: {},
     });
     await nextEvent(iterator);
     transport.event({
       type: "tool.completed",
       callId: "tool-1",
       toolName: "Read",
-      outputText: "large result",
       isError: false,
     });
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-tool-boundary",
-      usage: { contextUsedTokens: 40, contextWindowTokens: 200 },
-    });
-    expect(transport.getContextUsage).toHaveBeenCalledOnce();
-
+    await nextEvent(iterator);
     transport.finish({ status: "succeeded" });
     for (;;) {
       if ((await nextEvent(iterator)).type === "turn.completed") break;
     }
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
     await session.close();
   });
 
-  it("refreshes Usage only at Assistant and Turn boundaries", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-
-      await session.execute(textTurn("usage-boundaries"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-      transport.contextUsage = { usedTokens: 60, maxTokens: 200, model: "runtime-default" };
-      transport.sessionUsage = { totalCostUsd: 0.25, inputTokens: 10, outputTokens: 2 };
-
-      transport.delta("working", "assistant-usage");
-      await nextEvent(iterator);
-      transport.event({ type: "message.completed", messageId: "assistant-usage" });
-      expect((await nextEvent(iterator)).type).toBe("item.completed");
-      expect(transport.getContextUsage).toHaveBeenCalledOnce();
-      expect(transport.getSessionUsage).toHaveBeenCalledOnce();
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
-      expect(transport.getSessionUsage).toHaveBeenCalledOnce();
-
-      transport.finish({ status: "succeeded" });
-      for (;;) {
-        if ((await nextEvent(iterator)).type === "turn.completed") break;
-      }
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(4);
-      expect(transport.getSessionUsage).toHaveBeenCalledTimes(2);
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("publishes latest cache hit after each completed Assistant request", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("latest-cache-hit"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    const nextUsage = async () => {
-      for (;;) {
-        const event = await nextEvent(iterator);
-        if (event.type === "session.usage.changed") return event;
-      }
-    };
-
-    transport.delta("first", "assistant-1");
-    transport.event({
-      type: "message.completed",
-      messageId: "assistant-1",
-      lastRequestUsage: {
-        inputTokens: 10,
-        cacheCreationInputTokens: 20,
-        cacheReadInputTokens: 70,
-      },
-    });
-    expect(await nextUsage()).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "latest-cache-hit",
-      usage: { cacheHitRatePercent: 70 },
-    });
-
-    transport.delta("second", "assistant-2");
-    transport.event({
-      type: "message.completed",
-      messageId: "assistant-2",
-      lastRequestUsage: {
-        inputTokens: 50,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 50,
-      },
-    });
-    expect(await nextUsage()).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "latest-cache-hit",
-      usage: { cacheHitRatePercent: 50 },
-    });
-
-    transport.finish({ status: "succeeded" });
-    for (;;) {
-      if ((await nextEvent(iterator)).type === "turn.completed") break;
-    }
-    await session.close();
-  });
-
-  it("recovers cache Usage from the transcript when the live Assistant Usage is sparse", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, history, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-
-      await session.execute(textTurn("transcript-cache-hit"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-
-      transport.delta("working", "native-request-1");
-      await nextEvent(iterator);
-      transport.event({ type: "message.completed", messageId: "native-request-1" });
-      expect((await nextEvent(iterator)).type).toBe("item.completed");
-      await vi.advanceTimersByTimeAsync(0);
-
-      history.push({
-        type: "assistant",
-        uuid: "assistant-checkpoint-1",
-        session_id: "claude-id-1",
-        parent_tool_use_id: null,
-        message: {
-          id: "native-request-1",
-          role: "assistant",
-          content: [{ type: "text", text: "working" }],
-          usage: {
-            input_tokens: 10,
-            output_tokens: 2,
-            cache_creation_input_tokens: 20,
-            cache_read_input_tokens: 70,
-          },
-        },
-      });
-      await vi.advanceTimersByTimeAsync(100);
-
-      expect(await nextEvent(iterator)).toEqual({
-        type: "session.usage.changed",
-        observedForTurnId: "transcript-cache-hit",
-        usage: { cacheHitRatePercent: 70 },
-      });
-
-      transport.finish({ status: "succeeded" });
-      for (;;) {
-        if ((await nextEvent(iterator)).type === "turn.completed") break;
-      }
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not let Context Usage overwrite cache hit rate from the completed Assistant response", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("usage-source-priority"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.contextUsage = {
-      usedTokens: 60,
-      maxTokens: 200,
-      model: "runtime-default",
-    };
-
-    transport.delta("working", "assistant-usage");
-    await nextEvent(iterator);
-    transport.event({
-      type: "message.completed",
-      messageId: "assistant-usage",
-      lastRequestUsage: {
-        inputTokens: 10,
-        cacheCreationInputTokens: 20,
-        cacheReadInputTokens: 70,
-      },
-    });
-
-    expect((await nextEvent(iterator)).type).toBe("session.usage.changed");
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-source-priority",
-      usage: {
-        cacheHitRatePercent: 70,
-        contextUsedTokens: 100,
-        contextWindowTokens: 200,
-      },
-    });
-
-    transport.finish({ status: "succeeded" });
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    await session.close();
-  });
-
-  it("publishes stable context Usage after the Turn terminal", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    expect(session.initialUsage).toBeNull();
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("usage-turn"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.contextUsage = { usedTokens: 80, maxTokens: 200, model: "runtime-default" };
-    transport.finish({ status: "succeeded" });
-
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-turn",
-      usage: { contextUsedTokens: 80, contextWindowTokens: 200 },
-    });
-    await session.close();
-  });
-
-  it("retries failed and empty context reads before publishing Usage", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-
-      await session.execute(textTurn("usage-retry"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-      transport.getContextUsage
-        .mockRejectedValueOnce(new Error("context unavailable"))
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ usedTokens: 75, maxTokens: 250, model: "runtime-default" });
-      transport.finish({ status: "succeeded" });
-
-      expect((await nextEvent(iterator)).type).toBe("item.completed");
-      expect((await nextEvent(iterator)).type).toBe("turn.completed");
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(await nextEvent(iterator)).toEqual({
-        type: "session.usage.changed",
-        observedForTurnId: "usage-retry",
-        usage: { contextUsedTokens: 75, contextWindowTokens: 250 },
-      });
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops retrying Context Usage after three failed attempts", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-
-      await session.execute(textTurn("usage-retry-limit"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-      transport.getContextUsage.mockResolvedValue(null);
-      transport.finish({ status: "succeeded" });
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-
-      await vi.advanceTimersByTimeAsync(3_000);
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("isolates failed context reads and discards a read invalidated by the next Turn", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("usage-failed"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-
-    const stale = deferred<ClaudeTransportContextUsage | null>();
-    transport.getContextUsage.mockImplementationOnce(() => stale.promise);
-    await session.execute(textTurn("usage-stale"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-
-    transport.contextUsage = { usedTokens: 95, maxTokens: 300, model: "runtime-default" };
-    await session.execute(textTurn("usage-current"));
-    expect((await nextEvent(iterator)).type).toBe("turn.started");
-    expect((await nextEvent(iterator)).type).toBe("item.started");
-    stale.resolve({ usedTokens: 10, maxTokens: 100, model: "runtime-default" });
-    await Promise.resolve();
-    transport.finish({ status: "succeeded" });
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-current",
-      usage: { contextUsedTokens: 95, contextWindowTokens: 300 },
-    });
-    await session.close();
-  });
-
-  it("discards a pending context read when close begins", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("usage-close"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    const pending = deferred<ClaudeTransportContextUsage | null>();
-    transport.getContextUsage.mockImplementationOnce(() => pending.promise);
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-
-    const closing = session.close();
-    pending.resolve({ usedTokens: 30, maxTokens: 100, model: "runtime-default" });
-    await closing;
-    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
-  });
-
-  it("merges Session cost, token totals, and latest cache hit rate from the Turn Result", async () => {
+  it("deduplicates completed requests and calibrates estimates with Result totals", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -3616,7 +3227,33 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.contextUsage = { usedTokens: 80, maxTokens: 200, model: "runtime-default" };
+    const request = {
+      requestId: "request-1",
+      model: "claude-sonnet-4-6",
+      provider: "firstParty",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 20,
+      cacheReadInputTokens: 70,
+    } as const;
+
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-1",
+      lastRequestUsage: request,
+    });
+    const estimate = await nextEvent(iterator);
+    expect(estimate).toMatchObject({
+      type: "session.usage.changed",
+      usage: { inputTokens: 100, outputTokens: 5, cacheHitRatePercent: 70 },
+    });
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-1",
+      lastRequestUsage: request,
+    });
+    await Promise.resolve();
+
     transport.event({
       type: "usage.result",
       totalCostUsd: 1.373,
@@ -3626,6 +3263,7 @@ describe("Claude Code HarnessAdapter", () => {
       ],
       lastRequestUsage: {
         inputTokens: 10,
+        outputTokens: 45,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 990,
       },
@@ -3641,22 +3279,246 @@ describe("Claude Code HarnessAdapter", () => {
       },
     });
     transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    expect(transport.getContextUsage).not.toHaveBeenCalled();
+    await session.close();
+  });
 
-    expect((await nextEvent(iterator)).type).toBe("item.completed");
-    expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "usage-result",
-      usage: {
-        totalCostUsd: 1.373,
-        inputTokens: 120,
-        outputTokens: 45,
-        cacheHitRatePercent: 99,
-        contextUsedTokens: 80,
-        contextWindowTokens: 200,
+  it("keeps passive Usage isolated across concurrent Claude Sessions", async () => {
+    const { adapter, transports } = fixture();
+    const sessionA = await openSession(adapter);
+    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
+    await sessionA.execute(textTurn("session-a"));
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+
+    const sessionB = await openSession(adapter);
+    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
+    await sessionB.execute(textTurn("session-b"));
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    const transportA = transports[0];
+    const transportB = transports[1];
+    if (!transportA || !transportB) throw new Error("Fake Claude transports were not created");
+
+    transportA.event({
+      type: "message.completed",
+      messageId: "assistant-a",
+      lastRequestUsage: {
+        requestId: "shared-looking-id",
+        inputTokens: 10,
+        outputTokens: 1,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 90,
       },
     });
+    transportB.event({
+      type: "message.completed",
+      messageId: "assistant-b",
+      lastRequestUsage: {
+        requestId: "shared-looking-id",
+        inputTokens: 80,
+        outputTokens: 7,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 20,
+      },
+    });
+    expect(await nextEvent(iteratorA)).toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 1, cacheHitRatePercent: 90 },
+    });
+    expect(await nextEvent(iteratorB)).toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 7, cacheHitRatePercent: 20 },
+    });
+
+    transportA.finish({ status: "succeeded" });
+    transportB.finish({ status: "succeeded" });
+    for (;;) if ((await nextEvent(iteratorA)).type === "turn.completed") break;
+    for (;;) if ((await nextEvent(iteratorB)).type === "turn.completed") break;
+    await sessionA.close();
+    await sessionB.close();
+  });
+
+  it("refreshes exact Context on demand, stops after success, and reuses the TTL", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("exact-context"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = { usedTokens: 80, maxTokens: 200, model: "runtime-default" };
+
+    await session.refreshUsage?.();
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "exact-context",
+      usage: { contextUsedTokens: 80, contextWindowTokens: 200 },
+    });
+    await session.refreshUsage?.();
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
+
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
     await session.close();
+  });
+
+  it("keeps concurrent exact Context refreshes isolated between Sessions", async () => {
+    const { adapter, transports } = fixture();
+    const sessionA = await openSession(adapter);
+    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
+    await sessionA.execute(textTurn("context-a"));
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    await nextEvent(iteratorA);
+    const sessionB = await openSession(adapter);
+    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
+    await sessionB.execute(textTurn("context-b"));
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    await nextEvent(iteratorB);
+    const transportA = transports[0];
+    const transportB = transports[1];
+    if (!transportA || !transportB) throw new Error("Fake Claude transports were not created");
+    transportA.contextUsage = { usedTokens: 30, maxTokens: 100, model: "a" };
+    transportB.contextUsage = { usedTokens: 90, maxTokens: 200, model: "b" };
+
+    await Promise.all([sessionA.refreshUsage?.(), sessionB.refreshUsage?.()]);
+    expect(transportA.getContextUsage).toHaveBeenCalledOnce();
+    expect(transportB.getContextUsage).toHaveBeenCalledOnce();
+    expect(await nextEvent(iteratorA)).toMatchObject({
+      usage: { contextUsedTokens: 30, contextWindowTokens: 100 },
+    });
+    expect(await nextEvent(iteratorB)).toMatchObject({
+      usage: { contextUsedTokens: 90, contextWindowTokens: 200 },
+    });
+
+    transportA.finish({ status: "succeeded" });
+    transportB.finish({ status: "succeeded" });
+    for (;;) if ((await nextEvent(iteratorA)).type === "turn.completed") break;
+    for (;;) if ((await nextEvent(iteratorB)).type === "turn.completed") break;
+    await sessionA.close();
+    await sessionB.close();
+  });
+
+  it("deduplicates concurrent exact Context reads and applies failure cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("exact-context-failure"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.getContextUsage.mockResolvedValue(null);
+
+      const first = session.refreshUsage?.();
+      const second = session.refreshUsage?.();
+      await vi.advanceTimersByTimeAsync(3_000);
+      await Promise.all([first, second]);
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+      await session.refreshUsage?.();
+      expect(transport.getContextUsage).toHaveBeenCalledTimes(3);
+
+      transport.finish({ status: "succeeded" });
+      for (;;) {
+        if ((await nextEvent(iterator)).type === "turn.completed") break;
+      }
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("discards exact Context that resolves after the Model generation changes", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("stale-context"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    const pending = deferred<ClaudeTransportContextUsage | null>();
+    transport.getContextUsage.mockImplementationOnce(() => pending.promise);
+    const refresh = session.refreshUsage?.();
+    const alias = encodeClaudeModelRef("sonnet");
+    await expect(session.execute({ type: "model.select", model: alias })).resolves.toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    await nextEvent(iterator);
+    pending.resolve({ usedTokens: 10, maxTokens: 100, model: "old" });
+    await refresh;
+    expect(transport.getContextUsage).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("recovers request Usage from the transcript when the live Assistant Usage is sparse", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, history, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("transcript-cache-hit"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.event({ type: "message.completed", messageId: "native-request-1" });
+      await vi.advanceTimersByTimeAsync(0);
+      history.push({
+        type: "assistant",
+        request_id: "request-1",
+        uuid: "assistant-checkpoint-1",
+        session_id: "claude-id-1",
+        parent_tool_use_id: null,
+        provider: "firstParty",
+        message: {
+          id: "native-request-1",
+          model: "claude-sonnet-4-6",
+          role: "assistant",
+          content: [{ type: "text", text: "working" }],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 70,
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "session.usage.changed",
+        usage: { cacheHitRatePercent: 70, inputTokens: 100, outputTokens: 2 },
+      });
+      transport.finish({ status: "succeeded" });
+      for (;;) {
+        if ((await nextEvent(iterator)).type === "turn.completed") break;
+      }
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("omits cache hit rate when last-request cache fields are incomplete", async () => {
@@ -3768,15 +3630,13 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.contextUsage = { usedTokens: 40, maxTokens: 200, model: "runtime-default" };
     transport.event({ type: "usage.result", totalCostUsd: 0.2 });
     const resultUsage = await nextEvent(iterator);
     transport.finish({ status: "succeeded" });
 
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
-    const contextUsage = await nextEvent(iterator);
-    for (const event of [resultUsage, contextUsage]) {
+    for (const event of [resultUsage]) {
       if (event.type !== "session.usage.changed" || event.usage === null) {
         throw new Error("Expected a Session Usage snapshot");
       }
@@ -3909,286 +3769,6 @@ describe("Claude Code HarnessAdapter", () => {
     transportB.finish({ status: "succeeded" });
     await nextEvent(iteratorB);
     await nextEvent(iteratorB);
-    await sessionA.close();
-    await sessionB.close();
-  });
-
-  it("falls back to the cached value when the live Transport has no fresher answer", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("refresh-turn"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-
-    transport.planLimit({ fiveHour: { utilizationPercent: 55 } });
-    await nextEvent(iterator);
-
-    // The fake Transport's on-demand pull (`planLimitOnDemand`) is unset, so this still tries a
-    // real fetch through the open Session and only falls back once that comes back empty.
-    await expect(adapter.refreshCredits()).resolves.toEqual(adapter.credits());
-    expect(transport.getPlanLimit).toHaveBeenCalledOnce();
-
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await session.close();
-  });
-
-  it("pulls fresh plan usage through an open Session's live Transport and republishes the Thread's own Usage too", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
-    await session.execute(textTurn("pull-turn"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledOnce());
-    transport.getPlanLimit.mockClear();
-
-    transport.planLimitOnDemand = {
-      fiveHour: { utilizationPercent: 71, resetsAtUnix: 1_787_674_200 },
-      sevenDay: { utilizationPercent: 22 },
-    };
-
-    await expect(adapter.refreshCredits()).resolves.toEqual({
-      usedPercent: 71,
-      periodType: "five_hour",
-      resetsAt: new Date(1_787_674_200 * 1000).toISOString(),
-      productUsage: [{ product: "7-day window", usagePercent: 22 }],
-    });
-    expect(transport.getPlanLimit).toHaveBeenCalledOnce();
-
-    // Same pull, routed through `#handlePlanLimit` like the passive push, also lands in this
-    // Thread's own Usage snapshot — not only the Adapter-wide credits() cache.
-    expect(await nextEvent(iterator)).toEqual({
-      type: "session.usage.changed",
-      usage: {
-        planFiveHourUsedPercent: 71,
-        planFiveHourResetsAtUnix: 1_787_674_200,
-        planSevenDayUsedPercent: 22,
-      },
-    });
-    await session.close();
-  });
-
-  it("returns the cached value without erroring when no Session is open to pull through", async () => {
-    const { adapter } = fixture();
-    await expect(adapter.refreshCredits()).resolves.toBeNull();
-  });
-
-  it("keeps an idle Session's stale push from overwriting a pulled reading", async () => {
-    const { adapter, transports } = fixture();
-    const sessionA = await openSession(adapter);
-    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
-    await sessionA.execute(textTurn("session-a"));
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-    const transportA = transports[0];
-    if (!transportA) throw new Error("Fake Claude transport was not created");
-    transportA.finish({ status: "succeeded" });
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-
-    const sessionB = await openSession(adapter);
-    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
-    await sessionB.execute(textTurn("session-b"));
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    const transportB = transports[1];
-    if (!transportB) throw new Error("Fake Claude transport was not created");
-
-    // The active Session pulls the account's real current utilization.
-    transportA.planLimitOnDemand = { fiveHour: { utilizationPercent: 19 } };
-    await expect(adapter.refreshCredits()).resolves.toEqual({
-      usedPercent: 19,
-      periodType: "five_hour",
-    });
-    await nextEvent(iteratorA);
-
-    // The other Session has been idle, so the rate-limit event riding along on
-    // its next API call reports the account as it stood hours ago. It must not
-    // be allowed to drag the pill backwards — this flapping between an active
-    // Session's 19% and an idle Session's 3% is the bug being guarded here.
-    transportB.planLimit({ fiveHour: { utilizationPercent: 3 } });
-    expect(adapter.credits()).toEqual({ usedPercent: 19, periodType: "five_hour" });
-
-    // ...and the rejected push must not leave Session B's own Usage snapshot
-    // disagreeing with the pill either.
-    transportB.planLimitOnDemand = { fiveHour: { utilizationPercent: 19 } };
-    expect(await nextEvent(iteratorB)).toEqual({
-      type: "session.usage.changed",
-      observedForTurnId: "session-b",
-      usage: { planFiveHourUsedPercent: 19 },
-    });
-
-    transportB.finish({ status: "succeeded" });
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    await sessionA.close();
-    await sessionB.close();
-  });
-
-  it("polls account credits during a Turn, refreshes on completion, then stops", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-      await session.execute(textTurn("poll-credits"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-
-      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 6 } };
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
-      await expect(nextEvent(iterator)).resolves.toMatchObject({
-        type: "session.usage.changed",
-        usage: { planFiveHourUsedPercent: 6 },
-      });
-
-      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 10 } };
-      transport.finish({ status: "succeeded" });
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledTimes(2));
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(transport.getPlanLimit).toHaveBeenCalledTimes(2);
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("lets a push fill a window the pull never reported", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
-    await session.execute(textTurn("partial-windows"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude transport was not created");
-    transport.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-
-    transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 40 } };
-    await adapter.refreshCredits();
-    await nextEvent(iterator);
-
-    // A push carrying only the 7-day window expresses no opinion about the
-    // 5-hour one, so it fills the empty window without disturbing the pulled one.
-    transport.planLimit({ sevenDay: { utilizationPercent: 26 } });
-    expect(adapter.credits()).toEqual({
-      usedPercent: 40,
-      periodType: "five_hour",
-      productUsage: [{ product: "7-day window", usagePercent: 26 }],
-    });
-
-    await session.close();
-  });
-
-  it("serves the pulled reading from cache until it expires", async () => {
-    vi.useFakeTimers();
-    try {
-      const { adapter, transports } = fixture();
-      const session = await openSession(adapter);
-      const iterator = session.outputs[Symbol.asyncIterator]();
-      await session.execute(textTurn("ttl-turn"));
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      const transport = transports[0];
-      if (!transport) throw new Error("Fake Claude transport was not created");
-      transport.finish({ status: "succeeded" });
-      await nextEvent(iterator);
-      await nextEvent(iterator);
-      await vi.waitFor(() => expect(transport.getPlanLimit).toHaveBeenCalledOnce());
-      transport.getPlanLimit.mockClear();
-
-      transport.planLimitOnDemand = { fiveHour: { utilizationPercent: 40 } };
-      await adapter.refreshCredits();
-      await nextEvent(iterator);
-      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
-
-      // Every mounted composer inspects Usage on its own schedule; those reads
-      // must be served from cache rather than each firing its own pull.
-      await adapter.refreshCredits();
-      await adapter.refreshCredits();
-      expect(transport.getPlanLimit).toHaveBeenCalledOnce();
-
-      vi.advanceTimersByTime(15_001);
-      await adapter.refreshCredits();
-      expect(transport.getPlanLimit).toHaveBeenCalledTimes(2);
-
-      await session.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("tries each open Session in turn until one answers", async () => {
-    const { adapter, transports } = fixture();
-    const sessionA = await openSession(adapter);
-    const iteratorA = sessionA.outputs[Symbol.asyncIterator]();
-    await sessionA.execute(textTurn("session-a"));
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-    const transportA = transports[0];
-    if (!transportA) throw new Error("Fake Claude transport was not created");
-    transportA.finish({ status: "succeeded" });
-    await nextEvent(iteratorA);
-    await nextEvent(iteratorA);
-
-    const sessionB = await openSession(adapter);
-    const iteratorB = sessionB.outputs[Symbol.asyncIterator]();
-    await sessionB.execute(textTurn("session-b"));
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    const transportB = transports[1];
-    if (!transportB) throw new Error("Fake Claude transport was not created");
-    transportB.finish({ status: "succeeded" });
-    await nextEvent(iteratorB);
-    await nextEvent(iteratorB);
-    await vi.waitFor(() =>
-      expect(
-        transportA.getPlanLimit.mock.calls.length + transportB.getPlanLimit.mock.calls.length,
-      ).toBeGreaterThanOrEqual(2),
-    );
-    await adapter.refreshCredits();
-    transportA.getPlanLimit.mockClear();
-    transportB.getPlanLimit.mockClear();
-
-    // A has no answer (planLimitOnDemand unset); B does — the loop must not give up after A.
-    transportB.planLimitOnDemand = { fiveHour: { utilizationPercent: 12 } };
-
-    await expect(adapter.refreshCredits()).resolves.toEqual({
-      usedPercent: 12,
-      periodType: "five_hour",
-    });
-    expect(transportA.getPlanLimit).toHaveBeenCalledOnce();
-    expect(transportB.getPlanLimit).toHaveBeenCalledOnce();
-
-    await nextEvent(iteratorB); // this Thread's own Usage, republished alongside the pull
     await sessionA.close();
     await sessionB.close();
   });
@@ -4744,8 +4324,6 @@ describe("Claude Code HarnessAdapter", () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
         getContextUsage: async () => null,
-        getSessionUsage: async () => null,
-        getPlanLimit: async () => null,
         getPermissionMode: () => "default",
         setModel: async () => undefined,
         setThinkingOption: async () => undefined,

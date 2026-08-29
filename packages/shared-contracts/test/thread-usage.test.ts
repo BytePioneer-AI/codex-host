@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,
 } from "@codexhost/shared-contracts";
@@ -48,6 +49,16 @@ describe("Thread Usage contracts", () => {
   it("rejects undeclared fields", () => {
     expect(
       threadUsageSnapshotSchema.safeParse({ totalCostUsd: 0.1, nativeCost: 0.2 }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only the fixed exact refresh mode", () => {
+    expect(
+      threadUsageInspectionParamsSchema.parse({ threadId: "thread-usage", refresh: "exact" }),
+    ).toEqual({ threadId: "thread-usage", refresh: "exact" });
+    expect(
+      threadUsageInspectionParamsSchema.safeParse({ threadId: "thread-usage", refresh: "newer" })
+        .success,
     ).toBe(false);
   });
 

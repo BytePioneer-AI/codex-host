@@ -614,6 +614,12 @@ export function installRendererBindingProbe(
       mounted.usage,
       mounted.accountCredits,
     );
+    if (mounted.control.usage) {
+      mounted.control.usage.onOpen = () => {
+        if (controller.get(mounted.composer).agent === "codex") return;
+        void refreshThreadUsage(mounted, "exact");
+      };
+    }
   };
 
   const refreshCommands = async (mounted: MountedComposer): Promise<void> => {
@@ -671,7 +677,7 @@ export function installRendererBindingProbe(
     }
   };
 
-  const refreshThreadUsage = async (mounted: MountedComposer): Promise<void> => {
+  const refreshThreadUsage = async (mounted: MountedComposer, refresh?: "exact"): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId || !modelControl) {
       mounted.usage = null;
@@ -682,7 +688,10 @@ export function installRendererBindingProbe(
     }
     const generation = ++mounted.usageRequestGeneration;
     try {
-      const result = await modelControl.inspectThreadUsage({ threadId });
+      const result = await modelControl.inspectThreadUsage({
+        threadId,
+        ...(refresh ? { refresh } : {}),
+      });
       if (
         disposed ||
         mountedByComposer.get(mounted.composer) !== mounted ||

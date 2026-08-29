@@ -2353,7 +2353,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(replayIndex).toBeGreaterThan(readResponseIndex);
 
     const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(JSON.stringify(stored)).not.toMatch(/usage|cost|context/i);
+    expect(JSON.stringify(stored)).not.toMatch(/"(?:usage|cost|context|requestId|refreshCache)"/i);
     await stopFixture(fixture);
   });
 
@@ -2405,6 +2405,43 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("routes exact Usage refresh only to the owning External Session", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 60);
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      61,
+    );
+
+    writeRequest(fixture.desktopInput, {
+      id: 62,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: claudeThreadId, refresh: "exact" },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 62));
+    expect(claudeAdapter.sessions[0]?.usageRefreshes).toBe(1);
+    expect(piAdapter.sessions[0]?.usageRefreshes).toBe(0);
+
+    writeRequest(fixture.desktopInput, {
+      id: 63,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: piThreadId, refresh: "newer" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 63)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(piAdapter.sessions[0]?.usageRefreshes).toBe(0);
+    await stopFixture(fixture);
+  });
+
   it("round-trips Claude.ai plan-window fields through Thread Usage inspection without writing accountCredits", async () => {
     const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
     const fixture = createFixture({
@@ -2443,7 +2480,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 72,
       method: "codexhost/thread/usage/inspect",
-      params: { threadId: claudeThreadId },
+      params: { threadId: claudeThreadId, refresh: "exact" },
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 72))).resolves.toEqual({
       id: 72,
@@ -2459,6 +2496,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    expect(claudeAdapter.sessions[0]?.usageRefreshes).toBe(1);
+
+    writeRequest(fixture.desktopInput, {
+      id: 73,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId: "official-thread", refresh: "exact" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 73)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
     await stopFixture(fixture);
   });
 

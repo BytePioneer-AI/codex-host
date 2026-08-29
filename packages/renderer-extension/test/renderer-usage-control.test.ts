@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatRendererPlanReset,
+  formatRendererCacheHitRate,
+  formatRendererCost,
   formatRendererPlanWindow,
   rendererUsageHasDisplayData,
 } from "../src/renderer-usage-control.js";
@@ -19,6 +21,14 @@ describe("Renderer Usage plan-window formatting", () => {
 
   it("formats an invalid reset timestamp as an empty string", () => {
     expect(formatRendererPlanReset(Number.NaN)).toBe("");
+  });
+});
+
+describe("Renderer Usage Claude summary", () => {
+  it("keeps plan windows out of the collapsed CH and cost summary fields", () => {
+    expect(formatRendererCacheHitRate(99)).toBe("CH 99%");
+    expect(formatRendererCost(1.373)).toBe("$1.373");
+    expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(true);
   });
 });
 

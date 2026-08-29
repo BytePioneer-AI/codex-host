@@ -36,11 +36,10 @@ struct LinuxPackageMetadata {
 }
 
 fn canonical_linux_elf(path: &Path, label: &str) -> Result<PathBuf, PlatformError> {
-    let (expected_machine, architecture) = expected_elf_machine().ok_or_else(|| {
-        PlatformError::Unsupported(
+    let (expected_machine, architecture) =
+        expected_elf_machine().ok_or(PlatformError::Unsupported(
             "official ChatGPT Linux packages are unsupported on this architecture",
-        )
-    })?;
+        ))?;
     let canonical = canonical_unix_executable(path, label)?;
     let mut header = [0_u8; 20];
     File::open(&canonical)?

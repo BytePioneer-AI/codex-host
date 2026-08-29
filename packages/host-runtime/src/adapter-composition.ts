@@ -3,6 +3,7 @@ import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
+import { QwenCodeAdapter } from "@codexhost/adapter-qwen-code";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
 
@@ -12,6 +13,7 @@ export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOIN
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
+export const QWEN_CODE_COMMAND_ENV = "CODEXHOST_QWEN_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -68,6 +70,15 @@ export function createExternalHarnessAdapters(
       "omp",
       new OmpAdapter({
         ...(environment[OMP_COMMAND_ENV] ? { command: environment[OMP_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "qwen-code",
+      new QwenCodeAdapter({
+        ...(environment[QWEN_CODE_COMMAND_ENV]
+          ? { command: environment[QWEN_CODE_COMMAND_ENV] }
+          : {}),
         environment,
       }),
     ],

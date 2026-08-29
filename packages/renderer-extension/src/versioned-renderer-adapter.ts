@@ -38,6 +38,8 @@ export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
+export const QWEN_CODE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
+export const QWEN_CODE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -132,6 +134,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
+  if (agent === "qwen-code") return QWEN_CODE_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -354,6 +357,51 @@ export function decodeOmpTransportModelId(value: unknown): {
 
 export function isOmpTransportModelId(value: unknown): value is string {
   return decodeOmpTransportModelId(value) !== null;
+}
+
+export function qwenTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("Qwen Code transport configuration requires a Model Ref");
+    }
+    return QWEN_CODE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${QWEN_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
+}
+
+export function decodeQwenCodeTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === QWEN_CODE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(QWEN_CODE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
+export function isQwenCodeTransportModelId(value: unknown): value is string {
+  return decodeQwenCodeTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(
@@ -717,7 +765,9 @@ export function modelSelectionForAgent(
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "omp"
               ? ompTransportModelId(model, thinkingOptionId)
-              : transportModelIdForAgent(agent);
+              : agent === "qwen-code"
+                ? qwenTransportModelId(model, permissionModeId)
+                : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

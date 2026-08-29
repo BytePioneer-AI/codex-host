@@ -258,6 +258,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Grok";
     case "omp":
       return "Oh My Pi";
+    case "qwen-code":
+      return "Qwen Code";
   }
 }
 

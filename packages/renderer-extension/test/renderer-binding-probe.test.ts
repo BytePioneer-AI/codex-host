@@ -55,6 +55,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "notInstalled",
           grok: "ready",
           omp: "ready",
+          "qwen-code": "ready",
         },
         {
           pi: undefined,
@@ -66,6 +67,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
     ).toEqual([]);
@@ -78,6 +80,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "error",
           grok: "ready",
           omp: "ready",
+          "qwen-code": "ready",
         },
         {
           pi: undefined,
@@ -89,6 +92,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -101,6 +105,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "unavailable",
           grok: "ready",
           omp: "ready",
+          "qwen-code": "ready",
         },
         {
           pi: undefined,
@@ -112,6 +117,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -126,6 +132,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "checking",
           grok: "checking",
           omp: "checking",
+          "qwen-code": "checking",
         },
         {
           pi: undefined,
@@ -133,9 +140,10 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": undefined,
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp", "qwen-code"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -145,6 +153,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "notInstalled",
           grok: "ready",
           omp: "ready",
+          "qwen-code": "ready",
         },
         {
           pi: undefined,
@@ -156,6 +165,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
     ).toEqual([]);
@@ -168,6 +178,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "unavailable",
           grok: "ready",
           omp: "ready",
+          "qwen-code": "ready",
         },
         {
           pi: undefined,
@@ -179,6 +190,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          "qwen-code": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);

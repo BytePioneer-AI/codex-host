@@ -46,6 +46,7 @@ import {
   decodeGrokTransportModelId,
   decodeOmpTransportModelId,
   decodePiTransportModelId,
+  decodeQwenCodeTransportModelId,
   findComposerModelTarget,
   threadIdFromComposerModelTarget,
   waitForRendererDraftPrewarmPolicy,
@@ -79,6 +80,7 @@ const externalHarnessIds = {
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
+  "qwen-code": harnessIdSchema.parse("qwen-code"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -87,6 +89,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "deepseek-harness",
   "grok",
   "omp",
+  "qwen-code",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -328,6 +331,20 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const model = inspection.effectiveModel ?? transportSelection.model;
     return { agent: "deepseek-harness", ...(model ? { model } : {}) };
   }
+  if (inspection.harnessId === "qwen-code") {
+    const transportSelection = decodeQwenCodeTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Qwen Code Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "qwen-code",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -535,6 +552,7 @@ export function installRendererBindingProbe(
       "deepseek-harness": undefined,
       grok: undefined,
       omp: undefined,
+      "qwen-code": undefined,
     },
     requestGeneration: 0,
     request: null,

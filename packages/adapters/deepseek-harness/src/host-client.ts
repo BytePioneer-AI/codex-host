@@ -347,8 +347,13 @@ export class DeepSeekHostConnection {
   }
 
   connect(): Promise<void> {
-    this.#connectPromise ??= this.#performConnect();
-    return this.#connectPromise;
+    if (this.#connectPromise) return this.#connectPromise;
+    const attempt = this.#performConnect();
+    this.#connectPromise = attempt;
+    void attempt.catch(() => {
+      if (this.#connectPromise === attempt) this.#connectPromise = null;
+    });
+    return attempt;
   }
 
   subscribe(sessionId: string, subscriber: DeepSeekHostSubscriber): () => void {

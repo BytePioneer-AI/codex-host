@@ -2,68 +2,62 @@
 
 ## Purpose
 
-Define the Renderer-owned Usage surface for External Thread usage snapshots beside the native context control, or the Composer model control when that circle is absent.
+Define the shared native Context surface for External Thread usage snapshots. codexhost must preserve Desktop's native Context indicator and add its detailed usage rows to Desktop's own Context tooltip.
 
 ## Requirements
 
-### Requirement: Renderer SHALL place Usage immediately before the native context control when present
+### Requirement: Renderer SHALL preserve Desktop's native Context control
 
-Renderer SHALL mount a codexhost-owned Usage control immediately before a uniquely verified native context usage control in the same Composer. If that circle is absent, Renderer SHALL place the Usage control immediately before the Composer model control: the codexhost model picker when it is already in the DOM, otherwise the verified native model trigger. The Usage control MUST be a preceding sibling and MUST NOT modify native context or model control DOM attributes, text, styles, event handlers, or state. If neither a context control nor a model control is available, Renderer MUST leave the Usage control unmounted.
+Renderer SHALL resolve the uniquely verified native Context control in the same Composer and leave it mounted and visible for both Codex and supported external Agents. Renderer MUST NOT mount a replacement ring, pill, fallback indicator, or other renderer-owned Usage control, and MUST NOT alter the native control's accessible label, SVG, event handlers, or routing state.
 
-#### Scenario: Usage mounts to the left of the native context circle
+#### Scenario: Native Context control is present
 
-- **WHEN** a supported Composer contains one uniquely verified native context usage control
-- **THEN** Renderer MUST insert the Usage control immediately before that native control
-- **AND** the native control MUST remain unchanged
+- **WHEN** a supported Composer contains a visible native Context control
+- **THEN** Renderer MUST keep that control visible
+- **AND** Renderer MUST NOT add a codexhost-owned Usage sibling
 
-#### Scenario: Context circle is absent
+#### Scenario: Native Context control is not yet present
 
-- **WHEN** a Composer has no uniquely verified native context usage control
-- **AND** a supported Composer contains a mounted codexhost model picker
-- **THEN** Renderer MUST insert the Usage control immediately before that model picker
+- **WHEN** the native control is absent during one DOM scan
+- **THEN** Renderer MUST wait for the native control to appear
+- **AND** Renderer MUST NOT create a visually similar replacement
 
-#### Scenario: Placement anchors are missing
+### Requirement: Renderer SHALL project only reliable Thread Usage fields
 
-- **WHEN** a Composer has neither a verified native context usage control nor a model control
-- **THEN** Renderer MUST NOT guess a toolbar child position
-- **AND** Renderer MUST leave the Usage control hidden or unmounted
-
-### Requirement: Renderer SHALL display only reliable Thread Usage fields
-
-The Usage control SHALL bind its state to the current External Thread ID and SHALL display only fields present in the latest validated Usage snapshot. Its collapsed summary MUST display the latest cache hit rate as `CH <percent>%` and the cumulative estimated cost as `$<amount>` when those fields are available. The control MUST hide when no displayable Usage field is available.
+Renderer SHALL bind the current External Thread ID to the latest validated Usage snapshot and project only fields that are present. The native Context percentage MUST continue to come from Desktop's native token-usage carrier; codexhost MUST NOT infer a percentage from cache hit rate, input/output, or cost. If no reliable Context carrier exists, codexhost MUST not fabricate a ring.
 
 #### Scenario: Pi provides cache hit rate and cost
 
 - **WHEN** the current Thread Usage contains `cacheHitRatePercent: 99.9` and `totalCostUsd: 0.168`
-- **THEN** the collapsed control MUST display `CH 99.9% · $0.168`
-- **AND** it MUST NOT change a native context control, if one is present
+- **THEN** the native Context tooltip MUST include `Latest cache hit: CH 99.9%` and `Session cost: $0.168`
+- **AND** the native Context percentage and indicator MUST remain Desktop-owned
 
 #### Scenario: Usage contains only one displayable field
 
 - **WHEN** the current Usage contains a reliable cost but no cache hit rate
-- **THEN** the collapsed control MUST display the cost only
-- **AND** it MUST NOT display `CH 0%`, a placeholder percentage, or an inferred value
+- **THEN** the native Context tooltip MUST display the cost only
+- **AND** it MUST NOT display a placeholder percentage or an inferred value
 
 #### Scenario: Current Usage is unavailable
 
 - **WHEN** the current Thread has no reliable Usage snapshot or the snapshot has no displayable fields
-- **THEN** the Usage control MUST be hidden
+- **THEN** the native Context control MUST remain unchanged
 - **AND** normal Composer submission and Agent selection MUST remain available
 
-### Requirement: Renderer SHALL expose detailed Usage without changing native surfaces
+### Requirement: Renderer SHALL expose detailed Usage through Desktop's native tooltip
 
-The Usage control SHALL provide an accessible click and keyboard interaction that opens a compact details Popover. The Popover MUST display available context, cache read/write, input/output, cache hit rate, and cumulative cost fields with their data scope. It MUST omit unavailable fields and MUST NOT claim that Session aggregate fields are per-Turn values.
+When Desktop opens the native Context tooltip, Renderer SHALL append one codexhost-owned detail container containing available context, cache read/write, input/output, reasoning, throughput, cache hit rate, and cumulative cost fields with their data scope. Renderer MUST preserve Desktop's native rows and MUST NOT mutate the native accessible label or replace the tooltip.
 
 #### Scenario: User opens Usage details
 
-- **WHEN** the user activates the Usage control
-- **THEN** Renderer MUST open a details Popover anchored to the Usage control
-- **AND** the Popover MUST identify cache hit rate as the latest request value and cost as the Session cumulative estimate
+- **WHEN** the user hovers or focuses Desktop's native Context control
+- **THEN** Renderer MUST append the available codexhost detail rows to Desktop's open native tooltip
+- **AND** the rows MUST identify cache hit rate as the latest request value and cost as the Session cumulative estimate
 
 #### Scenario: User closes Usage details
 
-- **WHEN** the user presses Escape, activates the control again, or clicks outside the Popover
-- **THEN** Renderer MUST close the Popover
+- **WHEN** Desktop closes or replaces the native tooltip
+- **THEN** Renderer MUST remove the codexhost detail container from the detached tooltip
 - **AND** the native Composer controls MUST retain their existing focus and behavior
 
 ### Requirement: Renderer SHALL reject stale Usage updates

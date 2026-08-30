@@ -28,6 +28,200 @@ export function formatRendererCost(value: number): string {
   return `$${value.toFixed(3)}`;
 }
 
+export function formatRendererNativeContextUsageDetails(usage: ThreadUsageSnapshot | null): string {
+  if (!usage) return "";
+  const details: string[] = [];
+  if (usage.cacheHitRatePercent !== undefined) {
+    details.push(`Latest cache hit: ${formatRendererCacheHitRate(usage.cacheHitRatePercent)}`);
+  }
+  if (usage.cachedInputTokens !== undefined) {
+    details.push(`Cache read: ${formatRendererTokenCount(usage.cachedInputTokens)}`);
+  }
+  if (usage.cacheWriteInputTokens !== undefined) {
+    details.push(`Cache write: ${formatRendererTokenCount(usage.cacheWriteInputTokens)}`);
+  }
+  if (usage.reasoningOutputTokens !== undefined) {
+    details.push(`Reasoning: ${formatRendererTokenCount(usage.reasoningOutputTokens)}`);
+  }
+  if (usage.totalTokens !== undefined) {
+    details.push(`Total tokens: ${formatRendererTokenCount(usage.totalTokens)}`);
+  }
+  if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
+    details.push(
+      `Input / output: ${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
+    );
+  }
+  if (usage.outputTokensPerSecond !== undefined) {
+    details.push(`Output speed: ${formatRendererTokenRate(usage.outputTokensPerSecond)}`);
+  }
+  if (usage.totalCostUsd !== undefined) {
+    details.push(`Session cost: ${formatRendererCost(usage.totalCostUsd)}`);
+  }
+  return details.join("\n");
+}
+
+interface NativeContextUsageBinding {
+  usage: ThreadUsageSnapshot | null;
+  observer: MutationObserver | null;
+  tooltip: HTMLElement | null;
+  details: HTMLDivElement | null;
+}
+
+const nativeContextUsageBindings = new WeakMap<HTMLElement, NativeContextUsageBinding>();
+const nativeContextTooltipTextPattern =
+  /(context\s+window|tokens?|上下文窗口|背景信息窗口|令牌|标记|已用)/iu;
+
+function nativeElementIsVisible(element: HTMLElement): boolean {
+  if (element.hidden) return false;
+  const view = element.ownerDocument?.defaultView;
+  if (!view?.getComputedStyle) return true;
+  try {
+    const style = view.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function tooltipForNativeContext(element: HTMLElement): HTMLElement | null {
+  const document = element.ownerDocument;
+  if (!document) return null;
+  const sources = [
+    element,
+    element.parentElement,
+    typeof element.closest === "function"
+      ? element.closest<HTMLElement>('button,[role="button"]')
+      : null,
+  ].filter(
+    (source, index, all): source is HTMLElement => source !== null && all.indexOf(source) === index,
+  );
+  for (const source of sources) {
+    const describedBy = source.getAttribute("aria-describedby") ?? "";
+    for (const id of describedBy.split(/\s+/u).filter(Boolean)) {
+      const candidate = document.getElementById(id);
+      if (
+        candidate !== null &&
+        candidate.getAttribute("role") === "tooltip" &&
+        nativeElementIsVisible(candidate as HTMLElement)
+      ) {
+        return candidate as HTMLElement;
+      }
+    }
+  }
+  const body = document.body;
+  if (!body) return null;
+  const candidates = [...body.querySelectorAll<HTMLElement>('[role="tooltip"]')].filter(
+    (candidate) =>
+      nativeElementIsVisible(candidate) &&
+      nativeContextTooltipTextPattern.test(candidate.textContent ?? ""),
+  );
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  const triggerRect = element.getBoundingClientRect?.();
+  if (!triggerRect || (triggerRect.width === 0 && triggerRect.height === 0))
+    return candidates[0] ?? null;
+  let nearest: HTMLElement | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const rect = candidate.getBoundingClientRect?.();
+    if (!rect) continue;
+    const dx = rect.left + rect.width / 2 - (triggerRect.left + triggerRect.width / 2);
+    const dy = rect.top + rect.height / 2 - (triggerRect.top + triggerRect.height / 2);
+    const distance = dx * dx + dy * dy;
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  return nearest ?? candidates[0] ?? null;
+}
+
+function nativeContextTooltipContent(tooltip: HTMLElement): HTMLElement {
+  const content = [...tooltip.querySelectorAll<HTMLElement>("div")].find((candidate) => {
+    const classes = ["flex", "w-38", "flex-col", "gap-0.5", "text-center"];
+    return classes.every((className) => candidate.classList.contains(className));
+  });
+  return content ?? tooltip;
+}
+
+function syncNativeContextTooltip(binding: NativeContextUsageBinding, element: HTMLElement): void {
+  const tooltip = tooltipForNativeContext(element);
+  if (tooltip !== binding.tooltip || (binding.details && !binding.details.isConnected)) {
+    binding.details?.remove();
+    binding.details = null;
+    binding.tooltip = tooltip;
+  }
+  const detailsText = formatRendererNativeContextUsageDetails(binding.usage);
+  if (!tooltip || detailsText.length === 0) return;
+  const parent = nativeContextTooltipContent(tooltip);
+  let details = binding.details;
+  if (!details || details.parentElement !== parent) {
+    details?.remove();
+    details = tooltip.ownerDocument.createElement("div");
+    details.dataset.codexhostNativeUsageDetails = "";
+    details.className = "mt-1 flex flex-col gap-0.5 text-center";
+    details.style.font = "inherit";
+    details.style.fontSize = "11px";
+    details.style.lineHeight = "15px";
+    details.style.color = "inherit";
+    details.style.whiteSpace = "nowrap";
+    details.style.overflow = "hidden";
+    parent.append(details);
+    binding.details = details;
+  }
+  if (details.dataset.codexhostNativeUsageDetailsText === detailsText) return;
+  details.replaceChildren(
+    ...detailsText.split("\n").map((line) => {
+      const row = tooltip.ownerDocument.createElement("div");
+      row.textContent = line;
+      row.style.whiteSpace = "nowrap";
+      return row;
+    }),
+  );
+  details.dataset.codexhostNativeUsageDetailsText = detailsText;
+}
+
+/** Adds detailed Usage rows to Desktop's visible native Context tooltip. */
+export function syncRendererNativeContextUsage(
+  element: HTMLElement | null,
+  usage: ThreadUsageSnapshot | null,
+): void {
+  if (!element) return;
+  let binding = nativeContextUsageBindings.get(element);
+  if (!binding) {
+    binding = { usage, observer: null, tooltip: null, details: null };
+    nativeContextUsageBindings.set(element, binding);
+    const document = element.ownerDocument;
+    const MutationObserverCtor =
+      document?.defaultView?.MutationObserver ??
+      (typeof MutationObserver === "function" ? MutationObserver : null);
+    if (document?.body && MutationObserverCtor) {
+      const bound = binding;
+      binding.observer = new MutationObserverCtor(() => syncNativeContextTooltip(bound, element));
+      binding.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-describedby", "class", "data-state", "hidden", "role", "style"],
+      });
+      binding.observer.observe(element, {
+        attributes: true,
+        attributeFilter: ["aria-describedby", "data-state", "hidden"],
+      });
+    }
+  }
+  binding.usage = usage;
+  syncNativeContextTooltip(binding, element);
+}
+
+export function clearRendererNativeContextUsage(element: HTMLElement | null): void {
+  if (!element) return;
+  const binding = nativeContextUsageBindings.get(element);
+  if (!binding) return;
+  binding.observer?.disconnect();
+  binding.details?.remove();
+  nativeContextUsageBindings.delete(element);
+}
+
 export function formatRendererTokenRate(value: number): string {
   return `${decimal(value, 1)} tok/s`;
 }
@@ -431,6 +625,13 @@ export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
 ): boolean {
+  const visible = rendererUsageHasDisplayData(usage);
+  control.root.style.display = visible ? "inline-flex" : "none";
+  if (!visible) {
+    closePopover(control);
+    return false;
+  }
+
   const cacheHitRatePercent = usage?.cacheHitRatePercent;
   const outputTokensPerSecond = usage?.outputTokensPerSecond;
   const totalCostUsd = usage?.totalCostUsd;
@@ -445,13 +646,6 @@ export function renderRendererUsageControl(
     usage?.reasoningOutputTokens !== undefined;
   const hasPlanLimit =
     usage?.planFiveHourUsedPercent !== undefined || usage?.planSevenDayUsedPercent !== undefined;
-  const visible = rendererUsageHasDisplayData(usage);
-  control.root.style.display = visible ? "inline-flex" : "none";
-  if (!visible) {
-    closePopover(control);
-    return false;
-  }
-
   const summary = [
     cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
     outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,

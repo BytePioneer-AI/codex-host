@@ -160,6 +160,10 @@ export function shouldRetryExternalThreadUsage(
   return externalAgentHasAccountCredits(agent) && accountCredits === null;
 }
 
+function hasNativeContextUsage(usage: ThreadUsageSnapshot | null): boolean {
+  return usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined;
+}
+
 export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   previous: RendererAgentAvailability | undefined,
   next: RendererAgentAvailability,
@@ -365,6 +369,10 @@ interface MountedComposer {
   accountCredits: AccountCreditsSnapshot | null;
   hostId: string | null;
   usageRequestGeneration: number;
+  nativeContextRefreshElement: HTMLElement | null;
+  nativeContextRefreshListener: (() => void) | null;
+  nativeContextRefreshLastAt: number;
+  exactUsageRefreshStarted: boolean;
 }
 
 interface PendingComposerReplacement {
@@ -579,6 +587,42 @@ export function installRendererBindingProbe(
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
 
+  const unbindNativeContextUsageRefresh = (mounted: MountedComposer): void => {
+    const element = mounted.nativeContextRefreshElement;
+    const listener = mounted.nativeContextRefreshListener;
+    if (element && listener) {
+      for (const eventName of ["pointerenter", "focusin", "click"] as const) {
+        element.removeEventListener(eventName, listener, true);
+      }
+    }
+    mounted.nativeContextRefreshElement = null;
+    mounted.nativeContextRefreshListener = null;
+  };
+
+  const bindNativeContextUsageRefresh = (mounted: MountedComposer): void => {
+    const native = mounted.control.nativeContextUsageControl?.element ?? null;
+    const interactive =
+      native && typeof native.closest === "function"
+        ? native.closest<HTMLElement>('button,[role="button"]')
+        : null;
+    const target = interactive ?? native;
+    if (target === mounted.nativeContextRefreshElement) return;
+    unbindNativeContextUsageRefresh(mounted);
+    if (!target || typeof target.addEventListener !== "function") return;
+    const listener = (): void => {
+      if (controller.get(mounted.composer).agent === "codex") return;
+      const now = Date.now();
+      if (now - mounted.nativeContextRefreshLastAt < 750) return;
+      mounted.nativeContextRefreshLastAt = now;
+      void refreshThreadUsage(mounted, "exact");
+    };
+    for (const eventName of ["pointerenter", "focusin", "click"] as const) {
+      target.addEventListener(eventName, listener, true);
+    }
+    mounted.nativeContextRefreshElement = target;
+    mounted.nativeContextRefreshListener = listener;
+  };
+
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
@@ -632,12 +676,7 @@ export function installRendererBindingProbe(
       mounted.usage,
       mounted.accountCredits,
     );
-    if (mounted.control.usage) {
-      mounted.control.usage.onOpen = () => {
-        if (controller.get(mounted.composer).agent === "codex") return;
-        void refreshThreadUsage(mounted, "exact");
-      };
-    }
+    bindNativeContextUsageRefresh(mounted);
   };
 
   const refreshCommands = async (mounted: MountedComposer): Promise<void> => {
@@ -880,8 +919,14 @@ export function installRendererBindingProbe(
           const agent = controller.get(mounted.composer).agent;
           if (agent === "codex" && mounted.usage === null) {
             void refreshThreadUsage(mounted);
-          } else if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
-            scheduleThreadUsageRefresh(mounted);
+          } else if (agent !== "codex") {
+            if (!hasNativeContextUsage(mounted.usage) && !mounted.exactUsageRefreshStarted) {
+              mounted.exactUsageRefreshStarted = true;
+              void refreshThreadUsage(mounted, "exact");
+            }
+            if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
+              scheduleThreadUsageRefresh(mounted);
+            }
           }
         }
       }
@@ -916,6 +961,10 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
       if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
+        if (!mounted.exactUsageRefreshStarted) {
+          mounted.exactUsageRefreshStarted = true;
+          void refreshThreadUsage(mounted, "exact");
+        }
         scheduleThreadUsageRefresh(mounted);
       }
     } else {
@@ -926,6 +975,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
+      mounted.exactUsageRefreshStarted = false;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
@@ -1783,6 +1833,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
+      mounted.exactUsageRefreshStarted = false;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       const timer = usageRefreshTimers.get(mounted.composer);
@@ -1915,6 +1966,10 @@ export function installRendererBindingProbe(
       accountCredits: inherited?.accountCredits ?? null,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
+      nativeContextRefreshElement: null,
+      nativeContextRefreshListener: null,
+      nativeContextRefreshLastAt: 0,
+      exactUsageRefreshStarted: false,
     };
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
@@ -1942,6 +1997,10 @@ export function installRendererBindingProbe(
       inherited &&
       shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
     ) {
+      if (!hasNativeContextUsage(mounted.usage) && !mounted.exactUsageRefreshStarted) {
+        mounted.exactUsageRefreshStarted = true;
+        void refreshThreadUsage(mounted, "exact");
+      }
       scheduleThreadUsageRefresh(mounted);
     } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {
       void loadExternalCatalog(mounted);
@@ -1988,13 +2047,18 @@ export function installRendererBindingProbe(
           window.clearTimeout(timer);
           usageRefreshTimers.delete(composer);
         }
+        unbindNativeContextUsageRefresh(mounted);
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
       }
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
+      const previousNativeContext = mounted.control.nativeContextUsageControl?.element ?? null;
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
+      if (previousNativeContext !== (mounted.control.nativeContextUsageControl?.element ?? null)) {
+        renderMounted(mounted);
+      }
       if (refreshTargets) refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
@@ -2357,6 +2421,7 @@ export function installRendererBindingProbe(
       for (const mounted of mountedByComposer.values()) {
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
+        unbindNativeContextUsageRefresh(mounted);
         disposeComposerAgentControl(mounted.control);
       }
       mountedByComposer.clear();

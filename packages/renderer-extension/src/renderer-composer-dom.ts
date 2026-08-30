@@ -37,9 +37,8 @@ import {
   type RendererCreditsControl,
 } from "./renderer-credits-control.js";
 import {
-  mountRendererUsageControl,
-  renderRendererUsageControl,
-  type RendererUsageControl,
+  clearRendererNativeContextUsage,
+  syncRendererNativeContextUsage,
 } from "./renderer-usage-control.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import {
@@ -88,7 +87,6 @@ export interface ComposerAgentControl {
   nativeContextUsageControl?: NativeControlState | null;
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
-  usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
@@ -340,16 +338,59 @@ export function isNativeContextUsageControlCandidate(element: Element): boolean 
   // accessible radial indicator. The DOM shape is more stable than its
   // localized aria-label or generated CSS module class names.
   return (
+    nativeContextUsageElementVisible(element) &&
     element.matches('span[role="img"][aria-label]') &&
     element.querySelectorAll("svg > circle").length === 2
   );
 }
 
+function nativeContextUsageElementVisible(element: Element): boolean {
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    const typed = current as HTMLElement;
+    if (
+      typed.hidden ||
+      (typeof current.getAttribute === "function" && current.getAttribute("aria-hidden") === "true")
+    ) {
+      return false;
+    }
+    const inlineStyle = typed.style;
+    if (
+      inlineStyle &&
+      (inlineStyle.display === "none" ||
+        inlineStyle.visibility === "hidden" ||
+        inlineStyle.opacity === "0")
+    ) {
+      return false;
+    }
+    const view = current.ownerDocument?.defaultView;
+    if (!view?.getComputedStyle) continue;
+    try {
+      const style = view.getComputedStyle(typed);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+        return false;
+      }
+    } catch {
+      // A detached or test-only element may not be accepted by getComputedStyle.
+    }
+  }
+  return true;
+}
+
+const contextUsageLabelPattern = /(context|usage|token|上下文|用量|令牌|背景信息窗口)/iu;
+
 export function nativeContextUsageControlForComposer(composer: Element): HTMLElement | null {
-  const candidates = [
-    ...composer.querySelectorAll<HTMLElement>('span[role="img"][aria-label]'),
-  ].filter(isNativeContextUsageControlCandidate);
-  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+  const candidates = nativeContextUsageCandidatesForComposer(composer);
+  const verified = candidates.filter(isNativeContextUsageControlCandidate);
+  if (verified.length === 0) return null;
+  const described = verified.filter((element) =>
+    contextUsageLabelPattern.test(element.getAttribute("aria-label") ?? ""),
+  );
+  if (described.length === 1) return described[0] ?? null;
+  return verified.length === 1 ? (verified[0] ?? null) : null;
+}
+
+function nativeContextUsageCandidatesForComposer(composer: Element): HTMLElement[] {
+  return [...composer.querySelectorAll<HTMLElement>('span[role="img"][aria-label]')];
 }
 
 function contractElementVisible(element: Element): boolean {
@@ -437,9 +478,17 @@ function restoreNativeControl(state: NativeControlState | null | undefined): voi
   else state.element.setAttribute("aria-hidden", state.ariaHidden);
 }
 
+function removeLegacyUsageControl(composer: Element, composerId: string): void {
+  for (const element of composer.querySelectorAll<HTMLElement>("[data-codexhost-usage-control]")) {
+    element.remove();
+  }
+  composer.ownerDocument?.getElementById(`${composerId}-usage-popover`)?.remove();
+}
+
 function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
   const candidate = nativeContextUsageControlForComposer(control.composer);
   if (candidate === control.nativeContextUsageControl?.element) return;
+  clearRendererNativeContextUsage(control.nativeContextUsageControl?.element ?? null);
   restoreNativeControl(control.nativeContextUsageControl);
   control.nativeContextUsageControl = captureNativeControl(candidate);
 }
@@ -452,22 +501,6 @@ function refreshNativeModelControl(control: ComposerAgentControl): void {
     control.nativeModelControl = captureNativeControl(candidate);
     syncRendererModelTriggerClass(control.modelPicker);
   }
-}
-
-function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
-  const context = control.nativeContextUsageControl?.element;
-  // The native radial indicator is wrapped by a text/line-height span inside
-  // FooterInlineControls. Place Usage beside that wrapper so its 28px control
-  // participates in the footer's flex alignment instead of being nested in
-  // the wrapper's 18px line box.
-  const contextWrapper = context?.parentElement;
-  if (contextWrapper?.parentElement) return contextWrapper;
-  // External Harnesses can publish reliable cache, token, or cost Usage before
-  // the native Context control exists. The renderer-owned Model control is a
-  // stable footer anchor, so early Usage remains visible instead of waiting for
-  // a later Context observation to create the native indicator.
-  const modelRoot = control.modelPicker?.root;
-  return modelRoot?.parentElement ? modelRoot : null;
 }
 
 /**
@@ -500,25 +533,8 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   parent.insertBefore(agentRoot, anchor);
 }
 
-function refreshUsagePlacement(control: ComposerAgentControl): void {
-  const anchor = usagePlacementAnchor(control);
-  if (!anchor || !control.usage) {
-    if (control.usage?.anchor) control.usage.root.remove();
-    if (control.usage) control.usage.anchor = null;
-    return;
-  }
-  const previousUsageParent = control.usage.root.parentElement;
-  const previousUsageNextSibling = control.usage.root.nextElementSibling;
-  control.usage.place(anchor);
-  const usagePositionChanged =
-    previousUsageParent !== control.usage.root.parentElement ||
-    previousUsageNextSibling !== control.usage.root.nextElementSibling;
-  if (usagePositionChanged) control.harnessCommands?.placeBefore(control.usage.root);
-}
-
-// Deliberately independent of `refreshUsagePlacement`: Credits no longer
-// derives its position from where Usage happens to land, so it stays put
-// even when Usage's own anchor is still resolving (or has none at all).
+// Credits is independent of any Usage surface, so it stays put even when the
+// native Context control is still resolving (or has no reliable candidate).
 function refreshCreditsPlacement(control: ComposerAgentControl): void {
   const anchor = creditsPlacementAnchor(control);
   if (!anchor) {
@@ -585,7 +601,6 @@ export function reconcileComposerNativeControls(
   // location for it within this same pass.
   refreshNativePermissionModeControl(control);
   refreshTrailingClusterPlacement(control);
-  refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
   setNativeControlHidden(control.nativeModelControl, hideModel);
   // Context usage is shared by Codex and external Harnesses. External Usage
@@ -607,6 +622,7 @@ export function mountComposerAgentControl(
   onSelectPermissionMode: (permissionModeId: string) => void,
   onSelectCommand: (command: HarnessCommandDescriptor) => void,
 ): ComposerAgentControl {
+  removeLegacyUsageControl(composer, composerId);
   const nativeModelControl = captureNativeControl(nativeModelControlForComposer(composer));
   const nativeContextUsageControl = captureNativeControl(
     nativeContextUsageControlForComposer(composer),
@@ -652,13 +668,11 @@ export function mountComposerAgentControl(
     nativeContextUsageControl,
     nativePermissionModeControlVerified,
     credits,
-    usage: null,
     harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
   refreshTrailingClusterPlacement(control);
-  refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
   return control;
 }
@@ -674,10 +688,6 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
 ): void {
-  if (control.usage === null) {
-    control.usage = mountRendererUsageControl(control.composerId);
-  }
-
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
     (model) => model.ref.id === selectedModel?.id,
@@ -717,6 +727,7 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
+  syncRendererNativeContextUsage(control.nativeContextUsageControl?.element ?? null, usage);
   renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
   const permissionModeVisible =
     state.agent !== "codex" &&
@@ -729,7 +740,6 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  if (control.usage) renderRendererUsageControl(control.usage, usage);
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 
@@ -738,11 +748,10 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
     control.sendButton.disabled = control.sendDisabledBeforeSwitch;
   }
   restoreNativeControl(control.nativeModelControl);
+  clearRendererNativeContextUsage(control.nativeContextUsageControl?.element ?? null);
   restoreNativeControl(control.nativeContextUsageControl);
   restoreNativeControl(control.nativePermissionModeControl);
   control.credits.dispose();
-  control.usage?.dispose();
-  control.usage = null;
   control.harnessCommands.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();

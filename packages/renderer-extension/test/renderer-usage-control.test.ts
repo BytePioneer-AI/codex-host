@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   formatRendererPlanReset,
   formatRendererPlanWindow,
+  formatRendererNativeContextUsageDetails,
   rendererUsageHasDisplayData,
+  clearRendererNativeContextUsage,
+  syncRendererNativeContextUsage,
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Usage plan-window formatting", () => {
@@ -29,6 +32,47 @@ describe("Renderer Usage Claude plan windows", () => {
 });
 
 describe("Renderer Usage native Codex snapshots", () => {
+  it("formats detailed fields for the native Context tooltip", () => {
+    expect(
+      formatRendererNativeContextUsageDetails({
+        cacheHitRatePercent: 0,
+        cachedInputTokens: 12_345,
+        reasoningOutputTokens: 18_600,
+        totalTokens: 17_087,
+        inputTokens: 17_028,
+        outputTokens: 59,
+        totalCostUsd: 0.343,
+      }),
+    ).toBe(
+      "Latest cache hit: CH 0%\n" +
+        "Cache read: 12.3k\n" +
+        "Reasoning: 18.6k\n" +
+        "Total tokens: 17.1k\n" +
+        "Input / output: 17k / 59\n" +
+        "Session cost: $0.343",
+    );
+  });
+
+  it("does not mutate the native Context accessible label", () => {
+    const attributes = new Map<string, string>();
+    const element = {
+      getAttribute: (name: string) => attributes.get(name) ?? null,
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      removeAttribute: (name: string) => attributes.delete(name),
+    } as unknown as HTMLElement;
+    element.setAttribute("aria-label", "Context usage: 4% used");
+
+    syncRendererNativeContextUsage(element, {
+      cacheHitRatePercent: 96.5,
+      inputTokens: 1_000,
+      outputTokens: 20,
+    });
+    expect(element.getAttribute("aria-label")).toBe("Context usage: 4% used");
+
+    clearRendererNativeContextUsage(element);
+    expect(element.getAttribute("aria-label")).toBe("Context usage: 4% used");
+  });
+
   it("keeps token-only native snapshots eligible for the left Usage popover", () => {
     expect(
       rendererUsageHasDisplayData({

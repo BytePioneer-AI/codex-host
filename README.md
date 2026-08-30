@@ -157,6 +157,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将出现在 Codex Desktop 的会话列表中，你可以随时打开、查看进度或继续对话。
 
+外部 Harness 明确输出的推理摘要可在 **codexhost 设置 → 模型池 → 显示推理摘要** 中开启。该功能默认关闭，只展示经过验证的可见摘要；隐藏、加密或原始思维链不会被读取或保存。
+
 <details>
 <summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
 

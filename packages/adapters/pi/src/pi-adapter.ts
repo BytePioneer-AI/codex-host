@@ -185,6 +185,9 @@ class PiAdapterFaultError extends Error {
 }
 
 function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): HarnessError {
+  if (isRecord(error) && error.code === "ENOENT") {
+    return { code: "notInstalled", message: errorMessage(error), retryable: false };
+  }
   if (error instanceof PiAdapterFaultError) return error.harnessError;
   if (error instanceof PiRpcUnsupportedCommandError) {
     return {

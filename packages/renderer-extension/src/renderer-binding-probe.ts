@@ -1026,7 +1026,7 @@ export function installRendererBindingProbe(
             : undefined);
         selectedPermissionModeId = draftPermissionMode(
           permissionModes,
-          restoredPermissionModeId ?? preferredPermissionModeId,
+          restoredPermissionModeId ?? previousPermissionModeId ?? preferredPermissionModeId,
         );
         mounted.permissionModeView = {
           status: "loading",

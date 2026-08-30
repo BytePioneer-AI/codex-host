@@ -83,8 +83,15 @@ const START_MENU_ARGUMENT: &str = "--start-menu";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const DESKTOP_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn desktop_tree_refresh_due(last_refresh: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_refresh) >= DESKTOP_TREE_REFRESH_INTERVAL
+}
 
 fn managed_desktop_data_directory(
     data_directory: Option<OsString>,
@@ -667,6 +674,7 @@ fn supervise_desktop(
     notify_ready_and_detach()?;
     #[cfg(target_os = "macos")]
     let mut started_update_request = None;
+    let mut last_desktop_tree_refresh = Instant::now();
     loop {
         #[cfg(target_os = "macos")]
         if let Err(error) = start_pending_update(&mut started_update_request) {
@@ -691,7 +699,20 @@ fn supervise_desktop(
                 format!("Desktop Controller exited while Desktop was running: {status}").into(),
             );
         }
-        if !desktop.is_running()? {
+        let now = Instant::now();
+        // Check only the owned Desktop root on every 100 ms lifecycle tick. Refresh the full
+        // process tree less often so newly spawned descendants remain attributable for cleanup
+        // without repeatedly enumerating every system process while the Desktop is idle.
+        let root_is_running = desktop.is_running()?;
+        let refresh_desktop_tree = desktop_tree_refresh_due(last_desktop_tree_refresh, now);
+        let desktop_is_running = if root_is_running && refresh_desktop_tree {
+            let live = desktop.observe()?;
+            last_desktop_tree_refresh = now;
+            live.iter().any(|process| process.id == desktop_pid)
+        } else {
+            root_is_running
+        };
+        if !desktop_is_running {
             stop_desktop_controller(&mut controller)?;
             desktop.cleanup_escaped(Duration::from_secs(2))?;
             desktop.disarm_cleanup();
@@ -1184,9 +1205,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use std::process::Stdio;
     use std::thread;
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     use std::time::Duration;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::time::Instant;
 
     #[cfg(target_os = "windows")]
@@ -1211,6 +1232,23 @@ mod tests {
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
         parse_launch_options, read_bounded_controller_line,
     };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn throttles_full_desktop_tree_refreshes() {
+        let started = Instant::now();
+
+        assert!(!desktop_tree_refresh_due(
+            started,
+            started + DESKTOP_TREE_REFRESH_INTERVAL - Duration::from_millis(1),
+        ));
+        assert!(desktop_tree_refresh_due(
+            started,
+            started + DESKTOP_TREE_REFRESH_INTERVAL,
+        ));
+    }
+
     #[test]
     fn ready_line_is_the_exact_wrapper_protocol() {
         let mut output = Vec::new();

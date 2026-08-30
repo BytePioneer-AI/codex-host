@@ -433,11 +433,27 @@ impl ObservedProcessTree {
             .collect())
     }
 
-    pub(crate) fn root_is_live(&mut self) -> Result<bool, PlatformError> {
-        Ok(self
-            .observe()?
-            .iter()
-            .any(|process| process.id == self.root.id))
+    pub(crate) fn root_is_current(&self) -> Result<bool, PlatformError> {
+        let current = match unix_process_snapshot(self.root.id) {
+            Ok(current) => current,
+            Err(PlatformError::NotFound(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if !same_process_instance(&self.root, &current) {
+            return Err(PlatformError::Invalid(format!(
+                "PID {} was reused while observing the process tree",
+                self.root.id
+            )));
+        }
+        if current.executable != self.root.executable
+            && matches!(self.root_executable_policy, RootExecutablePolicy::Fixed)
+        {
+            return Err(PlatformError::Invalid(format!(
+                "Desktop root PID {} changed executable identity",
+                self.root.id
+            )));
+        }
+        Ok(true)
     }
 
     pub(crate) fn escaped(&mut self) -> Result<Vec<ProcessSnapshot>, PlatformError> {
@@ -908,6 +924,21 @@ mod tests {
         assert!(snapshot.process_group_id > 0);
         assert!(snapshot.executable.is_absolute());
         assert!(snapshot.started_at_micros > 0);
+    }
+
+    #[test]
+    fn checks_the_owned_root_without_refreshing_the_full_process_tree() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn root fixture");
+        let root = process_snapshot(child.id()).expect("snapshot root fixture");
+        let tree = ObservedProcessTree::new(root);
+
+        assert!(tree.root_is_current().expect("check live root"));
+        child.kill().expect("stop root fixture");
+        child.wait().expect("reap root fixture");
+        assert!(!tree.root_is_current().expect("check exited root"));
     }
 
     #[test]

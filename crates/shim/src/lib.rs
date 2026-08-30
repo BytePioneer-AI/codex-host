@@ -135,6 +135,21 @@ struct ChildOutcome {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+const PROCESS_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn process_tree_refresh_due(
+    last_refresh: Option<Instant>,
+    now: Instant,
+    root_exited: bool,
+) -> bool {
+    root_exited
+        || last_refresh.is_none_or(|last_refresh| {
+            now.saturating_duration_since(last_refresh) >= PROCESS_TREE_REFRESH_INTERVAL
+        })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_child(
     child: &mut codexhost_platform::SupervisedChild,
     signals: &ShutdownSignals,
@@ -149,11 +164,25 @@ fn wait_for_child(
     let mut forced = false;
     let mut terminated_descendants = false;
     let mut desktop_input_closed = false;
+    let mut last_process_tree_refresh = None;
     loop {
         if root_status.is_none() {
             root_status = child.try_wait()?;
         }
-        let has_live_processes = child.has_live_processes()?;
+        // `has_live_processes` takes a full system process snapshot so escaped descendants can
+        // still be attributed to this launch. Keep the 20 ms root/signal poll responsive, but do
+        // not repeat that expensive snapshot on every idle iteration. Root exit and lifecycle
+        // signals still trigger immediate snapshots through this branch or the signal operations.
+        let now = Instant::now();
+        let refresh_process_tree =
+            process_tree_refresh_due(last_process_tree_refresh, now, root_status.is_some());
+        let has_live_processes = if refresh_process_tree {
+            let has_live_processes = child.has_live_processes()?;
+            last_process_tree_refresh = Some(now);
+            has_live_processes
+        } else {
+            true
+        };
         if let Some(status) = root_status.as_ref()
             && !has_live_processes
         {
@@ -752,7 +781,10 @@ mod tests {
     use std::ffi::OsString;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    use super::ShutdownSignals;
+    use std::time::{Duration, Instant};
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
     use super::{
         app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,
         should_start_host_runtime,
@@ -760,6 +792,29 @@ mod tests {
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn throttles_idle_process_tree_refreshes_but_refreshes_immediately_after_root_exit() {
+        let started = Instant::now();
+
+        assert!(process_tree_refresh_due(None, started, false));
+        assert!(!process_tree_refresh_due(
+            Some(started),
+            started + PROCESS_TREE_REFRESH_INTERVAL - Duration::from_millis(1),
+            false,
+        ));
+        assert!(process_tree_refresh_due(
+            Some(started),
+            started + PROCESS_TREE_REFRESH_INTERVAL,
+            false,
+        ));
+        assert!(process_tree_refresh_due(
+            Some(started),
+            started + Duration::from_millis(1),
+            true,
+        ));
     }
 
     #[test]

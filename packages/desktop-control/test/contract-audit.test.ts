@@ -20,6 +20,13 @@ const validInspection = {
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
   settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
+  transcript: {
+    turnCount: 4,
+    itemNodeCount: 5,
+    identifiedItemCount: 11,
+    textBodyCount: 2,
+    textBodyOwnerCount: 2,
+  },
   fork: { annotatedResponseCount: 0, candidateButtonCount: 0, verifiedButtonCount: 0 },
   production: {
     bindingPresent: false,

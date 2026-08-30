@@ -10,7 +10,6 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { installCurrentRendererAdapter } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
-      import { RENDERER_REASONING_DISPLAY_PREFERENCE_KEY } from "./packages/renderer-extension/src/renderer-reasoning-preference.ts";
 
       const counters = new Map();
       const managers = new Map();
@@ -21,63 +20,20 @@ const { outputFiles } = await build({
 
       const createManager = (hostId) => {
         const id = \`manager-\${++managerSequence}\`;
-        const counter = {
-          notificationAdds: 0,
-          notificationRemoves: 0,
-          ownershipInspects: 0,
-          ownershipInspectThreads: [],
-        };
-        const notificationCallbacks = new Set();
-        const removedNotificationCallbacks = new Set();
-        const ownershipRequests = [];
+        const counter = { requestCalls: 0 };
         counters.set(id, counter);
         const manager = {
           id,
           hostId,
-          sendRequest: async (method, params) => {
-            if (method !== "codexhost/thread/inspect") throw new Error("unused request");
-            counter.ownershipInspects += 1;
-            counter.ownershipInspectThreads.push(params.threadId);
-            return new Promise((resolve) => {
-              ownershipRequests.push({ threadId: params.threadId, resolve });
-            });
+          sendRequest: async () => {
+            counter.requestCalls += 1;
+            return {
+              threadId: "thread-lifecycle",
+              usage: { inputTokens: 1 },
+            };
           },
           prewarmThreadStart: () => undefined,
           enqueueRequest: () => undefined,
-          addNotificationCallback: (_methods, callback) => {
-            counter.notificationAdds += 1;
-            notificationCallbacks.add(callback);
-            let removed = false;
-            return () => {
-              if (removed) return;
-              removed = true;
-              notificationCallbacks.delete(callback);
-              removedNotificationCallbacks.add(callback);
-              counter.notificationRemoves += 1;
-            };
-          },
-          emit(notification) {
-            for (const callback of notificationCallbacks) callback(notification);
-          },
-          emitRemoved(notification) {
-            for (const callback of removedNotificationCallbacks) callback(notification);
-          },
-          resolveOwnership(threadId, owner = "external") {
-            const index = ownershipRequests.findIndex((request) => request.threadId === threadId);
-            if (index < 0) throw new Error(\`No pending ownership request for \${threadId}\`);
-            const [request] = ownershipRequests.splice(index, 1);
-            request.resolve(
-              owner === "external"
-                ? {
-                    owner: "external",
-                    harnessId: "claude-code",
-                    transportModelId: "codexhost/claude-code-native",
-                    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
-                    locked: true,
-                  }
-                : { owner: "codex", locked: true },
-            );
-          },
         };
         managers.set(id, manager);
         return manager;
@@ -109,13 +65,8 @@ const { outputFiles } = await build({
         return policy;
       };
 
-      globalThis.setupAdapterLifecycle = (reasoningEnabled = false) => {
+      globalThis.setupAdapterLifecycle = () => {
         document.body.replaceChildren();
-        if (reasoningEnabled) {
-          localStorage.setItem(RENDERER_REASONING_DISPLAY_PREFERENCE_KEY, "true");
-        } else {
-          localStorage.removeItem(RENDERER_REASONING_DISPLAY_PREFERENCE_KEY);
-        }
         const editor = document.createElement("div");
         editor.setAttribute("data-codex-composer", "true");
         editor.setAttribute("data-codex-composer-root", "true");
@@ -137,7 +88,6 @@ const { outputFiles } = await build({
         window.__codexhostMainProcessTitlePolicyV1 = { state: "ready" };
         window.__codexhostDraftPrewarmPolicyV1 = initialPolicy;
         const adapter = installCurrentRendererAdapter();
-        const unsubscribeReasoning = adapter.modelControl?.subscribeThreadReasoning?.(() => {});
 
         const state = {
           adapter,
@@ -145,7 +95,6 @@ const { outputFiles } = await build({
           initialPolicy,
           portal,
           managerHook,
-          unsubscribeReasoning,
           replacementManager: null,
           replacementPolicy: null,
         };
@@ -202,22 +151,6 @@ const { outputFiles } = await build({
 
       globalThis.readCurrentHostId = () =>
         globalThis.__adapterLifecycleState.adapter.modelControl?.currentHostId?.() ?? null;
-      globalThis.setLifecycleComposerThread = (threadId) =>
-        globalThis.__adapterLifecycleState.portal.setAttribute(
-          "data-above-composer-conversation-id",
-          threadId,
-        );
-      globalThis.emitLifecycleReasoning = (managerId, notification, removed = false) => {
-        const manager = managers.get(managerId);
-        if (!manager) throw new Error(\`Unknown lifecycle manager \${managerId}\`);
-        if (removed) manager.emitRemoved(notification);
-        else manager.emit(notification);
-      };
-      globalThis.resolveLifecycleOwnership = (managerId, threadId, owner = "external") => {
-        const manager = managers.get(managerId);
-        if (!manager) throw new Error(\`Unknown lifecycle manager \${managerId}\`);
-        manager.resolveOwnership(threadId, owner);
-      };
       globalThis.publishRouteChange = () =>
         window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
       globalThis.enablePolicyCleanupFailure = () => { throwOnSelect = true; };
@@ -248,10 +181,7 @@ const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer adapter lifecycle E2E bundle was not generated");
 const browserBundleText: string = browserBundle;
 
-async function setup(
-  page: Page,
-  reasoningEnabled = false,
-): Promise<{
+async function setup(page: Page): Promise<{
   initialManagerId: string;
   initialPolicyId: string;
 }> {
@@ -260,13 +190,13 @@ async function setup(
   });
   await page.goto("https://codexhost.test/");
   await page.addScriptTag({ content: browserBundleText });
-  return page.evaluate((enableReasoning) => {
+  return page.evaluate(() => {
     const setupAdapterLifecycle = Reflect.get(globalThis, "setupAdapterLifecycle");
     if (typeof setupAdapterLifecycle !== "function") {
       throw new Error("Adapter lifecycle setup is unavailable");
     }
-    return setupAdapterLifecycle(enableReasoning);
-  }, reasoningEnabled);
+    return setupAdapterLifecycle();
+  });
 }
 
 async function replaceRoute(
@@ -286,10 +216,7 @@ async function counter(
   page: Page,
   id: string,
 ): Promise<{
-  notificationAdds?: number;
-  notificationRemoves?: number;
-  ownershipInspects?: number;
-  ownershipInspectThreads?: string[];
+  requestCalls?: number;
   selections?: number;
   requestTargetReads?: number;
 }> {
@@ -300,42 +227,6 @@ async function counter(
     }
     return readLifecycleCounter(counterId);
   }, id);
-}
-
-function reasoningDelta(threadId: string, turnId: string, itemId: string, delta: string): unknown {
-  return {
-    method: "item/reasoning/summaryTextDelta",
-    params: { threadId, turnId, itemId, summaryIndex: 0, delta },
-  };
-}
-
-async function emitReasoning(
-  page: Page,
-  managerId: string,
-  notification: unknown,
-  removed = false,
-): Promise<void> {
-  await page.evaluate(
-    ({ id, payload, useRemoved }) => {
-      const emit = Reflect.get(globalThis, "emitLifecycleReasoning");
-      if (typeof emit !== "function") throw new Error("Lifecycle Reasoning emitter is unavailable");
-      emit(id, payload, useRemoved);
-    },
-    { id: managerId, payload: notification, useRemoved: removed },
-  );
-}
-
-async function resolveOwnership(page: Page, managerId: string, threadId: string): Promise<void> {
-  await page.evaluate(
-    ({ id, thread }) => {
-      const resolve = Reflect.get(globalThis, "resolveLifecycleOwnership");
-      if (typeof resolve !== "function") {
-        throw new Error("Lifecycle ownership resolver is unavailable");
-      }
-      resolve(id, thread, "external");
-    },
-    { id: managerId, thread: threadId },
-  );
 }
 
 async function replaceRouteWithExactTarget(
@@ -361,9 +252,7 @@ async function publishRouteChange(page: Page): Promise<void> {
   });
 }
 
-test("an active-route read moves the reasoning relay to the resolved request manager", async ({
-  page,
-}) => {
+test("an active-route read moves requests to the resolved request manager", async ({ page }) => {
   const initial = await setup(page);
   const replacement = await replaceRoute(page, true);
 
@@ -376,16 +265,12 @@ test("an active-route read moves the reasoning relay to the resolved request man
       }),
     )
     .toBe("remote-ssh-discovered:replacement");
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      notificationRemoves: 1,
-    });
-  await expect
-    .poll(async () => counter(page, replacement.replacementManagerId))
-    .toMatchObject({
-      notificationAdds: 1,
-    });
+  await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "__adapterLifecycleState");
+    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+  });
+  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
+  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
 });
 
 test("one policy event reconnects an exact request target without Fiber discovery or DOM mutation", async ({
@@ -397,103 +282,15 @@ test("one policy event reconnects an exact request target without Fiber discover
   await publishRouteChange(page);
   await publishRouteChange(page);
 
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      notificationRemoves: 1,
-    });
-  await expect
-    .poll(async () => counter(page, replacement.replacementManagerId))
-    .toMatchObject({
-      notificationAdds: 1,
-    });
+  await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "__adapterLifecycleState");
+    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+  });
+  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
+  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
   expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({
     selections: 1,
   });
-});
-
-test("an exact Host replacement clears stale Reasoning ownership and safely reuses the Thread ID", async ({
-  page,
-}) => {
-  const displayedThreadId = "thread-displayed-old";
-  const reusedThreadId = "thread-reused-across-hosts";
-  const initial = await setup(page, true);
-  const panel = page.locator("[data-codexhost-reasoning-display]");
-
-  await emitReasoning(
-    page,
-    initial.initialManagerId,
-    reasoningDelta(displayedThreadId, "turn-displayed-old", "reasoning-displayed-old", "old panel"),
-  );
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      ownershipInspects: 1,
-      ownershipInspectThreads: [displayedThreadId],
-    });
-  await resolveOwnership(page, initial.initialManagerId, displayedThreadId);
-  await expect(panel).toContainText("old panel");
-
-  await emitReasoning(
-    page,
-    initial.initialManagerId,
-    reasoningDelta(reusedThreadId, "turn-pending-old", "reasoning-pending-old", "pending old"),
-  );
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      ownershipInspects: 2,
-      ownershipInspectThreads: [displayedThreadId, reusedThreadId],
-    });
-
-  const replacement = await replaceRouteWithExactTarget(page, "valid");
-  await publishRouteChange(page);
-
-  await expect(panel).toHaveCount(0);
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      notificationRemoves: 1,
-    });
-  await expect
-    .poll(async () => counter(page, replacement.replacementManagerId))
-    .toMatchObject({
-      notificationAdds: 1,
-    });
-
-  await emitReasoning(
-    page,
-    initial.initialManagerId,
-    reasoningDelta(reusedThreadId, "turn-stale-old", "reasoning-stale-old", "released stale old"),
-    true,
-  );
-  await resolveOwnership(page, initial.initialManagerId, reusedThreadId);
-  await page.evaluate((threadId) => {
-    const setThread = Reflect.get(globalThis, "setLifecycleComposerThread");
-    if (typeof setThread !== "function") {
-      throw new Error("Lifecycle Composer Thread control is unavailable");
-    }
-    setThread(threadId);
-  }, reusedThreadId);
-
-  await emitReasoning(
-    page,
-    replacement.replacementManagerId,
-    reasoningDelta(reusedThreadId, "turn-current-new", "reasoning-current-new", "current new"),
-  );
-  await expect
-    .poll(async () => counter(page, replacement.replacementManagerId))
-    .toMatchObject({
-      ownershipInspects: 1,
-      ownershipInspectThreads: [reusedThreadId],
-    });
-  await resolveOwnership(page, replacement.replacementManagerId, reusedThreadId);
-
-  await expect(panel).toContainText("current new");
-  await expect(panel).not.toContainText("old panel");
-  await expect(panel).not.toContainText("pending old");
-  await expect(panel).not.toContainText("released stale old");
-  expect(await counter(page, initial.initialManagerId)).toMatchObject({ ownershipInspects: 2 });
 });
 
 for (const mode of ["malformed", "host-mismatch"] as const) {
@@ -515,11 +312,9 @@ for (const mode of ["malformed", "host-mismatch"] as const) {
 
     expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
     expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-      notificationAdds: 0,
+      requestCalls: 0,
     });
-    expect(await counter(page, initial.initialManagerId)).toMatchObject({
-      notificationRemoves: 1,
-    });
+    expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
   });
 }
 
@@ -546,7 +341,7 @@ test("a renderer mutation recaptures a request manager after a transient discove
   await page.waitForTimeout(150);
   expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
   expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-    notificationAdds: 0,
+    requestCalls: 0,
   });
   await page.evaluate(() => {
     const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
@@ -560,11 +355,11 @@ test("a renderer mutation recaptures a request manager after a transient discove
     .toMatchObject({
       selections: 1,
     });
-  await expect
-    .poll(async () => counter(page, replacement.replacementManagerId))
-    .toMatchObject({
-      notificationAdds: 1,
-    });
+  await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "__adapterLifecycleState");
+    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+  });
+  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
 });
 
 test("a failed replacement selection disconnects the temporary mutation observer", async ({
@@ -612,7 +407,7 @@ test("a failed replacement selection disconnects the temporary mutation observer
 });
 
 test("adapter disposal continues after the routing policy rejects cleanup", async ({ page }) => {
-  const initial = await setup(page);
+  await setup(page);
   const cleanupError = await page.evaluate(() => {
     const enablePolicyCleanupFailure = Reflect.get(globalThis, "enablePolicyCleanupFailure");
     const disposeAdapter = Reflect.get(globalThis, "disposeAdapter");
@@ -624,9 +419,4 @@ test("adapter disposal continues after the routing policy rejects cleanup", asyn
   });
 
   expect(cleanupError).toBeNull();
-  await expect
-    .poll(async () => counter(page, initial.initialManagerId))
-    .toMatchObject({
-      notificationRemoves: 1,
-    });
 });

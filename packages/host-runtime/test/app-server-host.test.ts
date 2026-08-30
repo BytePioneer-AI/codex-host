@@ -2777,7 +2777,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor(
         (message) =>
           method(message, "item/started") &&
-          ((message.params as JsonObject).item as JsonObject | undefined)?.id === reasoningId,
+          ((message.params as JsonObject).item as JsonObject | undefined)?.id ===
+            `${reasoningId}-summary`,
       ),
     ).resolves.toMatchObject({
       params: { item: { type: "reasoning", summary: [], content: [] } },
@@ -2808,7 +2809,18 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: {
         turn: {
           items: [
-            { id: reasoningId, type: "reasoning", summary: ["visible analysis"], content: [] },
+            {
+              id: `${reasoningId}-summary`,
+              type: "reasoning",
+              summary: ["visible analysis"],
+              content: [],
+            },
+            {
+              id: reasoningId,
+              type: "commandExecution",
+              command: "thinking",
+              aggregatedOutput: "visible analysis",
+            },
             { type: "agentMessage", text: "answer" },
           ],
         },
@@ -2830,10 +2842,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
               items: [
                 { type: "userMessage" },
                 {
-                  id: reasoningId,
+                  id: `${reasoningId}-summary`,
                   type: "reasoning",
                   summary: ["visible analysis"],
                   content: [],
+                },
+                {
+                  id: reasoningId,
+                  type: "commandExecution",
+                  command: "thinking",
+                  aggregatedOutput: "visible analysis",
                 },
                 { type: "agentMessage", text: "answer" },
               ],

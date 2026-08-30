@@ -24,15 +24,9 @@ import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
 import {
   createRendererModelClient,
-  createThreadReasoningSubscriptionRelay,
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
-import {
-  installRendererReasoningDisplay,
-  type RendererReasoningDisplayControl,
-} from "./renderer-reasoning-display.js";
-import type { RendererReasoningEvent } from "./renderer-reasoning-events.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
@@ -798,12 +792,6 @@ export function installCurrentRendererAdapter(): {
     dispose() {},
   });
   const usageSubscription = createThreadUsageSubscriptionRelay();
-  const reasoningSubscription = createThreadReasoningSubscriptionRelay();
-  let reasoningDisplay: RendererReasoningDisplayControl = {
-    refresh() {},
-    reset() {},
-    dispose() {},
-  };
   const requestRouteResolver = createRendererRequestRouteResolver(
     () => window.__codexhostDraftPrewarmPolicyV1,
     () => findActivePrewarmTargets(document),
@@ -818,26 +806,23 @@ export function installCurrentRendererAdapter(): {
     if (client) clientsByTarget.set(target, client);
     return client;
   };
-  let reasoningRoutePolicy: RendererDraftPrewarmPolicy | null = null;
-  let reasoningRouteClient: RendererModelClient | null = null;
-  const syncReasoningRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
+  let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
+  let activeRouteClient: RendererModelClient | null = null;
+  const syncActiveRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
     const policy = route?.policy ?? null;
     const client = route ? modelClientForTargets(route.targets) : null;
-    if (reasoningRoutePolicy === policy && reasoningRouteClient === client) return client;
-    reasoningSubscription.disconnect();
-    reasoningRoutePolicy = policy;
-    reasoningRouteClient = client;
-    reasoningDisplay.reset();
-    if (client) reasoningSubscription.connect(client);
+    if (activeRoutePolicy === policy && activeRouteClient === client) return client;
+    activeRoutePolicy = policy;
+    activeRouteClient = client;
     return client;
   };
   const currentRequestRoute = (): RendererRequestRoute | null => {
     const route = requestRouteResolver.resolve();
-    syncReasoningRoute(route);
+    syncActiveRoute(route);
     return route;
   };
   const currentModelClient = (): RendererModelClient => {
-    const client = currentRequestRoute() ? reasoningRouteClient : null;
+    const client = currentRequestRoute() ? activeRouteClient : null;
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     usageSubscription.connect(client);
     return client;
@@ -863,15 +848,6 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().inspectThreadUsage(input),
     subscribeThreadUsage: (listener: (update: ThreadUsageInspection) => void) =>
       usageSubscription.subscribe(listener),
-    subscribeThreadReasoning: (listener: (event: RendererReasoningEvent) => void) => {
-      const unsubscribe = reasoningSubscription.subscribe(listener);
-      try {
-        reasoningSubscription.connect(currentModelClient());
-      } catch {
-        // A pending route will connect the relay once the request manager appears.
-      }
-      return unsubscribe;
-    },
     listThreadOwnership: (input: ThreadOwnershipListParams) =>
       currentModelClient().listThreadOwnership(input),
     selectThreadModel: (input: ThreadModelSelectParams) =>
@@ -887,14 +863,6 @@ export function installCurrentRendererAdapter(): {
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);
     return unsupportedResult();
-  }
-  try {
-    reasoningDisplay = installRendererReasoningDisplay(modelControl, window);
-  } catch (error) {
-    console.error(
-      "codexhost optional Reasoning display installation failed",
-      error instanceof Error ? error.name : "UnknownError",
-    );
   }
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
@@ -1033,10 +1001,8 @@ export function installCurrentRendererAdapter(): {
       requestRouteResolver.clear();
       const cleanups = [
         () => activeRoutingPolicy?.select(null),
-        () => syncReasoningRoute(null),
-        () => reasoningDisplay.dispose(),
+        () => syncActiveRoute(null),
         () => forkControl.dispose(),
-        () => reasoningSubscription.dispose(),
         () => usageSubscription.dispose(),
       ];
       for (const cleanup of cleanups) {

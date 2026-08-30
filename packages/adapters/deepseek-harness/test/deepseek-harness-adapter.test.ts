@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import Schema from "@deepseek-ai/schemastery";
 import type {
   HistoryEntry,
   ModelSelection,
@@ -13,6 +14,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
@@ -72,6 +74,29 @@ const MODEL_GROUPS = [
   },
 ];
 
+interface FakePermissionOption {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+const PERMISSION_OPTIONS: FakePermissionOption[] = [
+  { value: "team-safe", name: "Team safe", description: "Ask before broad access." },
+  { value: "trusted-run", name: "Trusted run", description: "Use the trusted runtime policy." },
+];
+
+function permissionSettingsSchema(options: readonly FakePermissionOption[]): unknown {
+  return JSON.parse(
+    JSON.stringify(
+      Schema.object({
+        defaultPreset: Schema.union(
+          options.map(({ value, name }) => Schema.const(value).description(name)),
+        ).required(),
+      }).toJSON(),
+    ),
+  );
+}
+
 function success<T>(value: T) {
   return { rpcId: RpcId("response"), result: { ok: true as const, value } };
 }
@@ -124,6 +149,9 @@ class FakeConnection implements DeepSeekHostConnectionLike {
   readonly history = new Map<string, HistoryEntry[]>();
   readonly cwd = new Map<string, string>();
   readonly modelsBySession = new Map<string, ModelSelection>();
+  readonly permissionState = new Map<string, { currentValue: string; seq: number }>();
+  permissionOptions: FakePermissionOption[] | null = null;
+  permissionDefaultModeId: string | null = null;
   readonly calls = {
     list: vi.fn(),
     create: vi.fn(),
@@ -134,6 +162,7 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     prompt: vi.fn(),
     commandList: vi.fn(),
     commandExecute: vi.fn(),
+    settingsDescribe: vi.fn(),
     cancel: vi.fn(),
     respond: vi.fn(),
   };
@@ -176,11 +205,38 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       ({ sessionId, cwd }: { sessionId?: SessionId; cwd?: string }) => {
         const created = sessionId ?? SESSION_ID;
         if (cwd) this.cwd.set(created, cwd);
+        if (this.permissionDefaultModeId) {
+          this.permissionState.set(created, {
+            currentValue: this.permissionDefaultModeId,
+            seq: -1,
+          });
+        }
         return Promise.resolve(success({ sessionId: created, agentPreset: "standard" }));
       },
     );
-    this.calls.history.mockImplementation(({ sessionId }: { sessionId: SessionId }) =>
-      Promise.resolve(success({ events: this.history.get(sessionId) ?? [], hasMore: false })),
+    this.calls.history.mockImplementation(
+      ({ sessionId, beforeSeq }: { sessionId: SessionId; beforeSeq?: number }) => {
+        const state = this.permissionState.get(sessionId);
+        return Promise.resolve(
+          success({
+            events: this.history.get(sessionId) ?? [],
+            hasMore: false,
+            ...(beforeSeq === undefined && state && this.permissionOptions
+              ? {
+                  projections: {
+                    asOfSeq: state.seq,
+                    values: {
+                      permissions: {
+                        options: this.permissionOptions,
+                        currentValue: state.currentValue,
+                      },
+                    },
+                  },
+                }
+              : {}),
+          }),
+        );
+      },
     );
     this.calls.models.mockImplementation(({ sessionId }: { sessionId: SessionId }) =>
       Promise.resolve(
@@ -270,10 +326,43 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       },
     );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
-    this.calls.commandList.mockResolvedValue(
-      commandSuccess([{ name: "compact", description: "Compact older conversation history" }]),
+    this.calls.commandList.mockImplementation(() =>
+      Promise.resolve(
+        commandSuccess([
+          { name: "compact", description: "Compact older conversation history" },
+          ...(this.permissionOptions
+            ? [
+                {
+                  name: "permission",
+                  description: "Switch the permission preset",
+                  input: { hint: "<preset>" },
+                },
+              ]
+            : []),
+        ]),
+      ),
     );
     this.calls.commandExecute.mockImplementation((agentId: string, line: string) => {
+      const permissionModeId = line.startsWith("/permission ")
+        ? line.slice("/permission ".length)
+        : null;
+      if (permissionModeId && this.permissionOptions) {
+        if (!this.permissionOptions.some(({ value }) => value === permissionModeId)) {
+          return Promise.resolve(
+            commandSuccess({
+              commandId: "command-1",
+              result: { kind: "error" as const, text: `unknown preset ${permissionModeId}` },
+            }),
+          );
+        }
+        this.setPermissionMode(agentId, permissionModeId);
+        return Promise.resolve(
+          commandSuccess({
+            commandId: "command-1",
+            result: { kind: "success" as const, text: `preset ${permissionModeId}` },
+          }),
+        );
+      }
       if (line === "/permission danger-full-access") {
         const history = this.history.get(agentId) ?? [];
         const seq = history.length;
@@ -294,6 +383,27 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     });
     this.calls.cancel.mockResolvedValue(success({ accepted: true }));
     this.calls.respond.mockResolvedValue({ accepted: true });
+    this.calls.settingsDescribe.mockImplementation(() =>
+      Promise.resolve(
+        success({
+          writable: true,
+          hasDocument: false,
+          namespaces:
+            this.permissionOptions && this.permissionDefaultModeId
+              ? [
+                  {
+                    ns: "permission",
+                    schema: permissionSettingsSchema(this.permissionOptions),
+                    value: { defaultPreset: this.permissionDefaultModeId },
+                    applies: "live" as const,
+                    secrets: [],
+                    revision: 0,
+                  },
+                ]
+              : [],
+        }),
+      ),
+    );
     const commands = {
       list: this.calls.commandList,
       execute: this.calls.commandExecute,
@@ -316,8 +426,34 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       llm: {
         models: vi.fn().mockResolvedValue(success({ groups: MODEL_GROUPS, failures: [] })),
       },
+      settings: { describe: this.calls.settingsDescribe },
       respond: this.calls.respond,
     } as unknown as DeepSeekHostClient;
+  }
+
+  enablePermissionModes(
+    options: readonly FakePermissionOption[] = PERMISSION_OPTIONS,
+    defaultModeId = options[0]?.value,
+  ): void {
+    if (!defaultModeId) throw new Error("Fake permission catalog has no default");
+    this.permissionOptions = [...options];
+    this.permissionDefaultModeId = defaultModeId;
+  }
+
+  setPermissionMode(sessionId: string, currentValue: string, seq?: number): void {
+    const current = this.permissionState.get(sessionId);
+    this.permissionState.set(sessionId, {
+      currentValue,
+      seq: seq ?? (current?.seq ?? -1) + 1,
+    });
+  }
+
+  permissionProjection(currentValue: string): {
+    options: FakePermissionOption[];
+    currentValue: string;
+  } {
+    if (!this.permissionOptions) throw new Error("Fake permission catalog is disabled");
+    return { options: this.permissionOptions, currentValue };
   }
 
   connect(): Promise<void> {
@@ -846,6 +982,342 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       expect(connection.subscribers.size, testCase.name).toBe(0);
       await adapter.close();
     }
+  });
+
+  it("discovers native Permission Modes dynamically and confirms the create-time selection", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      permissionModes: {
+        modes: [
+          { id: "team-safe", label: "Team safe" },
+          { id: "trusted-run", label: "Trusted run" },
+        ],
+        defaultModeId: "team-safe",
+      },
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      permissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(opened.value.capabilities.configuration.selectPermissionMode).toBe(true);
+    expect(opened.value.initialState.effectivePermissionModeId).toBe("trusted-run");
+    expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+      "session-native-1",
+      "/permission trusted-run",
+    );
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "trusted-run" } },
+    });
+    await adapter.close();
+  });
+
+  it("restores, refreshes, and higher-seq syncs the complete Permission Mode state", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.setPermissionMode(SESSION_ID, "trusted-run", 5);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect(session.initialState.effectivePermissionModeId).toBe("trusted-run");
+
+    connection.setPermissionMode(SESSION_ID, "team-safe", 6);
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "team-safe" } },
+    });
+
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    connection.setPermissionMode(SESSION_ID, "trusted-run", 8);
+    connection.mux(SESSION_ID, {
+      type: "session/projection",
+      sessionId: SESSION_ID,
+      key: "permissions",
+      value: connection.permissionProjection("trusted-run"),
+      seq: 8,
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectivePermissionModeId: "trusted-run" },
+        },
+      },
+    });
+    connection.mux(SESSION_ID, {
+      type: "session/projection",
+      sessionId: SESSION_ID,
+      key: "permissions",
+      value: connection.permissionProjection("team-safe"),
+      seq: 7,
+    });
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    const selectingModel = session.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectiveModel: model, effectivePermissionModeId: "trusted-run" },
+        },
+      },
+    });
+    await expect(selectingModel).resolves.toEqual({ ok: true, value: { completed: true } });
+    await adapter.close();
+  });
+
+  it("selects Permission Mode during a live Turn and publishes even an idempotent confirmation", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.setPermissionMode(SESSION_ID, "team-safe", 0);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("permission-live-turn"),
+      input: [{ type: "text", text: "continue" }],
+    });
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    connection.calls.commandExecute.mockImplementationOnce((agentId: string) => {
+      connection.mux(agentId, {
+        type: "session/projection",
+        sessionId: agentId as SessionId,
+        key: "permissions",
+        value: {
+          options: [
+            ...PERMISSION_OPTIONS,
+            {
+              value: "custom",
+              name: "Custom",
+              description: "Native knobs are between preset events.",
+            },
+          ],
+          currentValue: "custom",
+        },
+        seq: 1,
+      });
+      connection.setPermissionMode(agentId, "trusted-run", 2);
+      return Promise.resolve(
+        commandSuccess({
+          commandId: "permission-command",
+          result: { kind: "success" as const, text: "preset trusted-run" },
+        }),
+      );
+    });
+
+    const selecting = session.execute({
+      type: "permissionMode.select",
+      permissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectivePermissionModeId: "trusted-run" },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    const selectingAgain = session.execute({
+      type: "permissionMode.select",
+      permissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectivePermissionModeId: "trusted-run" },
+        },
+      },
+    });
+    await expect(selectingAgain).resolves.toEqual({ ok: true, value: { completed: true } });
+    await adapter.close();
+  });
+
+  it("keeps the confirmed Permission Mode when the native command rejects a selection", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.setPermissionMode(SESSION_ID, "trusted-run", 0);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "command-rejected",
+        result: { kind: "error", text: "policy rejected" },
+      }),
+    );
+
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("team-safe"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: "policy rejected" },
+    });
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    const model = encodeDeepSeekHarnessModelRef({
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+    });
+    const selectingModel = opened.value.execute({ type: "model.select", model });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: { effectivePermissionModeId: "trusted-run" },
+        },
+      },
+    });
+    await expect(selectingModel).resolves.toEqual({ ok: true, value: { completed: true } });
+    await adapter.close();
+  });
+
+  it("faults when a Permission Mode RPC error leaves unconfirmed partial native state", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.setPermissionMode(SESSION_ID, "trusted-run", 0);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    connection.calls.commandExecute.mockImplementationOnce((agentId: string) => {
+      connection.setPermissionMode(agentId, "custom", 1);
+      return Promise.resolve({
+        ok: false,
+        error: { code: "internal" as const, message: "permission setter failed", details: {} },
+      });
+    });
+    const fault = opened.value.outputs[Symbol.asyncIterator]().next();
+
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("team-safe"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    await expect(fault).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "session.faulted" } },
+    });
+    await adapter.close();
+  });
+
+  it("fails closed when native Permission Mode success cannot be confirmed", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.setPermissionMode(SESSION_ID, "team-safe", 0);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "command-mismatch",
+        result: { kind: "success", text: "preset trusted-run" },
+      }),
+    );
+    const fault = opened.value.outputs[Symbol.asyncIterator]().next();
+
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: expect.stringContaining("did not activate") },
+    });
+    await expect(fault).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "session.faulted" } },
+    });
+    await adapter.close();
+  });
+
+  it("fails inspection and open instead of downgrading malformed Permission Mode protocol", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.settingsDescribe.mockResolvedValueOnce(
+      success({
+        writable: true,
+        hasDocument: false,
+        namespaces: [
+          {
+            ns: "permission",
+            schema: permissionSettingsSchema(PERMISSION_OPTIONS),
+            value: { defaultPreset: "missing" },
+            applies: "live",
+            secrets: [],
+            revision: 0,
+          },
+        ],
+      }),
+    );
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "protocolError" },
+    });
+
+    connection.enablePermissionModes();
+    connection.calls.commandList.mockResolvedValueOnce(
+      commandSuccess([{ name: "compact", description: "Compact history" }]),
+    );
+    await expect(adapter.open({ kind: "create", cwd: "/workspace" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    await adapter.close();
   });
 
   it("creates an official Session, selects the requested Model, and projects a live Tool Turn", async () => {

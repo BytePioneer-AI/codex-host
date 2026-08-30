@@ -502,6 +502,12 @@ On the supported Desktop build, Renderer SHALL identify the unique official perm
 - **AND** unknown labels and descriptions SHALL remain unchanged
 - **AND** it SHALL visually distinguish dangerous options without changing their semantics
 
+#### Scenario: User selects DeepSeek Harness
+
+- **WHEN** DeepSeek inspection reports a dynamically discovered Permission Mode catalog
+- **THEN** the replacement picker SHALL display exactly that catalog without built-in preset rows
+- **AND** a locked Thread mode absent from the current catalog SHALL fail closed instead of falling back to the default
+
 #### Scenario: Current Claude catalog does not support Auto
 
 - **WHEN** Claude inspection omits `auto` because no native Model explicitly supports it
@@ -601,11 +607,11 @@ Renderer SHALL display Grok Model, Thinking, Permission, Usage, and Thread contr
 - **AND** it SHALL NOT add a Grok-specific Fork, rollback, or Slash Command control
 
 ### Requirement: Renderer can select DeepSeek Harness for a new Thread
-A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inject its dedicated transport Model when selected.
+A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inject its dedicated transport Model when selected. Its bounded selected carrier SHALL preserve the opaque Model Ref and optional Permission Mode ID for that exact draft.
 
 #### Scenario: User selects DeepSeek Harness
 - **WHEN** DeepSeek Harness inspection is available and the user selects it for a new Thread
-- **THEN** the Renderer SHALL submit `codexhost/deepseek-harness-native` with the selected DeepSeek Model configuration
+- **THEN** the Renderer SHALL submit `codexhost/deepseek-harness-native` with the selected DeepSeek Model and optional Permission Mode configuration
 
 #### Scenario: DeepSeek Harness is unavailable
 - **WHEN** inspection reports the DeepSeek runtime unavailable
@@ -613,11 +619,11 @@ A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inj
 - **AND** existing Codex, Pi, and Claude Code choices SHALL remain usable
 
 ### Requirement: Existing Thread ownership restores DeepSeek Agent state
-The Renderer SHALL recognize `deepseek-harness` ownership records and display the corresponding Agent for an existing process-local Thread.
+The Renderer SHALL recognize `deepseek-harness` ownership records and display the corresponding Agent for an existing process-local Thread. It SHALL prefer Host-confirmed effective configuration and use the bounded carrier only as the persisted fallback.
 
 #### Scenario: DeepSeek-owned Thread is selected
 - **WHEN** Renderer reads ownership identifying `deepseek-harness`
-- **THEN** it SHALL restore the DeepSeek Agent label and transport selection without treating it as Pi or Claude Code
+- **THEN** it SHALL restore the DeepSeek Agent label, Model, and Permission Mode without treating them as Pi or Claude Code
 
 ### Requirement: Renderer routing SHALL bind Agent selection to the active Codex host
 

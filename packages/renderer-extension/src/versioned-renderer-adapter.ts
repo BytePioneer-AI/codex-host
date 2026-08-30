@@ -286,22 +286,44 @@ export function isClaudeTransportModelId(value: unknown): value is string {
   return decodeClaudeTransportModelId(value) !== null;
 }
 
-export function deepSeekHarnessTransportModelId(model?: HarnessModelRef): string {
-  if (!model) return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  return `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}`;
+export function deepSeekHarnessTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("DeepSeek Harness transport Permission Mode requires a Model Ref");
+    }
+    return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
+  }
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
 export function decodeDeepSeekHarnessTransportModelId(value: unknown): {
   model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
 } | null {
   if (value === DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX)) {
     return null;
   }
-  const model = harnessModelRefSchema.safeParse({
-    id: value.slice(DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX.length),
-  });
-  return model.success ? { model: model.data } : null;
+  const components = value.slice(DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
 }
 
 export function isDeepSeekHarnessTransportModelId(value: unknown): value is string {
@@ -745,7 +767,7 @@ export function modelSelectionForAgent(
       : agent === "claude-code"
         ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
         : agent === "deepseek-harness"
-          ? deepSeekHarnessTransportModelId(model)
+          ? deepSeekHarnessTransportModelId(model, permissionModeId)
           : agent === "grok"
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "omp"

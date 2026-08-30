@@ -8,6 +8,7 @@ import type {
   RpcError,
   RpcId,
   RpcResponse,
+  SessionProjectionsBlock,
 } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
@@ -58,6 +59,7 @@ import {
 import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -65,6 +67,8 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HarnessPermissionModeCatalog,
+  type HarnessPermissionModeId,
   type HarnessThinkingOption,
   type HostInteractionId,
   type HostItemId,
@@ -95,6 +99,13 @@ import {
   normalizeDeepSeekThinkingOptions,
   parseDeepSeekThinkingOptionId,
 } from "./model-catalog.js";
+import {
+  isDeepSeekPermissionModeSelectable,
+  normalizeDeepSeekPermissionModeCatalog,
+  readDeepSeekLivePermissionMode,
+  readDeepSeekPermissionModeState,
+  type DeepSeekPermissionModeState,
+} from "./permission-modes.js";
 import {
   contentText,
   deepSeekUsageKey,
@@ -260,6 +271,65 @@ function normalizedForkError(error: unknown): HarnessError {
   return { ...normalized, retryable: false };
 }
 
+async function readDeepSeekPermissionModeCatalog(
+  client: DeepSeekHostClient,
+): Promise<HarnessPermissionModeCatalog | null> {
+  const settings = unwrapRpc(await client.settings.describe({}), "settings.describe");
+  return normalizeDeepSeekPermissionModeCatalog(settings.namespaces);
+}
+
+async function requireDeepSeekPermissionCommand(
+  client: DeepSeekHostClient,
+  sessionId: SessionId,
+): Promise<void> {
+  const response = await client.commands.list(sessionId);
+  if (!response.ok) {
+    throw new DeepSeekHarnessTransportError(
+      response.error.code === "session-not-found" ? "unavailable" : "nativeFailure",
+      `DeepSeek Harness 'commands/list' failed: ${response.error.message}`,
+    );
+  }
+  if (!response.value.some(({ name, input }) => name === "permission" && input !== undefined)) {
+    throw new DeepSeekHarnessTransportError(
+      "protocolError",
+      "DeepSeek Harness did not expose its Permission Mode command",
+    );
+  }
+}
+
+async function executeDeepSeekPermissionMode(
+  client: DeepSeekHostClient,
+  sessionId: SessionId,
+  permissionModeId: string,
+): Promise<void> {
+  const response = await client.commands.execute(sessionId, `/permission ${permissionModeId}`);
+  if (!response.ok) {
+    throw new DeepSeekHarnessTransportError(
+      response.error.code === "session-not-found" ? "unavailable" : "nativeFailure",
+      `DeepSeek Harness 'commands/execute' failed: ${response.error.message}`,
+    );
+  }
+  if (!response.value || response.value.result.kind !== "success") {
+    throw new DeepSeekHarnessTransportError(
+      "nativeFailure",
+      response.value?.result.text ?? "DeepSeek Harness did not apply the requested Permission Mode",
+    );
+  }
+}
+
+function requireSelectableDeepSeekPermissionMode(
+  state: DeepSeekPermissionModeState | undefined,
+  catalog: HarnessPermissionModeCatalog | null,
+): DeepSeekPermissionModeState | undefined {
+  if (state && catalog && !isDeepSeekPermissionModeSelectable(catalog, state.permissionModeId)) {
+    throw new DeepSeekHarnessTransportError(
+      "protocolError",
+      `DeepSeek Harness Permission Mode '${state.permissionModeId}' is not selectable`,
+    );
+  }
+  return state;
+}
+
 function delegationPermissionIsApplied(entries: readonly HistoryEntry[]): boolean {
   let preset: string | undefined;
   let sandboxMode: string | undefined;
@@ -293,21 +363,8 @@ async function applyDelegationPermission(
   client: DeepSeekHostClient,
   sessionId: SessionId,
 ): Promise<void> {
-  const response = await client.commands.execute(
-    sessionId,
-    `/permission ${DELEGATION_PERMISSION_PRESET}`,
-  );
-  if (!response.ok) {
-    throw commandFailure("commands/execute", response.error);
-  }
-  const execution = response.value;
-  if (!execution || execution.result.kind !== "success") {
-    throw new DeepSeekHarnessTransportError(
-      "nativeFailure",
-      execution?.result.text ?? "DeepSeek Harness did not apply the requested Permission Mode",
-    );
-  }
-  const entries = await readAllDeepSeekHistory(client, sessionId);
+  await executeDeepSeekPermissionMode(client, sessionId, DELEGATION_PERMISSION_PRESET);
+  const { entries } = await readAllDeepSeekHistory(client, sessionId);
   if (!delegationPermissionIsApplied(entries)) {
     throw new DeepSeekHarnessTransportError(
       "nativeFailure",
@@ -319,8 +376,9 @@ async function applyDelegationPermission(
 export async function readAllDeepSeekHistory(
   client: DeepSeekHostClient,
   sessionId: SessionId,
-): Promise<HistoryEntry[]> {
+): Promise<{ entries: HistoryEntry[]; projections?: SessionProjectionsBlock }> {
   let beforeSeq: number | undefined;
+  let projections: SessionProjectionsBlock | undefined;
   const pages: HistoryEntry[][] = [];
   for (let page = 0; page < HISTORY_PAGE_LIMIT; page += 1) {
     const value = unwrapRpc(
@@ -331,6 +389,7 @@ export async function readAllDeepSeekHistory(
       }),
       "session.history",
     );
+    if (beforeSeq === undefined) projections = value.projections;
     pages.unshift(value.events);
     if (!value.hasMore) {
       const entries = pages.flat();
@@ -340,7 +399,7 @@ export async function readAllDeepSeekHistory(
           "DeepSeek Harness history event sequence is not contiguous",
         );
       }
-      return entries;
+      return { entries, ...(projections ? { projections } : {}) };
     }
     const firstSeq = value.events[0]?.event.seq;
     if (firstSeq === undefined || (beforeSeq !== undefined && firstSeq >= beforeSeq)) {
@@ -359,14 +418,7 @@ export async function readAllDeepSeekHistory(
 
 class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   readonly harnessId: HarnessId = deepSeekHarnessId;
-  readonly capabilities: HarnessSessionCapabilities = {
-    configuration: {
-      selectModel: true,
-      selectThinkingOption: true,
-      selectPermissionMode: false,
-    },
-    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
-  };
+  readonly capabilities: HarnessSessionCapabilities;
   readonly commands: HarnessCommandCapability = {
     list: () => this.#listHarnessCommands(),
     execute: (command) => this.#executeHarnessCommand(command),
@@ -390,6 +442,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   #lastSeq: number;
   #reading = false;
   #model: HarnessModelRef;
+  readonly #permissionModes: HarnessPermissionModeCatalog | null;
+  #permissionModeId: HarnessPermissionModeId | undefined;
+  #permissionProjectionSeq: number;
+  #permissionRefresh: Promise<void> | null = null;
+  #selectingPermission = false;
   #thinkingOptionId: HarnessThinkingOption["id"] | undefined;
   #availableThinkingOptions: HarnessThinkingOption[];
   #contextWindowTokens: number | undefined;
@@ -406,6 +463,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     model: HarnessModelRef;
     nativeSessionId: string;
     lastSeq: number;
+    permissionModes: HarnessPermissionModeCatalog | null;
+    permissionModeId?: HarnessPermissionModeId;
+    permissionProjectionSeq?: number;
     contextWindowTokens?: number;
     thinkingOptionId?: HarnessThinkingOption["id"];
     availableThinkingOptions?: HarnessThinkingOption[];
@@ -418,6 +478,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     this.#client = input.client;
     this.#commandClient = input.client.commands;
     this.#model = input.model;
+    this.#permissionModes = input.permissionModes;
+    this.#permissionModeId = input.permissionModeId;
+    this.#permissionProjectionSeq = input.permissionProjectionSeq ?? -1;
     this.#thinkingOptionId = input.thinkingOptionId;
     this.#availableThinkingOptions = input.availableThinkingOptions ?? [];
     this.#onClosed = input.onClosed;
@@ -434,15 +497,70 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       nativeSessionId: input.nativeSessionId,
       formatVersion: 1,
     });
-    this.initialState = {
-      nativeRef: this.#nativeRef,
-      effectiveModel: input.model,
-      ...(input.thinkingOptionId ? { effectiveThinkingOptionId: input.thinkingOptionId } : {}),
-      ...(input.availableThinkingOptions && input.availableThinkingOptions.length > 0
-        ? { availableThinkingOptions: input.availableThinkingOptions }
-        : {}),
+    this.capabilities = {
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: input.permissionModes !== null,
+      },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     };
+    this.initialState = this.#configurationState();
     this.outputs = this.#channel.outputs;
+  }
+
+  #configurationState(): HarnessSessionState {
+    return {
+      nativeRef: this.#nativeRef,
+      effectiveModel: this.#model,
+      ...(this.#thinkingOptionId ? { effectiveThinkingOptionId: this.#thinkingOptionId } : {}),
+      ...(this.#availableThinkingOptions.length > 0
+        ? { availableThinkingOptions: this.#availableThinkingOptions }
+        : {}),
+      ...(this.#permissionModeId ? { effectivePermissionModeId: this.#permissionModeId } : {}),
+    };
+  }
+
+  #applyPermissionModeState(state: DeepSeekPermissionModeState, publish: boolean): void {
+    if (state.projectionSeq <= this.#permissionProjectionSeq) return;
+    const changed = state.permissionModeId !== this.#permissionModeId;
+    this.#permissionModeId = state.permissionModeId;
+    this.#permissionProjectionSeq = state.projectionSeq;
+    if (publish && changed) {
+      this.#emit({ type: "session.state.changed", state: this.#configurationState() });
+    }
+  }
+
+  async #readPermissionModeTail(): Promise<DeepSeekPermissionModeState> {
+    const history = unwrapRpc(
+      await this.#client.sessions.history({
+        sessionId: this.#nativeRef.nativeSessionId as SessionId,
+        maxMessages: 1,
+      }),
+      "session.history",
+    );
+    const state = requireSelectableDeepSeekPermissionMode(
+      readDeepSeekPermissionModeState(history.projections, this.#permissionModes),
+      this.#permissionModes,
+    );
+    if (!state) {
+      throw new DeepSeekHarnessTransportError(
+        "protocolError",
+        "DeepSeek Harness omitted its Permission Mode state",
+      );
+    }
+    return state;
+  }
+
+  #refreshPermissionMode(): void {
+    if (this.#permissionRefresh || this.#closed) return;
+    const refresh = this.#readPermissionModeTail()
+      .then((state) => this.#applyPermissionModeState(state, true))
+      .catch((error: unknown) => this.#fault(normalizedError(error, "protocolError")))
+      .finally(() => {
+        if (this.#permissionRefresh === refresh) this.#permissionRefresh = null;
+      });
+    this.#permissionRefresh = refresh;
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -461,7 +579,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
     this.#reading = true;
     try {
-      const [entries, modelState] = await Promise.all([
+      const [history, modelState] = await Promise.all([
         readAllDeepSeekHistory(this.#client, this.#nativeRef.nativeSessionId as SessionId),
         this.#client.sessions.models({
           sessionId: this.#nativeRef.nativeSessionId as SessionId,
@@ -472,10 +590,19 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       const projection = projectDeepSeekHistory({
         harnessId: this.harnessId,
         sessionId: this.#nativeRef.nativeSessionId,
-        entries,
+        entries: history.entries,
         fallbackModel: model,
         toolOutputLimit: this.#toolOutputLimit,
       });
+      const observedPermissionState = readDeepSeekPermissionModeState(
+        history.projections,
+        this.#permissionModes,
+      );
+      const permissionState =
+        observedPermissionState &&
+        observedPermissionState.projectionSeq < this.#permissionProjectionSeq
+          ? undefined
+          : requireSelectableDeepSeekPermissionMode(observedPermissionState, this.#permissionModes);
       this.#lastSeq = Math.max(this.#lastSeq, projection.lastSeq);
       this.#turns = [...projection.snapshot.turns];
       this.#contextWindowTokens = projection.contextWindowTokens;
@@ -485,6 +612,10 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#model = model;
       this.#thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
       this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
+      if (permissionState && permissionState.projectionSeq > this.#permissionProjectionSeq) {
+        this.#permissionModeId = permissionState.permissionModeId;
+        this.#permissionProjectionSeq = permissionState.projectionSeq;
+      }
       const usage = this.#withOutputSpeed(projection.usage);
       if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
         this.#usage = usage;
@@ -494,20 +625,13 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         ok: true,
         value: {
           ...projection.snapshot,
-          state: {
-            nativeRef: this.#nativeRef,
-            effectiveModel: this.#model,
-            ...(this.#thinkingOptionId
-              ? { effectiveThinkingOptionId: this.#thinkingOptionId }
-              : {}),
-            ...(this.#availableThinkingOptions.length > 0
-              ? { availableThinkingOptions: this.#availableThinkingOptions }
-              : {}),
-          },
+          state: this.#configurationState(),
         },
       };
     } catch (error) {
-      return { ok: false, error: normalizedError(error, "nativeFailure") };
+      const normalized = normalizedError(error, "nativeFailure");
+      if (normalized.code === "protocolError") this.#fault(normalized);
+      return { ok: false, error: normalized };
     } finally {
       this.#reading = false;
     }
@@ -539,12 +663,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
-    if (command.type !== "turn.start") {
-      return {
-        ok: false,
-        error: unsupported(`DeepSeek Harness does not support '${command.type}'`),
-      };
-    }
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
@@ -598,11 +717,30 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (this.#closed) return;
     const frame = envelope.payload;
     if (frame.type === "session/projection") {
-      if (frame.sessionId === this.#nativeRef.nativeSessionId && frame.key === "sessionStats") {
+      if (frame.sessionId !== this.#nativeRef.nativeSessionId) return;
+      if (frame.key === "sessionStats") {
         const speed = parseDeepSeekOutputTokensPerSecond(frame.value);
         if (speed !== undefined) {
           this.#outputTokensPerSecond = speed;
           this.#publishUsage();
+        }
+      } else if (frame.key === "permissions" && !this.#selectingPermission) {
+        if (frame.seq <= this.#permissionProjectionSeq) return;
+        try {
+          const permissionModeId = readDeepSeekLivePermissionMode(
+            frame.value,
+            this.#permissionModes,
+          );
+          if (
+            !this.#permissionModes ||
+            !isDeepSeekPermissionModeSelectable(this.#permissionModes, permissionModeId)
+          ) {
+            this.#refreshPermissionMode();
+          } else {
+            this.#applyPermissionModeState({ permissionModeId, projectionSeq: frame.seq }, true);
+          }
+        } catch (error) {
+          this.#fault(normalizedError(error, "protocolError"));
         }
       }
       return;
@@ -729,16 +867,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
         this.#emit({
           type: "session.state.changed",
-          state: {
-            nativeRef: this.#nativeRef,
-            effectiveModel: this.#model,
-            ...(this.#thinkingOptionId
-              ? { effectiveThinkingOptionId: this.#thinkingOptionId }
-              : {}),
-            ...(this.#availableThinkingOptions.length > 0
-              ? { availableThinkingOptions: this.#availableThinkingOptions }
-              : {}),
-          },
+          state: this.#configurationState(),
         });
         return { ok: true, value: { completed: true } };
       } catch (error) {
@@ -811,20 +940,98 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
         this.#emit({
           type: "session.state.changed",
-          state: {
-            nativeRef: this.#nativeRef,
-            effectiveModel: this.#model,
-            effectiveThinkingOptionId: this.#thinkingOptionId,
-            ...(this.#availableThinkingOptions.length > 0
-              ? { availableThinkingOptions: this.#availableThinkingOptions }
-              : {}),
-          },
+          state: this.#configurationState(),
         });
         return { ok: true, value: { completed: true } };
       } catch (error) {
         return { ok: false, error: normalizedError(error, "nativeFailure") };
       }
     } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    const requested = harnessPermissionModeIdSchema.safeParse(command.permissionModeId);
+    if (
+      !requested.success ||
+      !this.#permissionModes ||
+      !isDeepSeekPermissionModeSelectable(this.#permissionModes, requested.data)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: this.#permissionModes ? "invalidRequest" : "unsupported",
+          message: "DeepSeek Harness Permission Mode is unavailable",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#activeCommand || this.#configuring || this.#reading || this.#permissionRefresh) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message:
+            "DeepSeek Harness Session cannot select Permission Mode while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+
+    this.#configuring = true;
+    this.#selectingPermission = true;
+    try {
+      let uncertainFailure: HarnessError | undefined;
+      try {
+        const response = await this.#commandClient.execute(
+          this.#nativeRef.nativeSessionId as SessionId,
+          `/permission ${requested.data}`,
+        );
+        if (!response.ok) {
+          uncertainFailure = commandFailure("commands/execute", response.error);
+        } else if (!response.value || response.value.result.kind !== "success") {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message:
+                response.value?.result.text ??
+                "DeepSeek Harness did not expose its Permission Mode command",
+              retryable: false,
+            },
+          };
+        }
+      } catch (error) {
+        uncertainFailure = normalizedError(error, "nativeFailure");
+      }
+
+      let state: DeepSeekPermissionModeState;
+      try {
+        state = await this.#readPermissionModeTail();
+      } catch (error) {
+        const failure = normalizedError(error, "protocolError");
+        this.#fault(failure);
+        return { ok: false, error: failure };
+      }
+      if (state.permissionModeId !== requested.data) {
+        this.#applyPermissionModeState(state, true);
+        if (uncertainFailure) return { ok: false, error: uncertainFailure };
+        const failure: HarnessError = {
+          code: "nativeFailure",
+          message: "DeepSeek Harness did not activate the requested Permission Mode",
+          retryable: false,
+        };
+        this.#fault(failure);
+        return { ok: false, error: failure };
+      }
+      this.#applyPermissionModeState(state, false);
+      this.#emit({ type: "session.state.changed", state: this.#configurationState() });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      this.#selectingPermission = false;
       this.#configuring = false;
     }
   }
@@ -1550,9 +1757,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       await this.#connection.connect();
       stage = "host-describe";
-      const [description, directory] = await Promise.all([
+      const [description, directory, permissionModes] = await Promise.all([
         this.#connection.client.host.describe({}),
         this.#connection.client.llm.models({}),
+        readDeepSeekPermissionModeCatalog(this.#connection.client),
       ]);
       const host = unwrapRpc(description, "host.describe");
       stage = "model-catalog";
@@ -1569,11 +1777,12 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           provider: host.provider,
           model: host.model,
         }),
+        ...(permissionModes ? { permissionModes } : {}),
         capabilities: {
           configuration: {
             selectModel: true,
             selectThinkingOption: true,
-            selectPermissionMode: false,
+            selectPermissionMode: permissionModes !== null,
           },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         },
@@ -1611,14 +1820,39 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     if (input.kind !== "create" && input.kind !== "resume" && input.kind !== "fork") {
       return { ok: false, error: unsupported(`DeepSeek Harness does not support '${input.kind}'`) };
     }
-    if (input.kind === "create" && input.permissionModeId) {
-      return {
-        ok: false,
-        error: unsupported("DeepSeek Harness does not select Permission Mode"),
-      };
-    }
     try {
       await this.#connection.connect();
+      const permissionModes = await readDeepSeekPermissionModeCatalog(this.#connection.client);
+      const requestedPermissionModeId =
+        input.kind === "create" ? input.permissionModeId : undefined;
+      if (
+        requestedPermissionModeId &&
+        (!permissionModes ||
+          !isDeepSeekPermissionModeSelectable(permissionModes, requestedPermissionModeId))
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: permissionModes ? "invalidRequest" : "unsupported",
+            message: "DeepSeek Harness Permission Mode is unavailable",
+            retryable: false,
+          },
+        };
+      }
+      if (
+        input.kind === "create" &&
+        requestedPermissionModeId &&
+        input.executionPolicy === "unattended-full-access"
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "DeepSeek Harness cannot combine an explicit Permission Mode with delegation",
+            retryable: false,
+          },
+        };
+      }
       const cwd = path.resolve(input.cwd);
       let sessionId: string;
       let forkExpectedEntries: HistoryEntry[] | undefined;
@@ -1697,7 +1931,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           };
         }
 
-        const boundary = resolveDeepSeekForkBoundary(sourceEntries, checkpoint.data.checkpointId);
+        const boundary = resolveDeepSeekForkBoundary(
+          sourceEntries.entries,
+          checkpoint.data.checkpointId,
+        );
         if (!boundary) {
           return {
             ok: false,
@@ -1798,11 +2035,21 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
               "session.selectModel",
             );
           }
-          if (input.executionPolicy === "unattended-full-access") {
-            await applyDelegationPermission(this.#connection.client, sessionId as SessionId);
-          }
         }
-        const [entries, modelState] = await Promise.all([
+        if (permissionModes) {
+          await requireDeepSeekPermissionCommand(this.#connection.client, sessionId as SessionId);
+        }
+        if (requestedPermissionModeId) {
+          await executeDeepSeekPermissionMode(
+            this.#connection.client,
+            sessionId as SessionId,
+            requestedPermissionModeId,
+          );
+        }
+        if (input.kind === "create" && input.executionPolicy === "unattended-full-access") {
+          await applyDelegationPermission(this.#connection.client, sessionId as SessionId);
+        }
+        const [history, modelState] = await Promise.all([
           readAllDeepSeekHistory(this.#connection.client, sessionId as SessionId),
           this.#connection.client.sessions.models({ sessionId: sessionId as SessionId }),
         ]);
@@ -1811,14 +2058,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         const projection = projectDeepSeekHistory({
           harnessId: this.harnessId,
           sessionId,
-          entries,
+          entries: history.entries,
           fallbackModel: model,
           toolOutputLimit: this.#toolOutputLimit,
         });
         if (forkExpectedEntries) {
           const terminal = projection.snapshot.turns.at(-1);
           const exactFork =
-            matchesDeepSeekForkHistory(forkExpectedEntries, entries) &&
+            matchesDeepSeekForkHistory(forkExpectedEntries, history.entries) &&
             projection.snapshot.turns.length === forkExpectedTurnCount &&
             terminal?.checkpoint?.checkpointId === forkCheckpointId &&
             projection.snapshot.turns.every(
@@ -1833,12 +2080,32 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             );
           }
         }
+        const permissionState = requireSelectableDeepSeekPermissionMode(
+          readDeepSeekPermissionModeState(history.projections, permissionModes),
+          permissionModes,
+        );
+        if (
+          requestedPermissionModeId &&
+          permissionState?.permissionModeId !== requestedPermissionModeId
+        ) {
+          throw new DeepSeekHarnessTransportError(
+            "nativeFailure",
+            "DeepSeek Harness did not activate the requested Permission Mode",
+          );
+        }
         const thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
         session = new DeepSeekHarnessSession({
           client: this.#connection.client,
           model,
           nativeSessionId: sessionId,
           lastSeq: projection.lastSeq,
+          permissionModes,
+          ...(permissionState
+            ? {
+                permissionModeId: permissionState.permissionModeId,
+                permissionProjectionSeq: permissionState.projectionSeq,
+              }
+            : {}),
           ...(thinkingOptionId ? { thinkingOptionId } : {}),
           availableThinkingOptions: normalizeDeepSeekThinkingOptions(models),
           ...(projection.contextWindowTokens !== undefined

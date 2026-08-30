@@ -8,7 +8,7 @@ We believe **Codex Desktop** provides one of the best desktop development experi
 
 But **Codex** is not the only capable **Agent Harness**. Some developers prefer **Claude Code** or **Pi Agent**.
 
-**CodexHost** lets you choose the **Agent** that actually executes your tasks inside **Codex Desktop**, while preserving the native Codex experience.
+**codexhost** lets you choose the **Agent** that actually executes your tasks inside **Codex Desktop**, while preserving the native Codex experience and letting those Agents work together.
 
 ⭐ If this project helps you, please give it a Star! ⭐
 
@@ -31,6 +31,15 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
 </p>
 
 </div>
+
+<p align="center">
+  <strong>Quick navigation:</strong>
+  <a href="#interface-preview">Interface preview</a> •
+  <a href="#quick-start">Quick start</a> •
+  <a href="#feature-status">Feature status</a> •
+  <a href="#cross-agent-collaboration">Cross-Agent collaboration</a> •
+  <a href="#remote-harness">Remote Harness</a>
+</p>
 
 ## Interface Preview
 
@@ -126,15 +135,28 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 | Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 |
 | Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | — | ✅ | ✅ | — |
+| Permission modes | Native | — | ✅ | ✅ | ✅ | — |
+| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Fork | Native | ✅ | ✅ | ✅ | ✅ | — |
 | Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
 | Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
 
+## Cross-Agent collaboration
+
+You can ask the current Agent to delegate an independent task to another Harness. For example:
+
+> Ask `@claude-code` to review this change independently and identify compatibility risks.
+>
+> Ask `@pi` to investigate why this test fails intermittently.
+>
+> Ask `@omp` to implement this feature while I continue working on the documentation.
+
+codexhost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
+
 <details>
-<summary><h3>Remote Harness</h3></summary>
+<summary><h3 id="remote-harness">Remote Harness</h3></summary>
 
 Use Harnesses on remote nodes within Codex Desktop on your local machine, executing tasks on remote machines while continuing to use Codex Desktop’s unified interface. Both ends need to install the same codexhost version.
 
@@ -182,7 +204,8 @@ codexhost takes a different approach:
 
 - **Desktop layer:** Use CDP / Electron Inspector to enhance the official Codex Desktop with Agent selection and session controls. The chat shell is not recreated, and the official installer is not modified.
 - **Protocol layer:** Use a CLI shim to transparently connect to the official app-server and forward Codex requests unchanged.
-- **Harness layer:** Integrate each Harness through its native interface: Pi uses the official RPC, while Claude Code uses the Agent SDK / CLI. Each Harness is then projected into the Desktop's existing streaming output, tools, diffs, approvals, and questions.
+- **Harness layer:** Integrate each Harness through its native interface. Pi uses the official RPC, while Claude Code uses the Agent SDK / CLI. Each Harness is then projected into the Desktop's existing streaming output, tools, diffs, approvals, and questions.
+- **Orchestration layer:** Create a separate Native Session and regular writable Thread for the delegated Harness, and store the delegation relation separately. Creation and result observation remain separate, so the initiating Agent explicitly chooses whether to read, wait, or leave the task running in the background.
 
 The goal is fidelity, not merely making the conversation work. Streaming, tool status, reliable patches, native approvals, and questions should come from the Harness itself whenever possible, rather than being guessed or fabricated by the Host.
 

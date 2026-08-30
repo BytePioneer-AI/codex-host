@@ -8,7 +8,7 @@
 
 하지만 **Codex**만이 뛰어난 **Agent Harness**인 것은 아닙니다. **Claude Code**나 **Pi Agent**를 선호하는 개발자도 있습니다.
 
-**CodexHost**를 사용하면 **Codex Desktop**의 기본 경험을 유지하면서 실제 작업을 실행할 **Agent**를 선택할 수 있습니다.
+**codexhost**를 사용하면 **Codex Desktop**의 기본 경험을 유지하면서 실제 작업을 실행할 **Agent**를 선택하고, 여러 Agent가 함께 작업하도록 할 수 있습니다.
 
 ⭐ 이 프로젝트가 도움이 되었다면 Star를 눌러 주세요! ⭐
 
@@ -30,6 +30,15 @@
   <sub><a href="../README.md">简体中文</a> · <a href="README.en.md">English</a> · 한국어</sub>
 </p>
 </div>
+
+<p align="center">
+  <strong>빠른 이동:</strong>
+  <a href="#인터페이스-미리보기">인터페이스 미리보기</a> •
+  <a href="#빠른-시작">빠른 시작</a> •
+  <a href="#기능-상태">기능 상태</a> •
+  <a href="#agent-간-협업">Agent 간 협업</a> •
+  <a href="#원격-harness">원격 Harness</a>
+</p>
 
 ## 인터페이스 미리보기
 
@@ -125,15 +134,28 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 |
 | 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ |
-| 권한 모드 | 기본 제공 | — | — | ✅ | ✅ | — |
+| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | — |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 | 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 | 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
 
+## Agent 간 협업
+
+현재 Agent에게 독립 작업을 다른 Harness로 위임하도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.
+
+> `@claude-code`에게 이 변경 사항을 독립적으로 검토하고 호환성 위험을 찾도록 요청하세요.
+>
+> `@pi`에게 이 테스트가 간헐적으로 실패하는 원인을 조사하도록 요청하세요.
+>
+> 제가 문서를 정리하는 동안 `@omp`에게 이 기능을 구현하도록 요청하세요.
+
+codexhost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
+
 <details>
-<summary><h3>원격 Harness</h3></summary>
+<summary><h3 id="원격-harness">원격 Harness</h3></summary>
 
 로컬 Codex Desktop에서 원격 노드의 Harness를 사용하여 원격 컴퓨터에서 작업을 실행하면서 Codex Desktop의 통합 인터페이스를 계속 사용할 수 있습니다. 양쪽 끝에 동일한 버전의 codexhost를 설치해야 합니다.
 
@@ -177,11 +199,12 @@ Windows가 제어 대상 Host인 경우, codexhost는 Codex Desktop의 공식 �
 
 대부분의 멀티 에이전트 클라이언트는 [ACP](https://agentclientprotocol.com/) 프로토콜을 통해 여러 Harness를 연결합니다. 통합은 빠르지만 도구, 승인, 권한, Diff, 질문과 같은 기본 기능이 먼저 공통분모로 축소된 후 UI에서 다시 근사하게 구현됩니다.
 
-CodexHost는 다른 방식을 사용합니다.
+codexhost는 다른 방식을 사용합니다.
 
-- **Desktop 계층**: CDP / Electron Inspector를 사용해 공식 Codex Desktop에 Agent 선택과 세션 제어 기능을 추가합니다. 채팅 UI를 다시 만들지 않으며 공식 설치 프로그램도 수정하지 않습니다.
+- **Desktop 계층**: CDP / Electron Inspector를 사용해 공식 Codex Desktop에 Agent 선택과 Session 제어 기능을 추가합니다. 채팅 UI를 다시 만들지 않으며 공식 설치 프로그램도 수정하지 않습니다.
 - **프로토콜 계층**: CLI Shim을 사용해 공식 app-server에 투명하게 연결하고 Codex 요청을 변경 없이 전달합니다.
-- **Harness 계층**: 각 Harness의 기본 인터페이스를 사용해 통합합니다. Pi는 공식 RPC를 사용하고 Claude Code는 Agent SDK / CLI를 사용한 다음, 결과를 Desktop의 스트리밍 출력, 도구, Diff, 승인 및 질문 UI에 반영합니다.
+- **Harness 계층**: 각 Harness의 기본 인터페이스를 사용합니다. Pi는 공식 RPC를 사용하고 Claude Code는 Agent SDK / CLI를 사용합니다. 각 Harness의 결과는 Desktop의 스트리밍 출력, 도구, Diff, 승인 및 질문 UI에 반영됩니다.
+- **오케스트레이션 계층**: 위임할 Harness를 위한 별도 Native Session과 일반 쓰기 가능 Thread를 만들고 위임 관계를 따로 저장합니다. 생성과 결과 확인을 분리하므로, 시작한 Agent가 결과를 읽거나 기다리거나 백그라운드에서 계속 실행할지 명시적으로 선택합니다.
 
 목표는 단순히 대화가 가능하게 만드는 것이 아니라 높은 충실도를 유지하는 것입니다. 스트리밍, 도구 상태, 안정적인 Patch, 기본 승인과 질문은 가능한 한 Host가 추측하거나 만들어 내지 않고 Harness 자체에서 제공됩니다.
 

@@ -8,7 +8,7 @@
 
 但 **Codex** 并不是唯一优秀的 **Agent Harness**，也有人偏好 **Claude Code** 和 **Pi Agent**。
 
-**CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验。
+**CodexHost** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验，并让它们协作完成任务
 
 ⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
 
@@ -36,10 +36,12 @@
   <a href="#界面预览">界面预览</a> •
   <a href="#快速使用">快速使用</a> •
   <a href="#功能状态">功能状态</a> •
+  <a href="#跨-agent-协作">跨 Agent 协作</a> •
   <a href="#远程连接-harness">远程连接</a> •
   <a href="#加入交流群">加入交流群</a> •
   <a href="#开发">开发</a>
 </p>
+
 
 ## 界面预览
 
@@ -96,7 +98,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
     <td colspan="2" valign="top">
       <p><strong>完整工作界面</strong></p>
       <div align="center">
-        <img width="90%" src="docs/imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 CodexHost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
+        <img width="90%" src="docs/imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 codexhost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
       </div>
     </td>
   </tr>
@@ -135,12 +137,25 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | 🚧 |
 | 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | — | ✅ | ✅ | — |
+| 权限模式 | 原生 | — | ✅ | ✅ | ✅ | — |
+| Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Fork | 原生 | ✅ | ✅ | ✅ | ✅ | — |
 | 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
+
+## 跨 Agent 协作
+
+你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
+
+> 让 `@claude-code` 独立审查这次修改，并指出兼容性风险。
+>
+> 让 `@pi` 调查这个测试为什么偶发失败。
+>
+> 让 `@omp` 实现这个功能，我继续整理文档。
+
+CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将出现在 Codex Desktop 的会话列表中，你可以随时打开、查看进度或继续对话。
 
 <details>
 <summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
@@ -192,7 +207,8 @@ CodexHost 尽量不走这条路：
 
 - **Desktop 侧**：用 CDP / Electron Inspector 在官方 Codex Desktop 上增强 Agent 选择与会话界面，不重做聊天壳，也不改官方安装包
 - **协议侧**：用 CLI Shim 透明接入官方 app-server；Codex 请求原样转发
-- **Harness 侧**：按各自原生接口接入——Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI——再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
+- **Harness 侧**：按各自原生接口接入。Pi 走官方 RPC，Claude Code 走 Agent SDK / CLI，再投影到 Desktop 已有的流式输出、工具、Diff、审批和提问
+- **编排侧**：为被委派的 Harness 创建独立 Native Session 与普通可写 Thread，并单独保存委派关系。创建与结果观察彼此分离，发起方显式选择读取、等待或后台运行
 
 目标是保真，不只「能聊」。流式、工具状态、可靠 Patch、原生审批和提问，都尽量来自 Harness 自己，而不是 Host 猜测或伪造。
 

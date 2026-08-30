@@ -28,6 +28,7 @@ class FakeElement {
   rel = "";
   target = "";
   textContent = "";
+  title = "";
   type = "";
 
   constructor(
@@ -53,6 +54,10 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
   }
 }
 
@@ -244,6 +249,42 @@ describe("Renderer Connections page", () => {
     expect(visibleText(content)).not.toContain("pi exited with code 1");
 
     cleanup?.();
+  });
+});
+
+describe("Renderer Model Pool page", () => {
+  it("renders the opt-in reasoning display switch and persists changes", () => {
+    let enabled = false;
+    const setEnabled = vi.fn((next: boolean) => {
+      enabled = next;
+    });
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      { isEnabled: () => enabled, setEnabled },
+    ).find(({ id }) => id === "model-pool");
+    if (!page) throw new Error("Model Pool page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const toggle = elementWithClass(content, "settings-preference-switch");
+    expect(toggle.attributes.get("role")).toBe("switch");
+    expect(toggle.attributes.get("aria-checked")).toBe("false");
+    expect(visibleText(content)).toContain("Show reasoning summaries");
+
+    toggle.dispatch("click");
+    expect(setEnabled).toHaveBeenCalledWith(true);
+    expect(toggle.attributes.get("aria-checked")).toBe("true");
+
+    scope.dispose();
   });
 });
 

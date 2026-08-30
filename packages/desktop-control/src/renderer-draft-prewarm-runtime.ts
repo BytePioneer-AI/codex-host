@@ -592,6 +592,9 @@ export function installDraftPrewarmPolicyBridge(
         candidatePrewarmedThreadManager === prewarmedThreadManager
       );
     },
+    requestTarget(): RendererHostRequestManager {
+      return manager;
+    },
     select(model: string | null): boolean {
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");

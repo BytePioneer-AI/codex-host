@@ -1,5 +1,9 @@
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
 import { RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
+import {
+  readRendererReasoningDisplayPreference,
+  setRendererReasoningDisplayPreference,
+} from "../renderer-reasoning-preference.js";
 import type { CodexhostError } from "@codexhost/shared-contracts";
 import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type {
@@ -40,7 +44,20 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 ] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
-type UnavailableRendererSettingsPageId = Exclude<DefaultRendererSettingsPageId, "updates">;
+type UnavailableRendererSettingsPageId = Exclude<
+  DefaultRendererSettingsPageId,
+  "connections" | "model-pool" | "updates"
+>;
+
+export interface RendererReasoningDisplayPreference {
+  isEnabled(): boolean;
+  setEnabled(enabled: boolean): void;
+}
+
+const DEFAULT_REASONING_DISPLAY_PREFERENCE: RendererReasoningDisplayPreference = Object.freeze({
+  isEnabled: () => readRendererReasoningDisplayPreference(),
+  setEnabled: (enabled: boolean) => setRendererReasoningDisplayPreference(enabled),
+});
 
 export interface RendererUpdateClient {
   checkUpdate(): Promise<UpdateCheckResult>;
@@ -480,6 +497,61 @@ function connectionsPage(
   });
 }
 
+function modelPoolPage(
+  messages: RendererSettingsMessages,
+  preference: RendererReasoningDisplayPreference,
+): RendererSettingsPageDefinition {
+  return Object.freeze({
+    id: "model-pool",
+    label: messages.pageLabels["model-pool"],
+    icon: "model-pool",
+    mount(context: RendererSettingsPageMountContext) {
+      const document = context.content.ownerDocument;
+      const heading = document.createElement("div");
+      heading.className = "settings-section-label";
+      heading.textContent = messages.pageLabels["model-pool"];
+      const description = document.createElement("p");
+      description.className = "settings-page-description";
+      description.textContent = messages.modelPoolDescription;
+
+      const row = document.createElement("div");
+      row.className = "settings-preference-row";
+      const copy = document.createElement("div");
+      copy.className = "settings-preference-row__copy";
+      const title = document.createElement("strong");
+      title.textContent = messages.reasoningDisplayTitle;
+      const detail = document.createElement("span");
+      detail.textContent = messages.reasoningDisplayDescription;
+      copy.append(title, detail);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "settings-preference-switch";
+      toggle.setAttribute("role", "switch");
+      const thumb = document.createElement("span");
+      thumb.className = "settings-preference-switch__thumb";
+      toggle.append(thumb);
+      const render = (enabled: boolean): void => {
+        toggle.setAttribute("aria-checked", String(enabled));
+        toggle.setAttribute(
+          "aria-label",
+          `${messages.reasoningDisplayTitle}: ${enabled ? messages.enabled : messages.disabled}`,
+        );
+        toggle.title = enabled ? messages.enabled : messages.disabled;
+      };
+      render(preference.isEnabled());
+      toggle.addEventListener("click", () => {
+        const enabled = toggle.getAttribute("aria-checked") !== "true";
+        preference.setEnabled(enabled);
+        render(enabled);
+      });
+      row.append(copy, toggle);
+      context.content.append(heading, description, row);
+      return undefined;
+    },
+  });
+}
+
 function versionRow(
   context: RendererSettingsPageMountContext,
   label: string,
@@ -807,12 +879,15 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  reasoningDisplayPreference: RendererReasoningDisplayPreference = DEFAULT_REASONING_DISPLAY_PREFERENCE,
 ): readonly RendererSettingsPageDefinition[] {
   const unavailableIds = DEFAULT_RENDERER_SETTINGS_PAGE_IDS.filter(
-    (id): id is UnavailableRendererSettingsPageId => id !== "updates" && id !== "connections",
+    (id): id is UnavailableRendererSettingsPageId =>
+      id !== "updates" && id !== "connections" && id !== "model-pool",
   );
   return Object.freeze([
     connectionsPage(messages, getDiagnostics),
+    modelPoolPage(messages, reasoningDisplayPreference),
     ...unavailableIds.map((id) => unavailablePage(id, messages)),
     updatesPage(messages, getUpdateClient),
   ]);
@@ -822,8 +897,14 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  reasoningDisplayPreference: RendererReasoningDisplayPreference = DEFAULT_REASONING_DISPLAY_PREFERENCE,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
+    createDefaultRendererSettingsPages(
+      messages,
+      getUpdateClient,
+      getDiagnostics,
+      reasoningDisplayPreference,
+    ),
   );
 }

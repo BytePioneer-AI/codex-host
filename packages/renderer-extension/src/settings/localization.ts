@@ -55,6 +55,13 @@ export interface RendererSettingsMessages {
   readonly connectionStatusError: string;
   readonly connectionStatusInstalling: string;
   readonly connectionStatusUnsupported: string;
+  readonly modelPoolDescription: string;
+  readonly reasoningDisplayTitle: string;
+  readonly reasoningDisplayDescription: string;
+  readonly reasoningDisplayLive: string;
+  readonly reasoningDisplayCompleted: string;
+  readonly enabled: string;
+  readonly disabled: string;
   readonly openSettings: string;
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
@@ -123,6 +130,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusError: "Error",
   connectionStatusInstalling: "Installing",
   connectionStatusUnsupported: "Unsupported",
+  modelPoolDescription: "Configure how external Harness capabilities appear in Codex.",
+  reasoningDisplayTitle: "Show reasoning summaries",
+  reasoningDisplayDescription:
+    "Display explicit reasoning summaries emitted by external Harnesses. Hidden and encrypted reasoning is never shown. Off by default.",
+  reasoningDisplayLive: "Reasoning",
+  reasoningDisplayCompleted: "Reasoning complete",
+  enabled: "Enabled",
+  disabled: "Disabled",
   openSettings: "Open codexhost settings",
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
@@ -197,6 +212,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusError: "错误",
   connectionStatusInstalling: "安装中",
   connectionStatusUnsupported: "不支持",
+  modelPoolDescription: "配置外部 Harness 能力在 Codex 中的显示方式。",
+  reasoningDisplayTitle: "显示推理摘要",
+  reasoningDisplayDescription:
+    "显示外部 Harness 明确输出的推理摘要；隐藏或加密的推理内容永远不会展示。默认关闭。",
+  reasoningDisplayLive: "推理中",
+  reasoningDisplayCompleted: "推理完成",
+  enabled: "已开启",
+  disabled: "已关闭",
   openSettings: "打开 codexhost 设置",
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",

@@ -192,6 +192,33 @@ describe("OMP RPC session", () => {
     ).toMatchObject({ arguments: ["--mode", "rpc", "--resume", "/tmp/omp.jsonl"] });
   });
 
+  it("maps OMP Permission Modes to startup approval flags", () => {
+    const dependencies = {
+      platform: "darwin" as const,
+      homeDirectory: "/Users/test",
+      isExecutable: () => true,
+    };
+    expect(
+      ompRpcProcessCommand(
+        { cwd: "/synthetic", environment: {}, permissionMode: "write" },
+        dependencies,
+      ),
+    ).toMatchObject({ arguments: ["--mode", "rpc", "--approval-mode", "write"] });
+  });
+
+  it("uses OMP's yolo approval mode for unattended full access", () => {
+    expect(
+      ompRpcProcessCommand(
+        { cwd: "/synthetic", environment: {}, permissionMode: "yolo" },
+        {
+          platform: "darwin",
+          homeDirectory: "/Users/test",
+          isExecutable: () => true,
+        },
+      ),
+    ).toMatchObject({ arguments: ["--mode", "rpc", "--approval-mode", "yolo"] });
+  });
+
   it("uses OMP's --fork flag for forked sessions", () => {
     expect(
       ompRpcProcessCommand(

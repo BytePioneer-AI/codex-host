@@ -384,6 +384,21 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
+  it("passes unattended full access to the native transport", async () => {
+    const { adapter, dependencies } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await opened.value.execute(textTurn("permission-turn"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ unattendedFullAccess: true }),
+    );
+    await adapter.close();
+  });
+
   it("passes per-Session delegation environment to the native transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter, {

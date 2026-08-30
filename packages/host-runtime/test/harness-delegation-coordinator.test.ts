@@ -71,6 +71,15 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
   };
 }
 
+class RecordingAdapter extends FakeHarnessAdapter {
+  readonly openInputs: Parameters<FakeHarnessAdapter["open"]>[0][] = [];
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    this.openInputs.push(input);
+    return super.open(input);
+  }
+}
+
 class FailingTurnAdapter extends FakeHarnessAdapter {
   override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
     const opened = await super.open(input);
@@ -88,7 +97,8 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 
 describe("HarnessDelegationCoordinator", () => {
   it("creates a normal writable child Thread and publishes it only after initial delivery", async () => {
-    const value = await fixture();
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
     try {
       const result = await value.coordinator.start({
         harnessId: "pi",
@@ -100,6 +110,12 @@ describe("HarnessDelegationCoordinator", () => {
       expect(value.registered).toHaveLength(1);
       expect(value.notifications).toHaveLength(1);
       expect(value.adapter.sessions).toHaveLength(1);
+      expect(adapter.openInputs).toContainEqual(
+        expect.objectContaining({
+          kind: "create",
+          executionPolicy: "unattended-full-access",
+        }),
+      );
       const records = await value.repository.list();
       expect(records).toHaveLength(1);
       expect(records[0]?.subagent).toBeUndefined();

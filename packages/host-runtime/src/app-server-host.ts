@@ -1082,6 +1082,8 @@ export class AppServerHost {
     }
     const started = await this.#officialRequestBroker.request("thread/start", {
       cwd: input.cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
       ephemeral: false,
       historyMode: "paginated",
     });

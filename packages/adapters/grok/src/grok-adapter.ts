@@ -53,6 +53,7 @@ import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
   type HarnessPermissionModeId,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -1322,7 +1323,10 @@ export class GrokAdapter implements HarnessAdapter {
       };
     const requestedPermissionModeId =
       input.kind === "create"
-        ? (input.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID)
+        ? (input.permissionModeId ??
+          (input.executionPolicy === "unattended-full-access"
+            ? harnessPermissionModeIdSchema.parse("always-approve")
+            : GROK_DEFAULT_PERMISSION_MODE_ID))
         : GROK_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeGrokPermissionModeId(requestedPermissionModeId);

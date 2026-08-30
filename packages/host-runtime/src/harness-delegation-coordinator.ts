@@ -204,6 +204,7 @@ export class HarnessDelegationCoordinator {
         kind: "create",
         cwd: record.cwd,
         environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
+        executionPolicy: "unattended-full-access",
       });
       if (!opened.ok) throw new DelegationControlError("DELEGATION_FAILED", opened.error.message);
       session = opened.value;

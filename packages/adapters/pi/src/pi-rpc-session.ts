@@ -131,6 +131,7 @@ export interface PiRpcSessionOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  unattendedFullAccess?: boolean;
   commandTimeoutMs?: number;
   compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
@@ -145,6 +146,7 @@ export interface PiRpcProcessOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  unattendedFullAccess?: boolean;
 }
 
 export interface PiRpcProcessAdapter {
@@ -406,7 +408,14 @@ export function piRpcProcessCommand(
   const modelArguments = options.model
     ? ["--provider", options.model.provider, "--model", options.model.id]
     : [];
-  const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
+  const permissionArguments = options.unattendedFullAccess ? ["--approval-mode", "yolo"] : [];
+  const arguments_ = [
+    "--mode",
+    "rpc",
+    ...permissionArguments,
+    ...modelArguments,
+    ...sessionArguments,
+  ];
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
@@ -500,6 +509,7 @@ export class PiRpcSession {
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),
+      ...(this.#options.unattendedFullAccess ? { unattendedFullAccess: true } : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));

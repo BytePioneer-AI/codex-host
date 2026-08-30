@@ -348,6 +348,32 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("uses always-approve for unattended full-access sessions", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: alwaysApprove,
+    });
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
+    await adapter.close();
+  });
+
   it("seeds and changes the native Grok Permission Mode", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(

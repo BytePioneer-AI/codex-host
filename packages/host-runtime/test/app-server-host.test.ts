@@ -1043,7 +1043,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
       requestId: "native-request-1",
     });
     const threadStart = await readJsonLine(fixture.official.stdin);
-    expect(threadStart).toMatchObject({ method: "thread/start" });
+    expect(threadStart).toMatchObject({
+      method: "thread/start",
+      params: {
+        cwd: "/synthetic",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      },
+    });
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );

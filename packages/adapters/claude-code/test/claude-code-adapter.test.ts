@@ -3063,6 +3063,22 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("uses auto Permission Mode for unattended delegation sessions", async () => {
+    const { adapter, dependencies } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await opened.value.execute(textTurn("unattended"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "auto" }),
+    );
+    await opened.value.close();
+  });
+
   it("defers cold Permission Mode selection and dynamically switches a started Query", async () => {
     const { adapter, dependencies, transports } = fixture();
     const plan = harnessPermissionModeIdSchema.parse("plan");

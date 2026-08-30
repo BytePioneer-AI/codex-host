@@ -2464,7 +2464,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     const requestedPermissionModeId =
       input.kind === "create"
-        ? (input.permissionModeId ?? CLAUDE_DEFAULT_PERMISSION_MODE_ID)
+        ? (input.permissionModeId ??
+          (input.executionPolicy === "unattended-full-access"
+            ? encodeClaudePermissionModeId("auto")
+            : CLAUDE_DEFAULT_PERMISSION_MODE_ID))
         : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeClaudePermissionModeId(requestedPermissionModeId);

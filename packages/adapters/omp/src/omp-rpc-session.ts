@@ -23,6 +23,7 @@ import {
   parseOmpStateContextUsage,
 } from "./omp-usage.js";
 import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
+import type { OmpPermissionMode } from "./omp-permission-modes.js";
 import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpFrameDecoder } from "./omp-protocol.js";
 
@@ -133,6 +134,7 @@ export interface OmpRpcSessionOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: OmpNativeModelRef;
+  permissionMode?: OmpPermissionMode;
   commandTimeoutMs?: number;
   compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
@@ -148,6 +150,7 @@ export interface OmpRpcProcessOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: OmpNativeModelRef;
+  permissionMode?: OmpPermissionMode;
 }
 
 export interface OmpRpcProcessAdapter {
@@ -413,7 +416,16 @@ export function ompRpcProcessCommand(
   const modelArguments = options.model
     ? ["--provider", options.model.provider, "--model", options.model.id]
     : [];
-  const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
+  const permissionArguments = options.permissionMode
+    ? ["--approval-mode", options.permissionMode]
+    : [];
+  const arguments_ = [
+    "--mode",
+    "rpc",
+    ...permissionArguments,
+    ...modelArguments,
+    ...sessionArguments,
+  ];
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
@@ -512,6 +524,7 @@ export class OmpRpcSession {
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),
+      ...(this.#options.permissionMode ? { permissionMode: this.#options.permissionMode } : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));

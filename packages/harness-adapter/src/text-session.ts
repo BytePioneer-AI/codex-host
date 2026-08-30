@@ -64,10 +64,13 @@ export interface InspectHarnessInput {
   refresh?: boolean;
 }
 
+export type HarnessExecutionPolicy = "default" | "unattended-full-access";
+
 export interface CreateSessionInput {
   kind: "create";
   cwd: string;
   environment?: Record<string, string | undefined>;
+  executionPolicy?: HarnessExecutionPolicy;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;

@@ -10,6 +10,7 @@
 - [x] 2.2 实现显式 Request ID 幂等与省略 Request ID 时的有界重复检测，且不误伤任务文本不同的连续委派
 - [x] 2.3 实现失败回滚，确保目标 Harness 启动失败时不留下已发布或半持久化的子 Thread
 - [x] 2.4 实现结构化委派结果（子 Thread 标识、终态、摘要、可用性判定）
+- [x] 2.5 为委派 Session 增加统一无人值守执行意图，并由 Claude Code（`auto`）、Grok、OMP、Pi 与原生 Codex 路径映射到各自原生行为；DeepSeek Harness 延后到兼容其当前 Host Remote 控制入口的后续变更
 
 ## 3. 委派 Skill
 
@@ -55,3 +56,4 @@
 - [x] 7.4 为完整 CLI 参数解析、非法视图/超时/limit、深度链接规范化、原生 Thread 读取代理、列举默认值与排序补充 CLI 测试
 - [x] 7.5 为官方环境白名单补充回归测试
 - [x] 7.6 运行聚焦测试、typecheck、格式化、lint 与严格 OpenSpec 校验
+- [x] 7.7 为各 Harness 的委派无人值守执行映射、普通创建权限不变和权限设置失败回滚补充测试并运行聚焦验证

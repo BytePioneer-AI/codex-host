@@ -52,12 +52,14 @@ import {
 import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
+  type HarnessPermissionModeId,
   type HostItemId,
   type HostTurnId,
   type JsonValue,
@@ -88,6 +90,13 @@ import {
   type OmpNativeModel,
   type OmpNativeModelRef,
 } from "./omp-model-catalog.js";
+import {
+  decodeOmpPermissionModeId,
+  encodeOmpPermissionModeId,
+  OMP_DEFAULT_PERMISSION_MODE_ID,
+  OMP_PERMISSION_MODE_CATALOG,
+  type OmpPermissionMode,
+} from "./omp-permission-modes.js";
 import { OmpSubagentLifecycle } from "./omp-subagent-lifecycle.js";
 
 export interface OmpAdapterOptions {
@@ -231,6 +240,7 @@ function effectiveModelFromState(state: OmpSessionState): HarnessModelRef | unde
 function harnessStateFromOmp(
   state: OmpSessionState,
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
+  permissionModeId?: HarnessPermissionModeId,
 ): HarnessSessionState {
   const effectiveModel = effectiveModelFromState(state);
   const availableThinkingOptions = thinkingLevels
@@ -255,6 +265,7 @@ function harnessStateFromOmp(
     ...(effectiveModel ? { effectiveModel } : {}),
     ...(state.thinkingLevel ? { effectiveThinkingOptionId: state.thinkingLevel } : {}),
     ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
+    ...(permissionModeId ? { effectivePermissionModeId: permissionModeId } : {}),
   };
 }
 
@@ -370,6 +381,8 @@ class OmpHarnessSession implements HarnessSession {
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
+  #permissionMode: OmpPermissionMode;
+  #permissionModeId: HarnessPermissionModeId;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -395,6 +408,8 @@ class OmpHarnessSession implements HarnessSession {
       thinkingOptionId?: HarnessThinkingOptionId;
       toolOutputLimit: number;
       supportsThinkingSelection: boolean;
+      permissionMode: OmpPermissionMode;
+      permissionModeId: HarnessPermissionModeId;
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -407,11 +422,13 @@ class OmpHarnessSession implements HarnessSession {
     this.#requestedModel = options.model;
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.#permissionMode = options.permissionMode;
+    this.#permissionModeId = options.permissionModeId;
     this.capabilities = {
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
-        selectPermissionMode: false,
+        selectPermissionMode: true,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
@@ -422,8 +439,12 @@ class OmpHarnessSession implements HarnessSession {
     };
     this.#transport = options.startedTransport ?? null;
     this.initialState = options.startedTransport
-      ? harnessStateFromOmp(options.startedTransport.state, options.startedThinkingLevels ?? null)
-      : {};
+      ? harnessStateFromOmp(
+          options.startedTransport.state,
+          options.startedThinkingLevels ?? null,
+          this.#permissionModeId,
+        )
+      : { effectivePermissionModeId: this.#permissionModeId };
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
@@ -676,16 +697,7 @@ class OmpHarnessSession implements HarnessSession {
     }
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
-    if (command.type === "permissionMode.select") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Omp does not expose a selectable Permission Mode",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (this.#acceptingTurn || this.#active || this.#configuring) {
       return {
         ok: false,
@@ -966,6 +978,99 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  async #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    if (this.#acceptingTurn || this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Omp Session cannot select Permission Mode while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    let permissionMode: OmpPermissionMode;
+    let permissionModeId: HarnessPermissionModeId;
+    try {
+      permissionModeId = harnessPermissionModeIdSchema.parse(command.permissionModeId);
+      permissionMode = decodeOmpPermissionModeId(permissionModeId);
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "invalidRequest") };
+    }
+    if (permissionModeId === this.#permissionModeId) {
+      return { ok: true, value: { completed: true } };
+    }
+    const transport = this.#transport;
+    if (!transport) {
+      this.#permissionMode = permissionMode;
+      this.#permissionModeId = permissionModeId;
+      this.#state = { ...this.#state, effectivePermissionModeId: permissionModeId };
+      this.#event({ type: "session.state.changed", state: this.#state });
+      return { ok: true, value: { completed: true } };
+    }
+    const sessionFile = transport.state.sessionFile;
+    if (!sessionFile) {
+      return {
+        ok: false,
+        error: invalidState("Omp Permission Mode selection requires a persisted Native Session"),
+      };
+    }
+    this.#configuring = true;
+    const nativeSessionId = transport.state.sessionId;
+    const transportOptions = (mode: OmpPermissionMode): OmpRpcSessionOptions => ({
+      cwd: this.#cwd,
+      sessionFile,
+      permissionMode: mode,
+      onFault: (error) => queueMicrotask(() => this.#fault(error)),
+      onSubagentEvent: (event) => this.handleTransportEvent(event),
+    });
+    try {
+      let replacement: OmpTurnTransport | null = null;
+      try {
+        replacement = this.#createTransport(transportOptions(permissionMode));
+        await transport.close();
+        await replacement.start();
+        if (replacement.state.sessionId !== nativeSessionId) {
+          throw new Error("Omp Permission Mode restart changed the Native Session identity");
+        }
+        const thinkingLevels = await replacement.getAvailableThinkingLevels();
+        this.#transport = replacement;
+        this.#permissionMode = permissionMode;
+        this.#permissionModeId = permissionModeId;
+        this.#publishTransportState(replacement.state, thinkingLevels);
+        return { ok: true, value: { completed: true } };
+      } catch (error) {
+        await replacement?.close().catch(() => undefined);
+        let recovery: OmpTurnTransport | null = null;
+        try {
+          recovery = this.#createTransport(transportOptions(this.#permissionMode));
+          await recovery.start();
+          if (recovery.state.sessionId !== nativeSessionId) {
+            throw new Error("Omp Permission Mode recovery changed the Native Session identity");
+          }
+          const thinkingLevels = await recovery.getAvailableThinkingLevels();
+          this.#transport = recovery;
+          this.#publishTransportState(recovery.state, thinkingLevels);
+        } catch (recoveryError) {
+          await recovery?.close().catch(() => undefined);
+          this.#transport = null;
+          this.#fault(
+            new OmpAdapterFaultError({
+              code: "nativeFailure",
+              message: `Omp Permission Mode switch failed and the previous Session could not be recovered: ${errorMessage(recoveryError)}`,
+              retryable: true,
+            }),
+          );
+        }
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1115,6 +1220,7 @@ class OmpHarnessSession implements HarnessSession {
       cwd: this.#cwd,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      permissionMode: this.#permissionMode,
     });
     const starting = transport
       .start()
@@ -1163,7 +1269,7 @@ class OmpHarnessSession implements HarnessSession {
     state: OmpSessionState,
     thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   ): void {
-    this.#state = harnessStateFromOmp(state, thinkingLevels);
+    this.#state = harnessStateFromOmp(state, thinkingLevels, this.#permissionModeId);
     this.#event({ type: "session.state.changed", state: this.#state });
   }
 
@@ -1736,11 +1842,12 @@ export class OmpAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog,
+        permissionModes: OMP_PERMISSION_MODE_CATALOG,
         capabilities: {
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
-            selectPermissionMode: false,
+            selectPermissionMode: true,
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },
@@ -1780,15 +1887,17 @@ export class OmpAdapter implements HarnessAdapter {
       };
     }
     if (input.kind === "create") {
-      if (input.permissionModeId) {
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "Omp does not expose a selectable Permission Mode",
-            retryable: false,
-          },
-        };
+      let permissionModeId =
+        input.permissionModeId ??
+        (input.executionPolicy === "unattended-full-access"
+          ? encodeOmpPermissionModeId("yolo")
+          : OMP_DEFAULT_PERMISSION_MODE_ID);
+      let permissionMode: OmpPermissionMode;
+      try {
+        permissionModeId = harnessPermissionModeIdSchema.parse(permissionModeId);
+        permissionMode = decodeOmpPermissionModeId(permissionModeId);
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
       }
       if (input.model) {
         try {
@@ -1817,6 +1926,8 @@ export class OmpAdapter implements HarnessAdapter {
           ...(input.model ? { model: input.model } : {}),
           ...(thinkingOptionId?.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
           supportsThinkingSelection: this.#thinkingSelectionSupported === true,
+          permissionMode,
+          permissionModeId,
         }),
       };
     }
@@ -1931,6 +2042,8 @@ export class OmpAdapter implements HarnessAdapter {
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
+        permissionMode: "yolo",
+        permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
       });
       return { ok: true, value: session };
     } catch (error) {
@@ -1946,6 +2059,8 @@ export class OmpAdapter implements HarnessAdapter {
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
       supportsThinkingSelection: boolean;
+      permissionMode: OmpPermissionMode;
+      permissionModeId: HarnessPermissionModeId;
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -1967,6 +2082,8 @@ export class OmpAdapter implements HarnessAdapter {
         ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
         supportsThinkingSelection: options.supportsThinkingSelection,
+        permissionMode: options.permissionMode,
+        permissionModeId: options.permissionModeId,
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }

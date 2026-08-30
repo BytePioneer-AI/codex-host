@@ -155,8 +155,6 @@ You can ask the current Agent to delegate an independent task to another Harness
 
 codexhost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
 
-To display reasoning summaries explicitly emitted by an external Harness, enable **codexhost Settings → Model Pool → Show reasoning summaries**. The option is off by default and never reads or stores hidden, encrypted, or raw chain-of-thought content.
-
 <details>
 <summary><h3 id="remote-harness">Remote Harness</h3></summary>
 

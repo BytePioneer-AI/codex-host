@@ -121,6 +121,7 @@ export interface QwenCodeAcpTransportLike {
 
 interface ActiveTool {
   item: QwenCodeProjectedToolItem;
+  rawInput: unknown;
   status?: string;
 }
 
@@ -629,7 +630,11 @@ class QwenCodeHarnessSession implements HarnessSession {
       this.#toolOutputLimit,
     );
     if (hasQwenCodeToolProjection(projection)) item = applyQwenCodeToolProjection(item, projection);
-    active.tools.set(event.callId, { item, ...(event.status ? { status: event.status } : {}) });
+    active.tools.set(event.callId, {
+      item,
+      rawInput: event.rawInput,
+      ...(event.status ? { status: event.status } : {}),
+    });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
     if (event.status === "completed" || event.status === "failed") {
       this.#completeTool(active, event.callId, event.status, event.content, event.rawOutput);
@@ -642,6 +647,7 @@ class QwenCodeHarnessSession implements HarnessSession {
   ): void {
     const tool = active.tools.get(event.callId);
     if (!tool) return;
+    if (event.rawInput !== undefined) tool.rawInput = event.rawInput;
     const projection = projectQwenCodeToolOutput(
       event.content,
       event.rawOutput,
@@ -705,7 +711,7 @@ class QwenCodeHarnessSession implements HarnessSession {
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
     if (status !== "completed") return;
-    const changes = projectQwenCodeFileChanges(content, this.#cwd);
+    const changes = projectQwenCodeFileChanges(content, this.#cwd, tool.rawInput);
     if (!changes) return;
     const fileItem: HostFileChangeItem = {
       type: "fileChange",

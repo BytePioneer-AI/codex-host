@@ -65,6 +65,7 @@ export function mapQwenCodeReplay(
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, QwenCodeProjectedToolItem>();
+  const toolRawInputs = new Map<string, unknown>();
 
   const completeAgent = (): void => {
     if (!agent || agent.text.length === 0) return;
@@ -98,6 +99,8 @@ export function mapQwenCodeReplay(
     const tool = tools.get(callId);
     if (!tool) return;
     tools.delete(callId);
+    const rawInput = toolRawInputs.get(callId);
+    toolRawInputs.delete(callId);
     const outcome: HostItemSnapshot["outcome"] =
       status === "failed"
         ? {
@@ -111,7 +114,7 @@ export function mapQwenCodeReplay(
         : { status: "succeeded" };
     items.push({ item: tool, outcome });
     if (status !== "completed") return;
-    const changes = projectQwenCodeFileChanges(content, cwd);
+    const changes = projectQwenCodeFileChanges(content, cwd, rawInput);
     if (!changes) return;
     const fileItem: HostFileChangeItem = {
       type: "fileChange",
@@ -190,11 +193,13 @@ export function mapQwenCodeReplay(
           cwd,
         }),
       );
+      toolRawInputs.set(event.callId, event.rawInput);
       applyToolProjection(event.callId, event.content, event.rawOutput);
       if (event.status === "completed" || event.status === "failed") {
         completeTool(event.callId, event.status, event.content, event.rawOutput);
       }
     } else if (event.type === "tool.update") {
+      if (event.rawInput !== undefined) toolRawInputs.set(event.callId, event.rawInput);
       applyToolProjection(event.callId, event.content, event.rawOutput);
       if (event.status === "completed" || event.status === "failed") {
         completeTool(event.callId, event.status, event.content, event.rawOutput);

@@ -12,15 +12,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validAbsolutePath(value: unknown): value is string {
+function validDiffPathText(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    path.isAbsolute(value) &&
     value.trim().length > 0 &&
     !value.includes("\0") &&
     !value.includes("\n") &&
     !value.includes("\r")
   );
+}
+
+/**
+ * Qwen Code reports the edited file as a bare basename (`fileName`) while the
+ * tool call's own `file_path` argument stays absolute, so a relative diff path
+ * is resolved against that argument instead of the session cwd (the basename
+ * has already lost the subdirectory).
+ */
+function nativeDiffPath(diffPath: unknown, rawInput: unknown): string | null {
+  if (!validDiffPathText(diffPath)) return null;
+  if (path.isAbsolute(diffPath)) return diffPath;
+  if (isRecord(rawInput) && typeof rawInput.file_path === "string") {
+    const filePath = rawInput.file_path;
+    if (path.isAbsolute(filePath) && !filePath.includes("\0")) return filePath;
+  }
+  return null;
 }
 
 function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
@@ -37,10 +52,12 @@ function displayPath(nativePath: string, cwd: string): { path: string; absolute:
 function projectDiff(
   value: Record<string, unknown>,
   cwd: string,
+  rawInput: unknown,
   remainingTextBytes: number,
 ): { change: HostFileChange; textBytes: number } | null {
+  const nativePath = nativeDiffPath(value.path, rawInput);
   if (
-    !validAbsolutePath(value.path) ||
+    nativePath === null ||
     (typeof value.oldText !== "string" && value.oldText !== null) ||
     typeof value.newText !== "string"
   ) {
@@ -48,17 +65,16 @@ function projectDiff(
   }
   const oldText = value.oldText;
   const newText = value.newText;
-  if (
-    (typeof oldText === "string" && oldText === newText) ||
-    (oldText === null && newText === "")
-  ) {
+  if (oldText === newText || (oldText === null && newText === "")) {
     return null;
   }
   const textBytes = Buffer.byteLength(oldText ?? "", "utf8") + Buffer.byteLength(newText, "utf8");
   if (textBytes > remainingTextBytes) return null;
-  const displayed = displayPath(value.path, cwd);
+  const displayed = displayPath(nativePath, cwd);
   if (!displayed) return null;
-  const kind = oldText === null ? "add" : "update";
+  // The CLI always sends `oldText` as a string, using "" for files it just
+  // created, so both null and "" mark an add.
+  const kind = oldText === null || oldText === "" ? "add" : "update";
   const oldHeader =
     kind === "add" ? "/dev/null" : displayed.absolute ? displayed.path : `a/${displayed.path}`;
   const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
@@ -77,6 +93,7 @@ function projectDiff(
 export function projectQwenCodeFileChanges(
   content: unknown,
   cwd: string,
+  rawInput?: unknown,
   textLimit = DEFAULT_QWEN_CODE_FILE_CHANGE_TEXT_LIMIT,
 ): HostFileChange[] | null {
   if (!Number.isSafeInteger(textLimit) || textLimit <= 0 || !Array.isArray(content)) return null;
@@ -91,7 +108,7 @@ export function projectQwenCodeFileChanges(
   const paths = new Set<string>();
   let textBytes = 0;
   for (const candidate of candidates) {
-    const projected = projectDiff(candidate, cwd, textLimit - textBytes);
+    const projected = projectDiff(candidate, cwd, rawInput, textLimit - textBytes);
     if (!projected || paths.has(projected.change.path)) return null;
     textBytes += projected.textBytes;
     paths.add(projected.change.path);

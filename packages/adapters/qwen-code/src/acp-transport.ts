@@ -172,15 +172,18 @@ function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS
   }
 }
 
-function transportEvent(
+export function transportEvent(
   update: SessionUpdate,
   metadata?: Record<string, unknown>,
 ): QwenCodeTransportEvent | null {
-  const extension = update as unknown as Record<string, unknown>;
-  if (extension.sessionUpdate === "current_mode_update" && typeof extension.modeId === "string") {
-    return { type: "mode.changed", modeId: extension.modeId };
+  if (update.sessionUpdate === "current_mode_update") {
+    const currentModeId = (update as unknown as Record<string, unknown>).currentModeId;
+    if (typeof currentModeId === "string") {
+      return { type: "mode.changed", modeId: currentModeId };
+    }
+    return null;
   }
-  if (extension.sessionUpdate === "usage_update") {
+  if ((update as unknown as Record<string, unknown>).sessionUpdate === "usage_update") {
     return { type: "usage", update, ...(metadata ? { metadata } : {}) };
   }
   if (metadata && isRecord(metadata.usage)) {

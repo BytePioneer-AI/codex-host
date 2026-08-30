@@ -18,7 +18,9 @@ export function combineUsage(base: HostUsage | null, next: HostUsage | null): Ho
 export function usageFromMetadata(metadata: Record<string, unknown> | undefined): HostUsage | null {
   const usage = metadata?.usage;
   if (!isRecord(usage)) return null;
-  const cachedRead = optionalToken(usage.cachedInputTokens ?? usage.cachedTokens);
+  const cachedRead = optionalToken(
+    usage.cachedInputTokens ?? usage.cachedReadTokens ?? usage.cachedTokens,
+  );
   const reasoning = optionalToken(usage.thoughtTokens ?? usage.reasoningTokens);
   try {
     return parseHostUsage({

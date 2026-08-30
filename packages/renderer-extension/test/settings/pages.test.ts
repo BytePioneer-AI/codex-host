@@ -21,7 +21,8 @@ class FakeElement {
   readonly children: unknown[] = [];
   readonly dataset: Record<string, string> = {};
   readonly attributes = new Map<string, string>();
-  readonly #listeners = new Map<string, () => void>();
+  readonly style: Record<string, string> = {};
+  readonly #listeners = new Map<string, (event?: unknown) => void>();
   className = "";
   hidden = false;
   href = "";
@@ -29,22 +30,45 @@ class FakeElement {
   target = "";
   textContent = "";
   type = "";
+  tabIndex = 0;
+  disabled = false;
+  scrollLeft = 0;
+  scrollWidth = 0;
+  clientWidth = 0;
+  title = "";
 
   constructor(
     readonly tagName: string,
     readonly ownerDocument: FakeDocument,
   ) {}
 
-  addEventListener(name: string, listener: () => void): void {
+  addEventListener(name: string, listener: (event?: unknown) => void): void {
     this.#listeners.set(name, listener);
+  }
+
+  removeEventListener(name: string): void {
+    this.#listeners.delete(name);
   }
 
   append(...children: unknown[]): void {
     this.children.push(...children);
   }
 
-  dispatch(name: string): void {
-    this.#listeners.get(name)?.();
+  dispatch(name: string, event?: unknown): void {
+    this.#listeners.get(name)?.(event);
+  }
+
+  focus(): void {}
+
+  scrollBy(options: ScrollToOptions): void {
+    this.scrollLeft += Number(options.left ?? 0);
+    this.dispatch("scroll");
+  }
+
+  scrollIntoView(): void {}
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
   }
 
   replaceChildren(...children: unknown[]): void {
@@ -62,9 +86,15 @@ class FakeDocument {
     navigator: { clipboard: { writeText: this.clipboardWriteText } },
     setTimeout: vi.fn(() => 0),
     clearTimeout: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
   } as unknown as Window;
 
   createElement(tagName: string): FakeElement {
+    return new FakeElement(tagName, this);
+  }
+
+  createElementNS(_namespace: string, tagName: string): FakeElement {
     return new FakeElement(tagName, this);
   }
 }
@@ -129,6 +159,17 @@ function updateStatus(
   };
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 function visibleText(root: FakeElement): string {
   return descendants(root)
     .map(({ textContent }) => textContent)
@@ -137,7 +178,8 @@ function visibleText(root: FakeElement): string {
 }
 
 describe("Renderer Connections page", () => {
-  it("renders failed Agent checks with their diagnostic reason and refreshes", async () => {
+  it("renders Host tabs, install actions, and error details", async () => {
+    const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
       snapshot: vi.fn((): RendererConnectionSnapshot => ({
         adapter: {
@@ -149,7 +191,7 @@ describe("Renderer Connections page", () => {
         hosts: [
           {
             hostId: "local",
-            active: false,
+            active: true,
             agents: [
               {
                 agent: "pi",
@@ -163,16 +205,25 @@ describe("Renderer Connections page", () => {
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
+              {
+                agent: "deepseek-harness",
+                availability: "notInstalled",
+                error: {
+                  code: "notInstalled",
+                  message: "DSH is not installed",
+                  retryable: false,
+                },
+              },
             ],
           },
           {
             hostId: "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
-            active: true,
+            active: false,
             agents: [{ agent: "pi", availability: "ready", error: null }],
           },
         ],
       })),
-      refresh: vi.fn(async () => undefined),
+      refresh: vi.fn(() => refreshRequest.promise),
       subscribe: vi.fn(() => () => undefined),
     };
     const page = createDefaultRendererSettingsPages(
@@ -192,42 +243,53 @@ describe("Renderer Connections page", () => {
     });
 
     expect(visibleText(content)).toContain("本地");
-    expect(visibleText(content)).toContain("远程 Host: 公司 · 当前");
+    expect(
+      descendants(content).filter((candidate) =>
+        candidate.className.split(" ").includes("settings-connection-row__mark--logo"),
+      ),
+    ).toHaveLength(3);
+    expect(visibleText(content)).toContain("CH");
+    expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
     expect(visibleText(content)).toContain("startup");
-    const toggle = elementWithClass(content, "settings-connection-details-toggle");
-    const details = descendants(content).find(
-      (candidate) =>
-        candidate.className.split(" ").includes("settings-connection-details") &&
-        candidate.hidden === false,
+    const issueLink = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
     );
-    if (!details) throw new Error("Expanded connection details are not rendered");
-    expect(details.hidden).toBe(false);
-    toggle.dispatch("click");
-    expect(details.hidden).toBe(true);
-    toggle.dispatch("click");
-    expect(details.hidden).toBe(false);
+    expect(issueLink).toBeDefined();
+    const copyButton = descendants(
+      elementWithClass(content, "settings-connection-error-log-header"),
+    ).find(({ tagName }) => tagName === "button");
+    if (!copyButton) throw new Error("Copy error log button is not rendered");
+    copyButton.dispatch("click");
+    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(
+      expect.stringContaining("host: local"),
+    );
+    await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
     );
     if (!refresh) throw new Error("Connection refresh button is not rendered");
     refresh.dispatch("click");
-    await vi.waitFor(() => expect(diagnostics.refresh).toHaveBeenCalledWith());
-    const copyAll = descendants(content).find(
-      ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "copy-all",
-    );
-    if (!copyAll) throw new Error("Copy-all diagnostics button is not rendered");
-    copyAll.dispatch("click");
-    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8"),
-    );
-    await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
+    expect(refresh.disabled).toBe(true);
+    expect(visibleNotesText(refresh)).toContain("正在诊断...");
+    expect(diagnostics.refresh).toHaveBeenCalledWith();
+    refreshRequest.resolve(undefined);
+    await vi.waitFor(() => expect(refresh.disabled).toBe(false));
+    expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
+    const installLink = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://deepseek-harness.github.io/deepseek-harness/",
+    );
+    expect(installLink).toMatchObject({
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
+
+    expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
       ({ tagName, dataset }) =>
         tagName === "button" &&
@@ -236,12 +298,28 @@ describe("Renderer Connections page", () => {
     if (!remoteTab) throw new Error("Remote Host tab is not rendered");
     remoteTab.dispatch("click");
     const selectedPanel = descendants(content).find(
-      ({ tagName, dataset }) =>
-        tagName === "section" &&
-        dataset.connectionHost === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
+      ({ dataset }) => dataset.connectionHost === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
     );
     expect(selectedPanel).toBeDefined();
     expect(visibleText(content)).not.toContain("pi exited with code 1");
+    const selectedRemoteTab = descendants(content).find(
+      ({ dataset, attributes }) =>
+        dataset.connectionHostTab === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8" &&
+        attributes.get("aria-selected") === "true",
+    );
+    expect(selectedRemoteTab).toBeDefined();
+
+    const hostTabs = elementWithClass(content, "settings-connection-host-tabs");
+    hostTabs.clientWidth = 240;
+    hostTabs.scrollWidth = 720;
+    hostTabs.dispatch("scroll");
+    const scrollRight = descendants(content).find(
+      ({ dataset }) => dataset.connectionHostScroll === "right",
+    );
+    if (!scrollRight) throw new Error("Host scroll button is not rendered");
+    expect(scrollRight.disabled).toBe(false);
+    scrollRight.dispatch("click");
+    expect(hostTabs.scrollLeft).toBeGreaterThan(0);
 
     cleanup?.();
   });

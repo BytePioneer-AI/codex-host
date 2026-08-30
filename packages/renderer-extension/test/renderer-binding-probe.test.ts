@@ -16,6 +16,7 @@ import {
   isOwnershipSubmissionBlocked,
   lateConversationTargetResolution,
   passiveHarnessAvailabilityAgents,
+  refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
   rendererUsageRefreshDelay,
@@ -44,6 +45,42 @@ import {
   formatRendererTokenCount,
   rendererUsageTriggerMaxWidth,
 } from "../src/renderer-usage-control.js";
+
+describe("Renderer connection diagnostics", () => {
+  it("waits for every Host refresh before completing", async () => {
+    let resolveLocal!: () => void;
+    let resolveRemote!: () => void;
+    const local = new Promise<void>((resolve) => {
+      resolveLocal = resolve;
+    });
+    const remote = new Promise<void>((resolve) => {
+      resolveRemote = resolve;
+    });
+    const refreshHost = vi.fn((hostId: string) => (hostId === "local" ? local : remote));
+    let completed = false;
+    const refresh = refreshConnectionHosts(["local", "remote"], refreshHost).then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(refreshHost).toHaveBeenCalledTimes(2);
+    expect(completed).toBe(false);
+    resolveLocal();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    resolveRemote();
+    await refresh;
+    expect(completed).toBe(true);
+  });
+
+  it("rejects when one Host refresh fails", async () => {
+    await expect(
+      refreshConnectionHosts(["local", "remote"], (hostId) =>
+        hostId === "remote" ? Promise.reject(new Error("remote unavailable")) : Promise.resolve(),
+      ),
+    ).rejects.toThrow("remote unavailable");
+  });
+});
 
 describe("Renderer Composer DOM behavior", () => {
   it("does not re-probe ready Agents when an optional Harness is not installed", () => {

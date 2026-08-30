@@ -134,6 +134,13 @@ interface HostHarnessAvailabilityState {
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
 
+export function refreshConnectionHosts(
+  hostIds: Iterable<string>,
+  refreshHost: (hostId: string) => Promise<void>,
+): Promise<void> {
+  return Promise.all([...hostIds].map((hostId) => refreshHost(hostId))).then(() => undefined);
+}
+
 export function rendererUsageRefreshDelay(attempt: number): number {
   const index = Math.max(0, Math.min(Math.trunc(attempt), rendererUsageRefreshDelays.length - 1));
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
@@ -1821,10 +1828,9 @@ export function installRendererBindingProbe(
       };
     },
     refresh(): Promise<void> {
-      for (const hostId of harnessAvailabilityByHost.keys()) {
-        void refreshHarnessAvailabilityForHost(hostId, true, false, true);
-      }
-      return Promise.resolve();
+      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
+        refreshHarnessAvailabilityForHost(hostId, true, false, true),
+      );
     },
     subscribe(listener: () => void): () => void {
       connectionListeners.add(listener);

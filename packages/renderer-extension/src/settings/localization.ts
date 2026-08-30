@@ -36,9 +36,8 @@ export interface RendererSettingsMessages {
   readonly connectionReason: string;
   readonly connectionRefresh: string;
   readonly connectionRefreshing: string;
-  readonly connectionViewDetails: string;
+  readonly connectionViewError: string;
   readonly connectionCopyDetails: string;
-  readonly connectionCopyAll: string;
   readonly connectionCopied: string;
   readonly connectionCopyFailed: string;
   readonly connectionErrorCode: string;
@@ -55,6 +54,19 @@ export interface RendererSettingsMessages {
   readonly connectionStatusError: string;
   readonly connectionStatusInstalling: string;
   readonly connectionStatusUnsupported: string;
+  readonly connectionComponent: string;
+  readonly connectionStatus: string;
+  readonly connectionHostsScrollLeft: string;
+  readonly connectionHostsScrollRight: string;
+  readonly connectionOpenInstallation: string;
+  readonly connectionInstall: string;
+  readonly connectionInstallDescription: string;
+  readonly connectionErrorTitle: string;
+  readonly connectionErrorLog: string;
+  readonly connectionOpenIssue: string;
+  readonly connectionIssueDescription: string;
+  readonly connectionReadyDescription: string;
+  readonly connectionUnavailableDescription: string;
   readonly openSettings: string;
   readonly settingsButtonTitle: string;
   readonly settingsUnavailableTitle: string;
@@ -95,7 +107,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
   connectionsDescription:
-    "Inspect the adapter and each Agent runtime used by the picker. Failed checks keep their error details here.",
+    "View runtime status by Host. Select an item to inspect details or complete its setup.",
   connectionAdapter: "Renderer adapter",
   connectionHosts: "Hosts",
   connectionLocalHost: "Local",
@@ -104,9 +116,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReason: "Reason",
   connectionRefresh: "Run connection diagnostics",
   connectionRefreshing: "Running diagnostics...",
-  connectionViewDetails: "View details",
+  connectionViewError: "View error",
   connectionCopyDetails: "Copy diagnostics",
-  connectionCopyAll: "Copy all diagnostics",
   connectionCopied: "Copied",
   connectionCopyFailed: "Copy failed",
   connectionErrorCode: "Error code",
@@ -123,6 +134,22 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusError: "Error",
   connectionStatusInstalling: "Installing",
   connectionStatusUnsupported: "Unsupported",
+  connectionComponent: "Component",
+  connectionStatus: "Status",
+  connectionHostsScrollLeft: "Show previous Hosts",
+  connectionHostsScrollRight: "Show more Hosts",
+  connectionOpenInstallation: "Open official installation page",
+  connectionInstall: "Install",
+  connectionInstallDescription:
+    "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
+  connectionErrorTitle: "Connection check failed",
+  connectionErrorLog: "Error log",
+  connectionOpenIssue: "Open GitHub Issue",
+  connectionIssueDescription:
+    "Copy the error log and include the Host and reproduction steps when reporting the issue.",
+  connectionReadyDescription: "This component is available on the selected Host.",
+  connectionUnavailableDescription:
+    "This component is not currently available on the selected Host.",
   openSettings: "Open codexhost settings",
   settingsButtonTitle: "codexhost settings",
   settingsUnavailableTitle: "codexhost settings unavailable",
@@ -168,8 +195,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
-  connectionsDescription:
-    "查看适配器和 Agent 运行时的真实检查结果。失败检查会保留错误详情，方便排查无法选择的问题。",
+  connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
   connectionLocalHost: "本地",
@@ -178,9 +204,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReason: "原因",
   connectionRefresh: "重新诊断连接",
   connectionRefreshing: "正在诊断...",
-  connectionViewDetails: "查看详情",
+  connectionViewError: "查看错误",
   connectionCopyDetails: "复制诊断信息",
-  connectionCopyAll: "复制全部诊断信息",
   connectionCopied: "已复制",
   connectionCopyFailed: "复制失败",
   connectionErrorCode: "错误码",
@@ -197,6 +222,20 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusError: "错误",
   connectionStatusInstalling: "安装中",
   connectionStatusUnsupported: "不支持",
+  connectionComponent: "组件",
+  connectionStatus: "状态",
+  connectionHostsScrollLeft: "查看前面的 Host",
+  connectionHostsScrollRight: "查看更多 Host",
+  connectionOpenInstallation: "前往官方安装页面",
+  connectionInstall: "安装",
+  connectionInstallDescription:
+    "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",
+  connectionErrorTitle: "连接检查失败",
+  connectionErrorLog: "错误日志",
+  connectionOpenIssue: "提交 GitHub Issue",
+  connectionIssueDescription: "提交前请复制错误日志，并在 Issue 中说明当前 Host 与复现步骤。",
+  connectionReadyDescription: "该组件在当前 Host 上可用。",
+  connectionUnavailableDescription: "该组件当前无法在所选 Host 上使用。",
   openSettings: "打开 codexhost 设置",
   settingsButtonTitle: "codexhost 设置",
   settingsUnavailableTitle: "codexhost 设置不可用",

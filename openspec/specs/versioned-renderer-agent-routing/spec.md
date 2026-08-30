@@ -483,7 +483,7 @@ Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog,
 
 ### Requirement: Renderer projects provider-native Permission Mode controls
 
-On the supported Desktop build, Renderer SHALL identify the unique official permission trigger by its semantic navigation attribute and bounded Composer ownership. Codex SHALL retain that official trigger unchanged. Pi SHALL hide it without a replacement. Claude Code SHALL hide it and mount a codexhost picker in the same parent and position using only its Adapter catalog.
+On the supported Desktop build, Renderer SHALL identify the unique official permission trigger by its semantic navigation attribute and bounded Composer ownership. Codex SHALL retain that official trigger unchanged. A Harness without selectable Permission Modes SHALL hide it without a replacement. Any external Harness that reports a validated Permission Mode catalog SHALL hide it and mount a codexhost picker in the same parent and position using only that Adapter catalog's identities and semantics. Renderer MAY apply shared locale-specific presentation to known catalog labels and descriptions, but Adapters MUST NOT construct locale-specific catalogs, and unknown presentation text MUST remain unchanged.
 
 #### Scenario: User selects Codex
 
@@ -495,11 +495,12 @@ On the supported Desktop build, Renderer SHALL identify the unique official perm
 - **WHEN** the current Composer belongs to Pi
 - **THEN** the official Codex permission control SHALL be hidden and no replacement mode picker SHALL be shown
 
-#### Scenario: User selects Claude Code
+#### Scenario: User selects an external Harness with Permission Modes
 
-- **WHEN** Claude inspection reports selectable Permission Modes
-- **THEN** the replacement picker SHALL display exactly the Adapter catalog with provider-native labels
-- **AND** it SHALL visually distinguish the dangerous bypass option without changing its semantics
+- **WHEN** external Harness inspection reports selectable Permission Modes
+- **THEN** the replacement picker SHALL display exactly the Adapter catalog entries with Renderer-owned localized presentation where a shared translation is known
+- **AND** unknown labels and descriptions SHALL remain unchanged
+- **AND** it SHALL visually distinguish dangerous options without changing their semantics
 
 #### Scenario: Current Claude catalog does not support Auto
 

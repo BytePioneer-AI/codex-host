@@ -77,6 +77,12 @@ export {
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
 export type { RendererComposerContractInspection } from "./renderer-composer-dom.js";
+export {
+  rendererHarnessCommandPresentation,
+  rendererHarnessMessages,
+  rendererPermissionModePresentation,
+} from "./renderer-harness-localization.js";
+export type { RendererHarnessMessages } from "./renderer-harness-localization.js";
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {

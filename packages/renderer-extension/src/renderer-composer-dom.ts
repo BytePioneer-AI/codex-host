@@ -730,8 +730,10 @@ export function renderComposerAgentControl(
     control.permissionModePicker,
     permissionModeView,
     permissionModeVisible,
+    locale,
   );
   if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
+  control.harnessCommands.setLocale(locale);
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

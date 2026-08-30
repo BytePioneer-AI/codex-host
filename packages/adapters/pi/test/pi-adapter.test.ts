@@ -384,7 +384,7 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("passes unattended full access to the native transport", async () => {
+  it("does not translate execution policy into Pi permission options", async () => {
     const { adapter, dependencies } = fixture();
     const opened = await adapter.open({
       kind: "create",
@@ -394,7 +394,7 @@ describe("Pi HarnessAdapter Session", () => {
     if (!opened.ok) throw new Error(opened.error.message);
     await opened.value.execute(textTurn("permission-turn"));
     expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ unattendedFullAccess: true }),
+      expect.not.objectContaining({ unattendedFullAccess: expect.anything() }),
     );
     await adapter.close();
   });

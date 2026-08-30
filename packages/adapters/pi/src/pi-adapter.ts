@@ -367,7 +367,6 @@ class PiHarnessSession implements HarnessSession {
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
-  readonly #unattendedFullAccess: boolean;
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -390,7 +389,6 @@ class PiHarnessSession implements HarnessSession {
       thinkingOptionId?: HarnessThinkingOptionId;
       toolOutputLimit: number;
       supportsThinkingSelection: boolean;
-      unattendedFullAccess?: boolean;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -403,7 +401,6 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedModel = options.model;
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
-    this.#unattendedFullAccess = options.unattendedFullAccess === true;
     this.capabilities = {
       configuration: {
         selectModel: true,
@@ -969,7 +966,6 @@ class PiHarnessSession implements HarnessSession {
     const transport = this.#createTransport({
       cwd: this.#cwd,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
-      ...(this.#unattendedFullAccess ? { unattendedFullAccess: true } : {}),
     });
     const starting = transport
       .start()
@@ -1682,7 +1678,6 @@ export class PiAdapter implements HarnessAdapter {
           ...(input.model ? { model: input.model } : {}),
           ...(thinkingOptionId?.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
           supportsThinkingSelection: this.#thinkingSelectionSupported === true,
-          unattendedFullAccess: input.executionPolicy === "unattended-full-access",
         }),
       };
     }
@@ -1811,7 +1806,6 @@ export class PiAdapter implements HarnessAdapter {
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
       supportsThinkingSelection: boolean;
-      unattendedFullAccess?: boolean;
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
@@ -1833,7 +1827,6 @@ export class PiAdapter implements HarnessAdapter {
         ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
         supportsThinkingSelection: options.supportsThinkingSelection,
-        ...(options.unattendedFullAccess ? { unattendedFullAccess: true } : {}),
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }

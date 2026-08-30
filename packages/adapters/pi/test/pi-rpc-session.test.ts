@@ -734,19 +734,6 @@ describe("Pi RPC Turn aggregation", () => {
     expect(invocation.command).toBe(piCommand);
   });
 
-  it("uses yolo approval mode for unattended full access", () => {
-    expect(
-      piRpcProcessCommand({
-        cwd: process.cwd(),
-        environment: {},
-        command: "/synthetic/pi",
-        unattendedFullAccess: true,
-      }),
-    ).toMatchObject({
-      arguments: ["--mode", "rpc", "--approval-mode", "yolo"],
-    });
-  });
-
   it("builds mutually exclusive Native Session resume and Fork argv", async () => {
     const options = {
       cwd: process.cwd(),

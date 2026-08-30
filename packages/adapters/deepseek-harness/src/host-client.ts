@@ -1,16 +1,49 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
-import type { HostFrame, MuxFrame, RpcRequest } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type { HostFrame, MuxFrame, RpcError, RpcRequest } from "@deepseek-ai/dsh-host-apiproxy/api";
 import { hostFrameSchema, muxFrameSchema } from "@deepseek-ai/dsh-host-apiproxy/api/events.schema";
-import { serverRequestSchema } from "@deepseek-ai/dsh-host-apiproxy/api/rpc.schema";
+import {
+  serverRequestSchema,
+  serverResponseSchema,
+} from "@deepseek-ai/dsh-host-apiproxy/api/rpc.schema";
 import { AbstractApiClient, type IApiClient } from "@deepseek-ai/dsh-host-apiproxy/client";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
-export type DeepSeekHostClient = IApiClient;
+export type DeepSeekHostClient = IApiClient & { readonly commands: DeepSeekCommandClient };
 export type DeepSeekMuxEnvelope = RpcRequest<MuxFrame>;
 export type DeepSeekHostEnvelope = RpcRequest<HostFrame>;
+
+export interface DeepSeekCommandDescriptor {
+  readonly name: string;
+  readonly description: string;
+  readonly input?: { readonly hint: string; readonly images?: boolean };
+}
+
+export interface DeepSeekCommandExecution {
+  readonly commandId: string;
+  readonly result:
+    | { readonly kind: "success"; readonly text?: string; readonly sourceEventSeq?: number }
+    | { readonly kind: "error"; readonly text: string };
+}
+
+export type DeepSeekCommandResult<T> =
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: RpcError };
+
+export interface DeepSeekCommandClient {
+  list(
+    sessionId: SessionId,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCommandResult<DeepSeekCommandDescriptor[]>>;
+  execute(
+    sessionId: SessionId,
+    line: string,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCommandResult<DeepSeekCommandExecution | undefined>>;
+}
 
 export type DeepSeekHarnessTransportErrorCode =
   "notInstalled" | "unavailable" | "protocolError" | "processExited";
@@ -28,13 +61,72 @@ export class DeepSeekHarnessTransportError extends Error {
 type StreamFrame = MuxFrame | HostFrame;
 type StreamItem<F> = { type: "frame"; envelope: RpcRequest<F> } | { type: "end" };
 type FrameSchema<F> = { parse(value: unknown): F };
+const MISSING_COMMAND_IMAGES =
+  'typert gateway: commands/execute: args fields do not match the descriptor: missing "images"';
+
+function commandProtocolError(method: string, detail: string): DeepSeekHarnessTransportError {
+  return new DeepSeekHarnessTransportError(
+    "protocolError",
+    `DeepSeek Harness '${method}' returned ${detail}`,
+  );
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseCommandDescriptors(value: unknown): DeepSeekCommandDescriptor[] {
+  const valid =
+    Array.isArray(value) &&
+    value.every((entry) => {
+      const descriptor = record(entry);
+      if (
+        !descriptor ||
+        typeof descriptor.name !== "string" ||
+        typeof descriptor.description !== "string"
+      ) {
+        return false;
+      }
+      if (descriptor.input === undefined) return true;
+      const input = record(descriptor.input);
+      return (
+        !!input &&
+        typeof input.hint === "string" &&
+        (input.images === undefined || typeof input.images === "boolean")
+      );
+    });
+  if (!valid) throw new TypeError("an invalid command catalog");
+  return value as DeepSeekCommandDescriptor[];
+}
+
+function parseCommandExecution(value: unknown): DeepSeekCommandExecution | undefined {
+  if (value === undefined) return undefined;
+  const execution = record(value);
+  const result = record(execution?.result);
+  const validResult =
+    !!result &&
+    ((result.kind === "error" && typeof result.text === "string") ||
+      (result.kind === "success" &&
+        (result.text === undefined || typeof result.text === "string") &&
+        (result.sourceEventSeq === undefined ||
+          (Number.isSafeInteger(result.sourceEventSeq) &&
+            (result.sourceEventSeq as number) >= 0))));
+  if (!execution || typeof execution.commandId !== "string" || !validResult) {
+    throw new TypeError("an invalid command execution");
+  }
+  return value as DeepSeekCommandExecution;
+}
 
 export class NodeDeepSeekHostClient extends AbstractApiClient {
+  readonly commands: DeepSeekCommandClient;
   readonly #endpoint: URL;
 
   constructor(endpoint: string, timeoutMs?: number) {
     super(timeoutMs);
     this.#endpoint = parseLoopbackEndpoint(endpoint);
+    this.commands = new NodeDeepSeekCommandClient(endpoint, timeoutMs);
   }
 
   protected override resolveBase(): string {
@@ -129,6 +221,98 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
       socket.removeEventListener("error", handleError);
       socket.removeEventListener("close", handleClose);
       socket.close();
+    }
+  }
+}
+
+export class NodeDeepSeekCommandClient implements DeepSeekCommandClient {
+  readonly #endpoint: URL;
+  readonly #timeoutMs: number;
+
+  constructor(endpoint: string, timeoutMs = 5_000) {
+    this.#endpoint = parseLoopbackEndpoint(endpoint);
+    this.#timeoutMs = timeoutMs;
+  }
+
+  list(
+    sessionId: SessionId,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCommandResult<DeepSeekCommandDescriptor[]>> {
+    const timeout = AbortSignal.timeout(this.#timeoutMs);
+    return this.#call(
+      "commands/list",
+      { agentId: sessionId },
+      parseCommandDescriptors,
+      signal ? AbortSignal.any([signal, timeout]) : timeout,
+    );
+  }
+
+  async execute(
+    sessionId: SessionId,
+    line: string,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCommandResult<DeepSeekCommandExecution | undefined>> {
+    const result = await this.#call(
+      "commands/execute",
+      { agentId: sessionId, line },
+      parseCommandExecution,
+      signal,
+    );
+    if (
+      !result.ok &&
+      result.error.code === "internal" &&
+      result.error.message === MISSING_COMMAND_IMAGES
+    ) {
+      // rc.6 has no images parameter; newer DSH requires an explicit empty batch.
+      return this.#call(
+        "commands/execute",
+        { agentId: sessionId, line, images: [] },
+        parseCommandExecution,
+        signal,
+      );
+    }
+    return result;
+  }
+
+  async #call<T>(
+    method: string,
+    args: Record<string, unknown>,
+    parse: (value: unknown) => T,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCommandResult<T>> {
+    const rpcId = randomUUID();
+    const response = await globalThis.fetch(new URL(`/api/${method}`, this.#endpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "client-request", rpcId, method, payload: { args } }),
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      throw new DeepSeekHarnessTransportError(
+        "unavailable",
+        `DeepSeek Harness '${method}' transport failed with HTTP ${response.status}`,
+      );
+    }
+    let envelope: ReturnType<typeof serverResponseSchema.parse>;
+    try {
+      envelope = serverResponseSchema.parse(await response.json());
+    } catch (error) {
+      throw commandProtocolError(
+        method,
+        `an invalid response: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (envelope.rpcId !== rpcId) {
+      throw new DeepSeekHarnessTransportError(
+        "protocolError",
+        `DeepSeek Harness '${method}' returned an unexpected RPC identity`,
+      );
+    }
+    if (!envelope.result.ok) return envelope.result;
+    try {
+      return { ok: true, value: parse(envelope.result.value) };
+    } catch (error) {
+      throw commandProtocolError(method, error instanceof Error ? error.message : String(error));
     }
   }
 }

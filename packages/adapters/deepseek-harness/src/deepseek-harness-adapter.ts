@@ -146,6 +146,7 @@ const deepSeekHarnessId = harnessIdSchema.parse("deepseek-harness");
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const HISTORY_PAGE_MESSAGES = 100;
 const HISTORY_PAGE_LIMIT = 10_000;
+const DELEGATION_PERMISSION_PRESET = "danger-full-access";
 
 function normalizedError(error: unknown, fallback: HarnessError["code"]): HarnessError {
   if (error instanceof DeepSeekHarnessTransportError) {
@@ -177,6 +178,59 @@ function unwrapRpc<T>(response: RpcResponse<T>, operation: string): T {
     error.code === "session-not-found" ? "unavailable" : "protocolError",
     `DeepSeek Harness '${operation}' failed: ${error.message}`,
   );
+}
+
+function delegationPermissionIsApplied(entries: readonly HistoryEntry[]): boolean {
+  let preset: string | undefined;
+  let sandboxMode: string | undefined;
+  let approvalPolicy: string | undefined;
+  for (const entry of entries) {
+    const nativeEvent: unknown = entry.event;
+    if (
+      !isRecord(nativeEvent) ||
+      typeof nativeEvent.type !== "string" ||
+      !isRecord(nativeEvent.data)
+    ) {
+      continue;
+    }
+    const data = nativeEvent.data;
+    if (nativeEvent.type === "permission/preset" && nonBlankString(data.preset)) {
+      preset = data.preset;
+    } else if (nativeEvent.type === "sandbox/mode" && nonBlankString(data.mode)) {
+      sandboxMode = data.mode;
+    } else if (nativeEvent.type === "approval/policy" && nonBlankString(data.policy)) {
+      approvalPolicy = data.policy;
+    }
+  }
+  return (
+    preset === DELEGATION_PERMISSION_PRESET &&
+    sandboxMode === DELEGATION_PERMISSION_PRESET &&
+    approvalPolicy === "never"
+  );
+}
+
+async function applyDelegationPermission(
+  client: DeepSeekHostClient,
+  sessionId: SessionId,
+): Promise<void> {
+  const execution = await client.commands.execute({
+    agentId: sessionId,
+    line: `/permission ${DELEGATION_PERMISSION_PRESET}`,
+    images: [],
+  });
+  if (execution.result.kind !== "success") {
+    throw new DeepSeekHarnessTransportError(
+      "nativeFailure",
+      execution.result.text ?? "DeepSeek Harness did not apply the requested Permission Mode",
+    );
+  }
+  const entries = await readAllDeepSeekHistory(client, sessionId);
+  if (!delegationPermissionIsApplied(entries)) {
+    throw new DeepSeekHarnessTransportError(
+      "nativeFailure",
+      "DeepSeek Harness did not confirm danger-full-access with approval policy never",
+    );
+  }
 }
 
 export async function readAllDeepSeekHistory(
@@ -1227,6 +1281,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
               }),
               "session.selectModel",
             );
+          }
+          if (input.executionPolicy === "unattended-full-access") {
+            await applyDelegationPermission(this.#connection.client, sessionId as SessionId);
           }
         }
         const [entries, modelState] = await Promise.all([

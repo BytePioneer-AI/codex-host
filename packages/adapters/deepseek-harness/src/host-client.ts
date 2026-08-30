@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
 
@@ -8,12 +9,26 @@ import { hostFrameSchema, muxFrameSchema } from "@deepseek-ai/dsh-host-apiproxy/
 import { serverRequestSchema } from "@deepseek-ai/dsh-host-apiproxy/api/rpc.schema";
 import { AbstractApiClient, type IApiClient } from "@deepseek-ai/dsh-host-apiproxy/client";
 
-export type DeepSeekHostClient = IApiClient;
+export interface DeepSeekCommandResult {
+  commandId: string;
+  result:
+    { kind: "success"; text?: string; sourceEventSeq?: number } | { kind: "error"; text: string };
+}
+
+export type DeepSeekHostClient = IApiClient & {
+  commands: {
+    execute(input: {
+      agentId: string;
+      line: string;
+      images: readonly [];
+    }): Promise<DeepSeekCommandResult>;
+  };
+};
 export type DeepSeekMuxEnvelope = RpcRequest<MuxFrame>;
 export type DeepSeekHostEnvelope = RpcRequest<HostFrame>;
 
 export type DeepSeekHarnessTransportErrorCode =
-  "notInstalled" | "unavailable" | "protocolError" | "processExited";
+  "notInstalled" | "unavailable" | "protocolError" | "processExited" | "nativeFailure";
 
 export class DeepSeekHarnessTransportError extends Error {
   constructor(
@@ -29,6 +44,39 @@ type StreamFrame = MuxFrame | HostFrame;
 type StreamItem<F> = { type: "frame"; envelope: RpcRequest<F> } | { type: "end" };
 type FrameSchema<F> = { parse(value: unknown): F };
 
+type DeepSeekCommandResponse = {
+  result:
+    | { ok: true; value: DeepSeekCommandResult | undefined }
+    | { ok: false; error: { code: string; message: string } };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCommandResponse(value: unknown): value is DeepSeekCommandResponse {
+  if (!isRecord(value) || !isRecord(value.result) || typeof value.result.ok !== "boolean") {
+    return false;
+  }
+  if (!value.result.ok) {
+    return (
+      isRecord(value.result.error) &&
+      typeof value.result.error.code === "string" &&
+      typeof value.result.error.message === "string"
+    );
+  }
+  if (value.result.value === undefined) return true;
+  if (!isRecord(value.result.value) || typeof value.result.value.commandId !== "string") {
+    return false;
+  }
+  const result = value.result.value.result;
+  return (
+    isRecord(result) &&
+    (result.kind === "success" || result.kind === "error") &&
+    (result.text === undefined || typeof result.text === "string")
+  );
+}
+
 export class NodeDeepSeekHostClient extends AbstractApiClient {
   readonly #endpoint: URL;
 
@@ -43,6 +91,57 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
 
   protected doFetch(input: URL, init?: RequestInit): Promise<Response> {
     return globalThis.fetch(input, init);
+  }
+
+  readonly commands = {
+    execute: (input: {
+      agentId: string;
+      line: string;
+      images: readonly [];
+    }): Promise<DeepSeekCommandResult> => this.#executeCommand(input),
+  };
+
+  async #executeCommand(input: {
+    agentId: string;
+    line: string;
+    images: readonly [];
+  }): Promise<DeepSeekCommandResult> {
+    const response = await this.doFetch(new URL("/api/commands/execute", this.#endpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "client-request",
+        rpcId: `codexhost-${randomUUID()}`,
+        method: "commands/execute",
+        payload: { args: input },
+      }),
+    });
+    if (!response.ok) {
+      throw new DeepSeekHarnessTransportError(
+        "unavailable",
+        `DeepSeek Harness commands/execute returned HTTP ${response.status}`,
+      );
+    }
+    const envelope: unknown = await response.json();
+    if (!isCommandResponse(envelope)) {
+      throw new DeepSeekHarnessTransportError(
+        "protocolError",
+        "DeepSeek Harness commands/execute returned an invalid response",
+      );
+    }
+    if (!envelope.result.ok) {
+      throw new DeepSeekHarnessTransportError(
+        envelope.result.error.code === "session-not-found" ? "unavailable" : "protocolError",
+        `DeepSeek Harness commands/execute failed: ${envelope.result.error.message}`,
+      );
+    }
+    if (!envelope.result.value) {
+      throw new DeepSeekHarnessTransportError(
+        "protocolError",
+        "DeepSeek Harness did not recognize the requested command",
+      );
+    }
+    return envelope.result.value;
   }
 
   protected override openMux(

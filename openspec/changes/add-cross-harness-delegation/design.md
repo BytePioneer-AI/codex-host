@@ -74,7 +74,7 @@ Subagent 子 Thread 语义是「同一 Harness 内的只读附属品」，`exter
 
 ### 委派 Session 统一使用无人值守执行策略
 
-`delegate start` 在创建目标 Session 时携带统一的 `unattended-full-access` 执行意图，而不是让 Coordinator 拼接 Harness 私有命令。各 Adapter 在自身所有权内将该意图转换为委派默认权限设置：Claude Code 使用 `auto` Permission Mode，由 Claude Code 判断哪些操作可自动执行；Grok 使用 `always-approve`；Pi 与 OMP 以 `--approval-mode yolo` 启动。原生 Codex 的官方 `thread/start` 显式携带 `approvalPolicy: "never"` 与 `sandbox: "danger-full-access"`。DeepSeek Harness 的原生权限预设已经验证存在，但其当前 Host Remote 控制入口与 Adapter 依赖版本不一致，本变更暂不接入，避免产生权限已切换的假成功。
+`delegate start` 在创建目标 Session 时携带统一的 `unattended-full-access` 执行意图，而不是让 Coordinator 拼接 Harness 私有命令。各 Adapter 在自身所有权内将该意图转换为委派默认权限设置：Claude Code 使用 `auto` Permission Mode，由 Claude Code 判断哪些操作可自动执行；Grok 使用 `always-approve`；Pi 与 OMP 以 `--approval-mode yolo` 启动。DeepSeek Harness 使用最新版 Host Remote `commands/execute` 执行 `/permission danger-full-access`，并在任务投递前同时校验命令成功以及历史中最终的 `permission/preset=danger-full-access`、`sandbox/mode=danger-full-access`、`approval/policy=never`；最新版调用必须显式传递空的 `images` 列表。原生 Codex 的官方 `thread/start` 显式携带 `approvalPolicy: "never"` 与 `sandbox: "danger-full-access"`。
 
 该策略只用于委派创建，不改变用户从 Desktop 创建普通 Thread 时选择的权限。未来恢复或继续委派 Thread 时应保留 Native Session 已记录的权限状态，而不是回退到 Adapter 默认值。若目标 Harness 声明支持该执行意图但无法应用，创建 SHALL 失败并走现有回滚，不得留下等待人工审批的半运行委派。
 

@@ -6,7 +6,7 @@ codexhost 已经能在 Codex Desktop 中并行运行多个 Harness，但每个 T
 
 ## What Changes
 
-- 新增 `codexhost delegate start`：由 Harness A 发起，为目标 Harness 创建归属它自己的会话与一个**普通可写**子 Thread，并使其出现在 Codex Desktop 会话列表中。委派 Session 默认采用目标 Harness 的无人值守执行策略：由各 Adapter 将统一执行意图转换为自身原生权限配置；Claude Code 使用 `auto` Permission Mode，原生 Codex 使用 `approvalPolicy: "never"` 与 `danger-full-access`。
+- 新增 `codexhost delegate start`：由 Harness A 发起，为目标 Harness 创建归属它自己的会话与一个**普通可写**子 Thread，并使其出现在 Codex Desktop 会话列表中。委派 Session 默认采用目标 Harness 的无人值守执行策略：由各 Adapter 将统一执行意图转换为自身原生权限配置；Claude Code 使用 `auto` Permission Mode，DeepSeek Harness 使用最新版 Remote Command API 切换到 `danger-full-access` 并确认 `approval/policy=never`，原生 Codex 使用 `approvalPolicy: "never"` 与 `danger-full-access`。
 - 新增由共享 Agent Skill 承载的委派触发：codexhost 安装两份内容完全一致的薄 Skill，分别位于 `~/.agents/skills/codexhost-delegation/SKILL.md` 与 `~/.claude/skills/codexhost-delegation/SKILL.md`。前者覆盖读取共享 Agent Skills 根目录的发起方，后者兼容 Claude Code；Skill 只解释委派语法并要求先运行 `codexhost delegate --help`，不复制完整命令文档。Host 不在用户 Turn 中注入提示，也不改写原生 Codex 请求。
 - 新增 Delegation 关系持久化：父子 Thread 关系与可选 Request ID 幂等，独立于 Thread 记录保存；省略 Request ID 时在有界时间窗内按父 Thread、目标 Harness 与任务文本去重。Host 不根据任务文本自动触发委派，Host 投递的任务 Turn 也不依赖 Skill。
 - 新增 `codexhost thread read|wait|list`：接受用户提供的 Thread 标识（裸 ID 或 `codex://threads/<id>` 深度链接），可观察外部 Harness Thread 与原生 Codex Thread，不限于自己委派出去的。`read` 默认只返回状态、最新可见进度与最终 Agent 消息，按需通过 `--view messages` 分页读取用户/Agent 可见消息；首版不返回工具调用、工具输出或 reasoning summary。

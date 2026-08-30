@@ -62,6 +62,7 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     history: vi.fn(),
     models: vi.fn(),
     selectModel: vi.fn(),
+    executeCommand: vi.fn(),
     prompt: vi.fn(),
     cancel: vi.fn(),
     respond: vi.fn(),
@@ -103,6 +104,22 @@ class FakeConnection implements DeepSeekHostConnectionLike {
         return Promise.resolve(success({ selected: this.currentModel }));
       },
     );
+    this.calls.executeCommand.mockImplementation(
+      ({ agentId }: { agentId: string; line: string; images: readonly [] }) => {
+        const history = this.history.get(agentId) ?? [];
+        const seq = history.length;
+        this.history.set(agentId, [
+          ...history,
+          event(seq, "permission/preset", { preset: "danger-full-access" }),
+          event(seq + 1, "sandbox/mode", { mode: "danger-full-access" }),
+          event(seq + 2, "approval/policy", { policy: "never" }),
+        ]);
+        return Promise.resolve({
+          commandId: "command-1",
+          result: { kind: "success" as const, text: "preset danger-full-access" },
+        });
+      },
+    );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
     this.calls.cancel.mockResolvedValue(success({ accepted: true }));
     this.calls.respond.mockResolvedValue({ accepted: true });
@@ -123,6 +140,7 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       llm: {
         models: vi.fn().mockResolvedValue(success({ groups: MODEL_GROUPS, failures: [] })),
       },
+      commands: { execute: this.calls.executeCommand },
       respond: this.calls.respond,
     } as unknown as DeepSeekHostClient;
   }
@@ -296,6 +314,77 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(false);
     await adapter.close();
     expect(connection.closed).toBe(true);
+  });
+
+  it("uses danger-full-access only for unattended delegated Sessions", async () => {
+    const { adapter, connection } = fixture();
+
+    const regular = await adapter.open({ kind: "create", cwd: "/workspace" });
+    expect(regular.ok).toBe(true);
+    expect(connection.calls.executeCommand).not.toHaveBeenCalled();
+    if (!regular.ok) throw new Error(regular.error.message);
+    await regular.value.close();
+
+    const delegated = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      executionPolicy: "unattended-full-access",
+    });
+    expect(delegated.ok).toBe(true);
+    expect(connection.calls.executeCommand).toHaveBeenCalledWith({
+      agentId: "session-native-1",
+      line: "/permission danger-full-access",
+      images: [],
+    });
+    await adapter.close();
+  });
+
+  it("fails delegated Session creation when danger-full-access is not confirmed", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.executeCommand.mockResolvedValueOnce({
+      commandId: "command-1",
+      result: { kind: "success", text: "preset danger-full-access" },
+    });
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not confirm danger-full-access with approval policy never",
+        retryable: false,
+      },
+    });
+    await adapter.close();
+  });
+
+  it("fails delegated Session creation when the native permission command fails", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.executeCommand.mockResolvedValueOnce({
+      commandId: "command-1",
+      result: { kind: "error", text: "permission command failed" },
+    });
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "permission command failed",
+        retryable: false,
+      },
+    });
+    await adapter.close();
   });
 
   it("selects another Model for a resumed Session and publishes confirmed state", async () => {

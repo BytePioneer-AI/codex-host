@@ -59,6 +59,13 @@ codexhost SHALL 从同一权威模板向 `~/.agents/skills/codexhost-delegation/
 - **AND** SHALL 在无 Desktop 请求上下文的情况下主动发布该子 Host Thread 为已开始
 - **AND** 调用方 SHALL 收到该子 Thread 的标识与其深度链接
 
+#### Scenario: 委派给 DeepSeek Harness
+- **WHEN** 调用方发起一次委派且目标为 DeepSeek Harness
+- **THEN** Adapter SHALL 在创建 Native Session 后通过最新版 `commands/execute` 执行 `/permission danger-full-access`
+- **AND** 调用 SHALL 显式传递空的 `images` 列表
+- **AND** Adapter SHALL 在投递任务前确认命令成功，并从原生历史确认最终状态为 `permission/preset=danger-full-access`、`sandbox/mode=danger-full-access` 与 `approval/policy=never`
+- **AND** 任一确认失败时创建 SHALL 失败并触发现有委派回滚
+
 #### Scenario: 委派给原生 Codex
 - **WHEN** 调用方发起一次委派且目标为原生 Codex Harness
 - **THEN** Host SHALL 通过对官方 App Server 的带外请求创建一个原生 Codex Thread 并投递任务

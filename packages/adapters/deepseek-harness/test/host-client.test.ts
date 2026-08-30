@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,6 +48,63 @@ function childProcess(): ChildProcess {
 }
 
 describe("DeepSeek local Host connection", () => {
+  it("executes the latest DSH Remote Command shape with an explicit empty image list", async () => {
+    const requests: unknown[] = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const envelope = JSON.parse(Buffer.concat(chunks).toString()) as { rpcId: string };
+        requests.push(envelope);
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            type: "server-response",
+            rpcId: envelope.rpcId,
+            result: {
+              ok: true,
+              value: {
+                commandId: "command-1",
+                result: { kind: "success", text: "preset danger-full-access" },
+              },
+            },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const client = new NodeDeepSeekHostClient(`http://127.0.0.1:${address.port}`);
+
+    await expect(
+      client.commands.execute({
+        agentId: "session-1",
+        line: "/permission danger-full-access",
+        images: [],
+      }),
+    ).resolves.toEqual({
+      commandId: "command-1",
+      result: { kind: "success", text: "preset danger-full-access" },
+    });
+    expect(requests).toEqual([
+      expect.objectContaining({
+        type: "client-request",
+        method: "commands/execute",
+        payload: {
+          args: {
+            agentId: "session-1",
+            line: "/permission danger-full-access",
+            images: [],
+          },
+        },
+      }),
+    ]);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+
   it("connects to an existing compatible Host without spawning or stopping it", async () => {
     const spawn = vi.fn();
     const dependencies: DeepSeekHostConnectionDependencies = {

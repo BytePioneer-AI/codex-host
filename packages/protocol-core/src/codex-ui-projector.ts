@@ -294,7 +294,12 @@ export class CodexTurnProjector {
     return {
       id: this.#turnId,
       status: "inProgress",
-      items: [],
+      items: this.#wireItemOrder.flatMap((itemId) => {
+        const projected = this.#items.get(itemId);
+        return projected?.wireStarted && projected.item.type === "agentMessage"
+          ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+          : [];
+      }),
       error: null,
       startedAt,
       completedAt: null,

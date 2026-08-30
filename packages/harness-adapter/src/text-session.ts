@@ -67,6 +67,7 @@ export interface InspectHarnessInput {
 export interface CreateSessionInput {
   kind: "create";
   cwd: string;
+  environment?: Record<string, string | undefined>;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
@@ -76,6 +77,7 @@ export interface ResumeSessionInput {
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
+  environment?: Record<string, string | undefined>;
   knownTurnRefs?: NativeTurnRef[];
 }
 
@@ -85,12 +87,14 @@ export interface ForkSessionInput {
   checkpoint: NativeCheckpointRef;
   /** Execution cwd for the derived Native Session. */
   cwd: string;
+  environment?: Record<string, string | undefined>;
 }
 
 export interface RollbackLastTurnSessionInput {
   kind: "rollbackLastTurn";
   sourceRef: NativeSessionRef;
   cwd: string;
+  environment?: Record<string, string | undefined>;
 }
 
 export type OpenSessionInput =

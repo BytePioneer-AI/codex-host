@@ -264,8 +264,15 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
   return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
 }
 
-async function openSession(adapter: ClaudeCodeAdapter): Promise<HarnessSession> {
-  const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+async function openSession(
+  adapter: ClaudeCodeAdapter,
+  environment?: NodeJS.ProcessEnv,
+): Promise<HarnessSession> {
+  const opened = await adapter.open({
+    kind: "create",
+    cwd: "/synthetic",
+    ...(environment ? { environment } : {}),
+  });
   if (!opened.ok) throw new Error(opened.error.message);
   return opened.value;
 }
@@ -347,6 +354,27 @@ describe("projectClaudePlanLimitToCredits", () => {
 });
 
 describe("Claude Code HarnessAdapter", () => {
+  it("passes per-Session delegation environment to the SDK transport", async () => {
+    const { adapter, dependencies } = fixture();
+    const session = await openSession(adapter, {
+      CODEXHOST_CLI_PATH: "/opt/codexhost",
+      CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+      CODEXHOST_RUNTIME_TOKEN: "token",
+      CODEXHOST_THREAD_ID: "thread-1",
+    });
+    await session.execute(textTurn("environment-turn"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
   it("opens and closes unused Sessions without creating a Transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter);

@@ -1350,7 +1350,11 @@ export class GrokAdapter implements HarnessAdapter {
       };
     }
     let session: GrokHarnessSession | null = null;
-    const transport = this.#createTransport(cwd, (error) => session?.handleTransportFault(error));
+    const transport = this.#createTransport(
+      cwd,
+      (error) => session?.handleTransportFault(error),
+      input.environment,
+    );
     let sourceConfiguration:
       | {
           model: HarnessModelRef;
@@ -1576,7 +1580,12 @@ export class GrokAdapter implements HarnessAdapter {
   #createTransport(
     cwd: string,
     onFault: (error: GrokTransportError) => void,
+    environment?: NodeJS.ProcessEnv,
   ): GrokAcpTransportLike {
-    return this.#dependencies.createTransport({ cwd, onFault });
+    return this.#dependencies.createTransport({
+      cwd,
+      onFault,
+      ...(environment ? { environment } : {}),
+    });
   }
 }

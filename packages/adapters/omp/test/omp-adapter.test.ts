@@ -196,6 +196,42 @@ function historyTurn(input: {
   ];
 }
 
+describe("OMP Adapter Session environment", () => {
+  it("passes per-Session delegation environment to the native transport", async () => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_THREAD_ID: "thread-1",
+      },
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "environment-turn" as HostTurnId,
+      input: [{ type: "text", text: "task" }],
+    });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
+});
+
 describe("OMP Adapter Fork", () => {
   it("forks the requested completed prefix from the next OMP User Entry", async () => {
     const firstTurn = historyTurn({

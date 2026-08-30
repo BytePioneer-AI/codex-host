@@ -515,6 +515,7 @@ class ClaudeHarnessSession implements HarnessSession {
     onClosed: () => void,
     onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null,
     options: {
+      environment?: NodeJS.ProcessEnv;
       openMode: "create" | "resume";
       sessionId: string;
       requestedModel?: HarnessModelRef;
@@ -525,7 +526,10 @@ class ClaudeHarnessSession implements HarnessSession {
     },
   ) {
     this.#cwd = cwd;
-    this.#createTransport = dependencies.createTransport;
+    const environment = options.environment;
+    this.#createTransport = environment
+      ? (input) => dependencies.createTransport({ ...input, environment })
+      : dependencies.createTransport;
     this.#randomUUID = dependencies.randomUUID;
     this.#readSessionMessages = dependencies.readSessionMessages;
     this.#closeTimeoutMs = closeTimeoutMs;
@@ -2214,7 +2218,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         new ClaudeSdkTransport({
           ...input,
           ...(options.command ? { command: options.command } : {}),
-          environment: options.environment ?? process.env,
+          environment: input.environment ?? options.environment ?? process.env,
           closeTimeoutMs: this.#closeTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
@@ -2505,6 +2509,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
+        ...(input.environment ? { environment: input.environment } : {}),
         openMode: rollback?.openMode ?? (input.kind === "create" ? "create" : "resume"),
         sessionId:
           rollback?.sessionId ??

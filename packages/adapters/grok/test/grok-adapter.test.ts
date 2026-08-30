@@ -283,6 +283,40 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("passes per-Session delegation environment to the ACP transport", async () => {
+    const transport = new FakeGrokTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-environment",
+        createTransport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_THREAD_ID: "thread-1",
+      },
+    });
+    expect(opened.ok).toBe(true);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
   it("reports a single available Grok Model as selectable", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(

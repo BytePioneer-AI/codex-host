@@ -72,6 +72,7 @@ const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
 const NPM_CLI_PATH_ENV: &str = "CODEXHOST_NPM_CLI_PATH";
 const NPM_LAUNCHER_PATH_ENV: &str = "CODEXHOST_NPM_LAUNCHER_PATH";
 const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
+const CODEXHOST_CLI_PATH_ENV: &str = "CODEXHOST_CLI_PATH";
 const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
     NPM_NODE_PATH_ENV,
     NPM_CLI_PATH_ENV,
@@ -112,8 +113,24 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]"
+        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost delegate --help\n  codexhost delegate start ...\n  codexhost thread read|wait|list ..."
     );
+}
+
+fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    let executable = env::current_exe()?.canonicalize()?;
+    let resources = InstalledResources::from_executable(&executable)?;
+    let status = Command::new(&resources.node)
+        .arg(&resources.host_runtime)
+        .arg("--codexhost-delegation-cli")
+        .args(arguments)
+        .env(CODEXHOST_CLI_PATH_ENV, &executable)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 fn startup_trace(stage: &str) {
@@ -1120,6 +1137,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             inspect(custom_install_root.as_deref())
         }
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
             usage();
             Err("invalid launcher arguments".into())

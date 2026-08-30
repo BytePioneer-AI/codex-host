@@ -277,8 +277,15 @@ function sourceHistory(turnCount = 2): PiSessionHistory {
   return { entries, leafId: parentId };
 }
 
-async function openSession(adapter: PiAdapter): Promise<HarnessSession> {
-  const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
+async function openSession(
+  adapter: PiAdapter,
+  environment?: NodeJS.ProcessEnv,
+): Promise<HarnessSession> {
+  const result = await adapter.open({
+    kind: "create",
+    cwd: "/synthetic",
+    ...(environment ? { environment } : {}),
+  });
   if (!result.ok) throw new Error(result.error.message);
   return result.value;
 }
@@ -374,6 +381,28 @@ describe("Pi HarnessAdapter Session", () => {
     });
     await expect(adapter.inspect({ cwd: "/other" })).resolves.toMatchObject({ status: "ready" });
     expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
+  it("passes per-Session delegation environment to the native transport", async () => {
+    const { adapter, dependencies } = fixture();
+    const session = await openSession(adapter, {
+      CODEXHOST_CLI_PATH: "/opt/codexhost",
+      CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+      CODEXHOST_RUNTIME_TOKEN: "token",
+      CODEXHOST_THREAD_ID: "thread-1",
+    });
+    await session.execute(textTurn("environment-turn"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
     await adapter.close();
   });
 

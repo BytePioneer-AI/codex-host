@@ -200,6 +200,7 @@ export interface ClaudeTurnTransport {
 
 export interface ClaudeTransportFactoryInput {
   cwd: string;
+  environment?: NodeJS.ProcessEnv;
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;

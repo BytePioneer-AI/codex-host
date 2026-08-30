@@ -364,6 +364,10 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
     expect(source).toContain('if (launchArguments?.[0] === "launch")');
     expect(source).toContain('userArguments[0] === "remote"');
+    expect(source).toContain('userArguments[0] === "delegate"');
+    expect(source).toContain('userArguments[0] === "thread"');
+    expect(source).toContain('"--codexhost-delegation-cli"');
+    expect(source).toContain("CODEXHOST_CLI_PATH");
     expect(source).toContain('"--codexhost-remote"');
     expect(source).toContain('"--host-runtime", hostRuntime');
     expect(source).toContain('stdio: ["ignore", "pipe", "inherit"]');

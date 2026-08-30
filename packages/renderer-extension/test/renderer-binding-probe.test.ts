@@ -126,6 +126,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "checking",
           grok: "checking",
           omp: "checking",
+          antigravity: "checking",
         },
         {
           pi: undefined,
@@ -133,9 +134,10 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp", "antigravity"]);
 
     expect(
       passiveHarnessAvailabilityAgents(

@@ -10,6 +10,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "deepseek-harness": "DeepSeek Harness",
   grok: "Grok",
   omp: "Oh My Pi",
+  antigravity: "Antigravity CLI",
 };
 
 const PI_PATHS = [
@@ -92,6 +93,14 @@ export function createRendererAgentIcon(
     image.style.borderRadius = "22.37%";
     image.style.flex = "none";
     return image;
+  }
+  if (agent === "antigravity") {
+    return createSvgIcon(
+      [{ d: "M12 2 4 12h5l-2 10 9-12h-5l1-8z" }],
+      "#4285F4",
+      size,
+      ownerDocument,
+    );
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

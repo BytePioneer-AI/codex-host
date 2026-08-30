@@ -18,12 +18,15 @@ export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
   "deepseek-harness",
   "grok",
   "omp",
+  "antigravity",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -35,6 +38,7 @@ const transportModelByHarness = {
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
+  antigravity: ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -97,6 +101,48 @@ export function encodeOmpTransportModel(
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
   return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function encodeAntigravityTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId)
+      throw new Error("Antigravity transport configuration requires a Model Ref");
+    return ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermission = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
+}
+
+export function decodeAntigravityTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("Antigravity transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId] = components;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Antigravity transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Antigravity transport configuration contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
 }
 
 export function decodeOmpTransportSelection(value: unknown): ExternalConfigurationSelection | null {
@@ -327,6 +373,8 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+    case "antigravity":
+      return encodeAntigravityTransportModel(selection.model, selection.permissionModeId);
   }
 }
 
@@ -345,6 +393,8 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "antigravity":
+      return decodeAntigravityTransportSelection(value);
   }
 }
 
@@ -405,6 +455,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...ompSelection,
+    };
+  }
+  const antigravitySelection = decodeAntigravityTransportSelection(request.params.model);
+  if (antigravitySelection !== null) {
+    return {
+      harnessId: "antigravity",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...antigravitySelection,
     };
   }
 

@@ -1,0 +1,23 @@
+{
+  "name": "@codexhost/adapter-antigravity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@codexhost/harness-adapter": "0.0.0",
+    "@codexhost/harness-discovery": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0"
+  }
+}

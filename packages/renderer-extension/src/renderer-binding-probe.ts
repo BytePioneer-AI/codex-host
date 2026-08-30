@@ -41,6 +41,7 @@ import {
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
 import {
+  decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
@@ -79,6 +80,7 @@ const externalHarnessIds = {
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
+  antigravity: harnessIdSchema.parse("antigravity"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -87,9 +89,10 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "deepseek-harness",
   "grok",
   "omp",
+  "antigravity",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
-type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
 
 function isRetryableHarnessAvailability(
   availability: RendererAgentAvailability | undefined,
@@ -301,6 +304,20 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       agent: "omp",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    };
+  }
+  if (inspection.harnessId === "antigravity") {
+    const transportSelection = decodeAntigravityTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Antigravity Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "antigravity",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {
@@ -535,6 +552,7 @@ export function installRendererBindingProbe(
       "deepseek-harness": undefined,
       grok: undefined,
       omp: undefined,
+      antigravity: undefined,
     },
     requestGeneration: 0,
     request: null,

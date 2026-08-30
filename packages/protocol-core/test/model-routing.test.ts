@@ -7,12 +7,14 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
+  decodeAntigravityTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
@@ -21,6 +23,7 @@ import {
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
@@ -35,6 +38,7 @@ describe("external Harness transport model routing", () => {
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
+    ["antigravity", ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -87,6 +91,20 @@ describe("external Harness transport model routing", () => {
       model,
       thinkingOptionId,
     });
+  });
+
+  it("round-trips an Antigravity Model and Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
+    const transportModelId = encodeAntigravityTransportModel(model, permissionModeId);
+
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "antigravity", model, permissionModeId });
   });
 
   it("round-trips a request-scoped Pi Model and Thinking pair", () => {

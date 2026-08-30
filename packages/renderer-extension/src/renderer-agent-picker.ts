@@ -13,6 +13,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
+  antigravity: "https://antigravity.google/product/antigravity-cli",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

@@ -190,6 +190,11 @@ describe("QwenCodeAdapter", () => {
       onEvent({ type: "agent.thought", text: "think" });
       onEvent({ type: "agent.text", text: "OK" });
       onEvent({
+        type: "agent.text",
+        text: "!",
+        metadata: { usage: { inputTokens: 100, outputTokens: 4, totalTokens: 104 } },
+      });
+      onEvent({
         type: "usage",
         metadata: { usage: { inputTokens: 100, outputTokens: 4, totalTokens: 104 } },
       });
@@ -220,6 +225,7 @@ describe("QwenCodeAdapter", () => {
       "item.completed",
       "item.started",
       "item.updated",
+      "item.updated",
       "session.usage.changed",
       "item.completed",
       "turn.completed",
@@ -239,6 +245,10 @@ describe("QwenCodeAdapter", () => {
       "reasoning",
       "agentMessage",
     ]);
+    const agentText = snapshot.value.turns[0]?.items.find(
+      ({ item }) => item.type === "agentMessage",
+    );
+    expect(agentText?.item).toMatchObject({ text: "OK!" });
     await opened.value.close();
   });
 

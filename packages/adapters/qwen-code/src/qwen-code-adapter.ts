@@ -88,7 +88,12 @@ import {
   startQwenCodeToolItem,
   type QwenCodeProjectedToolItem,
 } from "./qwen-tool-output.js";
-import { combineUsage, sessionUsageFromReplay, usageFromUpdate } from "./qwen-usage.js";
+import {
+  combineUsage,
+  sessionUsageFromReplay,
+  usageFromMetadata,
+  usageFromUpdate,
+} from "./qwen-usage.js";
 
 export interface QwenCodeAdapterOptions {
   command?: string;
@@ -571,6 +576,15 @@ class QwenCodeHarnessSession implements HarnessSession {
     else if (event.type === "agent.thought") this.#appendReasoning(active, event.text);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
+    // Usage metadata rides along on message and tool updates; the underlying
+    // event still projected normally above.
+    if (event.metadata && usageFromMetadata(event.metadata)) {
+      const contextWindowTokens = this.#state.effectiveModel
+        ? this.#modelState.contextWindowTokensByModel.get(this.#state.effectiveModel.id)
+        : undefined;
+      const usage = usageFromUpdate(undefined, event.metadata, contextWindowTokens);
+      if (usage) this.#publishUsage(usage, active.command.turnId);
+    }
   }
 
   #appendAgent(active: ActiveTurn, text: string): void {

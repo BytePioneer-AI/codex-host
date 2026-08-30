@@ -25,12 +25,41 @@ describe("Qwen Code transportEvent mapping", () => {
     expect(transportEvent(frame)).toEqual({ type: "usage", update: frame });
   });
 
-  it("maps message chunks with metadata usage to a usage event", () => {
+  it("maps empty terminator chunks with metadata usage to a usage event", () => {
     const metadata = { usage: { inputTokens: 100, totalTokens: 104 } };
     const frame = update("agent_message_chunk", {
       content: { type: "text", text: "" },
     });
     expect(transportEvent(frame, metadata)).toEqual({ type: "usage", metadata });
+  });
+
+  it("keeps non-empty chunks that carry metadata usage and preserves the text", () => {
+    const metadata = { usage: { inputTokens: 100, totalTokens: 104 } };
+    expect(
+      transportEvent(
+        update("agent_message_chunk", { content: { type: "text", text: "visible" } }),
+        metadata,
+      ),
+    ).toEqual({ type: "agent.text", text: "visible", metadata });
+    expect(
+      transportEvent(
+        update("user_message_chunk", { content: { type: "text", text: "hi" } }),
+        metadata,
+      ),
+    ).toEqual({ type: "user.text", text: "hi", metadata });
+  });
+
+  it("carries metadata on tool frames", () => {
+    const metadata = { usage: { inputTokens: 7, totalTokens: 7 } };
+    expect(
+      transportEvent(update("tool_call", { toolCallId: "t1", title: "shell" }), metadata),
+    ).toEqual({ type: "tool.call", callId: "t1", title: "shell", metadata });
+    expect(
+      transportEvent(
+        update("tool_call_update", { toolCallId: "t1", status: "completed" }),
+        metadata,
+      ),
+    ).toEqual({ type: "tool.update", callId: "t1", status: "completed", metadata });
   });
 
   it("maps plain text chunks to text events", () => {

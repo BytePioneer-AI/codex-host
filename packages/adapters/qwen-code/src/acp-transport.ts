@@ -52,6 +52,7 @@ export type QwenCodeTransportEvent =
       rawInput?: unknown;
       rawOutput?: unknown;
       content?: unknown[];
+      metadata?: Record<string, unknown>;
     }
   | {
       type: "tool.update";
@@ -63,6 +64,7 @@ export type QwenCodeTransportEvent =
       rawInput?: unknown;
       rawOutput?: unknown;
       content?: unknown[] | null;
+      metadata?: Record<string, unknown>;
     }
   | { type: "usage"; update?: SessionUpdate; metadata?: Record<string, unknown> }
   | { type: "mode.changed"; modeId: string };
@@ -186,14 +188,16 @@ export function transportEvent(
   if ((update as unknown as Record<string, unknown>).sessionUpdate === "usage_update") {
     return { type: "usage", update, ...(metadata ? { metadata } : {}) };
   }
-  if (metadata && isRecord(metadata.usage)) {
-    return { type: "usage", metadata };
-  }
+  const hasUsageMetadata = metadata !== undefined && isRecord(metadata.usage);
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
     case "agent_thought_chunk":
-      if (update.content.type !== "text" || update.content.text.length === 0) return null;
+      if (update.content.type !== "text" || update.content.text.length === 0) {
+        // Usage metadata rides on empty terminator chunks; without it the
+        // update carries nothing worth projecting.
+        return hasUsageMetadata ? { type: "usage", metadata } : null;
+      }
       return {
         type:
           update.sessionUpdate === "user_message_chunk"
@@ -215,6 +219,7 @@ export function transportEvent(
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content ? { content: update.content } : {}),
+        ...(metadata ? { metadata } : {}),
       };
     case "tool_call_update":
       return {
@@ -227,6 +232,7 @@ export function transportEvent(
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content !== undefined ? { content: update.content } : {}),
+        ...(metadata ? { metadata } : {}),
       };
     default:
       return null;

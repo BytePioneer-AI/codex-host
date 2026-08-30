@@ -16,7 +16,7 @@
   - `protocol-core/`: Host protocol routing and projection
   - `mapping-store/`: external Thread metadata persistence
   - `harness-adapter/`: Harness abstraction
-  - `adapters/`: Pi and Claude Code Harness integrations
+  - `adapters/`: External Harness integrations (Pi, Claude Code, DeepSeek Harness, Grok Build, OMP, Qwen Code)
   - `desktop-control/`: Desktop interaction
   - `host-runtime/`: runtime composition
   - `update-manager/`: background update preparation

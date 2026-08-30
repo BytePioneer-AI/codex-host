@@ -15,7 +15,7 @@ Codex Desktop 官方 Remote Control 可以在不使用 SSH 的情况下，把 Wi
 
 1. 在 Windows 打开 **设置 → 连接 → 控制此电脑**，启用访问并生成配对码。
 2. 在控制端打开 **设置 → 连接 → 控制其他设备**，输入配对码并选择 Windows 环境。
-3. 打开该环境中的项目，在输入框的 Agent/Model 选择器中选择 Windows 上可用的 Pi、Claude Code、Grok 或其他 Harness。
+3. 打开该环境中的项目，在输入框的 Agent/Model 选择器中选择 Windows 上可用的 Pi、Claude Code、Grok、Qwen Code 或其他 Harness。
 
 诊断 Harness 前，先确认原生 Codex 任务可以通过 Remote Control 正常运行。配对失败、环境缺失和账号授权错误属于官方 Remote Control 层。
 

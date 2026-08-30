@@ -494,6 +494,7 @@ export class DeepSeekHostConnection {
       const args = [
         ...invocation.arguments,
         "web",
+        "--no-open",
         "--host",
         endpoint.hostname,
         "--port",

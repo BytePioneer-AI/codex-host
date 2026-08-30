@@ -205,7 +205,7 @@ describe("DeepSeek local Host connection", () => {
     await connection.connect();
     const expectedInvocation = deepSeekProcessInvocation(
       executable,
-      ["web", "--host", "127.0.0.1", "--port", "43123"],
+      ["web", "--no-open", "--host", "127.0.0.1", "--port", "43123"],
       process.env,
     );
     expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
@@ -250,6 +250,7 @@ describe("DeepSeek local Host connection", () => {
         "--no-install",
         "@deepseek-ai/dsh",
         "web",
+        "--no-open",
         "--host",
         "127.0.0.1",
         "--port",

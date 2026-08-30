@@ -8,6 +8,7 @@ import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
+import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
@@ -30,6 +31,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "routes",
   "gateway",
   "updates",
+  "about",
   "external-link",
   "refresh",
   "unavailable",
@@ -54,6 +56,7 @@ const iconNodes = {
   routes: Route,
   gateway: Network,
   updates: Download,
+  about: Info,
   "external-link": ExternalLink,
   refresh: RefreshCw,
   unavailable: CircleOff,

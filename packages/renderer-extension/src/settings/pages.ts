@@ -34,11 +34,36 @@ import {
   runBoundedRendererUpdateRequest,
 } from "./update-request.js";
 
-export const CODEXHOST_RELEASES_LATEST_URL =
-  "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
+export const CODEXHOST_RELEASES_LATEST_URL = `${CODEXHOST_GITHUB_REPOSITORY_URL}/releases/latest`;
 export const CODEXHOST_NPM_MANUAL_UPDATE_COMMAND = "npm install -g @codexhost/cli@latest";
 
-export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates"] as const;
+interface RendererUserAgentData {
+  readonly platform?: string;
+  readonly architecture?: string;
+  readonly bitness?: string;
+}
+
+function rendererUserAgentData(navigator: Navigator): RendererUserAgentData | undefined {
+  return (navigator as Navigator & { userAgentData?: RendererUserAgentData }).userAgentData;
+}
+
+function isWindowsRenderer(window: Window | null | undefined): boolean {
+  const navigator = window?.navigator;
+  if (!navigator) return false;
+  const identity = `${rendererUserAgentData(navigator)?.platform ?? ""} ${navigator.platform ?? ""} ${navigator.userAgent}`;
+  return /windows|win32|win64/iu.test(identity);
+}
+
+function windowsInstallerDownloadUrl(window: Window | null | undefined, version: string): string {
+  const navigator = window?.navigator;
+  const hints = navigator ? rendererUserAgentData(navigator) : undefined;
+  const identity = `${hints?.architecture ?? ""} ${hints?.platform ?? ""} ${navigator?.platform ?? ""} ${navigator?.userAgent ?? ""}`;
+  const architecture = /arm64|aarch64|\barm\b/iu.test(identity) ? "arm64" : "x64";
+  return `https://github.com/BytePioneer-AI/codex-host/releases/download/v${version}/codexhost-${version}-windows-${architecture}.exe`;
+}
+
+export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates", "about"] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
@@ -117,6 +142,59 @@ function formatUpdateBytes(value: number): string {
   return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${unit}`;
 }
 
+function aboutPage(messages: RendererSettingsMessages): RendererSettingsPageDefinition {
+  return Object.freeze({
+    id: "about",
+    label: messages.pageLabels.about,
+    icon: "about",
+    mount(context: RendererSettingsPageMountContext) {
+      const document = context.content.ownerDocument;
+      const heading = document.createElement("div");
+      heading.className = "settings-section-label";
+      heading.textContent = messages.pageLabels.about;
+
+      const panel = document.createElement("section");
+      panel.className = "settings-about-panel";
+      const product = document.createElement("strong");
+      product.className = "settings-about-product";
+      product.textContent = "CodexHost";
+      const tagline = document.createElement("strong");
+      tagline.className = "settings-about-tagline";
+      tagline.textContent = messages.aboutTagline;
+      const introduction = document.createElement("div");
+      introduction.className = "settings-about-copy";
+      for (const paragraphText of messages.aboutParagraphs) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = paragraphText;
+        introduction.append(paragraph);
+      }
+      const starCallout = document.createElement("p");
+      starCallout.className = "settings-about-star-callout";
+      starCallout.textContent = messages.aboutStarCallout;
+      const repositorySection = document.createElement("div");
+      repositorySection.className = "settings-about-repository";
+      const openSource = document.createElement("p");
+      openSource.textContent = messages.aboutOpenSource;
+      const repository = document.createElement("a");
+      repository.className = "settings-about-repository-link";
+      repository.href = CODEXHOST_GITHUB_REPOSITORY_URL;
+      repository.target = "_blank";
+      repository.rel = "noopener noreferrer";
+      const repositoryUrl = document.createElement("code");
+      repositoryUrl.textContent = CODEXHOST_GITHUB_REPOSITORY_URL;
+      repository.append(
+        createRendererSettingsIcon("external-link", 14),
+        messages.aboutRepository,
+        repositoryUrl,
+      );
+      repositorySection.append(openSource, repository);
+      panel.append(product, tagline, introduction, starCallout, repositorySection);
+      context.content.append(heading, panel);
+      return undefined;
+    },
+  });
+}
+
 function updatesPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererUpdateClient | null,
@@ -127,6 +205,7 @@ function updatesPage(
     icon: "updates",
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
+      const windows = isWindowsRenderer(document.defaultView);
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.updates;
@@ -196,6 +275,28 @@ function updatesPage(
       });
       manualNpmCommandRow.append(manualNpmCommand, copyCommand);
       manualNpm.append(manualNpmDescription, manualNpmCommandRow);
+      const manualWindowsInstaller = document.createElement("div");
+      manualWindowsInstaller.className = "settings-update-manual";
+      manualWindowsInstaller.hidden = true;
+      const manualWindowsInstallerDescription = document.createElement("p");
+      manualWindowsInstallerDescription.className = "settings-update-manual-description";
+      manualWindowsInstallerDescription.textContent = messages.updateWindowsInstallerDescription;
+      const manualWindowsInstallerActions = document.createElement("div");
+      manualWindowsInstallerActions.className = "settings-update-actions";
+      const manualWindowsInstallerLink = document.createElement("a");
+      manualWindowsInstallerLink.className = "settings-update-link";
+      manualWindowsInstallerLink.href = CODEXHOST_RELEASES_LATEST_URL;
+      manualWindowsInstallerLink.target = "_blank";
+      manualWindowsInstallerLink.rel = "noopener noreferrer";
+      manualWindowsInstallerLink.append(
+        messages.updateDownloadWindowsInstaller,
+        createRendererSettingsIcon("external-link", 14),
+      );
+      manualWindowsInstallerActions.append(manualWindowsInstallerLink);
+      manualWindowsInstaller.append(
+        manualWindowsInstallerDescription,
+        manualWindowsInstallerActions,
+      );
       const actions = document.createElement("div");
       actions.className = "settings-update-actions";
       const releaseLink = document.createElement("a");
@@ -208,7 +309,7 @@ function updatesPage(
         createRendererSettingsIcon("external-link", 14),
       );
       actions.append(releaseLink);
-      controls.append(manualTitle, manualNpm, actions);
+      controls.append(manualTitle, manualNpm, manualWindowsInstaller, actions);
 
       // Release notes render below the fold, in the page scroller rather than a
       // nested one.
@@ -220,9 +321,11 @@ function updatesPage(
       // Presentation-only: emphasise the manual path once the automatic one has
       // visibly failed.
       const setManualFallback = (fallback: boolean): void => {
-        manualNpmDescription.textContent = fallback
-          ? messages.updateManualFallbackDescription
-          : messages.updateManualNpmDescription;
+        manualNpmDescription.textContent = windows
+          ? messages.updateWindowsNpmDescription
+          : fallback
+            ? messages.updateManualFallbackDescription
+            : messages.updateManualNpmDescription;
         manualNpmDescription.className = fallback
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";
@@ -354,6 +457,16 @@ function updatesPage(
           : "";
         installationValue.textContent = installationLabel(result.installation, messages);
         manualNpm.hidden = result.installation !== "npm";
+        manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
+        releaseLink.hidden = windows;
+        manualTitle.hidden =
+          windows && !["npm", "windows-installer"].includes(result.installation ?? "");
+        if (windows && result.installation === "windows-installer" && result.latestVersion) {
+          manualWindowsInstallerLink.href = windowsInstallerDownloadUrl(
+            document.defaultView,
+            result.latestVersion,
+          );
+        }
         if (result.releaseNotesUrl) releaseLink.href = result.releaseNotesUrl;
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
@@ -361,26 +474,33 @@ function updatesPage(
           scheduleStatusPoll(client, true);
           return;
         }
+        const actionableStatus =
+          result.status?.phase === "failed" && result.status.version === result.latestVersion
+            ? result.status
+            : null;
         const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
         panel.dataset.updateState = view;
         panel.replaceChildren();
-        setManualFallback(Boolean(result.error) || result.status?.phase === "failed");
-        panel.append(
-          createPanelHead(
-            document,
-            view,
-            operationMessage ??
-              (result.error
-                ? messages.updateFailed
-                : result.updateAvailable
-                  ? messages.updateAvailable
-                  : messages.updateUpToDate),
-          ),
-        );
-        if (result.status?.phase === "failed" && result.status.error) {
+        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        if (result.error || !result.updateAvailable || windows || actionableStatus) {
+          panel.append(
+            createPanelHead(
+              document,
+              view,
+              actionableStatus
+                ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
+                : result.error
+                  ? messages.updateFailed
+                  : result.updateAvailable
+                    ? messages.updateWindowsManualRequired
+                    : messages.updateUpToDate,
+            ),
+          );
+        }
+        if (actionableStatus?.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";
-          error.textContent = result.status.error;
+          error.textContent = actionableStatus.error;
           panel.append(error);
         }
         if (result.error) {
@@ -390,7 +510,7 @@ function updatesPage(
           panel.append(error);
         }
         const buttons: HTMLElement[] = [];
-        if (result.updateAvailable && result.installationAvailable) {
+        if (!windows && result.updateAvailable && result.installationAvailable) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";
@@ -450,6 +570,7 @@ export function createDefaultRendererSettingsPages(
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
     updatesPage(messages, getUpdateClient),
+    aboutPage(messages),
   ]);
 }
 

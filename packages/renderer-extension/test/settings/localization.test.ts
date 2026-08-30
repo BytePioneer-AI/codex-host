@@ -39,12 +39,21 @@ describe("Renderer settings localization", () => {
     expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
     expect(chinese.updateWaitingForExit).toBe("正在等待应用退出...");
     expect(chinese.updateInstallingNpm).toBe("正在通过 npm 安装...");
+    expect(chinese.updateAndRestart).toBe("更新");
+    expect(chinese.updateWindowsManualRequired).toContain("Windows 暂不支持自动更新");
+    expect(chinese.updateWindowsInstallerDescription).toContain("适用于当前系统的安装包");
     expect(chinese.updateManualNpmDescription).toBe(
       "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
     );
     expect(english.updateInstalling).toBe("Installing update...");
     expect(english.updateDownloadFromReleases).toBe("Download from GitHub Releases");
     expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");
+    expect(chinese.updateDownloadWindowsInstaller).toBe("下载 Windows 安装包");
+    expect(chinese.pageLabels.about).toBe("关于");
+    expect(chinese.aboutTagline).toBe("在 Codex Desktop 中运行 Pi 和其他 Harness");
+    expect(chinese.aboutParagraphs).toHaveLength(3);
+    expect(chinese.aboutStarCallout).toContain("请给我们一个 Star");
+    expect(chinese.aboutRepository).toBe("开源仓库");
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
     expect(Object.isFrozen(chinese.pageLabels)).toBe(true);
@@ -55,6 +64,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "更新"]);
+    ).toEqual(["连接", "更新", "关于"]);
   });
 });

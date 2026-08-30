@@ -82,13 +82,21 @@ class FakeElement {
 
 class FakeDocument {
   readonly clipboardWriteText = vi.fn(async () => undefined);
-  readonly defaultView = {
-    navigator: { clipboard: { writeText: this.clipboardWriteText } },
-    setTimeout: vi.fn(() => 0),
-    clearTimeout: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  } as unknown as Window;
+  readonly defaultView: Window;
+
+  constructor(platform = "MacIntel") {
+    this.defaultView = {
+      navigator: {
+        clipboard: { writeText: this.clipboardWriteText },
+        platform,
+        userAgent: platform === "Win32" ? "Windows" : "Macintosh",
+      },
+      setTimeout: vi.fn(() => 0),
+      clearTimeout: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+  }
 
   createElement(tagName: string): FakeElement {
     return new FakeElement(tagName, this);
@@ -332,7 +340,6 @@ describe("Renderer Updates page", () => {
     [updateStatus("installing"), "正在通过 npm 安装..."],
     [updateStatus("installing", "windows-installer"), "正在安装更新..."],
     [updateStatus("restarting"), "正在重启以完成更新..."],
-    [updateStatus("succeeded"), "更新安装成功。"],
     [updateStatus("failed"), "更新失败。"],
   ])("renders a distinct localized update status for $0.phase", async (status, expected) => {
     const client = {
@@ -363,6 +370,39 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("shows only the Update action before an update starts and ignores stale success state", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      const panel = elementWithClass(content, "settings-update-panel");
+      expect(visibleText(panel)).toContain("更新");
+      expect(visibleText(panel)).not.toContain("更新安装成功");
+      expect(visibleText(panel)).not.toContain("有新版本可用");
+    });
+    expect(client.startUpdate).not.toHaveBeenCalled();
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("keeps a manual GitHub Releases download available before discovery and after update failure", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck()),
@@ -385,7 +425,12 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    const releaseLink = elementWithClass(content, "settings-update-link");
+    const releaseLink = descendants(content).find(
+      (candidate) =>
+        candidate.tagName === "a" &&
+        visibleNotesText(candidate).includes("Download from GitHub Releases"),
+    );
+    if (!releaseLink) throw new Error("GitHub Releases link is not rendered");
     expect(releaseLink.href).toBe(CODEXHOST_RELEASES_LATEST_URL);
     expect(releaseLink.target).toBe("_blank");
     expect(releaseLink.rel).toBe("noopener noreferrer");
@@ -404,9 +449,99 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => {
       expect(panel.dataset.updateState).toBe("failed");
     });
-    expect(elementWithClass(content, "settings-update-link")).toBe(releaseLink);
+    expect(descendants(content)).toContain(releaseLink);
     expect(releaseLink.href).toBe(
       "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+    );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it.each([
+    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
+    [
+      "windows-installer" as const,
+      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+    ],
+  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain(expected);
+      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+        "Windows 暂不支持自动更新",
+      );
+    });
+    expect(
+      descendants(elementWithClass(content, "settings-update-panel")).find(
+        ({ tagName }) => tagName === "button",
+      ),
+    ).toBeUndefined();
+    expect(client.startUpdate).not.toHaveBeenCalled();
+    if (installation === "npm") {
+      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+    } else {
+      const link = descendants(content).find(
+        ({ tagName, href }) =>
+          tagName === "a" &&
+          href ===
+            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+      );
+      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    }
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("renders the open-source project introduction on the About page", () => {
+    const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
+      ({ id }) => id === "about",
+    );
+    if (!page) throw new Error("About page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("在 Codex Desktop 中运行 Pi 和其他 Harness");
+    expect(visibleText(content)).toContain(
+      "我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验",
+    );
+    expect(visibleText(content)).toContain("Claude Code 和 Pi Agent");
+    expect(visibleText(content)).toContain("codexhost 是一个开源项目");
+    expect(visibleText(content)).toContain("请给我们一个 Star");
+    const repository = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host",
+    );
+    expect(repository).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    expect(visibleNotesText(repository as FakeElement)).toContain(
+      "https://github.com/BytePioneer-AI/codex-host",
     );
 
     cleanup?.();

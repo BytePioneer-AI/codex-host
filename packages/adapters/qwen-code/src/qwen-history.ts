@@ -66,6 +66,7 @@ export function mapQwenCodeReplay(
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, QwenCodeProjectedToolItem>();
   const toolRawInputs = new Map<string, unknown>();
+  let hasTurnOutput = false;
 
   const completeAgent = (): void => {
     if (!agent || agent.text.length === 0) return;
@@ -151,16 +152,27 @@ export function mapQwenCodeReplay(
     messageIndex = 0;
     input = "";
     items = [];
+    hasTurnOutput = false;
   };
 
   for (const event of replay) {
     if (event.type === "user.text") {
-      if (input.length > 0) completeTurn();
+      if (input.length > 0) {
+        // A user message replayed as multiple chunks is one logical prompt;
+        // only a user chunk that follows agent output starts a new Turn.
+        if (!hasTurnOutput) {
+          input += event.text;
+          continue;
+        }
+        completeTurn();
+      }
       input = event.text;
+      hasTurnOutput = false;
       continue;
     }
     if (input.length === 0) continue;
     if (event.type === "agent.text") {
+      hasTurnOutput = true;
       if (!agent) {
         completeReasoning();
         agent = {
@@ -171,6 +183,7 @@ export function mapQwenCodeReplay(
       }
       agent = { ...agent, text: agent.text + event.text };
     } else if (event.type === "agent.thought") {
+      hasTurnOutput = true;
       if (!reasoning) {
         reasoning = {
           type: "reasoning",
@@ -180,6 +193,7 @@ export function mapQwenCodeReplay(
       }
       reasoning = { ...reasoning, text: reasoning.text + event.text };
     } else if (event.type === "tool.call") {
+      hasTurnOutput = true;
       completeReasoning();
       completeAgent();
       tools.set(
@@ -199,6 +213,7 @@ export function mapQwenCodeReplay(
         completeTool(event.callId, event.status, event.content, event.rawOutput);
       }
     } else if (event.type === "tool.update") {
+      hasTurnOutput = true;
       if (event.rawInput !== undefined) toolRawInputs.set(event.callId, event.rawInput);
       applyToolProjection(event.callId, event.content, event.rawOutput);
       if (event.status === "completed" || event.status === "failed") {

@@ -402,6 +402,16 @@ describe("QwenCodeAdapter", () => {
       },
     });
     expect(forked).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    const rolled = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/tmp",
+      sourceRef: {
+        harnessId: harnessIdSchema.parse("qwen-code"),
+        nativeSessionId: "qwen-session-1",
+        formatVersion: 1,
+      },
+    });
+    expect(rolled).toMatchObject({ ok: false, error: { code: "unsupported" } });
     const foreign = await adapter.open({
       kind: "resume",
       cwd: "/tmp",
@@ -425,5 +435,109 @@ describe("QwenCodeAdapter", () => {
     });
     expect(thinking).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     await opened.value.close();
+  });
+
+  it("cancels an active Turn and resolves pending approvals", async () => {
+    const transport = new FakeTransport();
+    const permissionRequest: QwenCodePermissionRequest = {
+      request: {
+        sessionId: "qwen-session-1",
+        toolCall: { toolCallId: "call-1", title: "Run git status" },
+        options: [{ optionId: "opt-allow", name: "Allow", kind: "allow_once" }],
+      } as unknown as RequestPermissionRequest,
+      options: [{ optionId: "opt-allow", name: "Allow", kind: "allow_once" }] as PermissionOption[],
+    };
+    transport.runTurnImplementation = (onEvent, onPermission) =>
+      onPermission(permissionRequest).then((response) => {
+        expect(response).toEqual({ outcome: { outcome: "cancelled" } });
+        return { stopReason: "cancelled" } as PromptResponse;
+      });
+    const { adapter, events } = createAdapter(transport);
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+    if (!opened.ok) throw new Error("open failed");
+    await collectOutputs(opened.value, events);
+    void opened.value
+      .execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: "check status" }],
+      })
+      .then(() => undefined);
+    await vi.waitFor(() => {
+      expect(events.some(({ kind }) => kind === "interaction")).toBe(true);
+    });
+    const cancelResult = await opened.value.execute({
+      type: "turn.cancel",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+    });
+    expect(cancelResult).toEqual({ ok: true, value: { cancellationRequested: true } });
+    await vi.waitFor(() => {
+      expect(hostEvents(events).some(({ type }) => type === "turn.completed")).toBe(true);
+    });
+    const completed = hostEvents(events).find(({ type }) => type === "turn.completed");
+    expect(completed).toMatchObject({ outcome: { status: "cancelled" } });
+    const closed = hostEvents(events).filter(({ type }) => type === "interaction.closed");
+    expect(closed).toHaveLength(1);
+    const snapshot = await opened.value.readSnapshot();
+    if (!snapshot.ok) throw new Error("snapshot failed");
+    expect(snapshot.value.turns[0]?.outcome).toMatchObject({ status: "cancelled" });
+    await opened.value.close();
+  });
+
+  it("drops answered approvals and open tools at Turn end", async () => {
+    const transport = new FakeTransport();
+    transport.runTurnImplementation = (onEvent) => {
+      onEvent({
+        type: "tool.call",
+        callId: "call-1",
+        title: "long tool",
+        kind: "execute",
+        rawInput: { command: "sleep 100" },
+      });
+      return Promise.resolve({ stopReason: "end_turn" } as PromptResponse);
+    };
+    const { adapter, events } = createAdapter(transport);
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+    if (!opened.ok) throw new Error("open failed");
+    await collectOutputs(opened.value, events);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      input: [{ type: "text", text: "run" }],
+    });
+    await vi.waitFor(() => {
+      expect(hostEvents(events).some(({ type }) => type === "turn.completed")).toBe(true);
+    });
+    transport.runTurnImplementation = (onEvent) => {
+      onEvent({ type: "agent.text", text: "clean turn" });
+      return Promise.resolve({ stopReason: "end_turn" } as PromptResponse);
+    };
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-2"),
+      input: [{ type: "text", text: "again" }],
+    });
+    await vi.waitFor(() => {
+      expect(hostEvents(events).filter(({ type }) => type === "turn.completed")).toHaveLength(2);
+    });
+    const snapshot = await opened.value.readSnapshot();
+    if (!snapshot.ok) throw new Error("snapshot failed");
+    expect(snapshot.value.turns).toHaveLength(2);
+    expect(snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+      "commandExecution",
+    ]);
+    expect(snapshot.value.turns[1]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
+    await opened.value.close();
+  });
+
+  it("rejects inspection after the Adapter is closed", async () => {
+    const transport = new FakeTransport();
+    const { adapter } = createAdapter(transport);
+    const first = await adapter.inspect();
+    expect(first.status).toBe("ready");
+    await adapter.close();
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+    });
   });
 });

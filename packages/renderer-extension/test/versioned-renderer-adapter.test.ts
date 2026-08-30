@@ -10,21 +10,25 @@ import {
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
+  QWEN_CODE_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   decodeGrokTransportModelId,
   decodePiTransportModelId,
+  decodeQwenCodeTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   isClaudeTransportModelId,
   isGrokTransportModelId,
   isPiTransportModelId,
+  isQwenCodeTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
   grokTransportModelId,
   piTransportModelId,
+  qwenTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
@@ -419,6 +423,27 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(
       decodeGrokTransportModelId(`${GROK_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
+  });
+
+  it("encodes Qwen Code Model and Permission Mode in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "GLM-5.3-flash-openai" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
+    const carrier = qwenTransportModelId(model, permissionModeId);
+
+    expect(isQwenCodeTransportModelId(carrier)).toBe(true);
+    expect(decodeQwenCodeTransportModelId(carrier)).toEqual({ model, permissionModeId });
+    expect(
+      modelSelectionForAgent(null, null, "qwen-code", model, undefined, permissionModeId)?.model,
+    ).toBe(carrier);
+    expect(decodeQwenCodeTransportModelId(`${QWEN_CODE_TRANSPORT_MODEL_ID}@${model.id}`)).toEqual({
+      model,
+    });
+    expect(
+      decodeQwenCodeTransportModelId(`${QWEN_CODE_TRANSPORT_MODEL_ID}@${model.id}@`),
+    ).toBeNull();
+    expect(decodeQwenCodeTransportModelId("codexhost/other@x")).toBeNull();
+    expect(() => qwenTransportModelId(undefined, permissionModeId)).toThrow();
+    expect(qwenTransportModelId()).toBe(QWEN_CODE_TRANSPORT_MODEL_ID);
   });
 
   it("extracts only a validated conversation Thread identity", () => {

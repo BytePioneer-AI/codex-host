@@ -246,7 +246,7 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function approvalServerName(harnessId: ExternalHarnessId): string {
+export function approvalServerName(harnessId: ExternalHarnessId): string {
   switch (harnessId) {
     case "pi":
       return "Pi";

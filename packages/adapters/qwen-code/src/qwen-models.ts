@@ -51,16 +51,16 @@ export function parseQwenCodeModelState(value: unknown): QwenCodeModelState | nu
   const contextWindowTokensByModel = new Map<string, number>();
   const models: HarnessModelCatalog["models"] = [];
   const takenRefs = new Set<string>();
+  const seenNativeModelIds = new Set<string>();
   let currentModel: HarnessModelRef | null = null;
   for (const candidate of value.availableModels) {
     if (!isRecord(candidate) || !nonBlank(candidate.modelId) || !nonBlank(candidate.name)) continue;
-    if (nativeModelIdByRef.has(candidate.modelId) && candidate.modelId !== value.currentModelId) {
-      continue;
-    }
+    if (seenNativeModelIds.has(candidate.modelId)) continue;
     const refId = sanitizeQwenCodeModelRefId(candidate.modelId, takenRefs);
     const ref = harnessModelRefSchema.safeParse({ id: refId });
     if (!ref.success) continue;
     takenRefs.add(refId);
+    seenNativeModelIds.add(candidate.modelId);
     nativeModelIdByRef.set(refId, candidate.modelId);
     const metadata = isRecord(candidate._meta) ? candidate._meta : {};
     if (

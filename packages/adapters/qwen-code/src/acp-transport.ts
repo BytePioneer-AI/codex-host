@@ -514,7 +514,11 @@ export class QwenCodeAcpTransport {
       this.#sessionId &&
       this.#initialize?.agentCapabilities?.sessionCapabilities?.close
     ) {
-      await connection.closeSession({ sessionId: this.#sessionId }).catch(() => undefined);
+      await withTimeout(
+        connection.closeSession({ sessionId: this.#sessionId }),
+        this.#options.closeTimeoutMs,
+        "Qwen Code Session close",
+      ).catch(() => undefined);
     }
     if (child?.stdin.writable) child.stdin.end();
     if (child && !(await waitForExit(child, this.#options.closeTimeoutMs))) {

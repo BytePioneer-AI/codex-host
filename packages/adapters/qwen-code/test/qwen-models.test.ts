@@ -75,4 +75,35 @@ describe("Qwen Code Model Catalog", () => {
       expect(harnessModelRefSchema.safeParse(model.ref).success).toBe(true);
     }
   });
+
+  it("keeps exactly one entry per duplicated native Model ID", () => {
+    const state = parseQwenCodeModelState({
+      currentModelId: "GLM-5.3-flash(openai)",
+      availableModels: [
+        { modelId: "GLM-5.3-flash(openai)", name: "flash" },
+        { modelId: "GLM-5.3-flash(openai)", name: "flash again" },
+        { modelId: "qwen-route:v1:coder", name: "routed" },
+        { modelId: "qwen-route:v1:coder", name: "routed again" },
+      ],
+    });
+    const nativeIds = [...(state?.nativeModelIdByRef.values() ?? [])];
+    expect(nativeIds).toEqual(["GLM-5.3-flash(openai)", "qwen-route:v1:coder"]);
+    expect(state?.catalog.models).toHaveLength(2);
+  });
+
+  it("keeps a distinct native Model ID that equals another Model's sanitized Ref", () => {
+    const state = parseQwenCodeModelState({
+      currentModelId: "qwen-max(preview)",
+      availableModels: [
+        { modelId: "qwen-max(preview)", name: "preview" },
+        { modelId: "qwen-max-preview", name: "distinct" },
+      ],
+    });
+    expect(state?.catalog.models.map(({ ref }) => ref.id)).toEqual([
+      "qwen-max-preview",
+      "qwen-max-preview-2",
+    ]);
+    expect(state?.nativeModelIdByRef.get("qwen-max-preview")).toBe("qwen-max(preview)");
+    expect(state?.nativeModelIdByRef.get("qwen-max-preview-2")).toBe("qwen-max-preview");
+  });
 });

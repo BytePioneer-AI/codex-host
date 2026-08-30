@@ -888,6 +888,28 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "qwen-code",
+        transportModelId: "codexhost/qwen-code-native@GLM-5.3-flash-openai@plan",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "qwen-code",
+      model: { id: "GLM-5.3-flash-openai" },
+      permissionModeId: "plan",
+    });
+    expect(() =>
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "qwen-code",
+        transportModelId: "codexhost/qwen-code-native@@plan",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toThrow("Qwen Code Thread reported an incompatible transport Model");
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "deepseek-harness",
         transportModelId: "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g",
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },

@@ -12,6 +12,7 @@ import {
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
+  QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
@@ -20,11 +21,13 @@ import {
   decodeGrokTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
+  decodeQwenCodeTransportSelection,
   encodeClaudeTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
   encodeOmpTransportModel,
+  encodeQwenCodeTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
 
@@ -215,6 +218,38 @@ describe("external Harness transport model routing", () => {
 
     const legacyCarrier = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`;
     expect(decodeGrokTransportSelection(legacyCarrier)).toEqual({ model, thinkingOptionId });
+  });
+
+  it("round-trips request-scoped Qwen Code Model and Permission Mode selection", () => {
+    const model = harnessModelRefSchema.parse({ id: "GLM-5.3-flash-openai" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
+    const transportModelId = encodeQwenCodeTransportModel(model, permissionModeId);
+
+    expect(transportModelId).toBe(
+      `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}`,
+    );
+    expect(decodeQwenCodeTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(
+      decodeCreateRoute({ id: 10, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "qwen-code", model, permissionModeId });
+    expect(decodeQwenCodeTransportSelection(QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID)).toEqual({});
+    expect(encodeQwenCodeTransportModel()).toBe(QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID);
+    expect(() => encodeQwenCodeTransportModel(undefined, permissionModeId)).toThrow();
+  });
+
+  it("rejects malformed Qwen Code carriers instead of forwarding them as official Models", () => {
+    for (const carrier of [
+      `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@`,
+      `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@provider/model`,
+      `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@valid@`,
+      `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@a@b@c`,
+    ]) {
+      expect(() => decodeQwenCodeTransportSelection(carrier)).toThrow();
+    }
+    expect(decodeQwenCodeTransportSelection("codexhost/other-native@x")).toBeNull();
   });
 
   it("decodes existing Thread carriers only for their owning Harness", () => {

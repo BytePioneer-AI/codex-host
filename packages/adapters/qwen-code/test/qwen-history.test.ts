@@ -86,6 +86,46 @@ describe("Qwen Code history replay", () => {
     expect(turns[0]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
   });
 
+  it("merges a user message replayed as multiple chunks into one Turn", () => {
+    const replay = [user("part one"), user(" part two"), agent("answer")];
+    const { turns, turnCount } = mapQwenCodeReplay(replay, harnessId, sessionId, "/tmp");
+    expect(turnCount).toBe(1);
+    expect(turns[0]?.input).toEqual([{ type: "text", text: "part one part two" }]);
+  });
+
+  it("starts a new Turn only for a user chunk that follows agent output", () => {
+    const replay = [user("first"), agent("one"), user("second"), agent("two")];
+    const { turns, turnCount } = mapQwenCodeReplay(replay, harnessId, sessionId, "/tmp");
+    expect(turnCount).toBe(2);
+    expect(turns.map((turn) => turn.input[0])).toEqual([
+      { type: "text", text: "first" },
+      { type: "text", text: "second" },
+    ]);
+  });
+
+  it("does not re-emit open tools from a previous Turn", () => {
+    const replay = [
+      user("run"),
+      {
+        type: "tool.call",
+        callId: "t1",
+        title: "shell",
+        kind: "execute",
+        rawInput: { command: "sleep 100" },
+      } as QwenCodeTransportEvent,
+      agent("partial"),
+      user("more"),
+      agent("done"),
+    ];
+    const { turns } = mapQwenCodeReplay(replay, harnessId, sessionId, "/tmp");
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.items.map(({ item }) => item.type)).toEqual([
+      "agentMessage",
+      "commandExecution",
+    ]);
+    expect(turns[1]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
+  });
+
   it("marks failed tool calls as failed Items", () => {
     const replay = [
       user("run"),

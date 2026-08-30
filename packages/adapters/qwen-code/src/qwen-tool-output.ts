@@ -69,7 +69,7 @@ export function startQwenCodeToolItem(input: {
       type: "commandExecution",
       itemId: input.itemId,
       command,
-      ...(rawCwd !== undefined ? { cwd: rawCwd } : {}),
+      cwd: rawCwd ?? input.cwd,
     };
   }
   return {

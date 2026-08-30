@@ -1,6 +1,10 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessInspection } from "@codexhost/harness-adapter";
+import { EXTERNAL_HARNESS_IDS } from "@codexhost/protocol-core";
+import { approvalServerName } from "../src/app-server-host.js";
 import {
   CLAUDE_CODE_COMMAND_ENV,
   GROK_COMMAND_ENV,
@@ -78,5 +82,24 @@ describe("Host external Harness composition", () => {
       error: { code: "notInstalled" },
     });
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
+  });
+
+  it("declares every registered Adapter as a manifest dependency", async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { dependencies: Record<string, string> };
+    for (const id of ["pi", "claude-code", "deepseek-harness", "grok", "omp", "qwen-code"]) {
+      expect(manifest.dependencies[`@codexhost/adapter-${id}`]).toBeDefined();
+    }
+  });
+});
+
+describe("approval server names", () => {
+  it("names every external Harness", () => {
+    for (const harnessId of EXTERNAL_HARNESS_IDS) {
+      expect(approvalServerName(harnessId)).toEqual(expect.any(String));
+      expect(approvalServerName(harnessId).length).toBeGreaterThan(0);
+    }
+    expect(approvalServerName("qwen-code")).toBe("Qwen Code");
   });
 });

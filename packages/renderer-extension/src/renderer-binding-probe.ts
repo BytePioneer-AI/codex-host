@@ -518,6 +518,9 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
+    onLocaleChange() {
+      for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+    },
   });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
@@ -613,6 +616,7 @@ export function installRendererBindingProbe(
       mounted.permissionModeView,
       mounted.usage,
       mounted.accountCredits,
+      settingsLifecycle.locale,
     );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {

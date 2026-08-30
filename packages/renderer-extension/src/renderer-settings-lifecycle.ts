@@ -21,6 +21,7 @@ const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
+  onLocaleChange?(locale: RendererSettingsLocale): void;
 }
 
 export interface RendererSettingsLifecycleControl {
@@ -91,6 +92,7 @@ export function installRendererSettingsLifecycle(
     trigger = null;
     shell = null;
     const mounted = mount();
+    options.onLocaleChange?.(locale);
 
     if (reopen) {
       const opener = mounted.trigger.root?.querySelector<HTMLButtonElement>("button") ?? undefined;

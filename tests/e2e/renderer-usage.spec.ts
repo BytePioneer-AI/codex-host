@@ -77,6 +77,19 @@ const { outputFiles } = await build({
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
+        globalThis.updateRendererUsageChinese = () => {
+          renderRendererUsageControl(usage, {
+            cacheHitRatePercent: 92.9,
+            cachedInputTokens: 482800,
+            cacheWriteInputTokens: 0,
+            totalTokens: 552700,
+            inputTokens: 62300,
+            outputTokens: 7600,
+            totalCostUsd: 0.780,
+            contextUsedTokens: 57664,
+            contextWindowTokens: 272000,
+          }, "zh-CN");
+        };
       };
     `,
     resolveDir: repositoryRoot,
@@ -230,6 +243,39 @@ test("keeps Usage in place and shows credits after the leading composer control"
   await expect(popover.locator("[data-codexhost-credits-bar]")).toHaveCount(3);
   // One "resets" line under the headline, one under the Build tile (Chat has none).
   await expect(popover.getByText("resets", { exact: false })).toHaveCount(2);
+});
+
+test("renders the Usage popover in Chinese when the settings locale is Chinese", async ({
+  page,
+}) => {
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererUsageChinese");
+    if (typeof update !== "function") throw new Error("Chinese Usage update is unavailable");
+    update();
+  });
+
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await expect(usage.locator("button")).toHaveAttribute(
+    "aria-label",
+    "对话用量: CH 92.9% · $0.780",
+  );
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("用量");
+  await expect(popover).toContainText("上下文");
+  await expect(popover).toContainText("最近缓存命中率");
+  await expect(popover).toContainText("缓存读取");
+  await expect(popover).toContainText("缓存写入");
+  await expect(popover).toContainText("Token 总数");
+  await expect(popover).toContainText("输入 / 输出");
+  await expect(popover).toContainText("会话费用估算");
+  await expect(popover).not.toContainText("Latest cache hit");
 });
 
 test("shows a Claude.ai five-hour plan window only in the Usage popover", async ({ page }) => {

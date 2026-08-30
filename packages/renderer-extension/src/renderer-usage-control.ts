@@ -1,5 +1,7 @@
 import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 
+import type { RendererSettingsLocale } from "./settings/localization.js";
+
 import {
   ensureRendererTriggerChipStyle,
   TRIGGER_CHIP_CLASS,
@@ -11,9 +13,80 @@ export interface RendererUsageControl {
   popover: HTMLDivElement;
   anchor: HTMLElement | null;
   label: HTMLSpanElement;
+  locale: RendererSettingsLocale;
   onOpen: (() => void) | null;
   dispose(): void;
   place(anchor: HTMLElement | null): boolean;
+}
+
+interface RendererUsageMessages {
+  readonly usage: string;
+  readonly context: string;
+  readonly latestCacheHit: string;
+  readonly outputSpeed: string;
+  readonly cacheRead: string;
+  readonly cacheWrite: string;
+  readonly reasoning: string;
+  readonly totalTokens: string;
+  readonly inputOutput: string;
+  readonly fiveHourLimit: string;
+  readonly sevenDayLimit: string;
+  readonly sessionCostEstimate: string;
+  readonly threadUsage: string;
+  readonly threadUsageDetails: string;
+  readonly contextSummary: string;
+  readonly tokensSummary: string;
+  readonly tokensPerSecond: string;
+  readonly fiveHourSummary: string;
+  readonly sevenDaySummary: string;
+}
+
+const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
+  usage: "Usage",
+  context: "Context",
+  latestCacheHit: "Latest cache hit",
+  outputSpeed: "Output speed",
+  cacheRead: "Cache read",
+  cacheWrite: "Cache write",
+  reasoning: "Reasoning",
+  totalTokens: "Total tokens",
+  inputOutput: "Input / output",
+  fiveHourLimit: "5-hour limit",
+  sevenDayLimit: "7-day limit",
+  sessionCostEstimate: "Session cost estimate",
+  threadUsage: "Thread Usage",
+  threadUsageDetails: "Thread Usage details",
+  contextSummary: "context",
+  tokensSummary: "tokens",
+  tokensPerSecond: "tok/s",
+  fiveHourSummary: "5h",
+  sevenDaySummary: "7d",
+});
+
+const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
+  usage: "用量",
+  context: "上下文",
+  latestCacheHit: "最近缓存命中率",
+  outputSpeed: "输出速度",
+  cacheRead: "缓存读取",
+  cacheWrite: "缓存写入",
+  reasoning: "推理",
+  totalTokens: "Token 总数",
+  inputOutput: "输入 / 输出",
+  fiveHourLimit: "5 小时限额",
+  sevenDayLimit: "7 天限额",
+  sessionCostEstimate: "会话费用估算",
+  threadUsage: "对话用量",
+  threadUsageDetails: "对话用量详情",
+  contextSummary: "上下文",
+  tokensSummary: "Token",
+  tokensPerSecond: "Token/秒",
+  fiveHourSummary: "5 小时",
+  sevenDaySummary: "7 天",
+});
+
+export function rendererUsageMessages(locale: RendererSettingsLocale): RendererUsageMessages {
+  return locale === "zh-CN" ? CHINESE_USAGE_MESSAGES : ENGLISH_USAGE_MESSAGES;
 }
 
 function decimal(value: number, fractionDigits: number): string {
@@ -28,15 +101,20 @@ export function formatRendererCost(value: number): string {
   return `$${value.toFixed(3)}`;
 }
 
-export function formatRendererTokenRate(value: number): string {
-  return `${decimal(value, 1)} tok/s`;
+export function formatRendererTokenRate(
+  value: number,
+  locale: RendererSettingsLocale = "en",
+): string {
+  return `${decimal(value, 1)} ${rendererUsageMessages(locale).tokensPerSecond}`;
 }
 
 export function formatRendererTokenCount(value: number): string {
   const sign = value < 0 ? "-" : "";
   const absolute = Math.abs(value);
-  if (absolute < 1000) return `${sign}${Math.round(absolute)}`;
-  return `${sign}${decimal(absolute / 1000, 1)}k`;
+  if (absolute < 1_000) return `${sign}${Math.round(absolute)}`;
+  if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}k`;
+  if (absolute < 1_000_000_000) return `${sign}${decimal(absolute / 1_000_000, 1)}M`;
+  return `${sign}${decimal(absolute / 1_000_000_000, 1)}B`;
 }
 
 export function formatRendererCreditsPercent(value: number): string {
@@ -97,10 +175,13 @@ export function createRendererUsageRing(
   return svg;
 }
 
-export function formatRendererPlanReset(unixSeconds: number): string {
+export function formatRendererPlanReset(
+  unixSeconds: number,
+  locale?: RendererSettingsLocale,
+): string {
   const date = new Date(unixSeconds * 1000);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(locale === "zh-CN" ? "zh-CN" : undefined, {
     month: "long",
     day: "numeric",
     hour: "numeric",
@@ -108,10 +189,14 @@ export function formatRendererPlanReset(unixSeconds: number): string {
   });
 }
 
-export function formatRendererPlanWindow(usedPercent: number, resetsAtUnix?: number): string {
+export function formatRendererPlanWindow(
+  usedPercent: number,
+  resetsAtUnix?: number,
+  locale?: RendererSettingsLocale,
+): string {
   const percent = formatRendererCreditsPercent(usedPercent);
   if (resetsAtUnix === undefined) return percent;
-  const reset = formatRendererPlanReset(resetsAtUnix);
+  const reset = formatRendererPlanReset(resetsAtUnix, locale);
   return reset.length > 0 ? `${percent} · ${reset}` : percent;
 }
 
@@ -179,10 +264,15 @@ function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   parent.append(row);
 }
 
-function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | null): void {
+function renderDetails(
+  popover: HTMLDivElement,
+  usage: ThreadUsageSnapshot | null,
+  messages: RendererUsageMessages,
+  locale: RendererSettingsLocale,
+): void {
   popover.replaceChildren();
   const heading = document.createElement("div");
-  heading.textContent = "Usage";
+  heading.textContent = messages.usage;
   heading.style.fontWeight = "600";
   heading.style.marginBottom = "6px";
   popover.append(heading);
@@ -194,7 +284,7 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | nul
         : null;
     addDetailRow(
       popover,
-      "Context",
+      messages.context,
       contextPercent === null
         ? `/${formatRendererTokenCount(usage.contextWindowTokens)}`
         : `${decimal(contextPercent, 1)}% / ${formatRendererTokenCount(usage.contextWindowTokens)}`,
@@ -203,48 +293,68 @@ function renderDetails(popover: HTMLDivElement, usage: ThreadUsageSnapshot | nul
   if (usage?.cacheHitRatePercent !== undefined) {
     addDetailRow(
       popover,
-      "Latest cache hit",
+      messages.latestCacheHit,
       formatRendererCacheHitRate(usage.cacheHitRatePercent),
     );
   }
   if (usage?.outputTokensPerSecond !== undefined) {
-    addDetailRow(popover, "Output speed", formatRendererTokenRate(usage.outputTokensPerSecond));
+    addDetailRow(
+      popover,
+      messages.outputSpeed,
+      formatRendererTokenRate(usage.outputTokensPerSecond, locale),
+    );
   }
   if (usage?.cachedInputTokens !== undefined) {
-    addDetailRow(popover, "Cache read", formatRendererTokenCount(usage.cachedInputTokens));
+    addDetailRow(popover, messages.cacheRead, formatRendererTokenCount(usage.cachedInputTokens));
   }
   if (usage?.cacheWriteInputTokens !== undefined) {
-    addDetailRow(popover, "Cache write", formatRendererTokenCount(usage.cacheWriteInputTokens));
+    addDetailRow(
+      popover,
+      messages.cacheWrite,
+      formatRendererTokenCount(usage.cacheWriteInputTokens),
+    );
   }
   if (usage?.reasoningOutputTokens !== undefined) {
-    addDetailRow(popover, "Reasoning", formatRendererTokenCount(usage.reasoningOutputTokens));
+    addDetailRow(
+      popover,
+      messages.reasoning,
+      formatRendererTokenCount(usage.reasoningOutputTokens),
+    );
   }
   if (usage?.totalTokens !== undefined) {
-    addDetailRow(popover, "Total tokens", formatRendererTokenCount(usage.totalTokens));
+    addDetailRow(popover, messages.totalTokens, formatRendererTokenCount(usage.totalTokens));
   }
   if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
     addDetailRow(
       popover,
-      "Input / output",
+      messages.inputOutput,
       `${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
     );
   }
   if (usage?.planFiveHourUsedPercent !== undefined) {
     addDetailRow(
       popover,
-      "5-hour limit",
-      formatRendererPlanWindow(usage.planFiveHourUsedPercent, usage.planFiveHourResetsAtUnix),
+      messages.fiveHourLimit,
+      formatRendererPlanWindow(
+        usage.planFiveHourUsedPercent,
+        usage.planFiveHourResetsAtUnix,
+        locale,
+      ),
     );
   }
   if (usage?.planSevenDayUsedPercent !== undefined) {
     addDetailRow(
       popover,
-      "7-day limit",
-      formatRendererPlanWindow(usage.planSevenDayUsedPercent, usage.planSevenDayResetsAtUnix),
+      messages.sevenDayLimit,
+      formatRendererPlanWindow(
+        usage.planSevenDayUsedPercent,
+        usage.planSevenDayResetsAtUnix,
+        locale,
+      ),
     );
   }
   if (usage?.totalCostUsd !== undefined) {
-    addDetailRow(popover, "Session cost estimate", formatRendererCost(usage.totalCostUsd));
+    addDetailRow(popover, messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd));
   }
 }
 
@@ -293,8 +403,12 @@ function togglePopover(
   else openPopover(control);
 }
 
-export function mountRendererUsageControl(composerId: string): RendererUsageControl {
+export function mountRendererUsageControl(
+  composerId: string,
+  locale: RendererSettingsLocale = "en",
+): RendererUsageControl {
   ensureRendererTriggerChipStyle(document);
+  const messages = rendererUsageMessages(locale);
 
   const root = document.createElement("div");
   root.dataset.codexhostUsageControl = composerId;
@@ -311,8 +425,8 @@ export function mountRendererUsageControl(composerId: string): RendererUsageCont
   trigger.type = "button";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
-  trigger.setAttribute("aria-label", "Thread Usage");
-  trigger.title = "Thread Usage";
+  trigger.setAttribute("aria-label", messages.threadUsage);
+  trigger.title = messages.threadUsage;
   // Usage is secondary metadata, not a primary composer action. Keep the
   // compact, muted treatment used by the previous Composer integration while
   // avoiding Codex's private trigger class names.
@@ -343,7 +457,7 @@ export function mountRendererUsageControl(composerId: string): RendererUsageCont
   const popover = document.createElement("div");
   popover.id = `${composerId}-usage-popover`;
   popover.setAttribute("role", "dialog");
-  popover.setAttribute("aria-label", "Thread Usage details");
+  popover.setAttribute("aria-label", messages.threadUsageDetails);
   popover.setAttribute("popover", "auto");
   popover.hidden = typeof popover.showPopover !== "function";
   popover.style.position = "fixed";
@@ -364,6 +478,7 @@ export function mountRendererUsageControl(composerId: string): RendererUsageCont
     popover,
     anchor: null,
     label,
+    locale,
     onOpen: null,
     dispose() {
       closePopover(control);
@@ -430,7 +545,11 @@ export function mountRendererUsageControl(composerId: string): RendererUsageCont
 export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
+  locale: RendererSettingsLocale = control.locale,
 ): boolean {
+  control.locale = locale;
+  const messages = rendererUsageMessages(locale);
+  control.popover.setAttribute("aria-label", messages.threadUsageDetails);
   const cacheHitRatePercent = usage?.cacheHitRatePercent;
   const outputTokensPerSecond = usage?.outputTokensPerSecond;
   const totalCostUsd = usage?.totalCostUsd;
@@ -454,7 +573,9 @@ export function renderRendererUsageControl(
 
   const summary = [
     cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
-    outputTokensPerSecond !== undefined ? formatRendererTokenRate(outputTokensPerSecond) : null,
+    outputTokensPerSecond !== undefined
+      ? formatRendererTokenRate(outputTokensPerSecond, locale)
+      : null,
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   if (
@@ -464,30 +585,30 @@ export function renderRendererUsageControl(
     usage.contextWindowTokens > 0
   ) {
     summary.push(
-      `${decimal(((usage.contextUsedTokens ?? 0) / usage.contextWindowTokens) * 100, 1)}% context`,
+      `${decimal(((usage.contextUsedTokens ?? 0) / usage.contextWindowTokens) * 100, 1)}% ${messages.contextSummary}`,
     );
   }
   if (summary.length === 0 && usage?.totalTokens !== undefined) {
-    summary.push(`${formatRendererTokenCount(usage.totalTokens)} tokens`);
+    summary.push(`${formatRendererTokenCount(usage.totalTokens)} ${messages.tokensSummary}`);
   }
   if (summary.length === 0 && hasTokenUsage) {
     summary.push(
-      `${formatRendererTokenCount((usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0))} tokens`,
+      `${formatRendererTokenCount((usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0))} ${messages.tokensSummary}`,
     );
   }
   if (summary.length === 0 && hasPlanLimit) {
     summary.push(
       usage?.planFiveHourUsedPercent !== undefined
-        ? `5h ${formatRendererCreditsPercent(usage.planFiveHourUsedPercent)}`
-        : `7d ${formatRendererCreditsPercent(usage?.planSevenDayUsedPercent ?? 0)}`,
+        ? `${messages.fiveHourSummary} ${formatRendererCreditsPercent(usage.planFiveHourUsedPercent)}`
+        : `${messages.sevenDaySummary} ${formatRendererCreditsPercent(usage?.planSevenDayUsedPercent ?? 0)}`,
     );
   }
   const compactSummary = summary.join(" · ");
-  const accessibleSummary = `Thread Usage: ${compactSummary}`;
+  const accessibleSummary = `${messages.threadUsage}: ${compactSummary}`;
   control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
   control.label.textContent = compactSummary;
-  renderDetails(control.popover, usage);
+  renderDetails(control.popover, usage, messages, locale);
   return true;
 }

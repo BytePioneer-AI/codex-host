@@ -1030,10 +1030,11 @@ export class OmpRpcSession {
       return;
     }
     if (value.type === "agent_end" && Array.isArray(value.messages)) {
-      for (const message of value.messages) {
-        if (isRecord(message) && message.role === "assistant") {
-          this.#finalizeAssistantMessage(active, message);
-        }
+      for (let index = value.messages.length - 1; index >= 0; index -= 1) {
+        const message = value.messages[index];
+        if (!isRecord(message) || message.role !== "assistant") continue;
+        this.#finalizeAssistantMessage(active, message);
+        break;
       }
     }
     if (value.type === "agent_end" && value.isTerminal !== false) {

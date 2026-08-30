@@ -27,6 +27,7 @@ class FakeOmpProcess extends EventEmitter {
   constructor(
     readonly compactMode: "complete" | "stalled" = "complete",
     readonly sessionFile?: string,
+    readonly terminalMessageMode: "none" | "replay" | "fallback" = "none",
   ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
@@ -153,12 +154,14 @@ class FakeOmpProcess extends EventEmitter {
           content: [{ type: "text", text: "PONG" }],
         };
         this.#output({ type: "message_start", message });
-        this.#output({
-          type: "message_update",
-          message,
-          assistantMessageEvent: { type: "text_delta", delta: "PONG" },
-        });
-        this.#output({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        if (this.terminalMessageMode !== "fallback") {
+          this.#output({
+            type: "message_update",
+            message,
+            assistantMessageEvent: { type: "text_delta", delta: "PONG" },
+          });
+          this.#output({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        }
         this.#output({
           type: "subagent_lifecycle",
           payload: {
@@ -170,7 +173,23 @@ class FakeOmpProcess extends EventEmitter {
             parentToolCallId: "tool-1",
           },
         });
-        this.#output({ type: "agent_end", isTerminal: true });
+        this.#output({
+          type: "agent_end",
+          isTerminal: true,
+          ...(this.terminalMessageMode !== "none"
+            ? {
+                messages: [
+                  {
+                    role: "assistant",
+                    responseId: "assistant-before-final",
+                    content: [{ type: "text", text: "Earlier tool setup" }],
+                    stopReason: "toolUse",
+                  },
+                  { ...message, stopReason: "stop" },
+                ],
+              }
+            : {}),
+        });
       });
       return;
     }
@@ -243,6 +262,46 @@ describe("OMP RPC session", () => {
       cancelled: false,
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
+    await session.close();
+  });
+
+  it("does not replay Assistant messages from agent_end after message_end", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "replay");
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
+      text: "PONG",
+      cancelled: false,
+    });
+    expect(events.filter((event) => event.type === "text.delta")).toEqual([
+      { type: "text.delta", messageId: "assistant-1", delta: "PONG" },
+    ]);
+    expect(events.filter((event) => event.type === "message.completed")).toEqual([
+      { type: "message.completed", messageId: "assistant-1" },
+    ]);
+    await session.close();
+  });
+
+  it("recovers the final Assistant message from agent_end when message_end is absent", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "fallback");
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
+      text: "PONG",
+      cancelled: false,
+    });
+    expect(events.filter((event) => event.type === "text.delta")).toEqual([
+      { type: "text.delta", messageId: "assistant-1", delta: "PONG" },
+    ]);
+    expect(events.filter((event) => event.type === "message.completed")).toEqual([
+      { type: "message.completed", messageId: "assistant-1" },
+    ]);
     await session.close();
   });
 

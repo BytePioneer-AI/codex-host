@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { HistoryEntry } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionEvent } from "@deepseek-ai/dsh-session/types";
 
@@ -14,11 +16,13 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
   type HarnessModelRef,
   type HostItemId,
+  type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -60,6 +64,11 @@ export interface DeepSeekHistoryProjection {
   usage: HostUsage | null;
 }
 
+export interface DeepSeekForkBoundary {
+  atSeq: number;
+  entries: HistoryEntry[];
+}
+
 function itemId(sessionId: string, seq: number, suffix: string): HostItemId {
   return hostItemIdSchema.parse(`dsh:${sessionId}:${seq}:${suffix}`);
 }
@@ -71,6 +80,63 @@ function nativeTurnRef(harnessId: HarnessId, sessionId: string, turn: number): N
     nativeTurnKey: `turn:${turn}`,
     formatVersion: 1,
   });
+}
+
+export function deepSeekCheckpointRef(
+  harnessId: HarnessId,
+  sessionId: string,
+  seq: number,
+): NativeCheckpointRef {
+  return nativeCheckpointRefSchema.parse({
+    harnessId,
+    nativeSessionId: sessionId,
+    checkpointId: `turn-end:${seq}`,
+    formatVersion: 1,
+  });
+}
+
+export function parseDeepSeekCheckpointSeq(checkpointId: string): number | null {
+  const match = /^turn-end:(0|[1-9]\d*)$/u.exec(checkpointId);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isSafeInteger(seq) ? seq : null;
+}
+
+export function resolveDeepSeekForkBoundary(
+  entries: readonly HistoryEntry[],
+  checkpointId: string,
+): DeepSeekForkBoundary | null {
+  const atSeq = parseDeepSeekCheckpointSeq(checkpointId);
+  if (atSeq === null) return null;
+  const boundary = entries.findIndex(
+    (entry) => entry.event.seq === atSeq && entry.event.type === "turn/end",
+  );
+  if (boundary < 0) return null;
+  let cut = boundary + 1;
+  while (cut < entries.length && entries[cut]?.event.type !== "turn/start") cut += 1;
+  return { atSeq, entries: entries.slice(0, cut) };
+}
+
+export function matchesDeepSeekForkHistory(
+  expectedPrefix: readonly HistoryEntry[],
+  childEntries: readonly HistoryEntry[],
+): boolean {
+  const prefixMatches = expectedPrefix.every((entry, index) =>
+    isDeepStrictEqual(entry.event, childEntries[index]?.event),
+  );
+  if (!prefixMatches) return false;
+  const childOwned = childEntries.slice(expectedPrefix.length);
+  if (expectedPrefix.at(-1)?.event.type !== "session/end-seed") {
+    const marker = childOwned.shift()?.event;
+    if (
+      marker?.type !== "session/end-seed" ||
+      marker.seq !== expectedPrefix.length ||
+      !isDeepStrictEqual(marker.data, {})
+    ) {
+      return false;
+    }
+  }
+  return childOwned.every((entry) => entry.event.type !== "turn/start");
 }
 
 function contentByType(value: unknown, type: "text" | "reasoning"): string {
@@ -275,6 +341,7 @@ export function projectDeepSeekHistory(input: {
       finishIncompleteItems(active, itemOutcomeForTurn(data.reason));
       turns.push({
         nativeTurnRef: nativeTurnRef(input.harnessId, input.sessionId, active.turn),
+        checkpoint: deepSeekCheckpointRef(input.harnessId, input.sessionId, event.seq),
         input: active.input,
         items: active.items,
         outcome: projected.history,

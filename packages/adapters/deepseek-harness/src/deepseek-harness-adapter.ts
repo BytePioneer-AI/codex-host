@@ -5,6 +5,7 @@ import type {
   ClientResponse,
   HistoryEntry,
   MuxFrame,
+  RpcError,
   RpcId,
   RpcResponse,
 } from "@deepseek-ai/dsh-host-apiproxy/api";
@@ -60,6 +61,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
@@ -80,7 +82,12 @@ import {
   type DeepSeekHostSubscriber,
   type DeepSeekMuxEnvelope,
 } from "./host-client.js";
-import { projectDeepSeekHistory } from "./history.js";
+import {
+  deepSeekCheckpointRef,
+  matchesDeepSeekForkHistory,
+  projectDeepSeekHistory,
+  resolveDeepSeekForkBoundary,
+} from "./history.js";
 import {
   decodeDeepSeekHarnessModelRef,
   encodeDeepSeekHarnessModelRef,
@@ -219,7 +226,38 @@ function unwrapRpc<T>(response: RpcResponse<T>, operation: string): T {
   throw new DeepSeekHarnessTransportError(
     error.code === "session-not-found" ? "unavailable" : "protocolError",
     `DeepSeek Harness '${operation}' failed: ${error.message}`,
+    error.code,
   );
+}
+
+function forkFailure(operation: string, error: RpcError): HarnessError {
+  const code =
+    error.code === "session-not-found"
+      ? "sessionNotFound"
+      : error.code === "fork-unavailable"
+        ? "checkpointNotFound"
+        : "nativeFailure";
+  return {
+    code,
+    message: `DeepSeek Harness '${operation}' failed: ${error.message}`,
+    retryable: false,
+  };
+}
+
+function normalizedForkError(error: unknown): HarnessError {
+  if (error instanceof DeepSeekHarnessTransportError) {
+    if (error.nativeCode === "session-not-found") {
+      return { code: "sessionNotFound", message: error.message, retryable: false };
+    }
+    if (error.nativeCode === "fork-unavailable") {
+      return { code: "checkpointNotFound", message: error.message, retryable: false };
+    }
+    if (error.nativeCode) {
+      return { code: "nativeFailure", message: error.message, retryable: false };
+    }
+  }
+  const normalized = normalizedError(error, "nativeFailure");
+  return { ...normalized, retryable: false };
 }
 
 function delegationPermissionIsApplied(entries: readonly HistoryEntry[]): boolean {
@@ -294,7 +332,16 @@ export async function readAllDeepSeekHistory(
       "session.history",
     );
     pages.unshift(value.events);
-    if (!value.hasMore) return pages.flat();
+    if (!value.hasMore) {
+      const entries = pages.flat();
+      if (entries.some((entry, index) => entry.event.seq !== index)) {
+        throw new DeepSeekHarnessTransportError(
+          "protocolError",
+          "DeepSeek Harness history event sequence is not contiguous",
+        );
+      }
+      return entries;
+    }
     const firstSeq = value.events[0]?.event.seq;
     if (firstSeq === undefined || (beforeSeq !== undefined && firstSeq >= beforeSeq)) {
       throw new DeepSeekHarnessTransportError(
@@ -318,7 +365,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       selectThinkingOption: true,
       selectPermissionMode: false,
     },
-    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
   };
   readonly commands: HarnessCommandCapability = {
     list: () => this.#listHarnessCommands(),
@@ -570,7 +617,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         return;
       }
       try {
-        this.#event(frame.event.type, frame.event.data);
+        this.#event(frame.event.type, frame.event.data, frame.event.seq);
       } catch (error) {
         this.#fault(normalizedError(error, "protocolError"));
       }
@@ -1030,7 +1077,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
   }
 
-  #event(type: string, data: Record<string, unknown>): void {
+  #event(type: string, data: Record<string, unknown>, seq: number): void {
     const active = this.#active;
     switch (type) {
       case "turn/start": {
@@ -1117,7 +1164,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         if (!active?.started || data.turn !== active.nativeTurn) {
           throw new Error("DeepSeek Harness turn/end does not match the active Turn");
         }
-        this.#finishTurn(active, data.reason);
+        this.#finishTurn(active, data.reason, seq);
         return;
       default:
         return;
@@ -1350,7 +1397,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     });
   }
 
-  #finishTurn(active: ActiveTurn, reason: unknown): void {
+  #finishTurn(active: ActiveTurn, reason: unknown, seq: number): void {
     const terminal = projectTurnReason(reason);
     const itemOutcome: HostItemOutcome =
       terminal.outcome.status === "succeeded"
@@ -1369,8 +1416,10 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#closeHostInteraction(active, interactionId, "cancelled");
     }
     const nativeTurnRef = this.#nativeTurnRef(active.nativeTurn as number);
+    const checkpoint = deepSeekCheckpointRef(this.harnessId, this.#nativeRef.nativeSessionId, seq);
     this.#turns.push({
       nativeTurnRef,
+      checkpoint,
       input: active.command.input,
       items: [...active.snapshots],
       outcome: terminal.history,
@@ -1380,7 +1429,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       type: "turn.completed",
       turnId: active.command.turnId,
       nativeTurnRef,
-      outcome: terminal.outcome,
+      outcome: { ...terminal.outcome, checkpoint },
     });
     if (this.#active === active) this.#active = null;
   }
@@ -1526,7 +1575,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             selectThinkingOption: true,
             selectPermissionMode: false,
           },
-          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         },
       };
     } catch (error) {
@@ -1559,7 +1608,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind !== "create" && input.kind !== "resume") {
+    if (input.kind !== "create" && input.kind !== "resume" && input.kind !== "fork") {
       return { ok: false, error: unsupported(`DeepSeek Harness does not support '${input.kind}'`) };
     }
     if (input.kind === "create" && input.permissionModeId) {
@@ -1572,9 +1621,12 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       await this.#connection.connect();
       const cwd = path.resolve(input.cwd);
       let sessionId: string;
+      let forkExpectedEntries: HistoryEntry[] | undefined;
+      let forkExpectedTurnCount: number | undefined;
+      let forkCheckpointId: string | undefined;
       if (input.kind === "create") {
         sessionId = `session-${this.#dependencies.randomUUID()}`;
-      } else {
+      } else if (input.kind === "resume") {
         const parsed = nativeSessionRefSchema.safeParse(input.nativeRef);
         if (!parsed.success || parsed.data.harnessId !== this.harnessId) {
           return {
@@ -1587,6 +1639,118 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           };
         }
         sessionId = parsed.data.nativeSessionId;
+      } else {
+        const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
+        const checkpoint = nativeCheckpointRefSchema.safeParse(input.checkpoint);
+        if (
+          !sourceRef.success ||
+          !checkpoint.success ||
+          sourceRef.data.harnessId !== this.harnessId ||
+          checkpoint.data.harnessId !== this.harnessId ||
+          checkpoint.data.nativeSessionId !== sourceRef.data.nativeSessionId
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "DeepSeek Harness Fork references do not identify one Native Session",
+              retryable: false,
+            },
+          };
+        }
+
+        const sourceSessionId = sourceRef.data.nativeSessionId as SessionId;
+        const [listed, sourceEntries] = await Promise.all([
+          this.#connection.client.sessions.list({}),
+          readAllDeepSeekHistory(this.#connection.client, sourceSessionId),
+        ]);
+        if (!listed.result.ok) {
+          return { ok: false, error: forkFailure("session.list", listed.result.error) };
+        }
+        const source = listed.result.value.items.find(
+          (candidate) => candidate.sessionId === sourceSessionId,
+        );
+        if (!source) {
+          return {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "DeepSeek Harness Fork source Session is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        if (!source.cwd) {
+          return {
+            ok: false,
+            error: {
+              code: "protocolError",
+              message: "DeepSeek Harness Fork source has no working directory metadata",
+              retryable: false,
+            },
+          };
+        }
+        if (path.relative(path.resolve(source.cwd), cwd) !== "") {
+          return {
+            ok: false,
+            error: unsupported("DeepSeek Harness cannot Fork across working directories"),
+          };
+        }
+
+        const boundary = resolveDeepSeekForkBoundary(sourceEntries, checkpoint.data.checkpointId);
+        if (!boundary) {
+          return {
+            ok: false,
+            error: {
+              code: "checkpointNotFound",
+              message: "DeepSeek Harness Fork Checkpoint is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        const expected = projectDeepSeekHistory({
+          harnessId: this.harnessId,
+          sessionId: sourceSessionId,
+          entries: boundary.entries,
+          toolOutputLimit: this.#toolOutputLimit,
+        });
+        if (
+          expected.snapshot.turns.at(-1)?.checkpoint?.checkpointId !== checkpoint.data.checkpointId
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "checkpointNotFound",
+              message: "DeepSeek Harness Fork Checkpoint does not close a visible Turn",
+              retryable: false,
+            },
+          };
+        }
+
+        const forked = await this.#connection.client.sessions.fork({
+          sessionId: sourceSessionId,
+          atSeq: boundary.atSeq,
+        });
+        if (forked.result.ok) {
+          sessionId = forked.result.value.sessionId;
+        } else if (forked.result.error.code === "workspace-attach-failed") {
+          sessionId = forked.result.error.details.sessionId;
+        } else {
+          return { ok: false, error: forkFailure("session.fork", forked.result.error) };
+        }
+        if (sessionId === sourceSessionId) {
+          return {
+            ok: false,
+            error: {
+              code: "protocolError",
+              message: "DeepSeek Harness Fork returned the source Session identity",
+              retryable: false,
+            },
+          };
+        }
+        forkExpectedEntries = boundary.entries;
+        forkExpectedTurnCount = expected.snapshot.turns.length;
+        forkCheckpointId = checkpoint.data.checkpointId;
       }
 
       const pending: DeepSeekMuxEnvelope[] = [];
@@ -1651,6 +1815,24 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           fallbackModel: model,
           toolOutputLimit: this.#toolOutputLimit,
         });
+        if (forkExpectedEntries) {
+          const terminal = projection.snapshot.turns.at(-1);
+          const exactFork =
+            matchesDeepSeekForkHistory(forkExpectedEntries, entries) &&
+            projection.snapshot.turns.length === forkExpectedTurnCount &&
+            terminal?.checkpoint?.checkpointId === forkCheckpointId &&
+            projection.snapshot.turns.every(
+              (turn) =>
+                turn.nativeTurnRef.nativeSessionId === sessionId &&
+                turn.checkpoint?.nativeSessionId === sessionId,
+            );
+          if (!exactFork) {
+            throw new DeepSeekHarnessTransportError(
+              "protocolError",
+              "DeepSeek Harness Fork did not reproduce the requested Native history prefix",
+            );
+          }
+        }
         const thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
         session = new DeepSeekHarnessSession({
           client: this.#connection.client,
@@ -1676,7 +1858,13 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         throw error;
       }
     } catch (error) {
-      return { ok: false, error: normalizedError(error, "unavailable") };
+      return {
+        ok: false,
+        error:
+          input.kind === "fork"
+            ? normalizedForkError(error)
+            : normalizedError(error, "unavailable"),
+      };
     }
   }
 

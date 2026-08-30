@@ -52,6 +52,7 @@ export class DeepSeekHarnessTransportError extends Error {
   constructor(
     readonly code: DeepSeekHarnessTransportErrorCode,
     message: string,
+    readonly nativeCode?: string,
   ) {
     super(message);
     this.name = "DeepSeekHarnessTransportError";

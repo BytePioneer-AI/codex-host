@@ -41,8 +41,36 @@ export {
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
   createRendererModelClient,
+  createThreadReasoningSubscriptionRelay,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
+export {
+  RENDERER_REASONING_NOTIFICATION_METHODS,
+  RendererReasoningPendingBuffer,
+  RendererReasoningStore,
+  decodeRendererReasoningNotification,
+  rendererReasoningPanelView,
+} from "./renderer-reasoning-events.js";
+export type {
+  RendererReasoningEvent,
+  RendererReasoningPanelView,
+  RendererReasoningPhase,
+  RendererReasoningSnapshot,
+} from "./renderer-reasoning-events.js";
+export {
+  RENDERER_REASONING_DISPLAY_PREFERENCE_EVENT,
+  RENDERER_REASONING_DISPLAY_PREFERENCE_KEY,
+  readRendererReasoningDisplayPreference,
+  setRendererReasoningDisplayPreference,
+  writeRendererReasoningDisplayPreference,
+} from "./renderer-reasoning-preference.js";
+export type { RendererReasoningPreferenceStorage } from "./renderer-reasoning-preference.js";
+export { installRendererReasoningDisplay } from "./renderer-reasoning-display.js";
+export type {
+  RendererReasoningDisplayClient,
+  RendererReasoningDisplayControl,
+  RendererReasoningDisplayOptions,
+} from "./renderer-reasoning-display.js";
 export {
   inspectRendererComposerContract,
   isNativeContextUsageControlCandidate,
@@ -189,6 +217,7 @@ export type {
   RendererConnectionDiagnostics,
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
+  RendererReasoningDisplayPreference,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {

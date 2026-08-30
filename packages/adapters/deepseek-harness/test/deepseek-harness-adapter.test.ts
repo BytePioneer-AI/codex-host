@@ -12,7 +12,7 @@ import { RpcId } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   DeepSeekHarnessAdapter,
@@ -20,6 +20,7 @@ import {
   type DeepSeekHostConnectionLike,
 } from "../src/deepseek-harness-adapter.js";
 import type {
+  DeepSeekCommandExecution,
   DeepSeekHostClient,
   DeepSeekHostSubscriber,
   DeepSeekMuxEnvelope,
@@ -37,14 +38,41 @@ const MODEL_GROUPS = [
     id: "deepseek-official",
     name: "DeepSeek",
     models: [
-      { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
-      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+      {
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        reasoning: {
+          efforts: [
+            { id: "off", name: "Off" },
+            { id: "low", name: "Low" },
+            { id: "high", name: "High" },
+          ],
+          defaultEffort: "high",
+        },
+      },
+      {
+        id: "deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        reasoning: {
+          efforts: [
+            { id: "off", name: "Off" },
+            { id: "low", name: "Low" },
+            { id: "high", name: "High" },
+            { id: "max", name: "Max" },
+          ],
+          defaultEffort: "high",
+        },
+      },
     ],
   },
 ];
 
 function success<T>(value: T) {
   return { rpcId: RpcId("response"), result: { ok: true as const, value } };
+}
+
+function commandSuccess<T>(value: T) {
+  return { ok: true as const, value };
 }
 
 function event(seq: number, type: string, data: Record<string, unknown>): HistoryEntry {
@@ -63,6 +91,8 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     models: vi.fn(),
     selectModel: vi.fn(),
     prompt: vi.fn(),
+    commandList: vi.fn(),
+    commandExecute: vi.fn(),
     cancel: vi.fn(),
     respond: vi.fn(),
   };
@@ -98,16 +128,59 @@ class FakeConnection implements DeepSeekHostConnectionLike {
       ),
     );
     this.calls.selectModel.mockImplementation(
-      ({ provider, model }: { provider: string; model: string }) => {
-        this.currentModel = { provider, model };
+      ({
+        provider,
+        model,
+        reasoningEffort,
+      }: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+      }) => {
+        const defaultEffort = MODEL_GROUPS.find((group) => group.id === provider)?.models.find(
+          (candidate) => candidate.id === model,
+        )?.reasoning?.defaultEffort;
+        const effectiveEffort = reasoningEffort ?? defaultEffort;
+        this.currentModel = {
+          provider,
+          model,
+          ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
+        };
         return Promise.resolve(success({ selected: this.currentModel }));
       },
     );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
+    this.calls.commandList.mockResolvedValue(
+      commandSuccess([{ name: "compact", description: "Compact older conversation history" }]),
+    );
+    this.calls.commandExecute.mockImplementation((agentId: string, line: string) => {
+      if (line === "/permission danger-full-access") {
+        const history = this.history.get(agentId) ?? [];
+        const seq = history.length;
+        this.history.set(agentId, [
+          ...history,
+          event(seq, "permission/preset", { preset: "danger-full-access" }),
+          event(seq + 1, "sandbox/mode", { mode: "danger-full-access" }),
+          event(seq + 2, "approval/policy", { policy: "never" }),
+        ]);
+        return Promise.resolve(
+          commandSuccess({
+            commandId: "command-1",
+            result: { kind: "success" as const, text: "preset danger-full-access" },
+          }),
+        );
+      }
+      return Promise.resolve(commandSuccess(undefined));
+    });
     this.calls.cancel.mockResolvedValue(success({ accepted: true }));
     this.calls.respond.mockResolvedValue({ accepted: true });
+    const commands = {
+      list: this.calls.commandList,
+      execute: this.calls.commandExecute,
+    };
     this.client = {
       sessions,
+      commands,
       host: {
         describe: vi.fn().mockResolvedValue(
           success({
@@ -179,6 +252,12 @@ async function collectUntilTurn(session: Awaited<ReturnType<typeof openCreated>>
   throw new Error("Output stream ended before Turn completion");
 }
 
+async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
+  const next = await iterator.next();
+  if (next.done || next.value.kind !== "event") throw new Error("Expected a Harness event");
+  return next.value.event;
+}
+
 async function openCreated(adapter: DeepSeekHarnessAdapter) {
   const opened = await adapter.open({ kind: "create", cwd: "/workspace" });
   if (!opened.ok) throw new Error(opened.error.message);
@@ -222,6 +301,14 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       sessionId: "session-native-1",
       provider: "deepseek-official",
       model: "deepseek-v4-pro",
+    });
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: expect.arrayContaining([
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ]),
     });
 
     const turnId = hostTurnIdSchema.parse("host-turn-1");
@@ -298,6 +385,80 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(true);
   });
 
+  it("uses danger-full-access only for unattended delegated Sessions", async () => {
+    const { adapter, connection } = fixture();
+
+    const regular = await adapter.open({ kind: "create", cwd: "/workspace" });
+    expect(regular.ok).toBe(true);
+    expect(connection.calls.commandExecute).not.toHaveBeenCalled();
+    if (!regular.ok) throw new Error(regular.error.message);
+    await regular.value.close();
+
+    const delegated = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      executionPolicy: "unattended-full-access",
+    });
+    expect(delegated.ok).toBe(true);
+    expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+      "session-native-1",
+      "/permission danger-full-access",
+    );
+    await adapter.close();
+  });
+
+  it("fails delegated Session creation when danger-full-access is not confirmed", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "command-1",
+        result: { kind: "success", text: "preset danger-full-access" },
+      }),
+    );
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not confirm danger-full-access with approval policy never",
+        retryable: false,
+      },
+    });
+    await adapter.close();
+  });
+
+  it("fails delegated Session creation when the native permission command fails", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "command-1",
+        result: { kind: "error", text: "permission command failed" },
+      }),
+    );
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "permission command failed",
+        retryable: false,
+      },
+    });
+    await adapter.close();
+  });
+
   it("selects another Model for a resumed Session and publishes confirmed state", async () => {
     const { adapter, connection } = fixture();
     const opened = await adapter.open({
@@ -328,6 +489,11 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           state: {
             nativeRef: { nativeSessionId: SESSION_ID },
             effectiveModel: model,
+            effectiveThinkingOptionId: "high",
+            availableThinkingOptions: expect.arrayContaining([
+              { id: "high", label: "High" },
+              { id: "max", label: "Max" },
+            ]),
           },
         },
       },
@@ -339,6 +505,418 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       model: "deepseek-v4-pro",
     });
     expect(connection.calls.models).toHaveBeenCalledTimes(2);
+    await adapter.close();
+  });
+
+  it("advertises Thinking options from the Host model catalog", async () => {
+    const { adapter } = fixture();
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+      catalog: {
+        defaultThinkingOptionId: "high",
+        thinkingOptions: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+          { id: "max", label: "Max" },
+        ],
+        models: [
+          { supportedThinkingOptionIds: ["off", "low", "high"] },
+          { supportedThinkingOptionIds: ["off", "low", "high", "max"] },
+        ],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("keeps current Model and Thinking state ahead of the last historical request", async () => {
+    const { adapter, connection } = fixture();
+    const current: ModelSelection = {
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+      reasoningEffort: "high",
+    };
+    const model = encodeDeepSeekHarnessModelRef(current);
+    connection.currentModel = current;
+    connection.history.set(SESSION_ID, [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "request/header", { header: { config: CURRENT_MODEL } }),
+      event(2, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ]);
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const expectedState = {
+      effectiveModel: model,
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: expect.arrayContaining([
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ]),
+    };
+
+    expect(session.initialState).toMatchObject(expectedState);
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        state: expectedState,
+        turns: [{ model: encodeDeepSeekHarnessModelRef(CURRENT_MODEL) }],
+      },
+    });
+    await adapter.close();
+  });
+
+  it("creates a Session with the requested Thinking option", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect(session.capabilities.configuration.selectThinkingOption).toBe(true);
+    expect(connection.calls.selectModel).toHaveBeenCalledWith({
+      sessionId: "session-native-1",
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      reasoningEffort: "high",
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        state: {
+          effectiveThinkingOptionId: "high",
+          availableThinkingOptions: expect.arrayContaining([
+            { id: "off", label: "Off" },
+            { id: "high", label: "High" },
+          ]),
+        },
+      },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("rejects Thinking selection when native readback differs without publishing state", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const output = session.outputs[Symbol.asyncIterator]().next();
+    connection.calls.models.mockResolvedValueOnce(
+      success<SessionModels>({
+        current: { ...CURRENT_MODEL, reasoningEffort: "low" },
+        routable: true,
+        groups: MODEL_GROUPS,
+        failures: [],
+      }),
+    );
+
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not activate the requested Thinking option",
+        retryable: false,
+      },
+    });
+    await session.close();
+    await expect(output).resolves.toEqual({ done: true, value: undefined });
+    await adapter.close();
+  });
+
+  it("selects Thinking for a resumed Session and publishes confirmed state", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    const selecting = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        kind: "event",
+        event: {
+          type: "session.state.changed",
+          state: {
+            nativeRef: { nativeSessionId: SESSION_ID },
+            effectiveModel: expect.anything(),
+            effectiveThinkingOptionId: "high",
+            availableThinkingOptions: expect.arrayContaining([
+              { id: "off", label: "Off" },
+              { id: "low", label: "Low" },
+              { id: "high", label: "High" },
+            ]),
+          },
+        },
+      },
+    });
+    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(connection.calls.selectModel).toHaveBeenLastCalledWith({
+      sessionId: SESSION_ID,
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
+      reasoningEffort: "high",
+    });
+    await adapter.close();
+  });
+
+  it("discovers and executes dsh.compact through the native Remote command service", async () => {
+    const { adapter, connection } = fixture();
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/workspace",
+      nativeRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: SESSION_ID,
+        formatVersion: 1,
+      },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(commands.list()).resolves.toMatchObject({
+      ok: true,
+      value: { commands: [{ id: "dsh.compact", invocation: "/compact" }] },
+    });
+    expect(connection.calls.commandList).toHaveBeenCalledWith(SESSION_ID);
+    let resolveExecution:
+      ((value: { ok: true; value: DeepSeekCommandExecution }) => void) | undefined;
+    connection.calls.commandExecute.mockImplementationOnce(
+      () =>
+        new Promise<{ ok: true; value: DeepSeekCommandExecution }>((resolve) => {
+          resolveExecution = resolve;
+        }),
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("manual-compact");
+    await expect(
+      commands.execute({
+        turnId,
+        commandId: "dsh.compact",
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    const started = await nextEvent(iterator);
+    if (started.type !== "item.started") throw new Error("Expected compaction Item start");
+    expect(started).toMatchObject({
+      type: "item.started",
+      turnId,
+      item: { type: "contextCompaction" },
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+
+    resolveExecution?.(
+      commandSuccess({
+        commandId: "native-command-1",
+        result: { kind: "success", text: "compacted" },
+      }),
+    );
+    expect(await nextEvent(iterator)).toEqual({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: started.item, outcome: { status: "succeeded" } },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+      SESSION_ID,
+      "/compact",
+      expect.any(AbortSignal),
+    );
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await expect(session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+    await adapter.close();
+  });
+
+  it("hides dsh.compact when the native deployment does not advertise the argument-free command", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.commandList.mockResolvedValueOnce(
+      commandSuccess([
+        {
+          name: "compact",
+          description: "Different deployment contract",
+          input: { hint: "<instructions>" },
+        },
+      ]),
+    );
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(commands.list()).resolves.toEqual({
+      ok: true,
+      value: { commands: [] },
+    });
+    await adapter.close();
+  });
+
+  it("rejects unknown Harness commands and command arguments without touching the Host", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-x"),
+        commandId: "dsh.unknown",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      commands.execute({
+        turnId: hostTurnIdSchema.parse("manual-compact"),
+        commandId: "dsh.compact",
+        arguments: { text: "keep details" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(connection.calls.commandExecute).not.toHaveBeenCalled();
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("fails the temporary Turn when the native command does not resolve", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("missing-compact");
+
+    await expect(commands.execute({ turnId, commandId: "dsh.compact" })).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const started = await nextEvent(iterator);
+    expect(started.type).toBe("item.started");
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed", error: { code: "nativeFailure" } } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "nativeFailure" } },
+    });
+    expect(connection.calls.prompt).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("projects the native compact busy result as a failed temporary Turn", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    connection.calls.commandExecute.mockResolvedValueOnce(
+      commandSuccess({
+        commandId: "native-command-1",
+        result: {
+          kind: "error",
+          text: "Compaction is unavailable because this process has an active compaction, or the agent is not idle.",
+        },
+      }),
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("busy-compact");
+
+    await commands.execute({ turnId, commandId: "dsh.compact" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed", error: { code: "sessionBusy" } } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { code: "sessionBusy" } },
+    });
+    await expect(session.readSnapshot()).resolves.toMatchObject({ ok: true });
+    await adapter.close();
+  });
+
+  it("cancels a running native compact command through its AbortSignal", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
+    let commandSignal: AbortSignal | undefined;
+    connection.calls.commandExecute.mockImplementationOnce(
+      (_sessionId: SessionId, _line: string, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          commandSignal = signal;
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    );
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("cancel-compact");
+
+    await commands.execute({
+      turnId,
+      commandId: "dsh.compact",
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(commandSignal?.aborted).toBe(true);
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
     await adapter.close();
   });
 
@@ -361,11 +939,12 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       ok: false,
       error: { message: expect.stringContaining("Model is unavailable") },
     });
+    expect(connection.calls.models).toHaveBeenCalledTimes(1);
     await expect(session.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: { state: { effectiveModel: encodeDeepSeekHarnessModelRef(CURRENT_MODEL) } },
     });
-    expect(connection.calls.models).toHaveBeenCalledTimes(1);
+    expect(connection.calls.models).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
 
@@ -403,7 +982,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       ({ provider, model: modelId }: { provider: string; model: string }) =>
         new Promise((resolve) => {
           releaseSelection = () => {
-            connection.currentModel = { provider, model: modelId };
+            connection.currentModel = { provider, model: modelId, reasoningEffort: "high" };
             resolve(success({ selected: connection.currentModel }));
           };
         }),
@@ -435,12 +1014,13 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       provider: "deepseek-official",
       model: "deepseek-v4-pro",
     });
-    connection.calls.models.mockResolvedValueOnce(
-      success<SessionModels>({
-        current: CURRENT_MODEL,
-        routable: true,
-        groups: MODEL_GROUPS,
-        failures: [],
+    connection.calls.selectModel.mockResolvedValueOnce(
+      success({
+        selected: {
+          provider: "deepseek-official",
+          model: "deepseek-v4-pro",
+          reasoningEffort: "high",
+        },
       }),
     );
 

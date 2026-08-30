@@ -41,6 +41,7 @@ import {
   renderRendererUsageControl,
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import {
   mountRendererHarnessCommandControl,
@@ -673,9 +674,10 @@ export function renderComposerAgentControl(
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
+  locale: RendererSettingsLocale = "en",
 ): void {
   if (control.usage === null) {
-    control.usage = mountRendererUsageControl(control.composerId);
+    control.usage = mountRendererUsageControl(control.composerId, locale);
   }
 
   const selectedModel = modelView.selected;
@@ -729,7 +731,7 @@ export function renderComposerAgentControl(
     permissionModeView,
     permissionModeVisible,
   );
-  if (control.usage) renderRendererUsageControl(control.usage, usage);
+  if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

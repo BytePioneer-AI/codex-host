@@ -1,6 +1,8 @@
 import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
+import ChevronLeft from "lucide/dist/esm/icons/chevron-left.mjs";
+import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
@@ -31,6 +33,9 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "unavailable",
   "diagnose",
   "copy",
+  "download",
+  "chevron-left",
+  "chevron-right",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -50,6 +55,9 @@ const iconNodes = {
   unavailable: CircleOff,
   diagnose: Stethoscope,
   copy: Copy,
+  download: Download,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

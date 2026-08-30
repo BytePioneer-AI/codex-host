@@ -167,6 +167,88 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
   });
 
+  it("prefers a policy-owned exact request target without Composer discovery", () => {
+    const manager = {
+      hostId: "remote-ssh-discovered:mac",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: manager.hostId,
+      requestTarget: vi.fn(() => manager),
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    const route = resolveRendererRequestRoute(policy, [], null);
+
+    expect(route).toEqual({ policy, targets: [manager] });
+    expect(policy.requestTarget).toHaveBeenCalledOnce();
+
+    const discoverTargets = vi.fn(() => [manager]);
+    const resolver = createRendererRequestRouteResolver(() => policy, discoverTargets);
+    expect(resolver.resolve()?.targets).toEqual([manager]);
+    expect(discoverTargets).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["non-callable", {}],
+    ["malformed", () => ({})],
+    [
+      "host-mismatched",
+      () => ({
+        hostId: "remote-ssh-discovered:other",
+        sendRequest: vi.fn(),
+        prewarmThreadStart: vi.fn(),
+        enqueueRequest: vi.fn(),
+      }),
+    ],
+    [
+      "throwing",
+      () => {
+        throw new Error("synthetic target failure");
+      },
+    ],
+  ])("fails closed for a %s policy-owned request target", (_name, requestTarget) => {
+    const matchingDiscoveredManager = {
+      hostId: "remote-ssh-discovered:mac",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: matchingDiscoveredManager.hostId,
+      requestTarget,
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    expect(resolveRendererRequestRoute(policy, [matchingDiscoveredManager], null)).toBeNull();
+  });
+
+  it("keeps Fiber discovery as the fallback for a legacy policy without requestTarget", () => {
+    const manager = {
+      hostId: "remote-ssh-discovered:mac",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: manager.hostId,
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    expect(resolveRendererRequestRoute(policy, [manager], null)).toEqual({
+      policy,
+      targets: [manager],
+    });
+  });
+
   it("does not revive an invalidated request manager after a later discovery gap", () => {
     const policy = {
       state: "ready" as const,

@@ -15,6 +15,9 @@ import {
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
   type HarnessModelRef,
@@ -26,6 +29,7 @@ import {
   type HostAgentMessageItem,
   type HostApprovalInteraction,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostFileChangeItem,
   type HostItem,
   type HostItemOutcome,
@@ -51,12 +55,15 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  harnessCommandCatalogSchema,
   harnessIdSchema,
+  harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HarnessThinkingOption,
   type HostInteractionId,
   type HostItemId,
   type HostTurnId,
@@ -67,6 +74,7 @@ import {
 import {
   DeepSeekHarnessTransportError,
   DeepSeekHostConnection,
+  type DeepSeekCommandClient,
   type DeepSeekHostClient,
   type DeepSeekHostConnectionOptions,
   type DeepSeekHostSubscriber,
@@ -77,6 +85,8 @@ import {
   decodeDeepSeekHarnessModelRef,
   encodeDeepSeekHarnessModelRef,
   normalizeDeepSeekModelCatalog,
+  normalizeDeepSeekThinkingOptions,
+  parseDeepSeekThinkingOptionId,
 } from "./model-catalog.js";
 import {
   contentText,
@@ -142,10 +152,34 @@ interface ActiveTurn {
   snapshots: HostItemSnapshot[];
 }
 
+interface ActiveCommand {
+  command: HarnessCommandInvocation;
+  abort: AbortController;
+  cancellationRequested: boolean;
+  item: HostContextCompactionItem;
+}
+
 const deepSeekHarnessId = harnessIdSchema.parse("deepseek-harness");
+const deepSeekCommandCatalog = harnessCommandCatalogSchema.parse({
+  commands: [
+    {
+      id: "dsh.compact",
+      invocation: "/compact",
+      label: "Compact context",
+      description:
+        "Compact the current conversation context through the DeepSeek Harness command registry",
+      argumentMode: "none",
+    },
+  ],
+});
+const emptyDeepSeekCommandCatalog = harnessCommandCatalogSchema.parse({ commands: [] });
+const DSH_COMPACT_BUSY =
+  "Compaction is unavailable because this process has an active compaction, or the agent is not idle.";
+const DSH_COMPACT_CANCELLED = "Compaction cancelled.";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const HISTORY_PAGE_MESSAGES = 100;
 const HISTORY_PAGE_LIMIT = 10_000;
+const DELEGATION_PERMISSION_PRESET = "danger-full-access";
 
 function normalizedError(error: unknown, fallback: HarnessError["code"]): HarnessError {
   if (error instanceof DeepSeekHarnessTransportError) {
@@ -170,6 +204,15 @@ function unsupported(message: string): HarnessError {
   return { code: "unsupported", message, retryable: false };
 }
 
+function commandFailure(operation: string, error: { code: string; message: string }): HarnessError {
+  const code = error.code === "session-not-found" ? "unavailable" : "nativeFailure";
+  return {
+    code,
+    message: `DeepSeek Harness '${operation}' failed: ${error.message}`,
+    retryable: code === "unavailable" || error.code === "internal",
+  };
+}
+
 function unwrapRpc<T>(response: RpcResponse<T>, operation: string): T {
   if (response.result.ok) return response.result.value;
   const error = response.result.error;
@@ -177,6 +220,62 @@ function unwrapRpc<T>(response: RpcResponse<T>, operation: string): T {
     error.code === "session-not-found" ? "unavailable" : "protocolError",
     `DeepSeek Harness '${operation}' failed: ${error.message}`,
   );
+}
+
+function delegationPermissionIsApplied(entries: readonly HistoryEntry[]): boolean {
+  let preset: string | undefined;
+  let sandboxMode: string | undefined;
+  let approvalPolicy: string | undefined;
+  for (const entry of entries) {
+    const nativeEvent: unknown = entry.event;
+    if (
+      !isRecord(nativeEvent) ||
+      typeof nativeEvent.type !== "string" ||
+      !isRecord(nativeEvent.data)
+    ) {
+      continue;
+    }
+    const data = nativeEvent.data;
+    if (nativeEvent.type === "permission/preset" && nonBlankString(data.preset)) {
+      preset = data.preset;
+    } else if (nativeEvent.type === "sandbox/mode" && nonBlankString(data.mode)) {
+      sandboxMode = data.mode;
+    } else if (nativeEvent.type === "approval/policy" && nonBlankString(data.policy)) {
+      approvalPolicy = data.policy;
+    }
+  }
+  return (
+    preset === DELEGATION_PERMISSION_PRESET &&
+    sandboxMode === DELEGATION_PERMISSION_PRESET &&
+    approvalPolicy === "never"
+  );
+}
+
+async function applyDelegationPermission(
+  client: DeepSeekHostClient,
+  sessionId: SessionId,
+): Promise<void> {
+  const response = await client.commands.execute(
+    sessionId,
+    `/permission ${DELEGATION_PERMISSION_PRESET}`,
+  );
+  if (!response.ok) {
+    throw commandFailure("commands/execute", response.error);
+  }
+  const execution = response.value;
+  if (!execution || execution.result.kind !== "success") {
+    throw new DeepSeekHarnessTransportError(
+      "nativeFailure",
+      execution?.result.text ?? "DeepSeek Harness did not apply the requested Permission Mode",
+    );
+  }
+  const entries = await readAllDeepSeekHistory(client, sessionId);
+  if (!delegationPermissionIsApplied(entries)) {
+    throw new DeepSeekHarnessTransportError(
+      "nativeFailure",
+      "DeepSeek Harness did not confirm danger-full-access with approval policy never",
+    );
+  }
 }
 
 export async function readAllDeepSeekHistory(
@@ -216,10 +315,14 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   readonly capabilities: HarnessSessionCapabilities = {
     configuration: {
       selectModel: true,
-      selectThinkingOption: false,
+      selectThinkingOption: true,
       selectPermissionMode: false,
     },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  };
+  readonly commands: HarnessCommandCapability = {
+    list: () => this.#listHarnessCommands(),
+    execute: (command) => this.#executeHarnessCommand(command),
   };
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
@@ -227,17 +330,21 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #client: DeepSeekHostClient;
+  readonly #commandClient: DeepSeekCommandClient;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
   readonly #toolOutputLimit: number;
   readonly #unsubscribe: () => void;
   #active: ActiveTurn | null = null;
+  #activeCommand: ActiveCommand | null = null;
   #closePromise: Promise<void> | null = null;
   #closed = false;
   #configuring = false;
   #lastSeq: number;
   #reading = false;
   #model: HarnessModelRef;
+  #thinkingOptionId: HarnessThinkingOption["id"] | undefined;
+  #availableThinkingOptions: HarnessThinkingOption[];
   #contextWindowTokens: number | undefined;
   #turns: HostTurnSnapshot[];
   #usageBaseline: HostUsage | null;
@@ -253,6 +360,8 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     nativeSessionId: string;
     lastSeq: number;
     contextWindowTokens?: number;
+    thinkingOptionId?: HarnessThinkingOption["id"];
+    availableThinkingOptions?: HarnessThinkingOption[];
     initialUsage?: HostUsage | null;
     onClosed(): void;
     snapshot: HostThreadSnapshot;
@@ -260,7 +369,10 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     unsubscribe(): void;
   }) {
     this.#client = input.client;
+    this.#commandClient = input.client.commands;
     this.#model = input.model;
+    this.#thinkingOptionId = input.thinkingOptionId;
+    this.#availableThinkingOptions = input.availableThinkingOptions ?? [];
     this.#onClosed = input.onClosed;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#unsubscribe = input.unsubscribe;
@@ -275,7 +387,14 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       nativeSessionId: input.nativeSessionId,
       formatVersion: 1,
     });
-    this.initialState = { nativeRef: this.#nativeRef, effectiveModel: input.model };
+    this.initialState = {
+      nativeRef: this.#nativeRef,
+      effectiveModel: input.model,
+      ...(input.thinkingOptionId ? { effectiveThinkingOptionId: input.thinkingOptionId } : {}),
+      ...(input.availableThinkingOptions && input.availableThinkingOptions.length > 0
+        ? { availableThinkingOptions: input.availableThinkingOptions }
+        : {}),
+    };
     this.outputs = this.#channel.outputs;
   }
 
@@ -283,7 +402,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (this.#closed) {
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     }
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -295,15 +414,19 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
     this.#reading = true;
     try {
-      const entries = await readAllDeepSeekHistory(
-        this.#client,
-        this.#nativeRef.nativeSessionId as SessionId,
-      );
+      const [entries, modelState] = await Promise.all([
+        readAllDeepSeekHistory(this.#client, this.#nativeRef.nativeSessionId as SessionId),
+        this.#client.sessions.models({
+          sessionId: this.#nativeRef.nativeSessionId as SessionId,
+        }),
+      ]);
+      const models = unwrapRpc(modelState, "session.models");
+      const model = encodeDeepSeekHarnessModelRef(models.current);
       const projection = projectDeepSeekHistory({
         harnessId: this.harnessId,
         sessionId: this.#nativeRef.nativeSessionId,
         entries,
-        fallbackModel: this.#model,
+        fallbackModel: model,
         toolOutputLimit: this.#toolOutputLimit,
       });
       this.#lastSeq = Math.max(this.#lastSeq, projection.lastSeq);
@@ -312,7 +435,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
       this.#usageBaseline = projection.usage;
       this.#usageByStep.clear();
       this.#latestUsageKey = undefined;
-      if (projection.effectiveModel) this.#model = projection.effectiveModel;
+      this.#model = model;
+      this.#thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
+      this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
       const usage = this.#withOutputSpeed(projection.usage);
       if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
         this.#usage = usage;
@@ -322,7 +447,16 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         ok: true,
         value: {
           ...projection.snapshot,
-          state: { nativeRef: this.#nativeRef, effectiveModel: this.#model },
+          state: {
+            nativeRef: this.#nativeRef,
+            effectiveModel: this.#model,
+            ...(this.#thinkingOptionId
+              ? { effectiveThinkingOptionId: this.#thinkingOptionId }
+              : {}),
+            ...(this.#availableThinkingOptions.length > 0
+              ? { availableThinkingOptions: this.#availableThinkingOptions }
+              : {}),
+          },
         },
       };
     } catch (error) {
@@ -357,13 +491,14 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
+    if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type !== "turn.start") {
       return {
         ok: false,
         error: unsupported(`DeepSeek Harness does not support '${command.type}'`),
       };
     }
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -463,6 +598,15 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 
   async #performClose(): Promise<void> {
     if (this.#closed) return;
+    const activeCommand = this.#activeCommand;
+    if (activeCommand) {
+      activeCommand.cancellationRequested = true;
+      activeCommand.abort.abort(new Error("codexhost Session closed"));
+      this.#finishCommand(activeCommand, {
+        status: "cancelled",
+        reason: "DeepSeek Harness command was cancelled because the Session closed",
+      });
+    }
     const active = this.#active;
     if (active) {
       for (const pending of active.interactions.values()) {
@@ -485,7 +629,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#active || this.#configuring || this.#reading) {
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
       return {
         ok: false,
         error: {
@@ -534,9 +678,20 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
           };
         }
         this.#model = encodeDeepSeekHarnessModelRef(models.current);
+        this.#thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
+        this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
         this.#emit({
           type: "session.state.changed",
-          state: { nativeRef: this.#nativeRef, effectiveModel: this.#model },
+          state: {
+            nativeRef: this.#nativeRef,
+            effectiveModel: this.#model,
+            ...(this.#thinkingOptionId
+              ? { effectiveThinkingOptionId: this.#thinkingOptionId }
+              : {}),
+            ...(this.#availableThinkingOptions.length > 0
+              ? { availableThinkingOptions: this.#availableThinkingOptions }
+              : {}),
+          },
         });
         return { ok: true, value: { completed: true } };
       } catch (error) {
@@ -547,7 +702,240 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
   }
 
+  async #selectThinking(
+    command: ThinkingSelectCommand,
+  ): Promise<HarnessResult<ThinkingSelectCompleted>> {
+    if (this.#active || this.#configuring || this.#reading) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message:
+            "DeepSeek Harness Session cannot select Thinking while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    const requested = harnessThinkingOptionIdSchema.safeParse(command.thinkingOptionId);
+    if (!requested.success) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "DeepSeek Harness Thinking option is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const current = decodeDeepSeekHarnessModelRef(this.#model);
+    this.#configuring = true;
+    try {
+      try {
+        unwrapRpc(
+          await this.#client.sessions.selectModel({
+            sessionId: this.#nativeRef.nativeSessionId as SessionId,
+            provider: current.provider,
+            model: current.model,
+            reasoningEffort: requested.data,
+          }),
+          "session.selectModel",
+        );
+        const models = unwrapRpc(
+          await this.#client.sessions.models({
+            sessionId: this.#nativeRef.nativeSessionId as SessionId,
+          }),
+          "session.models",
+        );
+        if (
+          models.current.provider !== current.provider ||
+          models.current.model !== current.model ||
+          models.current.reasoningEffort !== requested.data
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "DeepSeek Harness did not activate the requested Thinking option",
+              retryable: false,
+            },
+          };
+        }
+        this.#thinkingOptionId = requested.data;
+        this.#availableThinkingOptions = normalizeDeepSeekThinkingOptions(models);
+        this.#emit({
+          type: "session.state.changed",
+          state: {
+            nativeRef: this.#nativeRef,
+            effectiveModel: this.#model,
+            effectiveThinkingOptionId: this.#thinkingOptionId,
+            ...(this.#availableThinkingOptions.length > 0
+              ? { availableThinkingOptions: this.#availableThinkingOptions }
+              : {}),
+          },
+        });
+        return { ok: true, value: { completed: true } };
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "nativeFailure") };
+      }
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #listHarnessCommands(): Promise<HarnessResult<typeof deepSeekCommandCatalog>> {
+    if (this.#closed) {
+      return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
+    }
+    try {
+      const result = await this.#commandClient.list(this.#nativeRef.nativeSessionId as SessionId);
+      if (!result.ok) return { ok: false, error: commandFailure("commands/list", result.error) };
+      const available = result.value.some(
+        (descriptor) => descriptor.name === "compact" && descriptor.input === undefined,
+      );
+      return { ok: true, value: available ? deepSeekCommandCatalog : emptyDeepSeekCommandCatalog };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "unavailable") };
+    }
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#closed) {
+      return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
+    }
+    if (command.commandId !== "dsh.compact") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `DeepSeek Harness does not expose command '${command.commandId}'`,
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active || this.#activeCommand || this.#configuring || this.#reading) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message:
+            "DeepSeek Harness Session cannot execute a command while another operation is active",
+          retryable: true,
+        },
+      };
+    }
+    if (command.arguments && Object.keys(command.arguments).length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "DeepSeek Harness compact command does not accept arguments",
+          retryable: false,
+        },
+      };
+    }
+
+    const active: ActiveCommand = {
+      command,
+      abort: new AbortController(),
+      cancellationRequested: false,
+      item: { type: "contextCompaction", itemId: this.#newItemId() },
+    };
+    this.#activeCommand = active;
+    this.#emit({ type: "turn.started", turnId: command.turnId });
+    this.#emit({ type: "item.started", turnId: command.turnId, item: active.item });
+    void this.#runHarnessCommand(active);
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  async #runHarnessCommand(active: ActiveCommand): Promise<void> {
+    try {
+      const response = await this.#commandClient.execute(
+        this.#nativeRef.nativeSessionId as SessionId,
+        "/compact",
+        active.abort.signal,
+      );
+      if (this.#activeCommand !== active) return;
+      if (!response.ok) {
+        if (active.cancellationRequested || response.error.code === "cancelled") {
+          this.#finishCommand(active, {
+            status: "cancelled",
+            reason: "DeepSeek Harness context compaction was cancelled",
+          });
+        } else {
+          this.#finishCommand(active, {
+            status: "failed",
+            error: commandFailure("commands/execute", response.error),
+          });
+        }
+        return;
+      }
+      const execution = response.value;
+      if (!execution) {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "DeepSeek Harness did not resolve the registered /compact command",
+            retryable: false,
+          },
+        });
+        return;
+      }
+      if (execution.result.kind === "success") {
+        this.#finishCommand(active, { status: "succeeded" });
+      } else if (active.cancellationRequested || execution.result.text === DSH_COMPACT_CANCELLED) {
+        this.#finishCommand(active, {
+          status: "cancelled",
+          reason: execution.result.text,
+        });
+      } else {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: {
+            code: execution.result.text === DSH_COMPACT_BUSY ? "sessionBusy" : "nativeFailure",
+            message: execution.result.text,
+            retryable: true,
+          },
+        });
+      }
+    } catch (error) {
+      if (this.#activeCommand !== active) return;
+      if (active.cancellationRequested || active.abort.signal.aborted) {
+        this.#finishCommand(active, {
+          status: "cancelled",
+          reason: "DeepSeek Harness context compaction was cancelled",
+        });
+      } else {
+        this.#finishCommand(active, {
+          status: "failed",
+          error: normalizedError(error, "nativeFailure"),
+        });
+      }
+    }
+  }
+
+  #finishCommand(active: ActiveCommand, outcome: HostItemOutcome): void {
+    if (this.#activeCommand !== active) return;
+    this.#activeCommand = null;
+    this.#emit({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item: active.item, outcome },
+    });
+    this.#emit({ type: "turn.completed", turnId: active.command.turnId, outcome });
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
+    const activeCommand = this.#activeCommand;
+    if (activeCommand?.command.turnId === command.turnId) {
+      if (!activeCommand.cancellationRequested) {
+        activeCommand.cancellationRequested = true;
+        activeCommand.abort.abort(new Error("DeepSeek Harness command cancelled by user"));
+      }
+      return { ok: true, value: { cancellationRequested: true } };
+    }
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
       return { ok: false, error: invalidState("DeepSeek Harness cancel requires the active Turn") };
@@ -1048,6 +1436,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 
   #fault(error: HarnessError): void {
     if (this.#closed) return;
+    const activeCommand = this.#activeCommand;
+    if (activeCommand) {
+      activeCommand.abort.abort(new Error(error.message));
+      this.#finishCommand(activeCommand, { status: "failed", error });
+    }
     const active = this.#active;
     if (active) {
       const outcome: HostItemOutcome = { status: "failed", error };
@@ -1130,7 +1523,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         capabilities: {
           configuration: {
             selectModel: true,
-            selectThinkingOption: false,
+            selectThinkingOption: true,
             selectPermissionMode: false,
           },
           history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
@@ -1169,10 +1562,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     if (input.kind !== "create" && input.kind !== "resume") {
       return { ok: false, error: unsupported(`DeepSeek Harness does not support '${input.kind}'`) };
     }
-    if (input.kind === "create" && (input.thinkingOptionId || input.permissionModeId)) {
+    if (input.kind === "create" && input.permissionModeId) {
       return {
         ok: false,
-        error: unsupported("DeepSeek Harness does not select Thinking or Permission Mode"),
+        error: unsupported("DeepSeek Harness does not select Permission Mode"),
       };
     }
     try {
@@ -1217,16 +1610,32 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
               "DeepSeek Harness created an unexpected Session identity",
             );
           }
-          if (input.model) {
-            const requested = decodeDeepSeekHarnessModelRef(input.model);
+          if (input.model || input.thinkingOptionId) {
+            let target = input.model ? decodeDeepSeekHarnessModelRef(input.model) : null;
+            if (!target) {
+              const currentModels = unwrapRpc(
+                await this.#connection.client.sessions.models({
+                  sessionId: sessionId as SessionId,
+                }),
+                "session.models",
+              );
+              target = {
+                provider: currentModels.current.provider,
+                model: currentModels.current.model,
+              };
+            }
             unwrapRpc(
               await this.#connection.client.sessions.selectModel({
                 sessionId: sessionId as SessionId,
-                provider: requested.provider,
-                model: requested.model,
+                provider: target.provider,
+                model: target.model,
+                ...(input.thinkingOptionId ? { reasoningEffort: input.thinkingOptionId } : {}),
               }),
               "session.selectModel",
             );
+          }
+          if (input.executionPolicy === "unattended-full-access") {
+            await applyDelegationPermission(this.#connection.client, sessionId as SessionId);
           }
         }
         const [entries, modelState] = await Promise.all([
@@ -1242,11 +1651,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           fallbackModel: model,
           toolOutputLimit: this.#toolOutputLimit,
         });
+        const thinkingOptionId = parseDeepSeekThinkingOptionId(models.current.reasoningEffort);
         session = new DeepSeekHarnessSession({
           client: this.#connection.client,
-          model: projection.effectiveModel ?? model,
+          model,
           nativeSessionId: sessionId,
           lastSeq: projection.lastSeq,
+          ...(thinkingOptionId ? { thinkingOptionId } : {}),
+          availableThinkingOptions: normalizeDeepSeekThinkingOptions(models),
           ...(projection.contextWindowTokens !== undefined
             ? { contextWindowTokens: projection.contextWindowTokens }
             : {}),

@@ -124,8 +124,14 @@ describe("ExternalThreadRuntime register", () => {
       alignSnapshot: async () => ({ record: stored, turns: [] }),
       sessionTreeId: async () => hostThreadId,
     } as unknown as ExternalThreadRepository;
+    const open = vi.spyOn(adapter, "open");
     const runtime = new ExternalThreadRuntime({
       adapters: new Map([["grok", adapter]]),
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+      },
       repository,
       consumeOutputs: async () => undefined,
       diagnose: () => undefined,
@@ -146,6 +152,16 @@ describe("ExternalThreadRuntime register", () => {
     }
     expect(executeOrder).toBeLessThan(readOrder);
     expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(autoMode);
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: hostThreadId,
+        }),
+      }),
+    );
 
     await adapter.close();
   });

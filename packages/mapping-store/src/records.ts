@@ -131,6 +131,57 @@ export const storedThreadRecordV1Schema = z
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;
 
+export const delegationStatusSchema = z.enum([
+  "creating",
+  "running",
+  "completed",
+  "failed",
+  "interrupted",
+]);
+
+export type DelegationStatus = z.infer<typeof delegationStatusSchema>;
+
+export const storedDelegationRecordV1Schema = z
+  .object({
+    formatVersion: z.literal(1),
+    revision: z.number().int().positive(),
+    delegationId: storedHostThreadIdSchema,
+    parentHostThreadId: hostThreadIdSchema,
+    childHostThreadId: hostThreadIdSchema,
+    sourceHarnessId: harnessIdSchema,
+    targetHarnessId: harnessIdSchema,
+    status: delegationStatusSchema,
+    requestId: nonBlankTextSchema.max(1_024).optional(),
+    taskDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict()
+  .refine((record) => record.parentHostThreadId !== record.childHostThreadId, {
+    path: ["childHostThreadId"],
+    message: "Delegation child Thread must differ from its parent",
+  });
+
+export type StoredDelegationRecordV1 = z.infer<typeof storedDelegationRecordV1Schema>;
+
+export interface CreateDelegationInput {
+  delegationId: HostThreadId;
+  parentHostThreadId: HostThreadId;
+  childHostThreadId: HostThreadId;
+  sourceHarnessId: HarnessId;
+  targetHarnessId: HarnessId;
+  status?: DelegationStatus;
+  requestId?: string;
+  taskDigest: string;
+}
+
+export interface FindRecentDelegationInput {
+  parentHostThreadId: HostThreadId;
+  targetHarnessId: HarnessId;
+  taskDigest: string;
+  since: Date;
+}
+
 export interface CreateProvisionalThreadInput {
   hostThreadId: HostThreadId;
   createRequestId: string;

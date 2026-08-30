@@ -20,6 +20,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
+import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 
 export type ExternalThreadRollbackResult =
@@ -103,6 +104,7 @@ async function executeCurrentLastTurnRollback(input: {
   adapters: Map<ExternalHarnessId, HarnessAdapter>;
   repository: ExternalThreadRepository;
   runtime: ExternalThreadRuntime;
+  environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadRollbackResult> {
   const { current, adapters, repository, runtime } = input;
   if (current.record.turnMappings.length === 0) {
@@ -125,6 +127,10 @@ async function executeCurrentLastTurnRollback(input: {
     opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: current.cwd,
+      environment: {
+        ...(input.environment ?? process.env),
+        [DELEGATION_THREAD_ID_ENV]: current.id,
+      },
       sourceRef: currentNativeRef as NativeSessionRef,
     });
   } catch {
@@ -207,6 +213,7 @@ export async function executeExternalThreadRollback(input: {
   repository: ExternalThreadRepository;
   runtime: ExternalThreadRuntime;
   expectedLastTurnId?: HostTurnId;
+  environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadRollbackResult> {
   const { derived, rollback, adapters, repository, runtime, expectedLastTurnId } = input;
   if (derived.running) {
@@ -229,6 +236,7 @@ export async function executeExternalThreadRollback(input: {
       adapters,
       repository,
       runtime,
+      ...(input.environment ? { environment: input.environment } : {}),
     });
   }
 
@@ -311,6 +319,10 @@ export async function executeExternalThreadRollback(input: {
     opened = await adapter.open({
       kind: "fork",
       cwd: derived.cwd,
+      environment: {
+        ...(input.environment ?? process.env),
+        [DELEGATION_THREAD_ID_ENV]: derived.id,
+      },
       sourceRef: sourceNativeRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });

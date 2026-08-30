@@ -392,6 +392,30 @@ describe("Renderer draft prewarm policy", () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  it("publishes the exact owned request target before announcing the policy", () => {
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture();
+    let announcedPolicy: unknown;
+    const target: DraftPrewarmPolicyTarget = {
+      dispatchEvent: vi.fn(() => {
+        announcedPolicy = target.__codexhostDraftPrewarmPolicyV1;
+        return true;
+      }),
+    };
+
+    installDraftPrewarmPolicyBridge(manager, bridge, "remote-ssh-discovered:mac", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      requestTarget(): RendererHostRequestManager;
+    };
+    expect(announcedPolicy).toBe(policy);
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(policy.requestTarget()).toBe(manager);
+    expect(target.dispatchEvent).toHaveBeenCalledOnce();
+  });
+
   it("keeps the selected route when the same Host bridge is reconciled", () => {
     const sendRequest = vi.fn();
     const prewarmThreadStart = vi.fn();

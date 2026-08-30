@@ -53,6 +53,7 @@ import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
   type HarnessPermissionModeId,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -1322,7 +1323,10 @@ export class GrokAdapter implements HarnessAdapter {
       };
     const requestedPermissionModeId =
       input.kind === "create"
-        ? (input.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID)
+        ? (input.permissionModeId ??
+          (input.executionPolicy === "unattended-full-access"
+            ? harnessPermissionModeIdSchema.parse("always-approve")
+            : GROK_DEFAULT_PERMISSION_MODE_ID))
         : GROK_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeGrokPermissionModeId(requestedPermissionModeId);
@@ -1350,7 +1354,11 @@ export class GrokAdapter implements HarnessAdapter {
       };
     }
     let session: GrokHarnessSession | null = null;
-    const transport = this.#createTransport(cwd, (error) => session?.handleTransportFault(error));
+    const transport = this.#createTransport(
+      cwd,
+      (error) => session?.handleTransportFault(error),
+      input.environment,
+    );
     let sourceConfiguration:
       | {
           model: HarnessModelRef;
@@ -1576,7 +1584,12 @@ export class GrokAdapter implements HarnessAdapter {
   #createTransport(
     cwd: string,
     onFault: (error: GrokTransportError) => void,
+    environment?: NodeJS.ProcessEnv,
   ): GrokAcpTransportLike {
-    return this.#dependencies.createTransport({ cwd, onFault });
+    return this.#dependencies.createTransport({
+      cwd,
+      onFault,
+      ...(environment ? { environment } : {}),
+    });
   }
 }

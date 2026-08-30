@@ -17,11 +17,16 @@ import path from "node:path";
 import type { HostThreadId, HostTurnId } from "@codexhost/shared-contracts";
 
 import {
+  storedDelegationRecordV1Schema,
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
+  type CreateDelegationInput,
   type CreateProvisionalThreadInput,
+  type DelegationStatus,
+  type FindRecentDelegationInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
+  type StoredDelegationRecordV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "./records.js";
@@ -30,7 +35,9 @@ export type MappingStoreErrorCode =
   | "STORE_LOCKED"
   | "STORE_NOT_INITIALIZED"
   | "THREAD_NOT_FOUND"
+  | "DELEGATION_NOT_FOUND"
   | "DUPLICATE_THREAD_ID"
+  | "DUPLICATE_DELEGATION_ID"
   | "DUPLICATE_CREATE_REQUEST"
   | "DUPLICATE_NATIVE_SESSION"
   | "MAPPING_CONFLICT"
@@ -68,8 +75,8 @@ interface ProcessIdentity {
   startedAt: number | null;
 }
 
-function cloneRecord(record: StoredThreadRecordV1): StoredThreadRecordV1 {
-  return JSON.parse(JSON.stringify(record)) as StoredThreadRecordV1;
+function cloneRecord<T>(record: T): T {
+  return JSON.parse(JSON.stringify(record)) as T;
 }
 
 function nativeSessionKey(ref: { harnessId: string; nativeSessionId: string }): string {
@@ -191,6 +198,7 @@ function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
 
 export class MappingStore {
   readonly #backupsDirectory: string;
+  readonly #delegationsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
   readonly #directory: string;
   readonly #instanceId: string;
@@ -199,6 +207,9 @@ export class MappingStore {
   readonly #quarantineDirectory: string;
   readonly #threadsDirectory: string;
   readonly #records = new Map<HostThreadId, StoredThreadRecordV1>();
+  readonly #delegations = new Map<HostThreadId, StoredDelegationRecordV1>();
+  readonly #delegationRequests = new Map<string, HostThreadId>();
+  readonly #delegationChildren = new Map<HostThreadId, HostThreadId>();
   readonly #createRequests = new Map<string, HostThreadId>();
   readonly #nativeSessions = new Map<string, HostThreadId>();
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
@@ -210,6 +221,7 @@ export class MappingStore {
   constructor(options: MappingStoreOptions) {
     this.#directory = path.resolve(options.directory);
     this.#threadsDirectory = path.join(this.#directory, "threads");
+    this.#delegationsDirectory = path.join(this.#directory, "delegations");
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
     this.#lockPath = path.join(this.#directory, "store.lock");
@@ -222,6 +234,7 @@ export class MappingStore {
     if (this.#initialized) return;
     await Promise.all([
       mkdir(this.#threadsDirectory, { recursive: true }),
+      mkdir(this.#delegationsDirectory, { recursive: true }),
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
     ]);
@@ -259,6 +272,25 @@ export class MappingStore {
         }
         this.#records.set(record.hostThreadId, record);
       }
+      const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
+        name.endsWith(".json"),
+      );
+      for (const name of delegationNames) {
+        const file = path.join(this.#delegationsDirectory, name);
+        try {
+          const parsed = storedDelegationRecordV1Schema.parse(
+            JSON.parse(await readFile(file, "utf8")),
+          ) as StoredDelegationRecordV1;
+          if (`${parsed.delegationId}.json` !== name) throw new Error("filename mismatch");
+          this.#delegations.set(parsed.delegationId, parsed);
+        } catch {
+          const quarantine = path.join(
+            this.#quarantineDirectory,
+            `${name}.${this.#now().getTime()}.invalid-delegation`,
+          );
+          await rename(file, quarantine).catch(() => undefined);
+        }
+      }
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
@@ -278,6 +310,116 @@ export class MappingStore {
     return [...this.#records.values()].map(cloneRecord);
   }
 
+  async getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
+    this.#requireInitialized();
+    const hostThreadId = this.#createRequests.get(createRequestId);
+    return hostThreadId ? this.getThread(hostThreadId) : null;
+  }
+
+  async getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null> {
+    this.#requireInitialized();
+    const record = this.#delegations.get(delegationId);
+    return record ? cloneRecord(record) : null;
+  }
+
+  async getDelegationByChild(
+    childHostThreadId: HostThreadId,
+  ): Promise<StoredDelegationRecordV1 | null> {
+    this.#requireInitialized();
+    const delegationId = this.#delegationChildren.get(childHostThreadId);
+    return delegationId ? this.getDelegation(delegationId) : null;
+  }
+
+  async findDelegationByRequest(requestId: string): Promise<StoredDelegationRecordV1 | null> {
+    this.#requireInitialized();
+    const delegationId = this.#delegationRequests.get(requestId);
+    return delegationId ? this.getDelegation(delegationId) : null;
+  }
+
+  async listDelegations(parentHostThreadId?: HostThreadId): Promise<StoredDelegationRecordV1[]> {
+    this.#requireInitialized();
+    return [...this.#delegations.values()]
+      .filter((record) => !parentHostThreadId || record.parentHostThreadId === parentHostThreadId)
+      .map(cloneRecord);
+  }
+
+  async findRecentDelegation(
+    input: FindRecentDelegationInput,
+  ): Promise<StoredDelegationRecordV1 | null> {
+    this.#requireInitialized();
+    const threshold = input.since.getTime();
+    const found = [...this.#delegations.values()]
+      .filter(
+        (record) =>
+          record.parentHostThreadId === input.parentHostThreadId &&
+          record.targetHarnessId === input.targetHarnessId &&
+          record.taskDigest === input.taskDigest &&
+          Date.parse(record.createdAt) >= threshold,
+      )
+      .toSorted((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+    return found ? cloneRecord(found) : null;
+  }
+
+  async createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
+    this.#requireInitialized();
+    if (this.#delegations.has(input.delegationId)) {
+      throw new MappingStoreError("DUPLICATE_DELEGATION_ID", "Delegation ID already exists");
+    }
+    if (this.#delegationChildren.has(input.childHostThreadId)) {
+      throw new MappingStoreError("MAPPING_CONFLICT", "Child Thread already has a Delegation");
+    }
+    if (input.requestId && this.#delegationRequests.has(input.requestId)) {
+      throw new MappingStoreError(
+        "DUPLICATE_CREATE_REQUEST",
+        "Delegation Request ID already exists",
+      );
+    }
+    const timestamp = this.#now().toISOString();
+    const record = storedDelegationRecordV1Schema.parse({
+      formatVersion: 1,
+      revision: 1,
+      ...input,
+      status: input.status ?? "creating",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }) as StoredDelegationRecordV1;
+    await this.#replaceDelegationFile(record);
+    this.#delegations.set(record.delegationId, record);
+    this.#rebuildIndexes();
+    return cloneRecord(record);
+  }
+
+  async setDelegationStatus(
+    delegationId: HostThreadId,
+    status: DelegationStatus,
+  ): Promise<StoredDelegationRecordV1> {
+    this.#requireInitialized();
+    const current = this.#delegations.get(delegationId);
+    if (!current) {
+      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
+    }
+    if (current.status === status) return cloneRecord(current);
+    const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
+    if (terminal.has(current.status) && !terminal.has(status)) return cloneRecord(current);
+    const next = storedDelegationRecordV1Schema.parse({
+      ...current,
+      revision: current.revision + 1,
+      status,
+      updatedAt: this.#now().toISOString(),
+    }) as StoredDelegationRecordV1;
+    await this.#replaceDelegationFile(next);
+    this.#delegations.set(delegationId, next);
+    this.#rebuildIndexes();
+    return cloneRecord(next);
+  }
+
+  async removeDelegation(delegationId: HostThreadId): Promise<void> {
+    this.#requireInitialized();
+    await rm(this.#delegationPath(delegationId), { force: true });
+    this.#delegations.delete(delegationId);
+    this.#rebuildIndexes();
+  }
+
   async findThreadByTurn(hostTurnId: HostTurnId): Promise<StoredThreadRecordV1 | null> {
     this.#requireInitialized();
     const threadId = this.#hostTurns.get(hostTurnId);
@@ -286,14 +428,14 @@ export class MappingStore {
 
   async createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
+    const existingThreadId = this.#createRequests.get(input.createRequestId);
+    if (existingThreadId) {
+      const existing = this.#records.get(existingThreadId);
+      if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
+      return cloneRecord(existing);
+    }
     if (this.#records.has(input.hostThreadId)) {
       throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
-    }
-    if (this.#createRequests.has(input.createRequestId)) {
-      throw new MappingStoreError(
-        "DUPLICATE_CREATE_REQUEST",
-        "Create request already identifies another Thread",
-      );
     }
     const timestamp = this.#now().toISOString();
     const record = storedThreadRecordV1Schema.parse({
@@ -602,6 +744,27 @@ export class MappingStore {
     }
   }
 
+  async #replaceDelegationFile(record: StoredDelegationRecordV1): Promise<void> {
+    const target = this.#delegationPath(record.delegationId);
+    const temp = `${target}.tmp-${randomUUID()}`;
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
+      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await rename(temp, target);
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await rm(temp, { force: true }).catch(() => undefined);
+      if (error instanceof MappingStoreError) throw error;
+      throw new MappingStoreError("IO_ERROR", "Delegation atomic replacement failed", {
+        cause: error,
+      });
+    }
+  }
+
   async #readRecord(file: string, expectedName: string): Promise<StoredThreadRecordV1> {
     const parsed = storedThreadRecordV1Schema.safeParse(JSON.parse(await readFile(file, "utf8")));
     if (!parsed.success) {
@@ -619,12 +782,18 @@ export class MappingStore {
   }
 
   async #cleanupTemps(): Promise<void> {
-    const names = await readdir(this.#threadsDirectory);
-    await Promise.all(
-      names
+    const [threadNames, delegationNames] = await Promise.all([
+      readdir(this.#threadsDirectory),
+      readdir(this.#delegationsDirectory),
+    ]);
+    await Promise.all([
+      ...threadNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#threadsDirectory, name), { force: true })),
-    );
+      ...delegationNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+    ]);
   }
 
   async #acquireLock(): Promise<void> {
@@ -693,9 +862,23 @@ export class MappingStore {
 
   #rebuildIndexes(): void {
     this.#createRequests.clear();
+    this.#delegationRequests.clear();
+    this.#delegationChildren.clear();
     this.#nativeSessions.clear();
     this.#hostTurns.clear();
     this.#nativeTurns.clear();
+    for (const delegation of this.#delegations.values()) {
+      if (this.#delegationChildren.has(delegation.childHostThreadId)) {
+        throw new MappingStoreError("MAPPING_CONFLICT", "Delegation child Thread is duplicated");
+      }
+      this.#delegationChildren.set(delegation.childHostThreadId, delegation.delegationId);
+      if (delegation.requestId) {
+        if (this.#delegationRequests.has(delegation.requestId)) {
+          throw new MappingStoreError("MAPPING_CONFLICT", "Delegation Request ID is duplicated");
+        }
+        this.#delegationRequests.set(delegation.requestId, delegation.delegationId);
+      }
+    }
     for (const record of this.#records.values()) {
       this.#validateGlobal(record, record.hostThreadId);
       this.#createRequests.set(record.createRequestId, record.hostThreadId);
@@ -723,6 +906,10 @@ export class MappingStore {
 
   #recordPath(hostThreadId: HostThreadId): string {
     return path.join(this.#threadsDirectory, `${hostThreadId}.json`);
+  }
+
+  #delegationPath(delegationId: HostThreadId): string {
+    return path.join(this.#delegationsDirectory, `${delegationId}.json`);
   }
 
   #backupPath(hostThreadId: HostThreadId): string {

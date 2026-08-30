@@ -97,6 +97,27 @@ describe("mapping-store package", () => {
     expect(packageMetadata.contractVersion).toBe(1);
   });
 
+  it("resolves a repeated caller create request to the existing Thread", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+
+    await expect(
+      store.createProvisional({
+        hostThreadId: hostThreadIdSchema.parse("thread-duplicate"),
+        createRequestId: "create-1",
+        harnessId,
+        cwd: "/another",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "legacy",
+      }),
+    ).resolves.toMatchObject({ hostThreadId: threadId, state: "ready" });
+    await expect(store.listThreads()).resolves.toHaveLength(1);
+    await store.close();
+  });
+
   it("persists strict identity and Desktop metadata across restart", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory, instanceId: "first" });
@@ -117,6 +138,81 @@ describe("mapping-store package", () => {
       turnMappings: [mapping(1)],
     });
     await second.close();
+  });
+
+  it("persists Delegation relations separately from Thread and Subagent metadata", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory, instanceId: "delegation-first" });
+    await first.initialize();
+    await createReady(first);
+    const childThreadId = hostThreadIdSchema.parse("thread-child");
+    const delegationId = hostThreadIdSchema.parse("delegation-1");
+    await first.createDelegation({
+      delegationId,
+      parentHostThreadId: threadId,
+      childHostThreadId: childThreadId,
+      sourceHarnessId: harnessId,
+      targetHarnessId: harnessIdSchema.parse("claude-code"),
+      status: "running",
+      requestId: "delegate-request-1",
+      taskDigest: "a".repeat(64),
+    });
+    await first.close();
+
+    const second = new MappingStore({ directory, instanceId: "delegation-second" });
+    await second.initialize();
+    await expect(second.getDelegation(delegationId)).resolves.toMatchObject({
+      parentHostThreadId: threadId,
+      childHostThreadId: childThreadId,
+      status: "running",
+      requestId: "delegate-request-1",
+    });
+    await expect(second.findDelegationByRequest("delegate-request-1")).resolves.toMatchObject({
+      delegationId,
+    });
+    await expect(second.getThread(threadId)).resolves.not.toHaveProperty("delegation");
+    await second.setDelegationStatus(delegationId, "completed");
+    await second.setDelegationStatus(delegationId, "running");
+    await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "completed",
+    });
+    await second.close();
+  });
+
+  it("finds recent implicit Delegation duplicates by parent, target and task digest", async () => {
+    const directory = await temporaryStoreDirectory();
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const store = new MappingStore({ directory, now: () => now });
+    await store.initialize();
+    const parentHostThreadId = hostThreadIdSchema.parse("parent-thread");
+    const targetHarnessId = harnessIdSchema.parse("claude-code");
+    await store.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegation-recent"),
+      parentHostThreadId,
+      childHostThreadId: hostThreadIdSchema.parse("child-recent"),
+      sourceHarnessId: harnessId,
+      targetHarnessId,
+      taskDigest: "b".repeat(64),
+    });
+
+    await expect(
+      store.findRecentDelegation({
+        parentHostThreadId,
+        targetHarnessId,
+        taskDigest: "b".repeat(64),
+        since: new Date("2025-12-31T23:59:00.000Z"),
+      }),
+    ).resolves.toMatchObject({ delegationId: "delegation-recent" });
+    now = new Date("2026-01-01T01:00:00.000Z");
+    await expect(
+      store.findRecentDelegation({
+        parentHostThreadId,
+        targetHarnessId,
+        taskDigest: "b".repeat(64),
+        since: new Date("2026-01-01T00:30:00.000Z"),
+      }),
+    ).resolves.toBeNull();
+    await store.close();
   });
 
   it("rejects content fields and cross-Session Checkpoints", () => {

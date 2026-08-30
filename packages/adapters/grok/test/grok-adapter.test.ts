@@ -283,6 +283,40 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("passes per-Session delegation environment to the ACP transport", async () => {
+    const transport = new FakeGrokTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-environment",
+        createTransport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_THREAD_ID: "thread-1",
+      },
+    });
+    expect(opened.ok).toBe(true);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
   it("reports a single available Grok Model as selectable", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
@@ -311,6 +345,32 @@ describe("Grok Adapter ACP projection", () => {
       },
     });
 
+    await adapter.close();
+  });
+
+  it("uses always-approve for unattended full-access sessions", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: alwaysApprove,
+    });
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
     await adapter.close();
   });
 

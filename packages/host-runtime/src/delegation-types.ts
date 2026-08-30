@@ -1,4 +1,10 @@
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
+import type {
+  HarnessInspection,
+  HarnessModelRef,
+  HarnessSessionState,
+  HarnessThinkingOptionId,
+} from "@codexhost/harness-adapter";
 
 export const DELEGATION_RUNTIME_ENDPOINT_ENV = "CODEXHOST_RUNTIME_ENDPOINT";
 export const DELEGATION_RUNTIME_TOKEN_ENV = "CODEXHOST_RUNTIME_TOKEN";
@@ -45,6 +51,27 @@ export interface DelegationStartInput {
   cwd: string;
   parentThreadId?: string;
   requestId?: string;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+}
+
+export interface HarnessInspectInput {
+  harnessId: RoutedHarnessId;
+  cwd?: string;
+  refresh?: boolean;
+}
+
+export interface HarnessInspectResult {
+  harnessId: RoutedHarnessId;
+  inspection: HarnessInspection;
+}
+
+export interface DelegationConfigurationResult {
+  requested?: { model?: HarnessModelRef; thinkingOptionId?: HarnessThinkingOptionId };
+  effective?: Pick<
+    HarnessSessionState,
+    "effectiveModel" | "resolvedModelLabel" | "effectiveThinkingOptionId"
+  >;
 }
 
 export interface DelegationStartResult {
@@ -54,6 +81,7 @@ export interface DelegationStartResult {
   harnessId: RoutedHarnessId;
   deepLink: string;
   status: DelegationThreadStatus;
+  configuration?: DelegationConfigurationResult;
   next: { read: string; wait: string };
 }
 
@@ -123,6 +151,7 @@ export interface DelegationThreadListResult {
 }
 
 export interface DelegationControlApi {
+  inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
   send(input: ThreadSendInput): Promise<ThreadSendResult>;
   cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;

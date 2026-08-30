@@ -433,7 +433,11 @@ if (userArguments.length === 0) {
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
   remoteArguments = userArguments.slice(1);
-} else if (userArguments[0] === "delegate" || userArguments[0] === "thread") {
+} else if (
+  userArguments[0] === "harness" ||
+  userArguments[0] === "delegate" ||
+  userArguments[0] === "thread"
+) {
   launchArguments = null;
   delegationArguments = userArguments;
 } else if (userArguments[0] === "--help" || userArguments[0] === "-h") {
@@ -446,6 +450,7 @@ if (userArguments.length === 0) {
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost delegate --help",
+      "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
       "  codexhost thread send|cancel|read|wait|list ...",
       "",

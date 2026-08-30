@@ -26,6 +26,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        inspect: vi.fn(),
         start,
         send: vi.fn(),
         cancel: vi.fn(),
@@ -57,6 +58,46 @@ describe("delegation control server", () => {
     }
   });
 
+  it("dispatches Harness inspection", async () => {
+    const inspect = vi.fn(async () => ({
+      harnessId: "pi" as const,
+      inspection: {
+        status: "ready" as const,
+        catalog: { models: [], thinkingOptions: [] },
+        capabilities: {
+          configuration: {
+            selectModel: false,
+            selectThinkingOption: false,
+            selectPermissionMode: false,
+          },
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        },
+      },
+    }));
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        inspect,
+        start: vi.fn(),
+        send: vi.fn(),
+        cancel: vi.fn(),
+        read: vi.fn(),
+        wait: vi.fn(),
+        list: vi.fn(),
+      },
+    });
+    try {
+      const response = await fetch(
+        `${server.endpoint}/v1/harness/inspect`,
+        authorized({ harnessId: "pi", cwd: "/synthetic", refresh: true }),
+      );
+      expect(response.status).toBe(200);
+      expect(inspect).toHaveBeenCalledWith({ harnessId: "pi", cwd: "/synthetic", refresh: true });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("dispatches thread send and cancel", async () => {
     const send = vi.fn(async () => ({
       threadId: "thread-1",
@@ -74,6 +115,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        inspect: vi.fn(),
         start: vi.fn(),
         send,
         cancel,
@@ -99,6 +141,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        inspect: vi.fn(),
         start: vi.fn(),
         send: vi.fn(),
         cancel: vi.fn(),

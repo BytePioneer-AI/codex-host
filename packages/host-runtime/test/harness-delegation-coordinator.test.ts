@@ -49,6 +49,7 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
     },
+    inspectOfficial: vi.fn(),
     readOfficial: vi.fn(),
     sendOfficial: vi.fn(),
     cancelOfficial: vi.fn(),
@@ -118,6 +119,8 @@ describe("HarnessDelegationCoordinator", () => {
           executionPolicy: "unattended-full-access",
         }),
       );
+      expect(adapter.openInputs[0]).not.toHaveProperty("model");
+      expect(adapter.openInputs[0]).not.toHaveProperty("thinkingOptionId");
       const records = await value.repository.list();
       expect(records).toHaveLength(1);
       expect(records[0]?.subagent).toBeUndefined();
@@ -128,6 +131,32 @@ describe("HarnessDelegationCoordinator", () => {
         childHostThreadId: result.threadId,
         status: "running",
       });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("inspects and applies an explicit Model and Thinking selection", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const inspection = await value.coordinator.inspect({ harnessId: "pi", cwd: "/synthetic" });
+      expect(inspection.inspection.status).toBe("ready");
+      if (inspection.inspection.status !== "ready") throw new Error("Harness is unavailable");
+      const model = inspection.inspection.catalog.defaultModel;
+      const thinkingOptionId = inspection.inspection.catalog.defaultThinkingOptionId;
+      if (!model || !thinkingOptionId) throw new Error("Fake catalog has no defaults");
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model,
+        thinkingOptionId,
+      });
+      expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
+      expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
+      expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
     } finally {
       await value.close();
     }

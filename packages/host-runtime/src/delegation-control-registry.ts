@@ -3,6 +3,7 @@ import {
   type DelegationControlApi,
   type DelegationControlRegistration,
   type DelegationStartInput,
+  type HarnessInspectInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -28,6 +29,14 @@ export class DelegationControlRegistry implements DelegationControlApi {
   register(registration: DelegationControlRegistration): () => void {
     this.#registrations.add(registration);
     return () => this.#registrations.delete(registration);
+  }
+
+  async inspect(input: HarnessInspectInput) {
+    const registrations = [...this.#registrations];
+    return only(
+      registrations,
+      "Harness inspection requires exactly one active Host Runtime session",
+    ).inspect(input);
   }
 
   async start(input: DelegationStartInput) {

@@ -113,7 +113,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost delegate --help\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -1137,7 +1137,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             inspect(custom_install_root.as_deref())
         }
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
-        Some("delegate") | Some("thread") => run_delegation_cli(arguments),
+        Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
             usage();
             Err("invalid launcher arguments".into())

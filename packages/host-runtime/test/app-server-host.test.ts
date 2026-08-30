@@ -23,8 +23,10 @@ import {
 import {
   harnessCommandDescriptorSchema,
   harnessIdSchema,
+  harnessModelRefSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -1140,6 +1142,105 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     fixture.official.stdout.write(`${JSON.stringify({ id: interrupt.id, result: {} })}\n`);
     await expect(cancel).resolves.toMatchObject({ turnId: "native-turn-2", cancelled: true });
+    await stopFixture(fixture);
+  });
+
+  it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+
+    const inspection = delegationApi.inspect({ harnessId: "codex" });
+    const modelList = await readJsonLine(fixture.official.stdin);
+    expect(modelList).toMatchObject({ method: "model/list", params: {} });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: modelList.id,
+        result: {
+          data: [
+            {
+              model: "gpt-5.6-luna",
+              displayName: "GPT Luna",
+              isDefault: true,
+              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
+            },
+          ],
+        },
+      })}\n`,
+    );
+    await expect(inspection).resolves.toMatchObject({
+      harnessId: "codex",
+      inspection: {
+        status: "ready",
+        catalog: {
+          defaultModel: { id: "gpt-5.6-luna" },
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      },
+    });
+
+    const pending = delegationApi.start({
+      harnessId: "codex",
+      task: "review auth",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+      model: harnessModelRefSchema.parse({ id: "gpt-5.6-luna" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    const validationList = await readJsonLine(fixture.official.stdin);
+    expect(validationList).toMatchObject({ method: "model/list" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: validationList.id,
+        result: {
+          data: [
+            {
+              model: "gpt-5.6-luna",
+              isDefault: true,
+              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
+            },
+          ],
+        },
+      })}\n`,
+    );
+    const threadStart = await readJsonLine(fixture.official.stdin);
+    expect(threadStart).toMatchObject({
+      method: "thread/start",
+      params: { model: "gpt-5.6-luna" },
+    });
+    expect(threadStart.params).not.toHaveProperty("reasoningEffort");
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: threadStart.id,
+        result: {
+          thread: { id: "native-configured" },
+          model: "gpt-5.6-luna",
+        },
+      })}\n`,
+    );
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { model: "gpt-5.6-luna", effort: "high" },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
+    );
+    await expect(pending).resolves.toMatchObject({
+      configuration: {
+        requested: { model: { id: "gpt-5.6-luna" }, thinkingOptionId: "high" },
+        effective: {
+          effectiveModel: { id: "gpt-5.6-luna" },
+        },
+      },
+    });
     await stopFixture(fixture);
   });
 

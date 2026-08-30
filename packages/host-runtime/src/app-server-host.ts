@@ -25,7 +25,9 @@ import {
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
+  harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -84,6 +86,8 @@ import type {
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  HarnessInspectInput,
+  HarnessInspectResult,
   ThreadCancelInput,
   ThreadCancelResult,
   ThreadListInput,
@@ -481,6 +485,7 @@ export class AppServerHost {
       startExternalTurn: (thread, text, turnId) =>
         this.#startDelegatedExternalTurn(thread, text, turnId),
       notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
+      inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
@@ -489,6 +494,7 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
+      inspect: (input) => this.#delegationCoordinator.inspect(input),
       start: (input) => this.#delegationCoordinator.start(input),
       send: (input) => this.#delegationCoordinator.send(input),
       cancel: (input) => this.#delegationCoordinator.cancel(input),
@@ -1055,10 +1061,97 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
+  async #inspectOfficialDelegationTarget(
+    input: HarnessInspectInput,
+  ): Promise<HarnessInspectResult> {
+    const response = await this.#officialRequestBroker.request("model/list", {});
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string"
+          ? response.error.message
+          : "Official Model catalog could not be read",
+      );
+    }
+    const result = isRecord(response.result) ? response.result : null;
+    const data = result && Array.isArray(result.data) ? result.data : [];
+    const thinkingById = new Map<ReturnType<typeof harnessThinkingOptionIdSchema.parse>, string>();
+    const models = data.flatMap((candidate) => {
+      if (!isRecord(candidate) || typeof candidate.model !== "string" || !candidate.model.trim()) {
+        return [];
+      }
+      const supportedThinkingOptionIds = Array.isArray(candidate.supportedReasoningEfforts)
+        ? candidate.supportedReasoningEfforts.flatMap((option) => {
+            if (
+              !isRecord(option) ||
+              typeof option.reasoningEffort !== "string" ||
+              !option.reasoningEffort.trim()
+            ) {
+              return [];
+            }
+            const id = harnessThinkingOptionIdSchema.safeParse(option.reasoningEffort);
+            if (!id.success) return [];
+            thinkingById.set(
+              id.data,
+              typeof option.description === "string" && option.description.trim()
+                ? option.description
+                : option.reasoningEffort,
+            );
+            return [id.data];
+          })
+        : [];
+      return [
+        {
+          ref: harnessModelRefSchema.parse({ id: candidate.model }),
+          label:
+            typeof candidate.displayName === "string" && candidate.displayName.trim()
+              ? candidate.displayName
+              : candidate.model,
+          ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
+        },
+      ];
+    });
+    const defaultEntry = data.find(
+      (candidate) => isRecord(candidate) && candidate.isDefault === true,
+    );
+    const defaultModel =
+      isRecord(defaultEntry) && typeof defaultEntry.model === "string"
+        ? harnessModelRefSchema.parse({ id: defaultEntry.model })
+        : undefined;
+    return {
+      harnessId: input.harnessId,
+      inspection: {
+        status: "ready",
+        catalog: {
+          models,
+          ...(defaultModel ? { defaultModel } : {}),
+          thinkingOptions: [...thinkingById].map(([id, label]) => ({ id, label })),
+        },
+        capabilities: {
+          configuration: {
+            selectModel: models.length > 0,
+            selectThinkingOption: thinkingById.size > 0,
+            selectPermissionMode: false,
+          },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        },
+      },
+    };
+  }
+
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string },
   ): Promise<DelegationStartResult> {
-    const digest = createHash("sha256").update(input.task).digest("hex");
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          task: input.task,
+          cwd: input.cwd,
+          modelId: input.model?.id ?? null,
+          thinkingOptionId: input.thinkingOptionId ?? null,
+        }),
+      )
+      .digest("hex");
     const existing = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
       : await this.#repository.findRecentDelegation({
@@ -1067,10 +1160,14 @@ export class AppServerHost {
           taskDigest: digest,
           since: new Date(Date.now() - 30_000),
         });
-    if (existing && input.requestId && existing.targetHarnessId !== "codex") {
+    if (
+      existing &&
+      input.requestId &&
+      (existing.targetHarnessId !== "codex" || existing.taskDigest !== digest)
+    ) {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
-        "Request ID is already associated with another target Harness",
+        "Request ID is already associated with another Delegation configuration",
       );
     }
     if (existing) {
@@ -1088,8 +1185,47 @@ export class AppServerHost {
         },
       };
     }
+    if (input.model || input.thinkingOptionId) {
+      const inspected = await this.#inspectOfficialDelegationTarget({
+        harnessId: "codex",
+        cwd: input.cwd,
+      });
+      if (inspected.inspection.status !== "ready") {
+        throw new DelegationControlError(
+          "DELEGATION_FAILED",
+          "Official Model catalog is unavailable",
+        );
+      }
+      if (
+        input.model &&
+        !inspected.inspection.catalog.models.some(
+          (candidate) => candidate.ref.id === input.model?.id,
+        )
+      ) {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Official Model is unavailable", {
+          validModelIds: inspected.inspection.catalog.models.map((candidate) => candidate.ref.id),
+        });
+      }
+      if (input.thinkingOptionId) {
+        const selectedModel = input.model ?? inspected.inspection.catalog.defaultModel;
+        const selectedEntry = selectedModel
+          ? inspected.inspection.catalog.models.find(
+              (candidate) => candidate.ref.id === selectedModel.id,
+            )
+          : undefined;
+        const validThinkingOptionIds = selectedEntry?.supportedThinkingOptionIds ?? [];
+        if (!validThinkingOptionIds.includes(input.thinkingOptionId)) {
+          throw new DelegationControlError(
+            "INVALID_ARGUMENT",
+            "Official Thinking option is unavailable for the selected Model",
+            { validThinkingOptionIds },
+          );
+        }
+      }
+    }
     const started = await this.#officialRequestBroker.request("thread/start", {
       cwd: input.cwd,
+      ...(input.model ? { model: input.model.id } : {}),
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: false,
@@ -1105,6 +1241,8 @@ export class AppServerHost {
       const turn = await this.#officialRequestBroker.request("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],
+        ...(input.model ? { model: input.model.id } : {}),
+        ...(input.thinkingOptionId ? { effort: input.thinkingOptionId } : {}),
       });
       const turnResult = isRecord(turn.result) ? turn.result : null;
       const turnValue = turnResult && isRecord(turnResult.turn) ? turnResult.turn : null;
@@ -1141,6 +1279,21 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
+        ...(input.model || input.thinkingOptionId
+          ? {
+              configuration: {
+                requested: {
+                  ...(input.model ? { model: input.model } : {}),
+                  ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+                },
+                effective: {
+                  ...(startedResult && typeof startedResult.model === "string"
+                    ? { effectiveModel: harnessModelRefSchema.parse({ id: startedResult.model }) }
+                    : {}),
+                },
+              },
+            }
+          : {}),
         next: {
           read: `codexhost thread read ${threadId}`,
           wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,

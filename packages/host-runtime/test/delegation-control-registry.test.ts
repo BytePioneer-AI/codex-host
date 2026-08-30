@@ -5,6 +5,21 @@ import type { DelegationControlRegistration } from "../src/delegation-types.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
+    inspect: vi.fn(async (input) => ({
+      harnessId: input.harnessId,
+      inspection: {
+        status: "ready" as const,
+        catalog: { models: [], thinkingOptions: [] },
+        capabilities: {
+          configuration: {
+            selectModel: false,
+            selectThinkingOption: false,
+            selectPermissionMode: false,
+          },
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        },
+      },
+    })),
     canHandleStart: (input) => input.parentThreadId === threadId,
     ownsThread: (candidate) => candidate === threadId,
     start: vi.fn(async () => ({
@@ -62,6 +77,9 @@ describe("DelegationControlRegistry", () => {
     registry.register(first);
     registry.register(second);
 
+    await expect(registry.inspect({ harnessId: "pi" })).rejects.toMatchObject({
+      code: "PARENT_THREAD_AMBIGUOUS",
+    });
     await registry.start({
       harnessId: "pi" as const,
       task: "review",

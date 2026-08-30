@@ -7,6 +7,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import { encodeGrokTransportModel } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
@@ -43,6 +44,69 @@ function record(): StoredThreadRecordV1 {
 }
 
 describe("ExternalThreadRuntime register", () => {
+  it("restores Antigravity history from the local transcript when the CLI returns placeholders", async () => {
+    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
+    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
+    const model = adapter.catalog.defaultModel;
+    if (!model) throw new Error("Fake Antigravity catalog has no default Model");
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
+    if (!opened.ok || !opened.value.initialState.nativeRef) {
+      throw new Error("Fake Antigravity Session did not open");
+    }
+    const session = opened.value;
+    const nativeSessionRef = opened.value.initialState.nativeRef;
+    const nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId: antigravityHarnessId,
+      nativeSessionId: nativeSessionRef.nativeSessionId,
+      nativeTurnKey: "turn:1",
+      formatVersion: 1,
+    });
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: antigravityHarnessId,
+      nativeSessionRef,
+      turnMappings: [{ hostTurnId: hostThreadId, nativeTurnRef }],
+      history: [{ id: hostThreadId, items: [{ type: "userMessage" }] }],
+    } as StoredThreadRecordV1;
+    session.readSnapshot = vi.fn(async () => ({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef,
+            input: [],
+            items: [
+              {
+                item: { itemId: "assistant", type: "agentMessage", text: "output only" },
+                outcome: { status: "succeeded" },
+              },
+            ],
+            outcome: { status: "unknown", reason: "placeholder" },
+          },
+        ],
+      },
+    }));
+    vi.spyOn(adapter, "open").mockResolvedValue({ ok: true, value: session });
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async () => ({ record: stored, turns: [{ id: hostThreadId }] }),
+      sessionTreeId: async () => hostThreadId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["antigravity", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") throw new Error("Antigravity Thread did not restore");
+    expect(resolved.thread.turns).toEqual(stored.history);
+    await adapter.close();
+  });
+
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;

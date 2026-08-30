@@ -57,7 +57,6 @@ import {
 
 import { resolveAntigravityExecutable } from "./command.js";
 import {
-  ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
   type AntigravityPermissionMode,
@@ -199,6 +198,9 @@ function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0
+      ? { cacheHitRatePercent: Math.min(100, (cachedInputTokens / inputTokens) * 100) }
+      : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
 }

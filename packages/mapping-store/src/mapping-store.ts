@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import type { HostThreadId, HostTurnId } from "@codexhost/shared-contracts";
+import type { HostThreadId, HostTurnId, JsonObject } from "@codexhost/shared-contracts";
 
 import {
   storedThreadRecordV1Schema,
@@ -389,6 +389,15 @@ export class MappingStore {
       ...current,
       turnMappings: this.#mergeMappings(current.turnMappings, mappings),
     }));
+  }
+
+  async setHistory(
+    hostThreadId: HostThreadId,
+    history: JsonObject[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) =>
+      sameJson(current.history, history) ? null : { ...current, history },
+    );
   }
 
   async reconcileTurnMappings(

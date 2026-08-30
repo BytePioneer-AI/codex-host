@@ -5,6 +5,7 @@ import type {
   HarnessSession,
   HarnessSessionState,
   HostThreadSnapshot,
+  HostTextInput,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -58,7 +59,7 @@ export interface ExternalThread {
   activeTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
+  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector; input: HostTextInput[] }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
@@ -82,6 +83,25 @@ export type ExternalThreadResolution =
 function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
   const ref = turn.nativeTurnRef;
   return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
+}
+
+function restoredTurns(
+  record: StoredThreadRecordV1,
+  snapshot: HostThreadSnapshot,
+  alignedTurns: JsonObject[],
+): JsonObject[] {
+  if (record.harnessId !== "antigravity" || !record.history) return alignedTurns;
+  if (snapshot.turns.length === 0) return record.history;
+  const localById = new Map(
+    record.history.flatMap((turn) =>
+      typeof turn.id === "string" ? [[turn.id, turn] as const] : [],
+    ),
+  );
+  return alignedTurns.map((turn, index) => {
+    const native = snapshot.turns[index];
+    if (native?.input.length) return turn;
+    return localById.get(typeof turn.id === "string" ? turn.id : "") ?? turn;
+  });
 }
 
 function mergeReadonlySnapshot(
@@ -364,11 +384,11 @@ export class ExternalThreadRuntime {
     try {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       thread.record = aligned.record;
-      thread.turns = aligned.turns;
+      thread.turns = restoredTurns(thread.record, snapshot.value, aligned.turns);
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
-        turns: aligned.turns,
+        turns: thread.turns,
         sessionId: thread.sessionId,
         running: thread.running,
       });
@@ -401,6 +421,18 @@ export class ExternalThreadRuntime {
       thread.persistenceError = failure;
       thread.stateObserver.fault(failure);
       this.#diagnose("External Turn identity could not be persisted");
+      return failure;
+    }
+  }
+
+  async persistHistory(thread: ExternalThread): Promise<Error | null> {
+    if (thread.harnessId !== "antigravity") return null;
+    try {
+      thread.record = await this.#repository.persistHistory(thread.record, thread.turns);
+      return null;
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(errorMessage(error));
+      this.#diagnose("External Thread history could not be persisted");
       return failure;
     }
   }
@@ -445,12 +477,13 @@ export class ExternalThreadRuntime {
       );
       const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
+      const turns = restoredTurns(aligned.record, snapshot.value, aligned.turns);
       return this.register({
         record: aligned.record,
         session,
         sessionId,
-        thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
-        turns: aligned.turns,
+        thread: externalThreadValue({ record: aligned.record, turns, sessionId }),
+        turns,
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
@@ -492,16 +525,17 @@ export class ExternalThreadRuntime {
       }
       const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
+      const turns = restoredTurns(aligned.record, snapshot.value, aligned.turns);
       return this.register({
         record: aligned.record,
         session,
         sessionId,
         thread: externalThreadValue({
           record: aligned.record,
-          turns: aligned.turns,
+          turns,
           sessionId,
         }),
-        turns: aligned.turns,
+        turns,
         ...(restoredSelection?.model ? { requestedModel: restoredSelection.model } : {}),
         ...(restoredSelection?.thinkingOptionId
           ? { requestedThinkingOptionId: restoredSelection.thinkingOptionId }

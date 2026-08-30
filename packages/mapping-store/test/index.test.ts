@@ -119,6 +119,21 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("persists an optional local history transcript", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    const history = [{ id: "turn-1", items: [{ type: "userMessage" }] }];
+    await first.setHistory(threadId, history);
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({ history });
+    await second.close();
+  });
+
   it("rejects content fields and cross-Session Checkpoints", () => {
     const base = {
       formatVersion: 1,

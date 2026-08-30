@@ -10,6 +10,7 @@ import type {
   HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
+  HostTextInput,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -163,6 +164,25 @@ interface TurnProjectionGate {
 
 interface ProjectedTurn {
   projector: CodexTurnProjector;
+  input: HostTextInput[];
+}
+
+function addProjectedTurnInput(turn: JsonObject, input: readonly HostTextInput[]): JsonObject {
+  if (input.length === 0) return turn;
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  const turnId = typeof turn.id === "string" ? turn.id : "turn";
+  return {
+    ...turn,
+    items: [
+      {
+        id: `${turnId}-user`,
+        type: "userMessage",
+        clientId: null,
+        content: input.map(({ text }) => ({ type: "text", text })),
+      },
+      ...items,
+    ],
+  };
 }
 
 type HostApprovalRequestId = number;
@@ -1392,6 +1412,7 @@ export class AppServerHost {
         cwd: thread.cwd,
         startedAtMs: Date.now(),
       }),
+      input: [],
     };
     const gate = turnProjectionGate();
     thread.running = true;
@@ -1851,6 +1872,10 @@ export class AppServerHost {
     return this.#externalRuntime.persistTerminalIdentity(thread, event);
   }
 
+  #persistExternalHistory(thread: ExternalThread): Promise<Error | null> {
+    return this.#externalRuntime.persistHistory(thread);
+  }
+
   async #forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void> {
     const parsed = externalThreadForkParamsSchema.safeParse(request.params);
     if (!parsed.success) {
@@ -2276,6 +2301,7 @@ export class AppServerHost {
         cwd: thread.cwd,
         startedAtMs,
       }),
+      input: [{ type: "text", text }],
     };
     const gate = turnProjectionGate();
     thread.running = true;
@@ -2489,6 +2515,7 @@ export class AppServerHost {
           cwd: thread.cwd,
           startedAtMs: Date.now(),
         }),
+        input: [],
       };
       thread.running = true;
       thread.activeTurnId = event.turnId;
@@ -2541,9 +2568,10 @@ export class AppServerHost {
       if (ephemeralTurn) {
         thread.ephemeralTurnIds.delete(event.turnId);
       } else {
-        thread.turns.push(result.completedTurn);
+        thread.turns.push(addProjectedTurnInput(result.completedTurn, projection.input));
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
+        await this.#persistExternalHistory(thread);
       }
       thread.historyHydrated = false;
       thread.running = false;

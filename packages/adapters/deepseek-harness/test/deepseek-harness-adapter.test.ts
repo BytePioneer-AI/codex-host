@@ -12,7 +12,12 @@ import { RpcId } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 
 import {
   DeepSeekHarnessAdapter,
@@ -81,12 +86,48 @@ function event(seq: number, type: string, data: Record<string, unknown>): Histor
   };
 }
 
+function sessionRef(sessionId: string) {
+  return nativeSessionRefSchema.parse({
+    harnessId: "deepseek-harness",
+    nativeSessionId: sessionId,
+    formatVersion: 1,
+  });
+}
+
+function checkpointRef(sessionId: string, seq: number) {
+  return nativeCheckpointRefSchema.parse({
+    harnessId: "deepseek-harness",
+    nativeSessionId: sessionId,
+    checkpointId: `turn-end:${seq}`,
+    formatVersion: 1,
+  });
+}
+
+function completedTurn(
+  startSeq: number,
+  turn: number,
+  text: string,
+  reason: Record<string, unknown> = { kind: "completed" },
+): HistoryEntry[] {
+  return [
+    event(startSeq, "turn/start", { turn }),
+    event(startSeq + 1, "user/message", {
+      source: { kind: "user" },
+      content: [{ type: "text", text }],
+    }),
+    event(startSeq + 2, "turn/end", { turn, reason }),
+  ];
+}
+
 class FakeConnection implements DeepSeekHostConnectionLike {
   readonly subscribers = new Map<string, DeepSeekHostSubscriber>();
   readonly history = new Map<string, HistoryEntry[]>();
+  readonly cwd = new Map<string, string>();
+  readonly modelsBySession = new Map<string, ModelSelection>();
   readonly calls = {
     list: vi.fn(),
     create: vi.fn(),
+    fork: vi.fn(),
     history: vi.fn(),
     models: vi.fn(),
     selectModel: vi.fn(),
@@ -99,28 +140,52 @@ class FakeConnection implements DeepSeekHostConnectionLike {
   connected = false;
   closed = false;
   currentModel: ModelSelection = CURRENT_MODEL;
+  forkChildId = "session-forked-1" as SessionId;
+  forkFailure: "fork-unavailable" | "workspace-attach-failed" | undefined;
+  forkHistoryTransform: ((entries: HistoryEntry[]) => HistoryEntry[]) | undefined;
+  forkedModel: ModelSelection | undefined;
   readonly client: DeepSeekHostClient;
 
   constructor() {
     const sessions = {
       list: this.calls.list,
       create: this.calls.create,
+      fork: this.calls.fork,
       history: this.calls.history,
       models: this.calls.models,
       selectModel: this.calls.selectModel,
       prompt: this.calls.prompt,
       cancel: this.calls.cancel,
     };
-    this.calls.create.mockImplementation(({ sessionId }: { sessionId?: SessionId }) =>
-      Promise.resolve(success({ sessionId: sessionId ?? SESSION_ID, agentPreset: "standard" })),
+    this.calls.list.mockImplementation(() =>
+      Promise.resolve(
+        success({
+          items: [...this.cwd].map(([sessionId, cwd]) => ({
+            sessionId: sessionId as SessionId,
+            updatedAt: 0,
+            running: false,
+            blank: (this.history.get(sessionId) ?? []).every(
+              (entry) => entry.event.type !== "turn/start",
+            ),
+            cwd,
+          })),
+        }),
+      ),
+    );
+    this.calls.create.mockImplementation(
+      ({ sessionId, cwd }: { sessionId?: SessionId; cwd?: string }) => {
+        const created = sessionId ?? SESSION_ID;
+        if (cwd) this.cwd.set(created, cwd);
+        return Promise.resolve(success({ sessionId: created, agentPreset: "standard" }));
+      },
     );
     this.calls.history.mockImplementation(({ sessionId }: { sessionId: SessionId }) =>
       Promise.resolve(success({ events: this.history.get(sessionId) ?? [], hasMore: false })),
     );
-    this.calls.models.mockImplementation(() =>
+    this.calls.models.mockImplementation(({ sessionId }: { sessionId: SessionId }) =>
       Promise.resolve(
         success<SessionModels>({
-          current: this.currentModel,
+          current: this.modelsBySession.get(sessionId) ?? this.currentModel,
           routable: true,
           groups: MODEL_GROUPS,
           failures: [],
@@ -129,10 +194,12 @@ class FakeConnection implements DeepSeekHostConnectionLike {
     );
     this.calls.selectModel.mockImplementation(
       ({
+        sessionId,
         provider,
         model,
         reasoningEffort,
       }: {
+        sessionId: SessionId;
         provider: string;
         model: string;
         reasoningEffort?: string;
@@ -146,7 +213,60 @@ class FakeConnection implements DeepSeekHostConnectionLike {
           model,
           ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
         };
+        this.modelsBySession.set(sessionId, this.currentModel);
         return Promise.resolve(success({ selected: this.currentModel }));
+      },
+    );
+    this.calls.fork.mockImplementation(
+      ({ sessionId, atSeq }: { sessionId: SessionId; atSeq?: number }) => {
+        if (this.forkFailure === "fork-unavailable") {
+          return Promise.resolve({
+            rpcId: RpcId("response"),
+            result: {
+              ok: false as const,
+              error: {
+                code: "fork-unavailable" as const,
+                message: "checkpoint unavailable",
+                details: { sessionId },
+              },
+            },
+          });
+        }
+        const source = this.history.get(sessionId) ?? [];
+        const boundary = source.findIndex(
+          (entry) => entry.event.type === "turn/end" && entry.event.seq >= (atSeq ?? Infinity),
+        );
+        const fallback = source.findLastIndex((entry) => entry.event.type === "turn/end");
+        const boundaryIndex = boundary >= 0 ? boundary : fallback;
+        let cut = boundaryIndex + 1;
+        while (cut < source.length && source[cut]?.event.type !== "turn/start") cut += 1;
+        let child = structuredClone(source.slice(0, cut));
+        if (child.at(-1)?.event.type !== "session/end-seed") {
+          const seq = (child.at(-1)?.event.seq ?? -1) + 1;
+          child.push(event(seq, "session/end-seed", {}));
+        }
+        child = this.forkHistoryTransform?.(child) ?? child;
+        this.history.set(this.forkChildId, child);
+        const sourceCwd = this.cwd.get(sessionId);
+        if (sourceCwd) this.cwd.set(this.forkChildId, sourceCwd);
+        this.modelsBySession.set(
+          this.forkChildId,
+          this.forkedModel ?? this.modelsBySession.get(sessionId) ?? this.currentModel,
+        );
+        if (this.forkFailure === "workspace-attach-failed") {
+          return Promise.resolve({
+            rpcId: RpcId("response"),
+            result: {
+              ok: false as const,
+              error: {
+                code: "workspace-attach-failed" as const,
+                message: "workspace unavailable",
+                details: { sessionId: this.forkChildId, workspaceId: "workspace-1" },
+              },
+            },
+          });
+        }
+        return Promise.resolve(success({ sessionId: this.forkChildId }));
       },
     );
     this.calls.prompt.mockResolvedValue(success({ accepted: true }));
@@ -244,10 +364,16 @@ function fixture(): {
 }
 
 async function collectUntilTurn(session: Awaited<ReturnType<typeof openCreated>>) {
+  return collectUntilTurnFrom(session.outputs[Symbol.asyncIterator]());
+}
+
+async function collectUntilTurnFrom(iterator: AsyncIterator<HarnessOutput>) {
   const outputs = [];
-  for await (const output of session.outputs) {
-    outputs.push(output);
-    if (output.kind === "event" && output.event.type === "turn.completed") return outputs;
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) break;
+    outputs.push(next.value);
+    if (next.value.kind === "event" && next.value.event.type === "turn.completed") return outputs;
   }
   throw new Error("Output stream ended before Turn completion");
 }
@@ -280,6 +406,446 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.connected).toBe(true);
     expect(connection.calls.list).not.toHaveBeenCalled();
     await adapter.close();
+  });
+
+  it("publishes stable live and historical Checkpoints for every native Turn outcome", async () => {
+    const { adapter, connection } = fixture();
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      capabilities: {
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
+    });
+    const session = await openCreated(adapter);
+    expect(session.capabilities.history).toEqual({
+      fork: true,
+      forkAcrossCwd: false,
+      rollbackLastTurn: false,
+    });
+    const sessionId = session.initialState.nativeRef?.nativeSessionId as string;
+    const reasons = [
+      { kind: "completed" },
+      { kind: "error", error: { message: "model failed", code: "MODEL_FAILED" } },
+      { kind: "aborted", reason: { kind: "user" } },
+    ];
+    const history: HistoryEntry[] = [];
+    const liveCheckpoints: string[] = [];
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    for (const [index, reason] of reasons.entries()) {
+      const turn = index + 1;
+      const startSeq = index * 3;
+      const turnId = hostTurnIdSchema.parse(`host-turn-checkpoint-${turn}`);
+      const collecting = collectUntilTurnFrom(iterator);
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: `prompt ${turn}` }],
+      });
+      connection.sessionEvent(sessionId, startSeq, "turn/start", { turn });
+      connection.sessionEvent(sessionId, startSeq + 1, "user/message", {
+        source: { kind: "user" },
+        content: [{ type: "text", text: `prompt ${turn}` }],
+      });
+      connection.sessionEvent(sessionId, startSeq + 2, "turn/end", { turn, reason });
+      const outputs = await collecting;
+      const completed = outputs.find(
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      );
+      if (!completed || completed.kind !== "event" || completed.event.type !== "turn.completed") {
+        throw new Error("Missing terminal event");
+      }
+      liveCheckpoints.push(completed.event.outcome.checkpoint?.checkpointId ?? "");
+      history.push(...completedTurn(startSeq, turn, `prompt ${turn}`, reason));
+    }
+
+    connection.history.set(sessionId, history);
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(liveCheckpoints).toEqual(["turn-end:2", "turn-end:5", "turn-end:8"]);
+    expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual(
+      liveCheckpoints,
+    );
+    expect(snapshot.value.turns.map((turn) => turn.outcome.status)).toEqual([
+      "succeeded",
+      "failed",
+      "cancelled",
+    ]);
+    await adapter.close();
+  });
+
+  it("Forks the exact completed prefix while a later source Turn is active", async () => {
+    const { adapter, connection } = fixture();
+    const sourceId = "session-source-active";
+    const sourceHistory = [
+      ...completedTurn(0, 1, "first"),
+      event(3, "session/title", { title: "Between turns" }),
+      ...completedTurn(4, 2, "second"),
+      event(7, "turn/start", { turn: 3 }),
+      event(8, "user/message", {
+        source: { kind: "user" },
+        content: [{ type: "text", text: "still running" }],
+      }),
+    ];
+    connection.history.set(sourceId, sourceHistory);
+    connection.cwd.set(sourceId, path.resolve("/workspace"));
+    connection.forkedModel = {
+      provider: "deepseek-official",
+      model: "deepseek-v4-pro",
+      reasoningEffort: "low",
+    };
+    connection.forkHistoryTransform = (entries) => [
+      ...entries,
+      event((entries.at(-1)?.event.seq ?? -1) + 1, "sandbox/mode", {
+        mode: "danger-full-access",
+      }),
+    ];
+
+    const opened = await adapter.open({
+      kind: "fork",
+      sourceRef: sessionRef(sourceId),
+      checkpoint: checkpointRef(sourceId, 2),
+      cwd: "/workspace",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect(connection.calls.fork).toHaveBeenCalledWith({
+      sessionId: sourceId,
+      atSeq: 2,
+    });
+    expect(session.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "session-forked-1" },
+      effectiveModel: encodeDeepSeekHarnessModelRef({
+        provider: "deepseek-official",
+        model: "deepseek-v4-pro",
+      }),
+      effectiveThinkingOptionId: "low",
+    });
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(snapshot.value.turns).toHaveLength(1);
+    expect(snapshot.value.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeSessionId: "session-forked-1", nativeTurnKey: "turn:1" },
+      checkpoint: { nativeSessionId: "session-forked-1", checkpointId: "turn-end:2" },
+      input: [{ type: "text", text: "first" }],
+    });
+    expect(connection.history.get("session-forked-1")?.map((entry) => entry.event.type)).toEqual([
+      "turn/start",
+      "user/message",
+      "turn/end",
+      "session/title",
+      "session/end-seed",
+      "sandbox/mode",
+    ]);
+    expect(connection.history.get(sourceId)).toEqual(sourceHistory);
+
+    const settledSourceHistory = [
+      ...sourceHistory,
+      event(9, "turn/end", { turn: 3, reason: { kind: "completed" } }),
+    ];
+    connection.history.set(sourceId, settledSourceHistory);
+    const resumedSource = await adapter.open({
+      kind: "resume",
+      nativeRef: sessionRef(sourceId),
+      cwd: "/workspace",
+    });
+    if (!resumedSource.ok) throw new Error(resumedSource.error.message);
+    const sourceSession = resumedSource.value;
+    const childTurnId = hostTurnIdSchema.parse("host-turn-fork-child");
+    const sourceTurnId = hostTurnIdSchema.parse("host-turn-fork-source");
+    const childCollecting = collectUntilTurn(session);
+    const sourceCollecting = collectUntilTurn(sourceSession);
+    await session.execute({
+      type: "turn.start",
+      turnId: childTurnId,
+      input: [{ type: "text", text: "continue child" }],
+    });
+    await sourceSession.execute({
+      type: "turn.start",
+      turnId: sourceTurnId,
+      input: [{ type: "text", text: "continue source" }],
+    });
+    expect(connection.calls.prompt).toHaveBeenCalledWith({
+      sessionId: "session-forked-1",
+      mode: "queue",
+      content: [{ type: "text", text: "continue child" }],
+    });
+    expect(connection.calls.prompt).toHaveBeenCalledWith({
+      sessionId: sourceId,
+      mode: "queue",
+      content: [{ type: "text", text: "continue source" }],
+    });
+
+    connection.sessionEvent("session-forked-1", 6, "turn/start", { turn: 2 });
+    connection.sessionEvent("session-forked-1", 7, "user/message", {
+      source: { kind: "user" },
+      content: [{ type: "text", text: "continue child" }],
+    });
+    connection.sessionEvent("session-forked-1", 8, "turn/end", {
+      turn: 2,
+      reason: { kind: "completed" },
+    });
+    connection.sessionEvent(sourceId, 10, "turn/start", { turn: 4 });
+    connection.sessionEvent(sourceId, 11, "user/message", {
+      source: { kind: "user" },
+      content: [{ type: "text", text: "continue source" }],
+    });
+    connection.sessionEvent(sourceId, 12, "turn/end", {
+      turn: 4,
+      reason: { kind: "completed" },
+    });
+    const [childOutputs, sourceOutputs] = await Promise.all([childCollecting, sourceCollecting]);
+    expect(childOutputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "turn.completed",
+            nativeTurnRef: expect.objectContaining({ nativeSessionId: "session-forked-1" }),
+            outcome: expect.objectContaining({
+              checkpoint: expect.objectContaining({ checkpointId: "turn-end:8" }),
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(sourceOutputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "turn.completed",
+            nativeTurnRef: expect.objectContaining({ nativeSessionId: sourceId }),
+            outcome: expect.objectContaining({
+              checkpoint: expect.objectContaining({ checkpointId: "turn-end:12" }),
+            }),
+          }),
+        }),
+      ]),
+    );
+
+    connection.history.set("session-forked-1", [
+      ...(connection.history.get("session-forked-1") ?? []),
+      ...completedTurn(6, 2, "continue child"),
+    ]);
+    connection.history.set(sourceId, [
+      ...settledSourceHistory,
+      ...completedTurn(10, 4, "continue source"),
+    ]);
+    expect(JSON.stringify(connection.history.get("session-forked-1"))).toContain("continue child");
+    expect(JSON.stringify(connection.history.get("session-forked-1"))).not.toContain(
+      "continue source",
+    );
+    expect(JSON.stringify(connection.history.get(sourceId))).toContain("continue source");
+    expect(JSON.stringify(connection.history.get(sourceId))).not.toContain("continue child");
+
+    await sourceSession.close();
+    await session.close();
+    expect(connection.subscribers.size).toBe(0);
+    await adapter.close();
+  });
+
+  it("adopts a verified child reported by workspace-attach-failed", async () => {
+    const { adapter, connection } = fixture();
+    const sourceId = "session-source-partial";
+    connection.history.set(sourceId, completedTurn(0, 1, "first"));
+    connection.cwd.set(sourceId, path.resolve("/workspace"));
+    connection.forkFailure = "workspace-attach-failed";
+
+    const opened = await adapter.open({
+      kind: "fork",
+      sourceRef: sessionRef(sourceId),
+      checkpoint: checkpointRef(sourceId, 2),
+      cwd: "/workspace",
+    });
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect(opened.value.initialState.nativeRef?.nativeSessionId).toBe("session-forked-1");
+      await opened.value.close();
+    }
+    expect(connection.subscribers.size).toBe(0);
+    await adapter.close();
+  });
+
+  it("rejects foreign, stale, missing, and cross-cwd Fork inputs before native creation", async () => {
+    const sourceId = "session-source-validation";
+    const cases = [
+      {
+        name: "foreign source",
+        mutate: (input: Record<string, unknown>) => ({
+          ...input,
+          sourceRef: { ...sessionRef(sourceId), harnessId: "pi" },
+        }),
+        code: "invalidRequest",
+      },
+      {
+        name: "mismatched checkpoint",
+        mutate: (input: Record<string, unknown>) => ({
+          ...input,
+          checkpoint: checkpointRef("another-session", 2),
+        }),
+        code: "invalidRequest",
+      },
+      {
+        name: "malformed checkpoint",
+        mutate: (input: Record<string, unknown>) => ({
+          ...input,
+          checkpoint: { ...checkpointRef(sourceId, 2), checkpointId: "turn-end:02" },
+        }),
+        code: "checkpointNotFound",
+      },
+      {
+        name: "stale checkpoint",
+        mutate: (input: Record<string, unknown>) => ({
+          ...input,
+          checkpoint: checkpointRef(sourceId, 99),
+        }),
+        code: "checkpointNotFound",
+      },
+      {
+        name: "cross cwd",
+        mutate: (input: Record<string, unknown>) => ({ ...input, cwd: "/other" }),
+        code: "unsupported",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { adapter, connection } = fixture();
+      connection.history.set(sourceId, completedTurn(0, 1, "first"));
+      connection.cwd.set(sourceId, path.resolve("/workspace"));
+      const input = testCase.mutate({
+        kind: "fork",
+        sourceRef: sessionRef(sourceId),
+        checkpoint: checkpointRef(sourceId, 2),
+        cwd: "/workspace",
+      });
+      const opened = await adapter.open(input as never);
+      expect(opened, testCase.name).toMatchObject({
+        ok: false,
+        error: { code: testCase.code },
+      });
+      expect(connection.calls.fork, testCase.name).not.toHaveBeenCalled();
+      expect(connection.subscribers.size, testCase.name).toBe(0);
+      await adapter.close();
+    }
+
+    const { adapter, connection } = fixture();
+    const missing = await adapter.open({
+      kind: "fork",
+      sourceRef: sessionRef("session-missing"),
+      checkpoint: checkpointRef("session-missing", 2),
+      cwd: "/workspace",
+    });
+    expect(missing).toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+    expect(connection.calls.fork).not.toHaveBeenCalled();
+    await adapter.close();
+
+    const withoutCwd = fixture();
+    withoutCwd.connection.history.set(sourceId, completedTurn(0, 1, "first"));
+    withoutCwd.connection.calls.list.mockResolvedValueOnce(
+      success({
+        items: [{ sessionId: sourceId, updatedAt: 0, running: false, blank: false }],
+      }),
+    );
+    await expect(
+      withoutCwd.adapter.open({
+        kind: "fork",
+        sourceRef: sessionRef(sourceId),
+        checkpoint: checkpointRef(sourceId, 2),
+        cwd: "/workspace",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(withoutCwd.connection.calls.fork).not.toHaveBeenCalled();
+    await withoutCwd.adapter.close();
+  });
+
+  it("fails closed on native and derived-history Fork mismatches and removes subscribers", async () => {
+    const sourceId = "session-source-failure";
+    const cases: Array<{
+      name: string;
+      configure(connection: FakeConnection): void;
+      code: string;
+    }> = [
+      {
+        name: "native checkpoint rejection",
+        configure: (connection) => {
+          connection.forkFailure = "fork-unavailable";
+        },
+        code: "checkpointNotFound",
+      },
+      {
+        name: "child Model readback failed",
+        configure: (connection) => {
+          connection.calls.models.mockResolvedValueOnce({
+            rpcId: RpcId("response"),
+            result: {
+              ok: false,
+              error: { code: "internal", message: "model state unavailable", details: {} },
+            },
+          });
+        },
+        code: "nativeFailure",
+      },
+      {
+        name: "source identity returned as child",
+        configure: (connection) => {
+          connection.forkChildId = sourceId as SessionId;
+        },
+        code: "protocolError",
+      },
+      {
+        name: "raw prefix changed",
+        configure: (connection) => {
+          connection.forkHistoryTransform = (entries) =>
+            entries.map((entry, index) =>
+              index === 1
+                ? event(entry.event.seq, "user/message", {
+                    source: { kind: "user" },
+                    content: [{ type: "text", text: "wrong" }],
+                  })
+                : entry,
+            );
+        },
+        code: "protocolError",
+      },
+      {
+        name: "later Turn leaked",
+        configure: (connection) => {
+          connection.forkHistoryTransform = (entries) => [
+            ...entries,
+            event((entries.at(-1)?.event.seq ?? 0) + 1, "turn/start", { turn: 2 }),
+          ];
+        },
+        code: "protocolError",
+      },
+      {
+        name: "partial success failed verification",
+        configure: (connection) => {
+          connection.forkFailure = "workspace-attach-failed";
+          connection.forkHistoryTransform = (entries) => entries.slice(1);
+        },
+        code: "protocolError",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { adapter, connection } = fixture();
+      connection.history.set(sourceId, completedTurn(0, 1, "first"));
+      connection.cwd.set(sourceId, path.resolve("/workspace"));
+      testCase.configure(connection);
+      const opened = await adapter.open({
+        kind: "fork",
+        sourceRef: sessionRef(sourceId),
+        checkpoint: checkpointRef(sourceId, 2),
+        cwd: "/workspace",
+      });
+      expect(opened, testCase.name).toMatchObject({
+        ok: false,
+        error: { code: testCase.code },
+      });
+      expect(connection.subscribers.size, testCase.name).toBe(0);
+      await adapter.close();
+    }
   });
 
   it("creates an official Session, selects the requested Model, and projects a live Tool Turn", async () => {
@@ -374,7 +940,10 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           event: expect.objectContaining({
             type: "turn.completed",
             nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn:1" }),
-            outcome: { status: "succeeded" },
+            outcome: expect.objectContaining({
+              status: "succeeded",
+              checkpoint: expect.objectContaining({ checkpointId: "turn-end:6" }),
+            }),
           }),
         }),
       ]),
@@ -1518,7 +2087,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
           kind: "event",
           event: expect.objectContaining({
             type: "turn.completed",
-            outcome: { status: "succeeded" },
+            outcome: expect.objectContaining({ status: "succeeded" }),
           }),
         }),
       ]),

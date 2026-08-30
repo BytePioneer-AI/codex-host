@@ -5,7 +5,9 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationStartInput,
+  type ThreadCancelInput,
   type ThreadListInput,
+  type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
 } from "./delegation-types.js";
@@ -90,6 +92,12 @@ export async function startDelegationControlServer(input: {
       switch (request.url) {
         case "/v1/delegate/start":
           writeJson(response, 200, await input.api.start(body as unknown as DelegationStartInput));
+          return;
+        case "/v1/thread/send":
+          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
+          return;
+        case "/v1/thread/cancel":
+          writeJson(response, 200, await input.api.cancel(body as unknown as ThreadCancelInput));
           return;
         case "/v1/thread/read":
           writeJson(response, 200, await input.api.read(body as unknown as ThreadReadInput));

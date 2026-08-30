@@ -57,6 +57,30 @@ export interface DelegationStartResult {
   next: { read: string; wait: string };
 }
 
+export interface ThreadSendInput {
+  threadId: string;
+  message: string;
+}
+
+export interface ThreadSendResult {
+  threadId: string;
+  turnId: string;
+  harnessId: RoutedHarnessId;
+  status: "running";
+  next: { read: string; wait: string };
+}
+
+export interface ThreadCancelInput {
+  threadId: string;
+}
+
+export interface ThreadCancelResult {
+  threadId: string;
+  turnId: string | null;
+  harnessId: RoutedHarnessId;
+  cancelled: boolean;
+}
+
 export interface ThreadReadInput {
   threadId: string;
   view: "result" | "messages";
@@ -100,6 +124,8 @@ export interface DelegationThreadListResult {
 
 export interface DelegationControlApi {
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
+  send(input: ThreadSendInput): Promise<ThreadSendResult>;
+  cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;
   read(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
   wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }>;
   list(input: ThreadListInput): Promise<DelegationThreadListResult>;
@@ -114,6 +140,7 @@ export type DelegationControlErrorCode =
   | "INVALID_ARGUMENT"
   | "HARNESS_NOT_FOUND"
   | "THREAD_NOT_FOUND"
+  | "THREAD_BUSY"
   | "PARENT_THREAD_AMBIGUOUS"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"

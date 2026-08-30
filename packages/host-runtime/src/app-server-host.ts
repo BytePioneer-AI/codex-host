@@ -84,8 +84,12 @@ import type {
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  ThreadCancelInput,
+  ThreadCancelResult,
   ThreadListInput,
   ThreadReadInput,
+  ThreadSendInput,
+  ThreadSendResult,
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { OfficialRequestBroker } from "./official-request-broker.js";
@@ -478,12 +482,16 @@ export class AppServerHost {
         this.#startDelegatedExternalTurn(thread, text, turnId),
       notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
+      sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
+      cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
       listOfficial: (input) => this.#listDelegationThreads(input),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
       start: (input) => this.#delegationCoordinator.start(input),
+      send: (input) => this.#delegationCoordinator.send(input),
+      cancel: (input) => this.#delegationCoordinator.cancel(input),
       read: (input) => this.#delegationCoordinator.read(input),
       wait: (input) => this.#delegationCoordinator.wait(input),
       list: (input) => this.#delegationCoordinator.list(input),
@@ -1148,6 +1156,96 @@ export class AppServerHost {
       this.#pendingOfficialDelegationThreads.delete(threadId);
       this.#pendingOfficialTerminalStatuses.delete(threadId);
     }
+  }
+
+  async #sendOfficialDelegationThread(input: ThreadSendInput): Promise<ThreadSendResult> {
+    if (!input.message?.trim()) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
+    }
+    if (this.#activeOfficialTurns.has(input.threadId)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    const current = await this.#officialRequestBroker.request("thread/read", {
+      threadId: input.threadId,
+      includeTurns: true,
+    });
+    if (isRecord(current.error) || !isRecord(current.result)) {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    }
+    const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+    const currentTurns =
+      currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
+    const latestTurn = currentTurns.at(-1);
+    if (
+      (currentThread && isRecord(currentThread.status) && currentThread.status.type === "active") ||
+      (isRecord(latestTurn) &&
+        (latestTurn.status === "inProgress" || latestTurn.status === "running"))
+    ) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    const response = await this.#officialRequestBroker.request("turn/start", {
+      threadId: input.threadId,
+      input: [{ type: "text", text: input.message }],
+    });
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+      );
+    }
+    const result = isRecord(response.result) ? response.result : null;
+    const turn = result && isRecord(result.turn) ? result.turn : null;
+    const turnId = turn && typeof turn.id === "string" ? turn.id : null;
+    if (!turnId) throw new Error("Official turn/start returned no Turn identity");
+    this.#activeOfficialTurns.set(input.threadId, turnId);
+    return {
+      threadId: input.threadId,
+      turnId,
+      harnessId: "codex",
+      status: "running",
+      next: {
+        read: `codexhost thread read ${input.threadId}`,
+        wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
+      },
+    };
+  }
+
+  async #cancelOfficialDelegationThread(input: ThreadCancelInput): Promise<ThreadCancelResult> {
+    let turnId = this.#activeOfficialTurns.get(input.threadId);
+    if (!turnId) {
+      const current = await this.#officialRequestBroker.request("thread/read", {
+        threadId: input.threadId,
+        includeTurns: true,
+      });
+      if (isRecord(current.error) || !isRecord(current.result)) {
+        throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      }
+      const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+      const currentTurns =
+        currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
+      const latestTurn = currentTurns.at(-1);
+      if (
+        isRecord(latestTurn) &&
+        typeof latestTurn.id === "string" &&
+        (latestTurn.status === "inProgress" || latestTurn.status === "running")
+      ) {
+        turnId = latestTurn.id;
+        this.#activeOfficialTurns.set(input.threadId, turnId);
+      } else {
+        return { threadId: input.threadId, turnId: null, harnessId: "codex", cancelled: false };
+      }
+    }
+    const response = await this.#officialRequestBroker.request("turn/interrupt", {
+      threadId: input.threadId,
+      turnId,
+    });
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string" ? response.error.message : "Turn cancel failed",
+      );
+    }
+    return { threadId: input.threadId, turnId, harnessId: "codex", cancelled: true };
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {

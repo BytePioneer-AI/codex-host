@@ -34,6 +34,14 @@ export class DelegationControlRegistry implements DelegationControlApi {
     return (await this.#registrationForStart(input)).start(input);
   }
 
+  async send(input: Parameters<DelegationControlApi["send"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).send(input);
+  }
+
+  async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).cancel(input);
+  }
+
   async read(input: ThreadReadInput) {
     return (await this.#registrationForThread(input.threadId)).read(input);
   }

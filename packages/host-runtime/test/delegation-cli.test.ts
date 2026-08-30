@@ -85,6 +85,40 @@ describe("delegation CLI", () => {
     });
   });
 
+  it("sends follow-up messages and cancellation requests using deep links", async () => {
+    const fetchImpl = successfulFetch({ ok: true });
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+    };
+    await expect(
+      runDelegationCli({
+        arguments: ["thread", "send", "codex://threads/child-1", "--message", "continue"],
+        environment,
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      runDelegationCli({
+        arguments: ["thread", "cancel", "codex://threads/child-1"],
+        environment,
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).resolves.toBe(0);
+    const sendCall = vi.mocked(fetchImpl).mock.calls[0];
+    const cancelCall = vi.mocked(fetchImpl).mock.calls[1];
+    if (!sendCall || !cancelCall) throw new Error("Expected send and cancel Runtime calls");
+    expect(String(sendCall[0])).toContain("/v1/thread/send");
+    expect(JSON.parse(String(sendCall[1]?.body))).toEqual({
+      threadId: "child-1",
+      message: "continue",
+    });
+    expect(String(cancelCall[0])).toContain("/v1/thread/cancel");
+    expect(JSON.parse(String(cancelCall[1]?.body))).toEqual({ threadId: "child-1" });
+  });
+
   it("rejects message cursors on the default result view", async () => {
     const diagnosticOutput = new PassThrough();
     await expect(
@@ -138,6 +172,8 @@ describe("delegation CLI", () => {
       "invalid message limit",
       ["thread", "read", "thread-1", "--view", "messages", "--limit", "101"],
     ],
+    ["missing send message", ["thread", "send", "thread-1"]],
+    ["cancel option", ["thread", "cancel", "thread-1", "--message", "no"]],
     ["invalid list limit", ["thread", "list", "--limit", "101"]],
     ["invalid sort", ["thread", "list", "--sort", "newest"]],
   ])("rejects %s before contacting Runtime", async (_name, arguments_) => {

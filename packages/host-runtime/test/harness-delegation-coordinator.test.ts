@@ -36,13 +36,13 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
       registered.push(thread);
       return thread;
     },
-    startExternalTurn: async (thread, _text, turnId) => {
+    startExternalTurn: async (thread, text, turnId) => {
       thread.running = true;
       thread.activeTurnId = hostTurnIdSchema.parse(turnId);
       const result = await thread.session.execute({
         type: "turn.start",
         turnId: hostTurnIdSchema.parse(turnId),
-        input: [{ type: "text", text: "task" }],
+        input: [{ type: "text", text }],
       });
       if (!result.ok) throw new Error(result.error.message);
     },
@@ -50,6 +50,8 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
       notifications.push(thread);
     },
     readOfficial: vi.fn(),
+    sendOfficial: vi.fn(),
+    cancelOfficial: vi.fn(),
     startOfficial: vi.fn(),
     listOfficial: vi.fn(async () => ({ threads: [], nextCursor: null })),
     activeOfficialParents: () => [],
@@ -170,6 +172,56 @@ describe("HarnessDelegationCoordinator", () => {
       expect(implicitRetry.threadId).toBe(implicit.threadId);
       expect(different.threadId).not.toBe(implicit.threadId);
       expect(value.adapter.sessions).toHaveLength(3);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("sends follow-up Turns, rejects busy sends, and cancels the active Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing delegated Session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing delegated Thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "continue",
+      });
+      expect(followUp).toMatchObject({
+        threadId: started.threadId,
+        harnessId: "pi",
+        status: "running",
+      });
+      await expect(
+        value.coordinator.send({ threadId: started.threadId, message: "again" }),
+      ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+      await expect(value.coordinator.cancel({ threadId: started.threadId })).resolves.toMatchObject(
+        {
+          threadId: started.threadId,
+          turnId: followUp.turnId,
+          cancelled: true,
+        },
+      );
+      session.completeCancellation();
+      thread.running = false;
+      thread.activeTurnId = null;
+      await expect(value.coordinator.cancel({ threadId: started.threadId })).resolves.toMatchObject(
+        {
+          turnId: null,
+          cancelled: false,
+        },
+      );
     } finally {
       await value.close();
     }

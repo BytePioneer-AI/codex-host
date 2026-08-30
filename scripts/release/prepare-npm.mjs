@@ -447,7 +447,7 @@ if (userArguments.length === 0) {
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost delegate --help",
       "  codexhost delegate start ...",
-      "  codexhost thread read|wait|list ...",
+      "  codexhost thread send|cancel|read|wait|list ...",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
       "Rust launcher/shim. Codex Desktop must already be installed.",

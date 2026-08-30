@@ -23,8 +23,12 @@ import {
   type DelegationStartResult,
   type DelegationThreadListResult,
   type DelegationThreadSnapshot,
+  type ThreadCancelInput,
+  type ThreadCancelResult,
   type ThreadListInput,
   type ThreadReadInput,
+  type ThreadSendInput,
+  type ThreadSendResult,
   type ThreadWaitInput,
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
@@ -88,6 +92,8 @@ export class HarnessDelegationCoordinator {
   ) => Promise<void>;
   readonly #notifyThreadStarted: (thread: JsonObject) => Promise<void>;
   readonly #readOfficial: (input: ThreadReadInput) => Promise<DelegationThreadSnapshot>;
+  readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
+  readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string },
   ) => Promise<DelegationStartResult>;
@@ -110,6 +116,8 @@ export class HarnessDelegationCoordinator {
     startExternalTurn(thread: ExternalThread, text: string, turnId: string): Promise<void>;
     notifyThreadStarted(thread: JsonObject): Promise<void>;
     readOfficial(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
+    sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
+    cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string },
     ): Promise<DelegationStartResult>;
@@ -124,6 +132,8 @@ export class HarnessDelegationCoordinator {
     this.#startExternalTurn = input.startExternalTurn;
     this.#notifyThreadStarted = input.notifyThreadStarted;
     this.#readOfficial = input.readOfficial;
+    this.#sendOfficial = input.sendOfficial;
+    this.#cancelOfficial = input.cancelOfficial;
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
     this.#activeOfficialParents = input.activeOfficialParents;
@@ -257,6 +267,63 @@ export class HarnessDelegationCoordinator {
         error instanceof Error ? error.message : String(error),
       );
     }
+  }
+
+  async send(input: ThreadSendInput): Promise<ThreadSendResult> {
+    if (!input.message?.trim()) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
+    }
+    const location = await this.#externalRuntime.locate(input.threadId);
+    if (location.kind === "official") return this.#sendOfficial(input);
+    if (location.kind === "error") {
+      throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
+    }
+    const resolution = await this.#externalRuntime.resolve(input.threadId);
+    if (resolution.kind !== "external") {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+    }
+    const thread = resolution.thread;
+    if (thread.record.subagent) {
+      throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
+    }
+    if (thread.running || thread.activeTurnId) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    const turnId = hostTurnIdSchema.parse(randomUUID());
+    try {
+      await this.#startExternalTurn(thread, input.message, turnId);
+    } catch (error) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return this.#turnResult(thread.id, turnId, thread.harnessId);
+  }
+
+  async cancel(input: ThreadCancelInput): Promise<ThreadCancelResult> {
+    const location = await this.#externalRuntime.locate(input.threadId);
+    if (location.kind === "official") return this.#cancelOfficial(input);
+    if (location.kind === "error") {
+      throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
+    }
+    const resolution = await this.#externalRuntime.resolve(input.threadId);
+    if (resolution.kind !== "external") {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+    }
+    const thread = resolution.thread;
+    if (thread.record.subagent) {
+      throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
+    }
+    const turnId = thread.activeTurnId;
+    if (!thread.running || !turnId) {
+      return { threadId: thread.id, turnId: null, harnessId: thread.harnessId, cancelled: false };
+    }
+    const result = await thread.session.execute({ type: "turn.cancel", turnId });
+    if (!result.ok) {
+      throw new DelegationControlError("DELEGATION_FAILED", result.error.message);
+    }
+    return { threadId: thread.id, turnId, harnessId: thread.harnessId, cancelled: true };
   }
 
   async read(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
@@ -410,6 +477,19 @@ export class HarnessDelegationCoordinator {
       delegation.targetHarnessId as RoutedHarnessId,
       delegation.status,
     );
+  }
+
+  #turnResult(threadId: string, turnId: string, harnessId: RoutedHarnessId): ThreadSendResult {
+    return {
+      threadId,
+      turnId,
+      harnessId,
+      status: "running",
+      next: {
+        read: `codexhost thread read ${threadId}`,
+        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
+      },
+    };
   }
 
   #result(

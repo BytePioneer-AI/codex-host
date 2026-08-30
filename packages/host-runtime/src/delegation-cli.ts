@@ -70,6 +70,8 @@ function rejectUnknown(parsed: ReturnType<typeof options>, allowed: readonly str
 
 export const DELEGATION_HELP = `usage:
   codexhost delegate start --harness <id> --task <text> [--parent-thread <thread>] [--request-id <id>]
+  codexhost thread send <thread> --message <text>
+  codexhost thread cancel <thread>
   codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread list [--cwd <path>] [--parent <thread>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc]
@@ -77,6 +79,8 @@ export const DELEGATION_HELP = `usage:
 Thread identifiers accept a bare ID or codex://threads/<id>. Output is JSON by default.
 delegate start requires --harness and --task, creates and submits the child Thread, then returns immediately. --parent-thread overrides caller inference. Reuse --request-id for idempotent retries; without it, identical recent parent/target/task requests are deduplicated briefly.
 Successful start fields: delegationId, threadId, turnId, harnessId, deepLink, status, next.read, next.wait.
+thread send starts a new Turn in an idle writable Thread and returns immediately. It fails with THREAD_BUSY instead of queueing or starting a concurrent Turn.
+thread cancel requests cancellation of the current Turn while preserving the Thread. An idle Thread returns cancelled=false.
 thread read is non-blocking. Its default result view returns threadId, harnessId, status, latest turn, visible progress, result.availability/result.text, and nextCursor.
 thread read --view messages additionally returns paginated user/Agent-visible messages. The default page is 25 and --limit is capped at 100; --cursor and --limit require the messages view. Tool calls, tool output, file activity, reasoning summaries, hidden reasoning, and private Harness transcripts are never returned.
 thread wait defaults to 30000 ms and waits only until the Thread reaches a terminal state or the bounded timeout expires. A timeout is a successful running checkpoint with timedOut=true; the child keeps running.
@@ -88,6 +92,7 @@ Errors are JSON: {"error":{"code":"...","message":"...","details":{...}}}.
 INVALID_ARGUMENT: fix the named argument or incompatible option combination.
 HARNESS_NOT_FOUND: choose a Harness ID listed in error.details.validHarnessIds.
 THREAD_NOT_FOUND: verify the bare ID or codex:// deep link.
+THREAD_BUSY: wait for or cancel the active Turn before sending another message.
 PARENT_THREAD_AMBIGUOUS: pass --parent-thread explicitly.
 RUNTIME_UNREACHABLE: run inside the Host-provided environment and, for native Codex, allow local Runtime connections; codexhost never falls back to PATH or another Runtime.
 DELEGATION_FAILED: the target Session or initial task delivery failed and no successful child was published.
@@ -188,6 +193,58 @@ export async function runDelegationCli(input: {
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
             ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
           },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "send") {
+      const parsed = options(rest);
+      rejectUnknown(parsed, ["--message"]);
+      if (parsed.positionals.length !== 1) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread send requires one Thread identifier",
+        );
+      }
+      const threadId = parsed.positionals[0];
+      const message = value(parsed, "--message");
+      if (!threadId || !message?.trim()) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "Thread identifier and --message are required",
+        );
+      }
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/send",
+          body: { threadId: normalizeThreadId(threadId), message },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "cancel") {
+      const parsed = options(rest);
+      rejectUnknown(parsed, []);
+      if (parsed.positionals.length !== 1) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread cancel requires one Thread identifier",
+        );
+      }
+      const threadId = parsed.positionals[0];
+      if (!threadId) {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      }
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/cancel",
+          body: { threadId: normalizeThreadId(threadId) },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );

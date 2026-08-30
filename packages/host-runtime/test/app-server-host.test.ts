@@ -1023,6 +1023,89 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+    const started = await delegationApi.start({
+      harnessId: "pi",
+      task: "first",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+    });
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Delegated Session was not opened");
+    session.succeedTurn();
+    await vi.waitFor(async () =>
+      expect(
+        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
+      ).toMatchObject({ status: "completed" }),
+    );
+    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
+    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
+    await expect(
+      delegationApi.send({ threadId: started.threadId, message: "again" }),
+    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
+      turnId: followUp.turnId,
+      cancelled: true,
+    });
+    session.completeCancellation();
+    await stopFixture(fixture);
+  });
+
+  it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+
+    const send = delegationApi.send({ threadId: "native-child", message: "continue" });
+    const read = await readJsonLine(fixture.official.stdin);
+    expect(read).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "native-child", includeTurns: true },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: read.id, result: { thread: { id: "native-child" } } })}\n`,
+    );
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { threadId: "native-child", input: [{ type: "text", text: "continue" }] },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn-2" } } })}\n`,
+    );
+    await expect(send).resolves.toMatchObject({ turnId: "native-turn-2", status: "running" });
+    await expect(
+      delegationApi.send({ threadId: "native-child", message: "again" }),
+    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+
+    const cancel = delegationApi.cancel({ threadId: "native-child" });
+    const interrupt = await readJsonLine(fixture.official.stdin);
+    expect(interrupt).toMatchObject({
+      method: "turn/interrupt",
+      params: { threadId: "native-child", turnId: "native-turn-2" },
+    });
+    fixture.official.stdout.write(`${JSON.stringify({ id: interrupt.id, result: {} })}\n`);
+    await expect(cancel).resolves.toMatchObject({ turnId: "native-turn-2", cancelled: true });
+    await stopFixture(fixture);
+  });
+
   it("delegates to native Codex through brokered official requests without echoing internal responses", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

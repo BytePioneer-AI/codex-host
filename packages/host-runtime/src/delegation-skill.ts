@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 2;
+const SKILL_VERSION = 3;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
+  "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -44,6 +45,8 @@ Create an independent child session and submit the requested task.
 After starting the task, choose the appropriate next action based on the
 user’s request and the task:
 
+- send a follow-up message to the same Thread;
+- cancel its current Turn;
 - read its current state immediately;
 - wait for a bounded period;
 - check it again later;

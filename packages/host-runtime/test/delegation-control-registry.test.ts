@@ -16,6 +16,19 @@ function registration(threadId: string): DelegationControlRegistration {
       status: "running" as const,
       next: { read: "read", wait: "wait" },
     })),
+    send: vi.fn(async () => ({
+      threadId,
+      turnId: `turn-${threadId}`,
+      harnessId: "pi" as const,
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    })),
+    cancel: vi.fn(async () => ({
+      threadId,
+      turnId: null,
+      harnessId: "pi" as const,
+      cancelled: false,
+    })),
     read: vi.fn(async () => ({
       threadId,
       harnessId: "pi" as const,
@@ -56,9 +69,13 @@ describe("DelegationControlRegistry", () => {
       parentThreadId: "parent-b",
     });
     await registry.read({ threadId: "parent-a", view: "result" });
+    await registry.send({ threadId: "parent-b", message: "continue" });
+    await registry.cancel({ threadId: "parent-a" });
 
     expect(second.start).toHaveBeenCalledOnce();
     expect(first.read).toHaveBeenCalledOnce();
+    expect(second.send).toHaveBeenCalledOnce();
+    expect(first.cancel).toHaveBeenCalledOnce();
   });
 
   it("requires a unique active session for implicit start and unscoped list", async () => {

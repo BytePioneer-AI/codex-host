@@ -27,6 +27,8 @@ describe("delegation control server", () => {
       token,
       api: {
         start,
+        send: vi.fn(),
+        cancel: vi.fn(),
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
@@ -55,11 +57,51 @@ describe("delegation control server", () => {
     }
   });
 
+  it("dispatches thread send and cancel", async () => {
+    const send = vi.fn(async () => ({
+      threadId: "thread-1",
+      turnId: "turn-2",
+      harnessId: "pi" as const,
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    }));
+    const cancel = vi.fn(async () => ({
+      threadId: "thread-1",
+      turnId: "turn-2",
+      harnessId: "pi" as const,
+      cancelled: true,
+    }));
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        start: vi.fn(),
+        send,
+        cancel,
+        read: vi.fn(),
+        wait: vi.fn(),
+        list: vi.fn(),
+      },
+    });
+    try {
+      await fetch(
+        `${server.endpoint}/v1/thread/send`,
+        authorized({ threadId: "thread-1", message: "continue" }),
+      );
+      await fetch(`${server.endpoint}/v1/thread/cancel`, authorized({ threadId: "thread-1" }));
+      expect(send).toHaveBeenCalledWith({ threadId: "thread-1", message: "continue" });
+      expect(cancel).toHaveBeenCalledWith({ threadId: "thread-1" });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("returns the common JSON error envelope", async () => {
     const server = await startDelegationControlServer({
       token,
       api: {
         start: vi.fn(),
+        send: vi.fn(),
+        cancel: vi.fn(),
         read: vi.fn(async () => {
           throw new Error("synthetic failure");
         }),

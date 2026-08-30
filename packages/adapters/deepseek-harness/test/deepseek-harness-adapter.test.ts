@@ -48,6 +48,7 @@ const MODEL_GROUPS = [
       {
         id: "deepseek-v4-flash",
         name: "DeepSeek V4 Flash",
+        description: "Fast general-purpose model",
         reasoning: {
           efforts: [
             { id: "off", name: "Off" },
@@ -527,7 +528,7 @@ async function openCreated(adapter: DeepSeekHarnessAdapter) {
 }
 
 describe("DeepSeekHarnessAdapter local Host", () => {
-  it("inspects the local Host model catalog", async () => {
+  it("inspects a local Host model catalog containing model descriptions", async () => {
     const { adapter, connection } = fixture();
 
     await expect(adapter.inspect()).resolves.toMatchObject({

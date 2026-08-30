@@ -109,7 +109,6 @@ export function normalizeDeepSeekModelCatalog(
     group.models.map((model) => ({
       ref: encodeDeepSeekHarnessModelRef({ provider: group.id, model: model.id }),
       label: `${group.name} / ${model.name}`,
-      ...(model.description ? { description: model.description } : {}),
       ...(model.reasoning && model.reasoning.efforts.length > 0
         ? { supportedThinkingOptionIds: model.reasoning.efforts.map((effort) => effort.id) }
         : {}),

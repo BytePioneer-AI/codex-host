@@ -1,6 +1,7 @@
 import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
+import Check from "lucide/dist/esm/icons/circle-check.mjs";
 import ChevronLeft from "lucide/dist/esm/icons/chevron-left.mjs";
 import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
@@ -15,6 +16,7 @@ import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
+import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import codexLogoUrl from "../assets/codex-logo-bright.png";
 
@@ -31,6 +33,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "external-link",
   "refresh",
   "unavailable",
+  "alert",
+  "check",
   "diagnose",
   "copy",
   "download",
@@ -53,6 +57,8 @@ const iconNodes = {
   "external-link": ExternalLink,
   refresh: RefreshCw,
   unavailable: CircleOff,
+  alert: TriangleAlert,
+  check: Check,
   diagnose: Stethoscope,
   copy: Copy,
   download: Download,

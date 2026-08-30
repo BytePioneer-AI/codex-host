@@ -94,6 +94,11 @@ export interface RendererSettingsMessages {
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
+  readonly updateManualTitle: string;
+  readonly updateManualFallbackDescription: string;
+  readonly updateCopyCommand: string;
+  readonly updateCommandCopied: string;
+  readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
@@ -179,6 +184,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
+  updateManualTitle: "Manual update",
+  updateManualFallbackDescription:
+    "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
+  updateCopyCommand: "Copy",
+  updateCommandCopied: "Copied",
+  updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
   pageLabels: Object.freeze({
     connections: "Connections",
@@ -265,6 +276,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+  updateManualTitle: "手动更新",
+  updateManualFallbackDescription:
+    "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",
+  updateCopyCommand: "复制",
+  updateCommandCopied: "已复制",
+  updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   pageLabels: Object.freeze({
     connections: "连接",

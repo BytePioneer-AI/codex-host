@@ -442,7 +442,19 @@ describe("Renderer Updates page", () => {
         tagName: "h2",
       });
     });
+    const panel = elementWithClass(content, "settings-update-panel");
+    const controls = elementWithClass(content, "settings-update-controls");
     const notes = elementWithClass(content, "settings-update-notes");
+    const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+    if (!updateButton) throw new Error("Update command is not rendered");
+    // Status and the update action come first; the manual fallback stays visible
+    // right below it, and release notes render last.
+    expect(content.children.indexOf(panel)).toBeLessThan(content.children.indexOf(controls));
+    expect(content.children.indexOf(controls)).toBeLessThan(
+      content.children.indexOf(elementWithClass(content, "settings-update-notes-section")),
+    );
+    expect(descendants(panel)).toContain(updateButton);
+    expect(descendants(panel)).not.toContain(notes);
     expect(notes.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "ul"]);
     expect(visibleNotesText(notes)).toContain("本次发布");
     expect(visibleNotesText(notes)).toContain("新增 Grok CLI adapter");

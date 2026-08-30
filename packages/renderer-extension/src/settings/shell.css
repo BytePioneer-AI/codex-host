@@ -942,7 +942,7 @@ button {
 
 .settings-update-metadata {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   margin-bottom: 24px;
   padding: 0 4px 20px;
@@ -970,10 +970,14 @@ button {
   line-height: 22px;
 }
 
+/* The only emphasis on this screen: a latest version newer than the installed one. */
+.settings-update-metadata__value--newer {
+  color: #4aa3f0;
+}
+
 .settings-update-panel {
   display: grid;
-  gap: 16px;
-  min-height: 128px;
+  gap: 12px;
   padding: 20px;
   color: var(--settings-text);
   background: var(--settings-panel);
@@ -981,8 +985,42 @@ button {
   border-radius: 8px;
 }
 
-.settings-update-panel > strong,
-.settings-update-panel > span,
+.settings-update-panel__head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.settings-update-panel__head .codexhost-settings-icon {
+  color: var(--settings-muted);
+}
+
+.settings-update-panel[data-update-state="available"] .codexhost-settings-icon,
+.settings-update-panel[data-update-state="downloading"] .codexhost-settings-icon,
+.settings-update-panel[data-update-state="installing"] .codexhost-settings-icon,
+.settings-update-panel[data-update-state="restarting"] .codexhost-settings-icon {
+  color: #4aa3f0;
+}
+
+.settings-update-panel[data-update-state="current"] .codexhost-settings-icon {
+  color: #4ade80;
+}
+
+.settings-update-panel[data-update-state="failed"] .codexhost-settings-icon,
+.settings-update-panel[data-update-state="error"] .codexhost-settings-icon {
+  color: #ef4444;
+}
+
+.settings-update-panel__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--settings-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
 .settings-update-summary,
 .settings-update-error {
   margin: 0;
@@ -991,7 +1029,6 @@ button {
   line-height: 20px;
 }
 
-.settings-update-panel > span,
 .settings-update-summary {
   color: var(--settings-muted);
 }
@@ -1010,6 +1047,18 @@ button {
   color: var(--settings-muted);
   font-size: 12px;
   line-height: 18px;
+}
+
+/* Release notes scroll with the page; a scroller inside a scroller traps the wheel. */
+.settings-update-notes-section {
+  min-width: 0;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-update-notes-section:empty {
+  display: none;
 }
 
 .settings-update-notes {
@@ -1147,51 +1196,94 @@ button {
   white-space: pre-wrap;
 }
 
-.settings-update-version-row {
+/* Manual update sits directly under the status panel, not behind a disclosure:
+   automatic updates can fail for machine-local reasons and this is the way out. */
+.settings-update-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 20px;
-  min-height: 32px;
-  color: var(--settings-muted);
-  font-size: 13px;
+  min-width: 0;
+  gap: 10px;
+  margin-top: 24px;
 }
 
-.settings-update-version-row strong {
+.settings-update-manual-title {
   color: var(--settings-text);
   font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
 }
 
 .settings-update-manual {
   display: grid;
   min-width: 0;
-  gap: 6px;
-  margin-top: 14px;
-  padding-inline: 4px;
+  gap: 8px;
 }
 
 .settings-update-manual[hidden] {
   display: none;
 }
 
-.settings-update-manual span {
+.settings-update-manual-description {
+  margin: 0;
   color: var(--settings-muted);
   font-size: 12px;
   line-height: 18px;
 }
 
-.settings-update-manual code {
-  overflow-wrap: anywhere;
+.settings-update-manual-description.is-fallback {
+  color: #ef4444;
+}
+
+.settings-update-command {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+}
+
+.settings-update-command code {
+  min-width: 0;
+  flex: 1;
+  padding: 9px 12px;
+  overflow-x: auto;
   color: var(--settings-text);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
-  line-height: 18px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.settings-update-command__copy {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
+  padding: 0 12px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--settings-border);
+  cursor: pointer;
+}
+
+.settings-update-command__copy:hover {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-update-command__copy:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: -2px;
 }
 
 .settings-update-actions {
   display: flex;
+  align-items: center;
   min-width: 0;
-  margin-top: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .settings-command-button,
@@ -1302,6 +1394,11 @@ button {
     padding-bottom: 20px;
     font-size: 20px;
     line-height: 26px;
+  }
+
+  .settings-update-metadata {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
   }
 
   .settings-status-row {

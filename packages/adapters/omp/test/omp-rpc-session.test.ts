@@ -27,7 +27,7 @@ class FakeOmpProcess extends EventEmitter {
   constructor(
     readonly compactMode: "complete" | "stalled" = "complete",
     readonly sessionFile?: string,
-    readonly terminalMessageMode: "none" | "replay" | "fallback" = "none",
+    readonly terminalMessageMode: "none" | "replay" | "fallback" | "failure" = "none",
   ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
@@ -179,13 +179,24 @@ class FakeOmpProcess extends EventEmitter {
           ...(this.terminalMessageMode !== "none"
             ? {
                 messages: [
-                  {
-                    role: "assistant",
-                    responseId: "assistant-before-final",
-                    content: [{ type: "text", text: "Earlier tool setup" }],
-                    stopReason: "toolUse",
-                  },
-                  { ...message, stopReason: "stop" },
+                  ...(this.terminalMessageMode === "failure"
+                    ? [
+                        {
+                          role: "assistant",
+                          content: [],
+                          stopReason: "aborted",
+                          errorMessage: "Request was aborted",
+                        },
+                      ]
+                    : [
+                        {
+                          role: "assistant",
+                          responseId: "assistant-before-final",
+                          content: [{ type: "text", text: "Earlier tool setup" }],
+                          stopReason: "toolUse",
+                        },
+                        { ...message, stopReason: "stop" },
+                      ]),
                 ],
               }
             : {}),
@@ -301,6 +312,22 @@ describe("OMP RPC session", () => {
     ]);
     expect(events.filter((event) => event.type === "message.completed")).toEqual([
       { type: "message.completed", messageId: "assistant-1" },
+    ]);
+    await session.close();
+  });
+
+  it("preserves a terminal Assistant failure reported only by agent_end", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "failure");
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(session.runTurn("hello", (event) => events.push(event))).rejects.toThrow(
+      "Request was aborted",
+    );
+    expect(events.filter((event) => event.type === "text.delta")).toEqual([
+      { type: "text.delta", messageId: "assistant-1", delta: "PONG" },
     ]);
     await session.close();
   });

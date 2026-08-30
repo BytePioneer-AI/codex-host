@@ -2639,6 +2639,7 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs: Date.now(),
+        initialInput: [{ type: "text", text }],
       }),
     };
     thread.running = true;

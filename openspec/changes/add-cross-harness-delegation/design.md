@@ -82,6 +82,8 @@ Subagent 子 Thread 语义是「同一 Harness 内的只读附属品」，`exter
 
 `delegate start` 只负责创建目标 Session/Thread、投递任务并立即返回子 Thread 标识与深度链接，不等待目标完成，也不建立完成后主动回流义务。发起方 Agent 可按当前任务需要自主选择：立即调用 `thread wait` 等待、使用短超时取得检查点、通过 `thread read` 读取当前结果、让子任务在后台运行后稍后再检查，或创建后不再跟踪。
 
+外部 Harness 的委派 Turn 并非由 Desktop 发起，因此 Renderer 没有本地乐观用户消息。Host 必须把委派任务作为该实时 Turn 的初始 `userMessage` 投影到 `turn/started`、运行中快照与 `turn/completed`；普通 Desktop 发起的 Turn 仍由 Renderer 自己持有输入，不在通用 projector 中重复注入。原生历史刷新继续作为持久化事实来源，并与实时投影使用相同的稳定 Host Turn 标识，避免完成后重复显示输入。
+
 `thread wait` 是有界观察操作：目标在期限内完成时返回结构化结果；超时时以成功退出并报告 `running`，子任务继续执行。Host 不为了主动回流而向父 Session 注入输入、唤醒父 Agent或创建自主 Turn，也不需要为此声明 Adapter 输入注入能力。Host 仍需维护子 Thread 的普通运行状态和可读结果，以支持 Desktop 展示及显式 `read` / `wait`，但不增加专门的完成通知到父 Session 的链路。
 
 ### `thread read` 默认只返回结果，按需读取可见消息

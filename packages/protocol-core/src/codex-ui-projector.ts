@@ -271,6 +271,7 @@ function diffText(changes: HostFileChange[]): string {
 
 export class CodexTurnProjector {
   readonly #cwd: string;
+  readonly #input: HostTurnSnapshot["input"];
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #itemOrder: HostItemId[] = [];
@@ -282,10 +283,17 @@ export class CodexTurnProjector {
   #completed = false;
   #started = false;
 
-  constructor(input: { threadId: string; turnId: HostTurnId; cwd: string; startedAtMs: number }) {
+  constructor(input: {
+    threadId: string;
+    turnId: HostTurnId;
+    cwd: string;
+    startedAtMs: number;
+    initialInput?: HostTurnSnapshot["input"];
+  }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
+    this.#input = input.initialInput ?? [];
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
   }
@@ -294,12 +302,15 @@ export class CodexTurnProjector {
     return {
       id: this.#turnId,
       status: "inProgress",
-      items: this.#wireItemOrder.flatMap((itemId) => {
-        const projected = this.#items.get(itemId);
-        return projected?.wireStarted && projected.item.type === "agentMessage"
-          ? [projectItem(projected.item, projected.outcome, this.#cwd)]
-          : [];
-      }),
+      items: [
+        ...this.#projectInput(),
+        ...this.#wireItemOrder.flatMap((itemId) => {
+          const projected = this.#items.get(itemId);
+          return projected?.wireStarted && projected.item.type === "agentMessage"
+            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+            : [];
+        }),
+      ],
       error: null,
       startedAt,
       completedAt: null,
@@ -577,14 +588,17 @@ export class CodexTurnProjector {
       id: this.#turnId,
       status: turnStatus(event.outcome),
       // Current Codex sends Tool/File Change state through Item notifications only.
-      items: this.#wireItemOrder.flatMap((itemId) => {
-        const projected = this.#items.get(itemId);
-        if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
-        return projected.wireStarted &&
-          (projected.item.type === "agentMessage" || projected.item.type === "reasoning")
-          ? [projectItem(projected.item, projected.outcome, this.#cwd)]
-          : [];
-      }),
+      items: [
+        ...this.#projectInput(),
+        ...this.#wireItemOrder.flatMap((itemId) => {
+          const projected = this.#items.get(itemId);
+          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          return projected.wireStarted &&
+            (projected.item.type === "agentMessage" || projected.item.type === "reasoning")
+            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+            : [];
+        }),
+      ],
       error,
       startedAt: this.#startedAt,
       completedAt,
@@ -614,6 +628,19 @@ export class CodexTurnProjector {
         },
       ],
     };
+  }
+
+  #projectInput(): JsonObject[] {
+    return this.#input.length === 0
+      ? []
+      : [
+          {
+            id: `${this.#turnId}-user`,
+            type: "userMessage",
+            clientId: null,
+            content: this.#input.map(({ text }) => ({ type: "text", text })),
+          },
+        ];
   }
 
   #startWireItem(projected: ProjectedItem, item: HostItem): JsonObject {

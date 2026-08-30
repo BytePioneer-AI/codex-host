@@ -179,6 +179,12 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** MUST NOT 等待被委派工作完成
 - **AND** SHALL 在响应中给出可用于 `thread read` 与 `thread wait` 的下一步命令提示
 
+#### Scenario: 运行期间打开外部 Harness 委派 Thread
+- **WHEN** 外部 Harness 的委派 Turn 仍在运行且用户打开其子 Thread
+- **THEN** Host 的实时 Turn 投影 SHALL 包含本次委派任务对应的 `userMessage`
+- **AND** SHALL 在同一 Turn 中继续投影 Agent 的可见进度与最终消息
+- **AND** 完成后的实时 Turn 与原生历史恢复结果 MUST NOT 重复该 `userMessage`
+
 #### Scenario: 显式指定父 Thread 与 Request ID
 - **WHEN** 调用方同时提供 `--parent-thread <thread>` 与 `--request-id <id>`
 - **THEN** Host SHALL 使用规范化后的父 Thread 标识记录 Delegation 关系

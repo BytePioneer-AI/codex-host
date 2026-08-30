@@ -7,6 +7,44 @@ const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = hostItemIdSchema.parse("item-1");
 
 describe("CodexTurnProjector pending Turn", () => {
+  it("includes explicitly projected input for an externally started Turn", () => {
+    const projector = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/synthetic",
+      startedAtMs: 1_000,
+      initialInput: [{ type: "text", text: "Review auth" }],
+    });
+
+    const started = projector.project({ type: "turn.started", turnId });
+
+    expect(started.messages).toMatchObject([
+      {
+        method: "turn/started",
+        params: {
+          turn: {
+            items: [
+              {
+                id: `${turnId}-user`,
+                type: "userMessage",
+                content: [{ type: "text", text: "Review auth" }],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    expect(projector.pendingTurn()).toMatchObject({
+      items: [
+        {
+          id: `${turnId}-user`,
+          type: "userMessage",
+          content: [{ type: "text", text: "Review auth" }],
+        },
+      ],
+    });
+  });
+
   it("includes the current visible Agent message but excludes reasoning activity", () => {
     const projector = new CodexTurnProjector({
       threadId: "thread-1",

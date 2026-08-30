@@ -946,7 +946,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("reads visible progress from a running external delegated Turn", async () => {
+  it("projects delegated input while reading visible progress from a running external Turn", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -965,6 +965,24 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Delegated Session was not opened");
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/started") &&
+          (message.params as JsonObject).threadId === started.threadId,
+      ),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          items: [
+            {
+              type: "userMessage",
+              content: [{ type: "text", text: "review auth" }],
+            },
+          ],
+        },
+      },
+    });
     session.appendText("Checking auth.");
     await expect(
       delegationApi.read({ threadId: started.threadId, view: "result" }),
@@ -974,6 +992,25 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") &&
+          (message.params as JsonObject).threadId === started.threadId,
+      ),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          items: [
+            {
+              type: "userMessage",
+              content: [{ type: "text", text: "review auth" }],
+            },
+            { type: "agentMessage", text: "Checking auth." },
+          ],
+        },
+      },
+    });
     await stopFixture(fixture);
   });
 

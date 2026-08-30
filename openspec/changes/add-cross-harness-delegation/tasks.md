@@ -59,3 +59,4 @@
 - [x] 7.6 运行聚焦测试、typecheck、格式化、lint 与严格 OpenSpec 校验
 - [x] 7.7 为各 Harness 的委派无人值守执行映射、普通创建权限不变和权限设置失败回滚补充测试并运行聚焦验证
 - [x] 7.8 使用隔离的最新版 DeepSeek Harness 实测普通 Session 保持 `workspace-write + ask`，委派 Session 切换为 `danger-full-access + never`
+- [x] 7.9 修复外部 Harness 委派 Turn 的实时输入投影，并补充运行中打开子 Thread 与完成结果一致性的回归测试

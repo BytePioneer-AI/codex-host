@@ -58,6 +58,24 @@ The Adapter SHALL build Snapshot and live Harness outputs only from the official
 - **THEN** the Adapter SHALL fault the loaded Session explicitly
 - **AND** a later mapped resume SHALL use public Session history without reading DSH JSONL
 
+### Requirement: DSH Permission Modes remain dynamically provider-owned
+The Adapter SHALL discover the selectable Permission Mode catalog from the native `permission` settings namespace and SHALL read each Session's effective mode from the authoritative `permissions` projection. It MUST NOT hardcode preset IDs, order, labels, descriptions, or defaults, parse command settlement text as state, or substitute Agent composition presets.
+
+#### Scenario: New Session selects a native permission preset
+- **WHEN** create input names one mode from the inspected catalog
+- **THEN** the Adapter SHALL create the official Session, invoke the native permission command, and confirm the requested value through a fresh projection read
+- **AND** it SHALL publish the confirmed mode in the complete initial Session state
+
+#### Scenario: Mapped Session resumes or refreshes
+- **WHEN** the Adapter opens a mapped Session or reads its Snapshot
+- **THEN** it SHALL restore the current native mode from the history-tail projection
+- **AND** higher-sequence live projection updates SHALL synchronize the complete Session state without allowing stale updates to overwrite them
+
+#### Scenario: Native permission state cannot be confirmed
+- **WHEN** the catalog, command capability, projection, or post-selection readback is missing, malformed, or inconsistent
+- **THEN** the affected inspection, open, read, or selection SHALL fail closed
+- **AND** codexhost SHALL NOT report the requested mode optimistically
+
 ### Requirement: Native turn operations remain truthful
 The Adapter SHALL map native prompt, cancellation, text, Reasoning, Tool, structured Diff, Usage, and terminal events to existing Harness contracts. It SHALL fail explicitly when the local Host rejects an operation or emits an unsupported interactive request.
 
@@ -86,4 +104,3 @@ The Adapter SHALL distinguish an existing external Host from a Host process it s
 - **WHEN** codexhost started DSH Web and later shuts down
 - **THEN** it SHALL request bounded process termination after closing Sessions and connections
 - **AND** official Native Session persistence SHALL remain available on the next DSH start
-

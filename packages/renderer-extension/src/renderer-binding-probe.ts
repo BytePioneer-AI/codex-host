@@ -258,6 +258,18 @@ export function draftPermissionMode(
   );
 }
 
+export function lockedPermissionMode(
+  catalog: HarnessPermissionModeCatalog,
+  effective: HarnessPermissionModeId | undefined,
+  carrier: HarnessPermissionModeId | undefined,
+): HarnessPermissionModeId | undefined {
+  const restored = effective ?? carrier;
+  if (restored && !catalog.modes.some(({ id }) => id === restored)) {
+    throw new Error("Existing Thread Permission Mode is absent from the current Catalog");
+  }
+  return restored;
+}
+
 export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
   return phase === "draft";
 }
@@ -333,7 +345,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       throw new Error("DeepSeek Harness Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? transportSelection.model;
-    return { agent: "deepseek-harness", ...(model ? { model } : {}) };
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "deepseek-harness",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
   }
   throw new Error("Thread owner is not a Renderer Agent");
 }
@@ -993,9 +1011,13 @@ export function installRendererBindingProbe(
           throw new Error("External Harness omitted its Permission Mode catalog");
         }
         mounted.permissionModeView = { status: "loading", catalog: permissionModes };
-        const effectivePermissionModeId =
+        const restoredPermissionModeId =
           current.phase === "locked"
-            ? mounted.threadConfiguration?.effectivePermissionModeId
+            ? lockedPermissionMode(
+                permissionModes,
+                mounted.threadConfiguration?.effectivePermissionModeId,
+                previousPermissionModeId,
+              )
             : undefined;
         const preferredPermissionModeId =
           preferredConfiguration?.permissionModeId ??
@@ -1004,7 +1026,7 @@ export function installRendererBindingProbe(
             : undefined);
         selectedPermissionModeId = draftPermissionMode(
           permissionModes,
-          effectivePermissionModeId ?? previousPermissionModeId ?? preferredPermissionModeId,
+          restoredPermissionModeId ?? preferredPermissionModeId,
         );
         mounted.permissionModeView = {
           status: "loading",

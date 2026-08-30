@@ -137,7 +137,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | ✅ | ✅ | — |
+| 权限模式 | 原生 | — | ✅ | ✅ | ✅ | ✅ |
 | Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Fork | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |

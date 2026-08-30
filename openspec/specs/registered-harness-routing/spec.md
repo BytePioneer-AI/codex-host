@@ -4,7 +4,7 @@
 TBD - created by archiving change implement-registered-harness-text-vertical-slice. Update Purpose after archive.
 ## Requirements
 ### Requirement: External Harness create routing uses a finite Protocol Core registry
-Protocol Core SHALL decode official Codex Models and the finite native transport carriers for Pi and Claude Code. Each external carrier SHALL identify one external Harness ID and MAY carry only that Harness's bounded opaque Model Ref and declared configuration components according to its registered format, without exposing Adapter implementation or native SDK configuration.
+Protocol Core SHALL decode official Codex Models and the finite registered native transport carriers. Each external carrier SHALL identify one external Harness ID and MAY carry only that Harness's bounded opaque Model Ref and declared configuration components according to its registered format, without exposing Adapter implementation or native SDK configuration.
 
 #### Scenario: Pi transport token is decoded
 - **WHEN** `thread/start.model` is `codexhost/pi-native` or a valid selected Pi carrier
@@ -254,11 +254,20 @@ Host Runtime SHALL route Grok Turn, interrupt, read, inspection, configuration, 
 - **AND** Grok output SHALL use the same Host projectors and response-ordering gates as other external Harnesses
 
 ### Requirement: DeepSeek Harness is a finite registered external Harness
-Protocol Core and Host Runtime SHALL recognize `deepseek-harness` and its `codexhost/deepseek-harness-native` transport Model as a registered external Harness without changing official Codex, Pi, or Claude Code routing.
+Protocol Core and Host Runtime SHALL recognize `deepseek-harness` and its `codexhost/deepseek-harness-native` transport Model as a registered external Harness without changing official Codex, Pi, or Claude Code routing. A selected DeepSeek carrier MAY contain one opaque Model Ref followed by one optional opaque Permission Mode ID.
 
 #### Scenario: DeepSeek transport Model is decoded
 - **WHEN** `thread/start.model` carries the DeepSeek Harness transport Model
 - **THEN** Protocol Core SHALL route creation to external Harness `deepseek-harness`
+
+#### Scenario: DeepSeek selected carrier is decoded
+- **WHEN** a DeepSeek carrier contains a valid Model Ref and Permission Mode ID
+- **THEN** Protocol Core SHALL preserve both opaque values for only that create or mapped Thread
+- **AND** Host SHALL pass or restore the mode through the owning DeepSeek Session without decoding the native preset
+
+#### Scenario: DeepSeek selected carrier is malformed
+- **WHEN** a DeepSeek-prefixed carrier has an empty, extra, invalid, or mode-without-Model component
+- **THEN** Protocol Core SHALL reject it explicitly instead of routing it to official Codex
 
 #### Scenario: DeepSeek Adapter is unavailable
 - **WHEN** a DeepSeek create reaches a Host whose runtime inspection reports unavailable
@@ -300,4 +309,3 @@ Release composition and audit SHALL include the DeepSeek Adapter's official Host
 - **WHEN** the production Host release bundle is built
 - **THEN** it SHALL resolve the DeepSeek local Host client and Adapter
 - **AND** it SHALL NOT require `runtime/cordis.yml`, `runtime/server.mjs`, or `dsh-jsonrpc-agent`
-

@@ -722,6 +722,77 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("fails when official app-server output closes before Desktop input", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 100);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the official app-server exits while its output stays open", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      expect(
+        fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
+      ).toBe(false);
+      writeRequest(fixture.desktopInput, { id: 90, method: "model/list", params: {} });
+      await vi.waitFor(() =>
+        expect(fixture.official.stdin.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.emit("exit", 0, null);
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.stdout.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Desktop-first official app-server shutdown successful", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopInput.end();
+
+      await expect(fixture.running).resolves.toBe(0);
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("can share one initialized Mapping Store across concurrent remote sessions", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-shared-"));
     const mappingStore = new MappingStore({ directory });

@@ -112,6 +112,7 @@ const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
+const OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS = 250;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -447,6 +448,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #closeRequested = false;
+  #desktopInputEnded = false;
 
   constructor(options: AppServerHostOptions) {
     this.#options = {
@@ -550,9 +552,26 @@ export class AppServerHost {
     this.#official = official;
     const exited = official.closed;
     if (this.#closeRequested) this.#terminateOfficial();
+    const forwardDesktop = this.#forwardDesktop();
+    const forwardOfficial = this.#forwardOfficial();
+    const officialOutput = forwardOfficial.then(() => {
+      if (!this.#closeRequested && !this.#desktopInputEnded) {
+        throw new Error("official app-server output closed before Desktop input ended");
+      }
+    });
+    const officialExit = exited.then((result) => {
+      if (!this.#closeRequested && !this.#desktopInputEnded) {
+        const status = result.error
+          ? result.error.message
+          : result.signal
+            ? `signal ${result.signal}`
+            : `code ${String(result.code ?? "unknown")}`;
+        throw new Error(`official app-server exited before Desktop input ended (${status})`);
+      }
+      return result;
+    });
     try {
-      await Promise.all([this.#forwardDesktop(), this.#forwardOfficial()]);
-      const result = await exited;
+      const [, , result] = await Promise.all([forwardDesktop, officialOutput, officialExit]);
       if (result.error) throw result.error;
       if (result.signal) {
         if (this.#closeRequested) return 0;
@@ -561,8 +580,24 @@ export class AppServerHost {
       return result.code ?? 1;
     } catch (error) {
       if (!this.#closeRequested) this.#diagnose(error);
+      this.#options.desktopInput.destroy();
       this.#terminateOfficial();
-      await exited.catch(() => undefined);
+      let forwardingSettled = false;
+      const forwarding = Promise.allSettled([forwardDesktop, forwardOfficial]).then(() => {
+        forwardingSettled = true;
+      });
+      let drainTimer: NodeJS.Timeout | null = null;
+      const drainTimeout = new Promise<void>((resolve) => {
+        drainTimer = setTimeout(resolve, OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS);
+      });
+      await Promise.race([forwarding, drainTimeout]);
+      if (drainTimer) clearTimeout(drainTimer);
+      if (!forwardingSettled) {
+        official.stdin.destroy();
+        official.stdout.destroy();
+        this.#options.desktopOutput.destroy();
+      }
+      void exited.catch(() => undefined);
       return this.#closeRequested ? 0 : 1;
     } finally {
       const threads = this.#externalRuntime.values();
@@ -974,6 +1009,7 @@ export class AppServerHost {
       }
       await writeFrame(official.stdin, frame);
     }
+    this.#desktopInputEnded = true;
     official.stdin.end();
   }
 

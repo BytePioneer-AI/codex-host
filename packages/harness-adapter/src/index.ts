@@ -17,6 +17,7 @@ export type {
   HarnessCommandInvocation,
   HarnessError,
   HarnessErrorCode,
+  HarnessExecutionPolicy,
   HarnessInspection,
   HarnessModel,
   HarnessModelCatalog,

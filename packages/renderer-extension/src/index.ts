@@ -41,42 +41,27 @@ export {
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
   createRendererModelClient,
-  createThreadReasoningSubscriptionRelay,
 } from "./renderer-model-client.js";
 export type { RendererModelClient } from "./renderer-model-client.js";
 export {
-  RENDERER_REASONING_NOTIFICATION_METHODS,
-  RendererReasoningPendingBuffer,
-  RendererReasoningStore,
-  decodeRendererReasoningNotification,
-  rendererReasoningPanelView,
-} from "./renderer-reasoning-events.js";
-export type {
-  RendererReasoningEvent,
-  RendererReasoningPanelView,
-  RendererReasoningPhase,
-  RendererReasoningSnapshot,
-} from "./renderer-reasoning-events.js";
-export {
-  RENDERER_REASONING_DISPLAY_PREFERENCE_EVENT,
-  RENDERER_REASONING_DISPLAY_PREFERENCE_KEY,
-  readRendererReasoningDisplayPreference,
-  setRendererReasoningDisplayPreference,
-  writeRendererReasoningDisplayPreference,
-} from "./renderer-reasoning-preference.js";
-export type { RendererReasoningPreferenceStorage } from "./renderer-reasoning-preference.js";
-export { installRendererReasoningDisplay } from "./renderer-reasoning-display.js";
-export type {
-  RendererReasoningDisplayClient,
-  RendererReasoningDisplayControl,
-  RendererReasoningDisplayOptions,
-} from "./renderer-reasoning-display.js";
+  TRANSCRIPT_ITEM_IDS_ATTRIBUTE,
+  TRANSCRIPT_ITEM_SELECTOR,
+  TRANSCRIPT_TEXT_BODY_SELECTOR,
+  inspectRendererTranscriptContract,
+} from "./renderer-transcript-dom.js";
+export type { RendererTranscriptContractInspection } from "./renderer-transcript-dom.js";
 export {
   inspectRendererComposerContract,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
 } from "./renderer-composer-dom.js";
 export type { RendererComposerContractInspection } from "./renderer-composer-dom.js";
+export {
+  rendererHarnessCommandPresentation,
+  rendererHarnessMessages,
+  rendererPermissionModePresentation,
+} from "./renderer-harness-localization.js";
+export type { RendererHarnessMessages } from "./renderer-harness-localization.js";
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
@@ -212,7 +197,6 @@ export type {
   RendererConnectionDiagnostics,
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
-  RendererReasoningDisplayPreference,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {

@@ -21,6 +21,7 @@ import type {
   JsonObject,
   JsonValue,
 } from "@codexhost/shared-contracts";
+import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
 
 import {
   projectCodexApprovalRequest,
@@ -122,7 +123,7 @@ function projectItem(
       };
     case "reasoning":
       return {
-        id: item.itemId,
+        id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
         summary: item.text.length > 0 ? [item.text] : [],
         content: [],
@@ -189,6 +190,40 @@ function projectItem(
   }
 }
 
+/**
+ * Codex only renders a Command Execution card for the Item id it was given by
+ * the Host, so the transcript twin keeps the original id and the ephemeral
+ * native Reasoning preview takes the derived one.
+ */
+export function reasoningPreviewItemId(itemId: HostItemId): string {
+  return `${itemId}-summary`;
+}
+
+/**
+ * Codex renders Reasoning summary deltas as an ephemeral one-line preview but
+ * keeps no text after the Turn. The Command Execution lane is the one that
+ * retains text, so each Reasoning Item also projects a parallel transcript twin.
+ */
+function projectReasoningTranscriptItem(
+  item: Extract<HostItem, { type: "reasoning" }>,
+  outcome: HostItemOutcome | null,
+  defaultCwd: string,
+): JsonObject {
+  return {
+    id: item.itemId,
+    type: "commandExecution",
+    command: REASONING_TRANSCRIPT_COMMAND,
+    cwd: defaultCwd,
+    processId: null,
+    source: "agent",
+    status: itemStatus(outcome),
+    commandActions: [],
+    aggregatedOutput: item.text.length > 0 ? item.text : null,
+    exitCode: outcome ? 0 : null,
+    durationMs: null,
+  };
+}
+
 function turnStatus(
   outcome: TurnCompletedEvent["outcome"],
 ): "completed" | "interrupted" | "failed" {
@@ -233,7 +268,14 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         clientId: null,
         content: snapshot.input.map(({ text }) => ({ type: "text", text })),
       },
-      ...snapshot.items.map(({ item, outcome }) => projectItem(item, outcome, cwd, true, "")),
+      ...snapshot.items.flatMap(({ item, outcome }) =>
+        item.type === "reasoning"
+          ? [
+              projectItem(item, outcome, cwd, true, ""),
+              projectReasoningTranscriptItem(item, outcome, cwd),
+            ]
+          : [projectItem(item, outcome, cwd, true, "")],
+      ),
     ],
     error,
     startedAt: null,
@@ -271,6 +313,7 @@ function diffText(changes: HostFileChange[]): string {
 
 export class CodexTurnProjector {
   readonly #cwd: string;
+  readonly #input: HostTurnSnapshot["input"];
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #itemOrder: HostItemId[] = [];
@@ -282,10 +325,17 @@ export class CodexTurnProjector {
   #completed = false;
   #started = false;
 
-  constructor(input: { threadId: string; turnId: HostTurnId; cwd: string; startedAtMs: number }) {
+  constructor(input: {
+    threadId: string;
+    turnId: HostTurnId;
+    cwd: string;
+    startedAtMs: number;
+    initialInput?: HostTurnSnapshot["input"];
+  }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
+    this.#input = input.initialInput ?? [];
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
   }
@@ -294,7 +344,15 @@ export class CodexTurnProjector {
     return {
       id: this.#turnId,
       status: "inProgress",
-      items: [],
+      items: [
+        ...this.#projectInput(),
+        ...this.#wireItemOrder.flatMap((itemId) => {
+          const projected = this.#items.get(itemId);
+          return projected?.wireStarted && projected.item.type === "agentMessage"
+            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+            : [];
+        }),
+      ],
       error: null,
       startedAt,
       completedAt: null,
@@ -423,13 +481,22 @@ export class CodexTurnProjector {
     };
     this.#items.set(event.item.itemId, projected);
     this.#itemOrder.push(event.item.itemId);
-    if (event.item.type === "agentMessage" && event.item.text.length === 0) {
+    if (
+      (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
+      event.item.text.length === 0
+    ) {
+      // An empty Reasoning Item would surface as a transcript card with no
+      // content, so defer the wire Item until real summary text arrives.
       return { messages: [] };
     }
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem)];
-    if (event.item.type === "reasoning" && event.item.text.length > 0) {
-      messages.push(...this.#reasoningDelta(projected, event.item.text, this.#startedAtMs));
+    if (event.item.type === "reasoning") {
+      messages.push(
+        this.#startReasoningTranscript(event.item, this.#startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, event.item.text, this.#startedAtMs),
+        ...this.#reasoningDelta(projected, event.item.text, this.#startedAtMs),
+      );
     }
     if (event.item.type === "fileChange") {
       messages.push(...this.#fileChangeUpdates(event.item.itemId, event.item.changes));
@@ -458,7 +525,16 @@ export class CodexTurnProjector {
           },
         });
       } else if (next.type === "reasoning") {
-        messages.push(...this.#reasoningDelta(projected, event.update.text, emittedAtMs));
+        if (!projected.wireStarted) {
+          messages.push(
+            this.#startWireItem(projected, { ...next, text: "" }),
+            this.#startReasoningTranscript({ ...next, text: "" }, emittedAtMs),
+          );
+        }
+        messages.push(
+          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
+          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
+        );
       }
     } else if (event.update.type === "output.append") {
       projected.streamedCommandOutput = true;
@@ -514,26 +590,33 @@ export class CodexTurnProjector {
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
     if (!projected.wireStarted) return { messages: [] };
-    return {
-      messages: [
-        {
-          method: "item/completed",
-          emittedAtMs,
-          params: {
-            threadId: this.#threadId,
-            turnId: this.#turnId,
-            completedAtMs: emittedAtMs,
-            item: projectItem(
-              projected.item,
-              projected.outcome,
-              this.#cwd,
-              !projected.streamedCommandOutput,
-              this.#threadId,
-            ),
-          },
-        },
-      ],
-    };
+    const completedItem = (item: JsonObject): JsonObject => ({
+      method: "item/completed",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        completedAtMs: emittedAtMs,
+        item,
+      },
+    });
+    const messages = [
+      completedItem(
+        projectItem(
+          projected.item,
+          projected.outcome,
+          this.#cwd,
+          !projected.streamedCommandOutput,
+          this.#threadId,
+        ),
+      ),
+    ];
+    if (projected.item.type === "reasoning") {
+      messages.push(
+        completedItem(projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd)),
+      );
+    }
+    return { messages };
   }
 
   #closeInteraction(event: InteractionClosedEvent, emittedAtMs: number): CodexTurnProjection {
@@ -572,14 +655,23 @@ export class CodexTurnProjector {
       id: this.#turnId,
       status: turnStatus(event.outcome),
       // Current Codex sends Tool/File Change state through Item notifications only.
-      items: this.#wireItemOrder.flatMap((itemId) => {
-        const projected = this.#items.get(itemId);
-        if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
-        return projected.wireStarted &&
-          (projected.item.type === "agentMessage" || projected.item.type === "reasoning")
-          ? [projectItem(projected.item, projected.outcome, this.#cwd)]
-          : [];
-      }),
+      items: [
+        ...this.#projectInput(),
+        ...this.#wireItemOrder.flatMap((itemId) => {
+          const projected = this.#items.get(itemId);
+          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          if (!projected.wireStarted) return [];
+          if (projected.item.type === "reasoning") {
+            return [
+              projectItem(projected.item, projected.outcome, this.#cwd),
+              projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd),
+            ];
+          }
+          return projected.item.type === "agentMessage"
+            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+            : [];
+        }),
+      ],
       error,
       startedAt: this.#startedAt,
       completedAt,
@@ -611,6 +703,19 @@ export class CodexTurnProjector {
     };
   }
 
+  #projectInput(): JsonObject[] {
+    return this.#input.length === 0
+      ? []
+      : [
+          {
+            id: `${this.#turnId}-user`,
+            type: "userMessage",
+            clientId: null,
+            content: this.#input.map(({ text }) => ({ type: "text", text })),
+          },
+        ];
+  }
+
   #startWireItem(projected: ProjectedItem, item: HostItem): JsonObject {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
@@ -623,6 +728,35 @@ export class CodexTurnProjector {
         turnId: this.#turnId,
         startedAtMs: this.#startedAtMs,
         item: projectItem(item, null, this.#cwd, true, this.#threadId),
+      },
+    };
+  }
+
+  #startReasoningTranscript(
+    item: Extract<HostItem, { type: "reasoning" }>,
+    emittedAtMs: number,
+  ): JsonObject {
+    return {
+      method: "item/started",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs: this.#startedAtMs,
+        item: projectReasoningTranscriptItem({ ...item, text: "" }, null, this.#cwd),
+      },
+    };
+  }
+
+  #reasoningOutputDelta(itemId: HostItemId, delta: string, emittedAtMs: number): JsonObject {
+    return {
+      method: "item/commandExecution/outputDelta",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        itemId,
+        delta,
       },
     };
   }
@@ -640,7 +774,7 @@ export class CodexTurnProjector {
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          itemId: projected.item.itemId,
+          itemId: reasoningPreviewItemId(projected.item.itemId),
           summaryIndex: 0,
         },
       });
@@ -651,7 +785,7 @@ export class CodexTurnProjector {
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
-        itemId: projected.item.itemId,
+        itemId: reasoningPreviewItemId(projected.item.itemId),
         delta,
         summaryIndex: 0,
       },

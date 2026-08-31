@@ -193,21 +193,20 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     });
   }
 
-  permission(): Promise<RequestPermissionResponse> {
+  permission(
+    options: GrokPermissionRequest["options"] = [
+      { optionId: "native-allow", name: "Allow once", kind: "allow_once" },
+      { optionId: "native-deny", name: "Reject", kind: "reject_once" },
+    ],
+  ): Promise<RequestPermissionResponse> {
     if (!this.#onPermission) throw new Error("No active Grok Prompt");
     return this.#onPermission({
       request: {
         sessionId: this.sessionId,
         toolCall: { toolCallId: "tool-1", title: "Run tests" },
-        options: [
-          { optionId: "native-allow", name: "Allow once", kind: "allow_once" },
-          { optionId: "native-deny", name: "Reject", kind: "reject_once" },
-        ],
+        options,
       },
-      options: [
-        { optionId: "native-allow", name: "Allow once", kind: "allow_once" },
-        { optionId: "native-deny", name: "Reject", kind: "reject_once" },
-      ],
+      options,
     });
   }
 
@@ -283,6 +282,40 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it("passes per-Session delegation environment to the ACP transport", async () => {
+    const transport = new FakeGrokTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-environment",
+        createTransport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_THREAD_ID: "thread-1",
+      },
+    });
+    expect(opened.ok).toBe(true);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
   it("reports a single available Grok Model as selectable", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
@@ -311,6 +344,32 @@ describe("Grok Adapter ACP projection", () => {
       },
     });
 
+    await adapter.close();
+  });
+
+  it("uses always-approve for unattended full-access sessions", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: alwaysApprove,
+    });
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(alwaysApprove);
     await adapter.close();
   });
 
@@ -506,15 +565,15 @@ describe("Grok Adapter ACP projection", () => {
       type: "approval",
       title: "Run tests",
       actions: [
-        { id: "native-1", effect: "allowOnce" },
-        { id: "native-2", effect: "deny" },
+        { id: "allow-once", effect: "allowOnce" },
+        { id: "deny", effect: "deny" },
       ],
     });
     await expect(
       session.execute({
         type: "interaction.respond",
         interactionId: interactionOutput.interaction.interactionId,
-        response: { type: "approval", actionId: "native-1" },
+        response: { type: "approval", actionId: "allow-once" },
       }),
     ).resolves.toEqual({ ok: true, value: { accepted: true } });
     await expect(permission).resolves.toEqual({
@@ -574,6 +633,54 @@ describe("Grok Adapter ACP projection", () => {
         ],
       },
     });
+    await adapter.close();
+  });
+
+  it("projects only actionable Grok Approval options", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-grok-approval-options");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "run" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    const permission = transport.permission([
+      { optionId: "always-allow", name: "Always approve everything", kind: "allow_always" },
+      { optionId: "allow-command", name: "Always allow this command", kind: "allow_always" },
+      { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+      { optionId: "reject-always", name: "Never allow this command", kind: "reject_always" },
+      { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
+    ]);
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction" || output.interaction.type !== "approval") {
+      throw new Error("Expected Grok Approval");
+    }
+    expect(output.interaction.actions).toEqual([
+      { id: "allow-once", label: "Allow once", effect: "allowOnce" },
+      { id: "allow-always", label: "Always allow", effect: "allowAlways" },
+      { id: "deny", label: "Deny", effect: "deny" },
+    ]);
+
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-always" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-command" },
+    });
+
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
     await adapter.close();
   });
 

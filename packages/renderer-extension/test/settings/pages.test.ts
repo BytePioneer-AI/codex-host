@@ -21,7 +21,8 @@ class FakeElement {
   readonly children: unknown[] = [];
   readonly dataset: Record<string, string> = {};
   readonly attributes = new Map<string, string>();
-  readonly #listeners = new Map<string, () => void>();
+  readonly style: Record<string, string> = {};
+  readonly #listeners = new Map<string, (event?: unknown) => void>();
   className = "";
   hidden = false;
   href = "";
@@ -30,22 +31,44 @@ class FakeElement {
   textContent = "";
   title = "";
   type = "";
+  tabIndex = 0;
+  disabled = false;
+  scrollLeft = 0;
+  scrollWidth = 0;
+  clientWidth = 0;
 
   constructor(
     readonly tagName: string,
     readonly ownerDocument: FakeDocument,
   ) {}
 
-  addEventListener(name: string, listener: () => void): void {
+  addEventListener(name: string, listener: (event?: unknown) => void): void {
     this.#listeners.set(name, listener);
+  }
+
+  removeEventListener(name: string): void {
+    this.#listeners.delete(name);
   }
 
   append(...children: unknown[]): void {
     this.children.push(...children);
   }
 
-  dispatch(name: string): void {
-    this.#listeners.get(name)?.();
+  dispatch(name: string, event?: unknown): void {
+    this.#listeners.get(name)?.(event);
+  }
+
+  focus(): void {}
+
+  scrollBy(options: ScrollToOptions): void {
+    this.scrollLeft += Number(options.left ?? 0);
+    this.dispatch("scroll");
+  }
+
+  scrollIntoView(): void {}
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
   }
 
   replaceChildren(...children: unknown[]): void {
@@ -55,21 +78,31 @@ class FakeElement {
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
-
-  getAttribute(name: string): string | null {
-    return this.attributes.get(name) ?? null;
-  }
 }
 
 class FakeDocument {
   readonly clipboardWriteText = vi.fn(async () => undefined);
-  readonly defaultView = {
-    navigator: { clipboard: { writeText: this.clipboardWriteText } },
-    setTimeout: vi.fn(() => 0),
-    clearTimeout: vi.fn(),
-  } as unknown as Window;
+  readonly defaultView: Window;
+
+  constructor(platform = "MacIntel") {
+    this.defaultView = {
+      navigator: {
+        clipboard: { writeText: this.clipboardWriteText },
+        platform,
+        userAgent: platform === "Win32" ? "Windows" : "Macintosh",
+      },
+      setTimeout: vi.fn(() => 0),
+      clearTimeout: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+  }
 
   createElement(tagName: string): FakeElement {
+    return new FakeElement(tagName, this);
+  }
+
+  createElementNS(_namespace: string, tagName: string): FakeElement {
     return new FakeElement(tagName, this);
   }
 }
@@ -134,6 +167,17 @@ function updateStatus(
   };
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 function visibleText(root: FakeElement): string {
   return descendants(root)
     .map(({ textContent }) => textContent)
@@ -142,7 +186,8 @@ function visibleText(root: FakeElement): string {
 }
 
 describe("Renderer Connections page", () => {
-  it("renders failed Agent checks with their diagnostic reason and refreshes", async () => {
+  it("renders Host tabs, install actions, and error details", async () => {
+    const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
       snapshot: vi.fn((): RendererConnectionSnapshot => ({
         adapter: {
@@ -154,7 +199,7 @@ describe("Renderer Connections page", () => {
         hosts: [
           {
             hostId: "local",
-            active: false,
+            active: true,
             agents: [
               {
                 agent: "pi",
@@ -168,16 +213,25 @@ describe("Renderer Connections page", () => {
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
+              {
+                agent: "deepseek-harness",
+                availability: "notInstalled",
+                error: {
+                  code: "notInstalled",
+                  message: "DSH is not installed",
+                  retryable: false,
+                },
+              },
             ],
           },
           {
             hostId: "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
-            active: true,
+            active: false,
             agents: [{ agent: "pi", availability: "ready", error: null }],
           },
         ],
       })),
-      refresh: vi.fn(async () => undefined),
+      refresh: vi.fn(() => refreshRequest.promise),
       subscribe: vi.fn(() => () => undefined),
     };
     const page = createDefaultRendererSettingsPages(
@@ -197,42 +251,53 @@ describe("Renderer Connections page", () => {
     });
 
     expect(visibleText(content)).toContain("本地");
-    expect(visibleText(content)).toContain("远程 Host: 公司 · 当前");
+    expect(
+      descendants(content).filter((candidate) =>
+        candidate.className.split(" ").includes("settings-connection-row__mark--logo"),
+      ),
+    ).toHaveLength(3);
+    expect(visibleText(content)).toContain("CH");
+    expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
     expect(visibleText(content)).toContain("startup");
-    const toggle = elementWithClass(content, "settings-connection-details-toggle");
-    const details = descendants(content).find(
-      (candidate) =>
-        candidate.className.split(" ").includes("settings-connection-details") &&
-        candidate.hidden === false,
+    const issueLink = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
     );
-    if (!details) throw new Error("Expanded connection details are not rendered");
-    expect(details.hidden).toBe(false);
-    toggle.dispatch("click");
-    expect(details.hidden).toBe(true);
-    toggle.dispatch("click");
-    expect(details.hidden).toBe(false);
+    expect(issueLink).toBeDefined();
+    const copyButton = descendants(
+      elementWithClass(content, "settings-connection-error-log-header"),
+    ).find(({ tagName }) => tagName === "button");
+    if (!copyButton) throw new Error("Copy error log button is not rendered");
+    copyButton.dispatch("click");
+    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(
+      expect.stringContaining("host: local"),
+    );
+    await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
     );
     if (!refresh) throw new Error("Connection refresh button is not rendered");
     refresh.dispatch("click");
-    await vi.waitFor(() => expect(diagnostics.refresh).toHaveBeenCalledWith());
-    const copyAll = descendants(content).find(
-      ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "copy-all",
-    );
-    if (!copyAll) throw new Error("Copy-all diagnostics button is not rendered");
-    copyAll.dispatch("click");
-    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8"),
-    );
-    await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
+    expect(refresh.disabled).toBe(true);
+    expect(visibleNotesText(refresh)).toContain("正在诊断...");
+    expect(diagnostics.refresh).toHaveBeenCalledWith();
+    refreshRequest.resolve(undefined);
+    await vi.waitFor(() => expect(refresh.disabled).toBe(false));
+    expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
+    const installLink = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://deepseek-harness.github.io/deepseek-harness/",
+    );
+    expect(installLink).toMatchObject({
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
+
+    expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
       ({ tagName, dataset }) =>
         tagName === "button" &&
@@ -241,50 +306,30 @@ describe("Renderer Connections page", () => {
     if (!remoteTab) throw new Error("Remote Host tab is not rendered");
     remoteTab.dispatch("click");
     const selectedPanel = descendants(content).find(
-      ({ tagName, dataset }) =>
-        tagName === "section" &&
-        dataset.connectionHost === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
+      ({ dataset }) => dataset.connectionHost === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8",
     );
     expect(selectedPanel).toBeDefined();
     expect(visibleText(content)).not.toContain("pi exited with code 1");
+    const selectedRemoteTab = descendants(content).find(
+      ({ dataset, attributes }) =>
+        dataset.connectionHostTab === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8" &&
+        attributes.get("aria-selected") === "true",
+    );
+    expect(selectedRemoteTab).toBeDefined();
+
+    const hostTabs = elementWithClass(content, "settings-connection-host-tabs");
+    hostTabs.clientWidth = 240;
+    hostTabs.scrollWidth = 720;
+    hostTabs.dispatch("scroll");
+    const scrollRight = descendants(content).find(
+      ({ dataset }) => dataset.connectionHostScroll === "right",
+    );
+    if (!scrollRight) throw new Error("Host scroll button is not rendered");
+    expect(scrollRight.disabled).toBe(false);
+    scrollRight.dispatch("click");
+    expect(hostTabs.scrollLeft).toBeGreaterThan(0);
 
     cleanup?.();
-  });
-});
-
-describe("Renderer Model Pool page", () => {
-  it("renders the opt-in reasoning display switch and persists changes", () => {
-    let enabled = false;
-    const setEnabled = vi.fn((next: boolean) => {
-      enabled = next;
-    });
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("en"),
-      () => null,
-      () => null,
-      { isEnabled: () => enabled, setEnabled },
-    ).find(({ id }) => id === "model-pool");
-    if (!page) throw new Error("Model Pool page is not registered");
-
-    const document = new FakeDocument();
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
-
-    const toggle = elementWithClass(content, "settings-preference-switch");
-    expect(toggle.attributes.get("role")).toBe("switch");
-    expect(toggle.attributes.get("aria-checked")).toBe("false");
-    expect(visibleText(content)).toContain("Show reasoning summaries");
-
-    toggle.dispatch("click");
-    expect(setEnabled).toHaveBeenCalledWith(true);
-    expect(toggle.attributes.get("aria-checked")).toBe("true");
-
-    scope.dispose();
   });
 });
 
@@ -295,7 +340,6 @@ describe("Renderer Updates page", () => {
     [updateStatus("installing"), "正在通过 npm 安装..."],
     [updateStatus("installing", "windows-installer"), "正在安装更新..."],
     [updateStatus("restarting"), "正在重启以完成更新..."],
-    [updateStatus("succeeded"), "更新安装成功。"],
     [updateStatus("failed"), "更新失败。"],
   ])("renders a distinct localized update status for $0.phase", async (status, expected) => {
     const client = {
@@ -326,6 +370,39 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("shows only the Update action before an update starts and ignores stale success state", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      const panel = elementWithClass(content, "settings-update-panel");
+      expect(visibleText(panel)).toContain("更新");
+      expect(visibleText(panel)).not.toContain("更新安装成功");
+      expect(visibleText(panel)).not.toContain("有新版本可用");
+    });
+    expect(client.startUpdate).not.toHaveBeenCalled();
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("keeps a manual GitHub Releases download available before discovery and after update failure", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck()),
@@ -348,7 +425,12 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    const releaseLink = elementWithClass(content, "settings-update-link");
+    const releaseLink = descendants(content).find(
+      (candidate) =>
+        candidate.tagName === "a" &&
+        visibleNotesText(candidate).includes("Download from GitHub Releases"),
+    );
+    if (!releaseLink) throw new Error("GitHub Releases link is not rendered");
     expect(releaseLink.href).toBe(CODEXHOST_RELEASES_LATEST_URL);
     expect(releaseLink.target).toBe("_blank");
     expect(releaseLink.rel).toBe("noopener noreferrer");
@@ -367,9 +449,99 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => {
       expect(panel.dataset.updateState).toBe("failed");
     });
-    expect(elementWithClass(content, "settings-update-link")).toBe(releaseLink);
+    expect(descendants(content)).toContain(releaseLink);
     expect(releaseLink.href).toBe(
       "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+    );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it.each([
+    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
+    [
+      "windows-installer" as const,
+      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+    ],
+  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain(expected);
+      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+        "Windows 暂不支持自动更新",
+      );
+    });
+    expect(
+      descendants(elementWithClass(content, "settings-update-panel")).find(
+        ({ tagName }) => tagName === "button",
+      ),
+    ).toBeUndefined();
+    expect(client.startUpdate).not.toHaveBeenCalled();
+    if (installation === "npm") {
+      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+    } else {
+      const link = descendants(content).find(
+        ({ tagName, href }) =>
+          tagName === "a" &&
+          href ===
+            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+      );
+      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    }
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("renders the open-source project introduction on the About page", () => {
+    const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
+      ({ id }) => id === "about",
+    );
+    if (!page) throw new Error("About page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("在 Codex Desktop 中运行 Pi 和其他 Harness");
+    expect(visibleText(content)).toContain(
+      "我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验",
+    );
+    expect(visibleText(content)).toContain("Claude Code 和 Pi Agent");
+    expect(visibleText(content)).toContain("codexhost 是一个开源项目");
+    expect(visibleText(content)).toContain("请给我们一个 Star");
+    const repository = descendants(content).find(
+      ({ tagName, href }) =>
+        tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host",
+    );
+    expect(repository).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    expect(visibleNotesText(repository as FakeElement)).toContain(
+      "https://github.com/BytePioneer-AI/codex-host",
     );
 
     cleanup?.();
@@ -405,7 +577,19 @@ describe("Renderer Updates page", () => {
         tagName: "h2",
       });
     });
+    const panel = elementWithClass(content, "settings-update-panel");
+    const controls = elementWithClass(content, "settings-update-controls");
     const notes = elementWithClass(content, "settings-update-notes");
+    const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+    if (!updateButton) throw new Error("Update command is not rendered");
+    // Status and the update action come first; the manual fallback stays visible
+    // right below it, and release notes render last.
+    expect(content.children.indexOf(panel)).toBeLessThan(content.children.indexOf(controls));
+    expect(content.children.indexOf(controls)).toBeLessThan(
+      content.children.indexOf(elementWithClass(content, "settings-update-notes-section")),
+    );
+    expect(descendants(panel)).toContain(updateButton);
+    expect(descendants(panel)).not.toContain(notes);
     expect(notes.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "ul"]);
     expect(visibleNotesText(notes)).toContain("本次发布");
     expect(visibleNotesText(notes)).toContain("新增 Grok CLI adapter");

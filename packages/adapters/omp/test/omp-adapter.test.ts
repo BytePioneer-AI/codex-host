@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
 import {
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -170,6 +171,19 @@ class FakeOmpTransport implements OmpTurnTransport {
   async close(): Promise<void> {}
 }
 
+class RestartableOmpTransport extends FakeOmpTransport {
+  closed = false;
+  startError: Error | null = null;
+
+  override async start(): Promise<void> {
+    if (this.startError) throw this.startError;
+  }
+
+  override async close(): Promise<void> {
+    this.closed = true;
+  }
+}
+
 function historyTurn(input: {
   assistantId: string;
   parentId: string | null;
@@ -196,6 +210,191 @@ function historyTurn(input: {
   ];
 }
 
+describe("OMP Adapter Session environment", () => {
+  it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "permission-turn" as HostTurnId,
+      input: [{ type: "text", text: "task" }],
+    });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "yolo" }),
+    );
+    await adapter.close();
+  });
+
+  it("defers a cold OMP Permission Mode selection until startup", async () => {
+    const transport = new RestartableOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: harnessPermissionModeIdSchema.parse("always-ask"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("write"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(createTransport).not.toHaveBeenCalled();
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "write" } },
+    });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "write" }),
+    );
+    await adapter.close();
+  });
+
+  it("advertises OMP Permission Modes and restarts a persisted Session to switch mode", async () => {
+    const inspection = new RestartableOmpTransport();
+    const initial = new RestartableOmpTransport();
+    initial.state = {
+      ...initial.state,
+      sessionId: "omp-permission-session",
+      sessionFile: "/synthetic/omp-permission-session.jsonl",
+    };
+    const replacement = new RestartableOmpTransport();
+    replacement.state = { ...initial.state };
+    const createTransport = vi
+      .fn()
+      .mockImplementationOnce(() => inspection)
+      .mockImplementationOnce(() => initial)
+      .mockImplementationOnce(() => replacement);
+    const adapter = new OmpAdapter({}, { createTransport });
+
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      permissionModes: {
+        defaultModeId: "yolo",
+        modes: expect.arrayContaining([
+          expect.objectContaining({ id: "always-ask" }),
+          expect.objectContaining({ id: "write" }),
+          expect.objectContaining({ id: "yolo", dangerous: true }),
+        ]),
+      },
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: harnessPermissionModeIdSchema.parse("write"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await opened.value.readSnapshot();
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(initial.closed).toBe(true);
+    expect(createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sessionFile: "/synthetic/omp-permission-session.jsonl",
+        permissionMode: "yolo",
+      }),
+    );
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "yolo" } },
+    });
+    await adapter.close();
+  });
+
+  it("recovers the previous OMP Permission Mode when restart fails", async () => {
+    const initial = new RestartableOmpTransport();
+    initial.state = {
+      ...initial.state,
+      sessionId: "omp-permission-recovery",
+      sessionFile: "/synthetic/omp-permission-recovery.jsonl",
+    };
+    const failedReplacement = new RestartableOmpTransport();
+    failedReplacement.state = { ...initial.state };
+    failedReplacement.startError = new Error("synthetic permission restart failure");
+    const recovery = new RestartableOmpTransport();
+    recovery.state = { ...initial.state };
+    const createTransport = vi
+      .fn()
+      .mockImplementationOnce(() => initial)
+      .mockImplementationOnce(() => failedReplacement)
+      .mockImplementationOnce(() => recovery);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: harnessPermissionModeIdSchema.parse("write"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await opened.value.readSnapshot();
+    await expect(
+      opened.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: "synthetic permission restart failure" },
+    });
+    expect(createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ permissionMode: "write" }),
+    );
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: "write" } },
+    });
+    await adapter.close();
+  });
+
+  it("passes per-Session delegation environment to the native transport", async () => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_THREAD_ID: "thread-1",
+      },
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "environment-turn" as HostTurnId,
+      input: [{ type: "text", text: "task" }],
+    });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: "thread-1",
+        }),
+      }),
+    );
+    await adapter.close();
+  });
+});
+
 describe("OMP Adapter inspection", () => {
   it("reports a missing executable as not installed", async () => {
     const transport = new FakeOmpTransport();
@@ -210,7 +409,6 @@ describe("OMP Adapter inspection", () => {
       error: { code: "notInstalled", retryable: false, stage: "startup" },
     });
     expect(close).toHaveBeenCalledOnce();
-    await adapter.close();
   });
 });
 

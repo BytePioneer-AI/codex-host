@@ -40,6 +40,7 @@ import {
   clearRendererNativeContextUsage,
   syncRendererNativeContextUsage,
 } from "./renderer-usage-control.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import {
   mountRendererHarnessCommandControl,
@@ -702,6 +703,7 @@ export function renderComposerAgentControl(
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
+  locale: RendererSettingsLocale = "en",
 ): void {
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -742,7 +744,7 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
-  syncRendererNativeContextUsage(control.nativeContextUsageControl?.element ?? null, usage);
+  syncRendererNativeContextUsage(control.nativeContextUsageControl?.element ?? null, usage, locale);
   renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
   const permissionModeVisible =
     state.agent !== "codex" &&
@@ -754,7 +756,9 @@ export function renderComposerAgentControl(
     control.permissionModePicker,
     permissionModeView,
     permissionModeVisible,
+    locale,
   );
+  control.harnessCommands.setLocale(locale);
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

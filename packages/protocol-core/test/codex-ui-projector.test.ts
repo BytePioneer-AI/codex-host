@@ -100,10 +100,23 @@ describe("Codex UI projector", () => {
           content: [{ type: "text", text: "question" }],
         },
         {
-          id: "historical-reasoning",
+          id: "historical-reasoning-summary",
           type: "reasoning",
           summary: ["visible analysis"],
           content: [],
+        },
+        {
+          id: "historical-reasoning",
+          type: "commandExecution",
+          command: "thinking",
+          cwd: "/workspace",
+          processId: null,
+          source: "agent",
+          status: "completed",
+          commandActions: [],
+          aggregatedOutput: "visible analysis",
+          exitCode: 0,
+          durationMs: null,
         },
         {
           id: "historical-agent",
@@ -413,14 +426,7 @@ describe("Codex UI projector", () => {
         turnId,
         item: { type: "reasoning", itemId: reasoningId, text: "" },
       }).messages,
-    ).toMatchObject([
-      {
-        method: "item/started",
-        params: {
-          item: { id: reasoningId, type: "reasoning", summary: [], content: [] },
-        },
-      },
-    ]);
+    ).toEqual([]);
     expect(
       value.project({
         type: "item.updated",
@@ -430,12 +436,28 @@ describe("Codex UI projector", () => {
       }).messages,
     ).toMatchObject([
       {
+        method: "item/started",
+        params: {
+          item: { id: `${reasoningId}-summary`, type: "reasoning", summary: [], content: [] },
+        },
+      },
+      {
+        method: "item/started",
+        params: {
+          item: { id: reasoningId, type: "commandExecution", command: "thinking" },
+        },
+      },
+      {
+        method: "item/commandExecution/outputDelta",
+        params: { itemId: reasoningId, delta: "visible " },
+      },
+      {
         method: "item/reasoning/summaryPartAdded",
-        params: { itemId: reasoningId, summaryIndex: 0 },
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0 },
       },
       {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: reasoningId, summaryIndex: 0, delta: "visible " },
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "visible " },
       },
     ]);
     expect(
@@ -447,8 +469,12 @@ describe("Codex UI projector", () => {
       }).messages,
     ).toMatchObject([
       {
+        method: "item/commandExecution/outputDelta",
+        params: { itemId: reasoningId, delta: "analysis" },
+      },
+      {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: reasoningId, summaryIndex: 0, delta: "analysis" },
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "analysis" },
       },
     ]);
     const reasoningCompleted = value.project({
@@ -464,10 +490,21 @@ describe("Codex UI projector", () => {
         method: "item/completed",
         params: {
           item: {
-            id: reasoningId,
+            id: `${reasoningId}-summary`,
             type: "reasoning",
             summary: ["visible analysis"],
             content: [],
+          },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: reasoningId,
+            type: "commandExecution",
+            command: "thinking",
+            aggregatedOutput: "visible analysis",
           },
         },
       },
@@ -500,7 +537,18 @@ describe("Codex UI projector", () => {
     });
     expect(completed.completedTurn).toMatchObject({
       items: [
-        { id: reasoningId, type: "reasoning", summary: ["visible analysis"], content: [] },
+        {
+          id: `${reasoningId}-summary`,
+          type: "reasoning",
+          summary: ["visible analysis"],
+          content: [],
+        },
+        {
+          id: reasoningId,
+          type: "commandExecution",
+          command: "thinking",
+          aggregatedOutput: "visible analysis",
+        },
         { id: agentId, type: "agentMessage", text: "answer" },
       ],
     });

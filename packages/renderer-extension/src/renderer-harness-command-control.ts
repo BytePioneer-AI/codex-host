@@ -1,5 +1,12 @@
 import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
 
+import {
+  rendererHarnessCommandPresentation,
+  rendererHarnessMessages,
+  type RendererHarnessMessages,
+} from "./renderer-harness-localization.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
+
 const CONTROL_ATTRIBUTE = "data-codexhost-harness-command-control";
 const MENU_ATTRIBUTE = "data-codexhost-harness-command-menu";
 const MENU_WIDTH = 320;
@@ -33,6 +40,7 @@ export interface RendererHarnessCommandControl {
   menu: HTMLElement;
   setCommands(commands: readonly HarnessCommandDescriptor[]): void;
   setExecuting(commandId: string | null): void;
+  setLocale(locale: RendererSettingsLocale): void;
   placeBefore(reference: Element | null): boolean;
   close(): void;
   dispose(): void;
@@ -41,13 +49,16 @@ export interface RendererHarnessCommandControl {
 function menuItem(
   ownerDocument: Document,
   command: HarnessCommandDescriptor,
+  locale: RendererSettingsLocale,
+  messages: RendererHarnessMessages,
   onSelect: () => void,
 ): HTMLButtonElement {
+  const presentation = rendererHarnessCommandPresentation(command, locale);
   const item = ownerDocument.createElement("button");
   item.type = "button";
   item.setAttribute("role", "menuitem");
   item.setAttribute("data-command-id", command.id);
-  item.setAttribute("aria-label", `${command.invocation} ${command.label}`);
+  item.setAttribute("aria-label", `${command.invocation} ${presentation.label}`);
   item.style.display = "flex";
   item.style.alignItems = "center";
   item.style.width = "100%";
@@ -82,7 +93,7 @@ function menuItem(
   title.style.whiteSpace = "nowrap";
 
   const description = ownerDocument.createElement("span");
-  description.textContent = command.description ?? command.label;
+  description.textContent = presentation.description;
   description.style.overflow = "hidden";
   description.style.color = "rgba(127, 127, 127, 0.9)";
   description.style.font = "400 11px/16px system-ui, sans-serif";
@@ -90,7 +101,7 @@ function menuItem(
   description.style.whiteSpace = "nowrap";
 
   const hint = ownerDocument.createElement("span");
-  hint.textContent = command.argumentMode === "text" ? "Text" : "↵";
+  hint.textContent = command.argumentMode === "text" ? messages.textArgument : "↵";
   hint.style.flex = "0 0 auto";
   hint.style.color = "rgba(127, 127, 127, 0.75)";
   hint.style.font = "400 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -124,8 +135,11 @@ export function mountRendererHarnessCommandControl(
   parent: Element,
   insertBefore: Element | null,
   onCommandSelected: (command: HarnessCommandDescriptor) => void,
+  initialLocale: RendererSettingsLocale = "en",
 ): RendererHarnessCommandControl {
   const ownerDocument = parent.ownerDocument;
+  let locale = initialLocale;
+  let messages = rendererHarnessMessages(locale);
   const root = ownerDocument.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, "true");
   root.style.display = "inline-flex";
@@ -136,8 +150,8 @@ export function mountRendererHarnessCommandControl(
   trigger.type = "button";
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.setAttribute("aria-expanded", "false");
-  trigger.setAttribute("aria-label", "Harness commands");
-  trigger.title = "Harness commands";
+  trigger.setAttribute("aria-label", messages.harnessCommands);
+  trigger.title = messages.harnessCommands;
   setButtonClass(trigger);
   trigger.append(commandIcon(ownerDocument));
   root.append(trigger);
@@ -145,7 +159,7 @@ export function mountRendererHarnessCommandControl(
   const menu = ownerDocument.createElement("div");
   menu.setAttribute(MENU_ATTRIBUTE, "true");
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Harness commands");
+  menu.setAttribute("aria-label", messages.harnessCommands);
   menu.hidden = true;
   menu.style.position = "fixed";
   menu.style.inset = "auto";
@@ -238,12 +252,14 @@ export function mountRendererHarnessCommandControl(
   const renderItems = (): void => {
     menu.replaceChildren();
     const header = ownerDocument.createElement("div");
-    header.textContent = "Commands";
+    header.textContent = messages.commands;
     header.style.padding = "5px 8px 4px";
     header.style.color = "rgba(127, 127, 127, 0.75)";
     header.style.font = "600 11px/16px system-ui, sans-serif";
     menu.append(header);
-    items = commands.map((command) => menuItem(ownerDocument, command, () => select(command)));
+    items = commands.map((command) =>
+      menuItem(ownerDocument, command, locale, messages, () => select(command)),
+    );
     menu.append(...items);
     activeIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
     if (executingCommandId !== null) {
@@ -347,6 +363,15 @@ export function mountRendererHarnessCommandControl(
       trigger.disabled = commandId !== null;
       trigger.style.opacity = commandId !== null ? "0.65" : "1";
       syncTriggerBackground();
+    },
+    setLocale(nextLocale) {
+      if (locale === nextLocale) return;
+      locale = nextLocale;
+      messages = rendererHarnessMessages(locale);
+      trigger.setAttribute("aria-label", messages.harnessCommands);
+      trigger.title = messages.harnessCommands;
+      menu.setAttribute("aria-label", messages.harnessCommands);
+      renderItems();
     },
     close,
     dispose() {

@@ -1,5 +1,5 @@
 import type { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 
 import type {
@@ -18,6 +18,7 @@ import {
   accountCreditsSnapshotSchema,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  harnessIdSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -25,8 +26,11 @@ import {
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
+  harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
+  hostThreadIdSchema,
   hostTurnIdSchema,
   jsonValueSchema,
   threadInspectionParamsSchema,
@@ -69,6 +73,30 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import {
+  DELEGATION_CLI_PATH_ENV,
+  DELEGATION_RUNTIME_ENDPOINT_ENV,
+  DELEGATION_RUNTIME_TOKEN_ENV,
+  DELEGATION_THREAD_ID_ENV,
+  DelegationControlError,
+} from "./delegation-types.js";
+import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
+import type {
+  DelegationControlRegistration,
+  DelegationStartInput,
+  DelegationStartResult,
+  DelegationThreadListResult,
+  DelegationThreadSnapshot,
+  HarnessInspectInput,
+  HarnessInspectResult,
+  ThreadCancelInput,
+  ThreadCancelResult,
+  ThreadListInput,
+  ThreadReadInput,
+  ThreadSendInput,
+  ThreadSendResult,
+} from "./delegation-types.js";
+import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { OfficialRequestBroker } from "./official-request-broker.js";
 import {
   spawnOfficialAppServerConnection,
@@ -155,6 +183,7 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
 }
 
 interface TurnProjectionGate {
@@ -227,6 +256,11 @@ function errorMessage(error: unknown): string {
 }
 
 export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    DELEGATION_CLI_PATH_ENV,
+    DELEGATION_RUNTIME_ENDPOINT_ENV,
+    DELEGATION_RUNTIME_TOKEN_ENV,
+  ]);
   const internal = new Set([
     "CODEX_CLI_PATH",
     "CODEXHOST_HOST_NODE_PATH",
@@ -247,7 +281,9 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_NPM_LAUNCHER_PATH",
     "CODEXHOST_NPM_PACKAGE_ROOT",
   ]);
-  return Object.fromEntries(Object.entries(source).filter(([key]) => !internal.has(key)));
+  return Object.fromEntries(
+    Object.entries(source).filter(([key]) => !internal.has(key) || allowed.has(key)),
+  );
 }
 
 function rpcEnvelope(request: JsonRpcRequest, value: JsonObject): JsonObject {
@@ -414,6 +450,11 @@ export class AppServerHost {
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
+  #delegationCoordinator: HarnessDelegationCoordinator;
+  #unregisterDelegationApi: (() => void) | undefined;
+  #activeOfficialTurns = new Map<string, string>();
+  #pendingOfficialDelegationThreads = new Set<string>();
+  #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   #officialUsageByThread = new Map<string, HostUsage>();
   #officialRateLimitUsage: Partial<HostUsage> | null = null;
   #officialRateLimitRefresh: Promise<void> | null = null;
@@ -452,10 +493,41 @@ export class AppServerHost {
     }
     this.#externalRuntime = new ExternalThreadRuntime({
       adapters: this.#externalAdapters,
+      environment: this.#options.environment ?? process.env,
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
     });
+    this.#delegationCoordinator = new HarnessDelegationCoordinator({
+      adapters: this.#externalAdapters,
+      environment: this.#options.environment ?? process.env,
+      externalRuntime: this.#externalRuntime,
+      repository: this.#repository,
+      registerExternalThread: (input) => this.#registerExternalThread(input),
+      startExternalTurn: (thread, text, turnId) =>
+        this.#startDelegatedExternalTurn(thread, text, turnId),
+      notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
+      inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
+      readOfficial: (input) => this.#readOfficialDelegationThread(input),
+      sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
+      cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
+      startOfficial: (input) => this.#startOfficialDelegation(input),
+      listOfficial: (input) => this.#listDelegationThreads(input),
+      activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
+    });
+    const unregisterDelegationApi = options.onDelegationApi?.({
+      inspect: (input) => this.#delegationCoordinator.inspect(input),
+      start: (input) => this.#delegationCoordinator.start(input),
+      send: (input) => this.#delegationCoordinator.send(input),
+      cancel: (input) => this.#delegationCoordinator.cancel(input),
+      read: (input) => this.#delegationCoordinator.read(input),
+      wait: (input) => this.#delegationCoordinator.wait(input),
+      list: (input) => this.#delegationCoordinator.list(input),
+      canHandleStart: (input) => this.#canHandleDelegationStart(input),
+      ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
+    });
+    this.#unregisterDelegationApi =
+      typeof unregisterDelegationApi === "function" ? unregisterDelegationApi : undefined;
   }
 
   close(): void {
@@ -530,6 +602,8 @@ export class AppServerHost {
       this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
       this.#externalRuntime.clear();
       this.#routeObservationTracker.clear();
+      this.#unregisterDelegationApi?.();
+      this.#unregisterDelegationApi = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
@@ -944,12 +1018,504 @@ export class AppServerHost {
         }
         const rateLimits = observeCodexRateLimits(parsed);
         if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "push");
+        try {
+          await this.#observeOfficialTurnLifecycle(parsed);
+        } catch (error) {
+          this.#diagnose(error);
+        }
         this.#routeObservationTracker.bindOfficialResponse(parsed);
         await this.#writer.frame(frame);
       }
     } finally {
       this.#officialRequestBroker.failAll(new Error("official app-server output closed"));
     }
+  }
+
+  async #observeOfficialTurnLifecycle(value: JsonValue): Promise<void> {
+    if (!isRecord(value) || !isRecord(value.params)) return;
+    const params = value.params;
+    if (value.method === "turn/started" && typeof params.threadId === "string") {
+      const turn = isRecord(params.turn) ? params.turn : null;
+      if (turn && typeof turn.id === "string")
+        this.#activeOfficialTurns.set(params.threadId, turn.id);
+    }
+    if (value.method === "turn/completed" && typeof params.threadId === "string") {
+      this.#activeOfficialTurns.delete(params.threadId);
+      const delegation = await this.#repository.getDelegationByChild(
+        hostThreadIdSchema.parse(params.threadId),
+      );
+      const turn = isRecord(params.turn) ? params.turn : null;
+      const status =
+        turn?.status === "failed"
+          ? "failed"
+          : turn?.status === "interrupted" || turn?.status === "cancelled"
+            ? "interrupted"
+            : "completed";
+      if (this.#pendingOfficialDelegationThreads.has(params.threadId)) {
+        this.#pendingOfficialTerminalStatuses.set(params.threadId, status);
+      }
+      if (delegation) {
+        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+      }
+    }
+  }
+
+  async #canHandleDelegationStart(input: DelegationStartInput): Promise<boolean> {
+    if (input.parentThreadId) return this.#ownsDelegationThread(input.parentThreadId);
+    const externalActive = this.#externalRuntime.values().some((thread) => thread.running);
+    return externalActive || this.#activeOfficialTurns.size > 0;
+  }
+
+  async #ownsDelegationThread(threadId: string): Promise<boolean> {
+    if (
+      this.#externalRuntime.get(threadId) !== undefined ||
+      this.#activeOfficialTurns.has(threadId)
+    ) {
+      return true;
+    }
+    const parsed = hostThreadIdSchema.safeParse(threadId);
+    if (!parsed.success) return false;
+    const [thread, childDelegation, delegation] = await Promise.all([
+      this.#repository.find(parsed.data),
+      this.#repository.getDelegationByChild(parsed.data),
+      this.#repository.getDelegation(parsed.data),
+    ]);
+    return thread !== null || childDelegation !== null || delegation !== null;
+  }
+
+  async #inspectOfficialDelegationTarget(
+    input: HarnessInspectInput,
+  ): Promise<HarnessInspectResult> {
+    const response = await this.#officialRequestBroker.request("model/list", {});
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string"
+          ? response.error.message
+          : "Official Model catalog could not be read",
+      );
+    }
+    const result = isRecord(response.result) ? response.result : null;
+    const data = result && Array.isArray(result.data) ? result.data : [];
+    const thinkingById = new Map<ReturnType<typeof harnessThinkingOptionIdSchema.parse>, string>();
+    const models = data.flatMap((candidate) => {
+      if (!isRecord(candidate) || typeof candidate.model !== "string" || !candidate.model.trim()) {
+        return [];
+      }
+      const supportedThinkingOptionIds = Array.isArray(candidate.supportedReasoningEfforts)
+        ? candidate.supportedReasoningEfforts.flatMap((option) => {
+            if (
+              !isRecord(option) ||
+              typeof option.reasoningEffort !== "string" ||
+              !option.reasoningEffort.trim()
+            ) {
+              return [];
+            }
+            const id = harnessThinkingOptionIdSchema.safeParse(option.reasoningEffort);
+            if (!id.success) return [];
+            thinkingById.set(
+              id.data,
+              typeof option.description === "string" && option.description.trim()
+                ? option.description
+                : option.reasoningEffort,
+            );
+            return [id.data];
+          })
+        : [];
+      return [
+        {
+          ref: harnessModelRefSchema.parse({ id: candidate.model }),
+          label:
+            typeof candidate.displayName === "string" && candidate.displayName.trim()
+              ? candidate.displayName
+              : candidate.model,
+          ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
+        },
+      ];
+    });
+    const defaultEntry = data.find(
+      (candidate) => isRecord(candidate) && candidate.isDefault === true,
+    );
+    const defaultModel =
+      isRecord(defaultEntry) && typeof defaultEntry.model === "string"
+        ? harnessModelRefSchema.parse({ id: defaultEntry.model })
+        : undefined;
+    return {
+      harnessId: input.harnessId,
+      inspection: {
+        status: "ready",
+        catalog: {
+          models,
+          ...(defaultModel ? { defaultModel } : {}),
+          thinkingOptions: [...thinkingById].map(([id, label]) => ({ id, label })),
+        },
+        capabilities: {
+          configuration: {
+            selectModel: models.length > 0,
+            selectThinkingOption: thinkingById.size > 0,
+            selectPermissionMode: false,
+          },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        },
+      },
+    };
+  }
+
+  async #startOfficialDelegation(
+    input: DelegationStartInput & { parentThreadId: string },
+  ): Promise<DelegationStartResult> {
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          task: input.task,
+          cwd: input.cwd,
+          modelId: input.model?.id ?? null,
+          thinkingOptionId: input.thinkingOptionId ?? null,
+        }),
+      )
+      .digest("hex");
+    const existing = input.requestId
+      ? await this.#repository.findDelegationByRequest(input.requestId)
+      : await this.#repository.findRecentDelegation({
+          parentHostThreadId: hostThreadIdSchema.parse(input.parentThreadId),
+          targetHarnessId: harnessIdSchema.parse("codex"),
+          taskDigest: digest,
+          since: new Date(Date.now() - 30_000),
+        });
+    if (
+      existing &&
+      input.requestId &&
+      (existing.targetHarnessId !== "codex" || existing.taskDigest !== digest)
+    ) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Request ID is already associated with another Delegation configuration",
+      );
+    }
+    if (existing) {
+      const turnId = this.#activeOfficialTurns.get(existing.childHostThreadId) ?? "pending";
+      return {
+        delegationId: existing.delegationId,
+        threadId: existing.childHostThreadId,
+        turnId,
+        harnessId: "codex",
+        deepLink: `codex://threads/${existing.childHostThreadId}`,
+        status: existing.status,
+        next: {
+          read: `codexhost thread read ${existing.childHostThreadId}`,
+          wait: `codexhost thread wait ${existing.childHostThreadId} --timeout-ms 30000`,
+        },
+      };
+    }
+    if (input.model || input.thinkingOptionId) {
+      const inspected = await this.#inspectOfficialDelegationTarget({
+        harnessId: "codex",
+        cwd: input.cwd,
+      });
+      if (inspected.inspection.status !== "ready") {
+        throw new DelegationControlError(
+          "DELEGATION_FAILED",
+          "Official Model catalog is unavailable",
+        );
+      }
+      if (
+        input.model &&
+        !inspected.inspection.catalog.models.some(
+          (candidate) => candidate.ref.id === input.model?.id,
+        )
+      ) {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Official Model is unavailable", {
+          validModelIds: inspected.inspection.catalog.models.map((candidate) => candidate.ref.id),
+        });
+      }
+      if (input.thinkingOptionId) {
+        const selectedModel = input.model ?? inspected.inspection.catalog.defaultModel;
+        const selectedEntry = selectedModel
+          ? inspected.inspection.catalog.models.find(
+              (candidate) => candidate.ref.id === selectedModel.id,
+            )
+          : undefined;
+        const validThinkingOptionIds = selectedEntry?.supportedThinkingOptionIds ?? [];
+        if (!validThinkingOptionIds.includes(input.thinkingOptionId)) {
+          throw new DelegationControlError(
+            "INVALID_ARGUMENT",
+            "Official Thinking option is unavailable for the selected Model",
+            { validThinkingOptionIds },
+          );
+        }
+      }
+    }
+    const started = await this.#officialRequestBroker.request("thread/start", {
+      cwd: input.cwd,
+      ...(input.model ? { model: input.model.id } : {}),
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    const startedResult = isRecord(started.result) ? started.result : null;
+    const thread = startedResult && isRecord(startedResult.thread) ? startedResult.thread : null;
+    const threadId = thread && typeof thread.id === "string" ? thread.id : null;
+    if (!threadId) throw new Error("Official thread/start returned no Thread identity");
+    this.#pendingOfficialDelegationThreads.add(threadId);
+    let turnId: string;
+    try {
+      const turn = await this.#officialRequestBroker.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text: input.task }],
+        ...(input.model ? { model: input.model.id } : {}),
+        ...(input.thinkingOptionId ? { effort: input.thinkingOptionId } : {}),
+      });
+      const turnResult = isRecord(turn.result) ? turn.result : null;
+      const turnValue = turnResult && isRecord(turnResult.turn) ? turnResult.turn : null;
+      const parsedTurnId = turnValue && typeof turnValue.id === "string" ? turnValue.id : null;
+      if (!parsedTurnId) throw new Error("Official turn/start returned no Turn identity");
+      turnId = parsedTurnId;
+    } catch (error) {
+      this.#pendingOfficialDelegationThreads.delete(threadId);
+      this.#pendingOfficialTerminalStatuses.delete(threadId);
+      await this.#officialRequestBroker
+        .request("thread/delete", { threadId })
+        .catch(() => undefined);
+      throw error;
+    }
+    this.#activeOfficialTurns.set(threadId, turnId);
+    const delegationId = hostThreadIdSchema.parse(randomUUID());
+    try {
+      const source = await this.#repository.find(input.parentThreadId);
+      const pendingTerminal = this.#pendingOfficialTerminalStatuses.get(threadId);
+      await this.#repository.createDelegation({
+        delegationId,
+        parentHostThreadId: hostThreadIdSchema.parse(input.parentThreadId),
+        childHostThreadId: hostThreadIdSchema.parse(threadId),
+        sourceHarnessId: source?.harnessId ?? harnessIdSchema.parse("codex"),
+        targetHarnessId: harnessIdSchema.parse("codex"),
+        status: pendingTerminal ?? "running",
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        taskDigest: digest,
+      });
+      return {
+        delegationId,
+        threadId,
+        turnId,
+        harnessId: "codex",
+        deepLink: `codex://threads/${threadId}`,
+        status: pendingTerminal ?? "running",
+        ...(input.model || input.thinkingOptionId
+          ? {
+              configuration: {
+                requested: {
+                  ...(input.model ? { model: input.model } : {}),
+                  ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+                },
+                effective: {
+                  ...(startedResult && typeof startedResult.model === "string"
+                    ? { effectiveModel: harnessModelRefSchema.parse({ id: startedResult.model }) }
+                    : {}),
+                },
+              },
+            }
+          : {}),
+        next: {
+          read: `codexhost thread read ${threadId}`,
+          wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
+        },
+      };
+    } catch (error) {
+      this.#activeOfficialTurns.delete(threadId);
+      await this.#officialRequestBroker
+        .request("thread/delete", { threadId })
+        .catch(() => undefined);
+      throw error;
+    } finally {
+      this.#pendingOfficialDelegationThreads.delete(threadId);
+      this.#pendingOfficialTerminalStatuses.delete(threadId);
+    }
+  }
+
+  async #sendOfficialDelegationThread(input: ThreadSendInput): Promise<ThreadSendResult> {
+    if (!input.message?.trim()) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
+    }
+    if (this.#activeOfficialTurns.has(input.threadId)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    const current = await this.#officialRequestBroker.request("thread/read", {
+      threadId: input.threadId,
+      includeTurns: true,
+    });
+    if (isRecord(current.error) || !isRecord(current.result)) {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    }
+    const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+    const currentTurns =
+      currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
+    const latestTurn = currentTurns.at(-1);
+    if (
+      (currentThread && isRecord(currentThread.status) && currentThread.status.type === "active") ||
+      (isRecord(latestTurn) &&
+        (latestTurn.status === "inProgress" || latestTurn.status === "running"))
+    ) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    const response = await this.#officialRequestBroker.request("turn/start", {
+      threadId: input.threadId,
+      input: [{ type: "text", text: input.message }],
+    });
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+      );
+    }
+    const result = isRecord(response.result) ? response.result : null;
+    const turn = result && isRecord(result.turn) ? result.turn : null;
+    const turnId = turn && typeof turn.id === "string" ? turn.id : null;
+    if (!turnId) throw new Error("Official turn/start returned no Turn identity");
+    this.#activeOfficialTurns.set(input.threadId, turnId);
+    return {
+      threadId: input.threadId,
+      turnId,
+      harnessId: "codex",
+      status: "running",
+      next: {
+        read: `codexhost thread read ${input.threadId}`,
+        wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
+      },
+    };
+  }
+
+  async #cancelOfficialDelegationThread(input: ThreadCancelInput): Promise<ThreadCancelResult> {
+    let turnId = this.#activeOfficialTurns.get(input.threadId);
+    if (!turnId) {
+      const current = await this.#officialRequestBroker.request("thread/read", {
+        threadId: input.threadId,
+        includeTurns: true,
+      });
+      if (isRecord(current.error) || !isRecord(current.result)) {
+        throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      }
+      const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
+      const currentTurns =
+        currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
+      const latestTurn = currentTurns.at(-1);
+      if (
+        isRecord(latestTurn) &&
+        typeof latestTurn.id === "string" &&
+        (latestTurn.status === "inProgress" || latestTurn.status === "running")
+      ) {
+        turnId = latestTurn.id;
+        this.#activeOfficialTurns.set(input.threadId, turnId);
+      } else {
+        return { threadId: input.threadId, turnId: null, harnessId: "codex", cancelled: false };
+      }
+    }
+    const response = await this.#officialRequestBroker.request("turn/interrupt", {
+      threadId: input.threadId,
+      turnId,
+    });
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        typeof response.error.message === "string" ? response.error.message : "Turn cancel failed",
+      );
+    }
+    return { threadId: input.threadId, turnId, harnessId: "codex", cancelled: true };
+  }
+
+  async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
+    const response = await this.#officialRequestBroker.request("thread/read", {
+      threadId: input.threadId,
+      includeTurns: true,
+    });
+    if (isRecord(response.error)) {
+      throw new DelegationControlError(
+        "THREAD_NOT_FOUND",
+        typeof response.error.message === "string"
+          ? response.error.message
+          : "Official Thread was not found",
+      );
+    }
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    if (!thread)
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    const turns = Array.isArray(thread.turns)
+      ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
+      : [];
+    const running =
+      this.#activeOfficialTurns.has(input.threadId) ||
+      (isRecord(thread.status) && thread.status.type === "active");
+    const snapshot = projectDelegationThreadSnapshot({
+      threadId: input.threadId,
+      harnessId: "codex",
+      thread,
+      turns,
+      running,
+      view: input.view,
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+    const delegation = await this.#repository.getDelegationByChild(
+      hostThreadIdSchema.parse(input.threadId),
+    );
+    if (delegation && delegation.status !== snapshot.status) {
+      await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
+    }
+    return snapshot;
+  }
+
+  async #listDelegationThreads(input: ThreadListInput): Promise<DelegationThreadListResult> {
+    const [sortKey, sortDirection] = input.sort.split("-") as [string, "asc" | "desc"];
+    const request: JsonRpcRequest = {
+      id: `codexhost:delegation-list:${randomUUID()}`,
+      method: "thread/list",
+      params: {
+        cwd: input.cwd ? [input.cwd] : null,
+        limit: input.limit,
+        cursor: input.cursor ?? null,
+        sortKey: `${sortKey}_at`,
+        sortDirection,
+      },
+    };
+    const decoded = decodeThreadListRequest(request);
+    if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
+    const records = await this.#repository.list();
+    const result = await aggregateThreadList({
+      query: decoded,
+      records,
+      runtimeFor: (threadId) => {
+        const thread = this.#externalRuntime.get(threadId);
+        return thread ? { running: thread.running } : null;
+      },
+      requestOfficialPage: async (params) =>
+        officialThreadListPageFromResponse(
+          await this.#officialRequestBroker.request("thread/list", params),
+        ),
+    });
+    return {
+      threads: result.data.flatMap((entry) => {
+        if (typeof entry.id !== "string") return [];
+        const record = records.find((candidate) => candidate.hostThreadId === entry.id);
+        const status =
+          isRecord(entry.status) && entry.status.type === "active" ? "running" : "completed";
+        return [
+          {
+            threadId: entry.id,
+            harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
+            deepLink: `codex://threads/${entry.id}`,
+            status,
+            ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
+            ...(typeof entry.name === "string"
+              ? { title: entry.name }
+              : typeof entry.preview === "string"
+                ? { title: entry.preview }
+                : {}),
+          },
+        ];
+      }),
+      nextCursor: result.nextCursor,
+    };
   }
 
   async #listThreads(
@@ -1760,6 +2326,10 @@ export class AppServerHost {
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,
+      environment: {
+        ...(this.#options.environment ?? process.env),
+        [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,
+      },
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
       ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
@@ -1898,6 +2468,7 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
@@ -1922,6 +2493,7 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
@@ -1973,6 +2545,7 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
@@ -1993,6 +2566,7 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
@@ -2228,6 +2802,43 @@ export class AppServerHost {
     if (!thread.activeTurnId) return thread.turns;
     const active = thread.projectedTurns.get(thread.activeTurnId);
     return active ? [...thread.turns, active.projector.pendingTurn()] : thread.turns;
+  }
+
+  async #startDelegatedExternalTurn(
+    thread: ExternalThread,
+    text: string,
+    requestedTurnId: string,
+  ): Promise<void> {
+    if (thread.running) {
+      throw new Error("External Thread already has an active Turn");
+    }
+    const turnId = hostTurnIdSchema.parse(requestedTurnId);
+    const projection: ProjectedTurn = {
+      projector: new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs: Date.now(),
+        initialInput: [{ type: "text", text }],
+      }),
+      input: [{ type: "text", text }],
+    };
+    thread.running = true;
+    thread.activeTurnId = turnId;
+    thread.projectedTurns.set(turnId, projection);
+    thread.responseGates.set(turnId, { promise: Promise.resolve(), resolve: () => undefined });
+    const result = await thread.session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text }],
+    });
+    if (!result.ok) {
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.projectedTurns.delete(turnId);
+      thread.responseGates.delete(turnId);
+      throw new Error(result.error.message);
+    }
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
@@ -2578,6 +3189,16 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
+      const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
+      if (delegation) {
+        const status =
+          result.completedTurn.status === "failed"
+            ? "failed"
+            : result.completedTurn.status === "interrupted"
+              ? "interrupted"
+              : "completed";
+        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+      }
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {

@@ -326,10 +326,21 @@ export function decodeClaudeTransportSelection(
   };
 }
 
-export function encodeDeepSeekHarnessTransportModel(model?: HarnessModelRef): string {
-  if (!model) return DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID;
+export function encodeDeepSeekHarnessTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("DeepSeek Harness transport Permission Mode requires a Model Ref");
+    }
+    return DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID;
+  }
   const parsedModel = harnessModelRefSchema.parse(model);
-  return `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}`;
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
 export function decodeDeepSeekHarnessTransportSelection(
@@ -342,12 +353,28 @@ export function decodeDeepSeekHarnessTransportSelection(
   ) {
     return null;
   }
-  const modelId = value.slice(DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX.length);
+  const components = value.slice(DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("DeepSeek Harness transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("DeepSeek Harness transport configuration has an empty Permission Mode");
+  }
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) {
     throw new Error("DeepSeek Harness transport Model contains an invalid Model Ref");
   }
-  return { model: model.data };
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("DeepSeek Harness transport contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
 }
 
 export function encodeExternalTransportSelection(
@@ -364,7 +391,7 @@ export function encodeExternalTransportSelection(
         selection.thinkingOptionId,
       );
     case "deepseek-harness":
-      return encodeDeepSeekHarnessTransportModel(selection.model);
+      return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
     case "grok":
       return encodeGrokTransportModel(
         selection.model,

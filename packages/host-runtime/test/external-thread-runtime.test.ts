@@ -1,11 +1,14 @@
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import type { HarnessResult, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostItemIdSchema,
   hostThreadIdSchema,
+  hostTurnIdSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
@@ -17,6 +20,7 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 const hostThreadId = hostThreadIdSchema.parse("thread-1");
+const hostTurnId = hostTurnIdSchema.parse("thread-1");
 
 function record(): StoredThreadRecordV1 {
   return {
@@ -65,10 +69,10 @@ describe("ExternalThreadRuntime register", () => {
       ...record(),
       harnessId: antigravityHarnessId,
       nativeSessionRef,
-      turnMappings: [{ hostTurnId: hostThreadId, nativeTurnRef }],
+      turnMappings: [{ hostTurnId, nativeTurnRef }],
       history: [{ id: hostThreadId, items: [{ type: "userMessage" }] }],
     } as StoredThreadRecordV1;
-    session.readSnapshot = vi.fn(async () => ({
+    session.readSnapshot = vi.fn(async (): Promise<HarnessResult<HostThreadSnapshot>> => ({
       ok: true,
       value: {
         turns: [
@@ -77,7 +81,11 @@ describe("ExternalThreadRuntime register", () => {
             input: [],
             items: [
               {
-                item: { itemId: "assistant", type: "agentMessage", text: "output only" },
+                item: {
+                  itemId: hostItemIdSchema.parse("assistant"),
+                  type: "agentMessage",
+                  text: "output only",
+                },
                 outcome: { status: "succeeded" },
               },
             ],
@@ -188,8 +196,14 @@ describe("ExternalThreadRuntime register", () => {
       alignSnapshot: async () => ({ record: stored, turns: [] }),
       sessionTreeId: async () => hostThreadId,
     } as unknown as ExternalThreadRepository;
+    const open = vi.spyOn(adapter, "open");
     const runtime = new ExternalThreadRuntime({
       adapters: new Map([["grok", adapter]]),
+      environment: {
+        CODEXHOST_CLI_PATH: "/opt/codexhost",
+        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+        CODEXHOST_RUNTIME_TOKEN: "token",
+      },
       repository,
       consumeOutputs: async () => undefined,
       diagnose: () => undefined,
@@ -210,6 +224,16 @@ describe("ExternalThreadRuntime register", () => {
     }
     expect(executeOrder).toBeLessThan(readOrder);
     expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(autoMode);
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEXHOST_CLI_PATH: "/opt/codexhost",
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_THREAD_ID: hostThreadId,
+        }),
+      }),
+    );
 
     await adapter.close();
   });

@@ -11,10 +11,9 @@ import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
 } from "./localization.js";
-import { createDefaultRendererSettingsRegistry } from "./pages.js";
+import { CODEXHOST_GITHUB_REPOSITORY_URL, createDefaultRendererSettingsRegistry } from "./pages.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
-export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
 
 export interface RendererSettingsShell {
   readonly root: HTMLElement;
@@ -95,24 +94,13 @@ export function mountRendererSettingsShell(
 
   const headerActions = ownerDocument.createElement("div");
   headerActions.className = "settings-header-actions";
-  const starLink = ownerDocument.createElement("a");
-  starLink.className = "settings-icon-button settings-star-link";
-  starLink.href = CODEXHOST_GITHUB_REPOSITORY_URL;
-  starLink.target = "_blank";
-  starLink.rel = "noopener noreferrer";
-  starLink.setAttribute("aria-label", messages.starOnGitHub);
-  starLink.title = messages.starOnGitHub;
-  const starLabel = ownerDocument.createElement("span");
-  starLabel.textContent = messages.starOnGitHub;
-  starLink.append(createRendererSettingsIcon("star", 16), starLabel);
-
   const closeButton = ownerDocument.createElement("button");
   closeButton.type = "button";
   closeButton.className = "settings-icon-button";
   closeButton.setAttribute("aria-label", messages.close);
   closeButton.title = messages.close;
   closeButton.append(createRendererSettingsIcon("close", 18));
-  headerActions.append(starLink, closeButton);
+  headerActions.append(closeButton);
   header.append(brand, headerActions);
 
   const layout = ownerDocument.createElement("div");
@@ -187,7 +175,19 @@ export function mountRendererSettingsShell(
     }
   };
 
+  const appendNavigationSection = (label: string): void => {
+    const section = ownerDocument.createElement("div");
+    section.className = "settings-nav-section-label";
+    section.textContent = label;
+    navigation.append(section);
+  };
+  let otherSectionAdded = false;
+  appendNavigationSection(messages.generalSection);
   for (const definition of resolvedRegistry.pages) {
+    if (definition.id === "about" && !otherSectionAdded) {
+      appendNavigationSection(messages.otherSection);
+      otherSectionAdded = true;
+    }
     const button = ownerDocument.createElement("button");
     button.type = "button";
     button.className = "settings-nav-button";
@@ -199,6 +199,18 @@ export function mountRendererSettingsShell(
     navigationButtons.set(definition.id, button);
     navigation.append(button);
   }
+  const starLink = ownerDocument.createElement("a");
+  starLink.className = "settings-nav-button settings-nav-star-link";
+  starLink.href = CODEXHOST_GITHUB_REPOSITORY_URL;
+  starLink.target = "_blank";
+  starLink.rel = "noopener noreferrer";
+  starLink.setAttribute("aria-label", messages.starOnGitHub);
+  starLink.title = messages.starOnGitHub;
+  starLink.append(createRendererSettingsIcon("star", 17));
+  const starLabel = ownerDocument.createElement("span");
+  starLabel.textContent = messages.starOnGitHub;
+  starLink.append(starLabel);
+  navigation.append(starLink);
   const supported = isRendererSettingsDialogSupported(dialog);
   const focusActiveNavigation = (): void => {
     navigationButtons.get(navigationState.activePageId)?.focus();

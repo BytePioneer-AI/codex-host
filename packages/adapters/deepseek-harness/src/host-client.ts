@@ -46,12 +46,13 @@ export interface DeepSeekCommandClient {
 }
 
 export type DeepSeekHarnessTransportErrorCode =
-  "notInstalled" | "unavailable" | "protocolError" | "processExited";
+  "notInstalled" | "unavailable" | "protocolError" | "processExited" | "nativeFailure";
 
 export class DeepSeekHarnessTransportError extends Error {
   constructor(
     readonly code: DeepSeekHarnessTransportErrorCode,
     message: string,
+    readonly nativeCode?: string,
   ) {
     super(message);
     this.name = "DeepSeekHarnessTransportError";
@@ -579,6 +580,7 @@ export class DeepSeekHostConnection {
       const args = [
         ...invocation.arguments,
         "web",
+        "--no-open",
         "--host",
         endpoint.hostname,
         "--port",

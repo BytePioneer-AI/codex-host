@@ -1677,6 +1677,7 @@ export class PiAdapter implements HarnessAdapter {
       return {
         ok: true,
         value: this.#trackSession(input.cwd, {
+          ...(input.environment ? { environment: input.environment } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(thinkingOptionId?.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
           supportsThinkingSelection: this.#thinkingSelectionSupported === true,
@@ -1788,6 +1789,7 @@ export class PiAdapter implements HarnessAdapter {
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
       session = this.#trackSession(input.cwd, {
+        ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
         initialUsage,
@@ -1803,6 +1805,7 @@ export class PiAdapter implements HarnessAdapter {
   #trackSession(
     cwd: string,
     options: {
+      environment?: NodeJS.ProcessEnv;
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
       supportsThinkingSelection: boolean;
@@ -1811,9 +1814,13 @@ export class PiAdapter implements HarnessAdapter {
       initialUsage?: HostUsage | null;
     },
   ): PiHarnessSession {
+    const environment = options.environment;
+    const createTransport = environment
+      ? (input: PiRpcSessionOptions) => this.#createTransport({ ...input, environment })
+      : this.#createTransport;
     const session = new PiHarnessSession(
       cwd,
-      this.#createTransport,
+      createTransport,
       () => {
         this.#sessions.delete(session);
       },

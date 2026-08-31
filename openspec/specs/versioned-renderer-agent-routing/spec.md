@@ -483,7 +483,7 @@ Renderer SHALL scope selected Claude Model Ref, resolved Model display, Catalog,
 
 ### Requirement: Renderer projects provider-native Permission Mode controls
 
-On the supported Desktop build, Renderer SHALL identify the unique official permission trigger by its semantic navigation attribute and bounded Composer ownership. Codex SHALL retain that official trigger unchanged. Pi SHALL hide it without a replacement. Claude Code SHALL hide it and mount a codexhost picker in the same parent and position using only its Adapter catalog.
+On the supported Desktop build, Renderer SHALL identify the unique official permission trigger by its semantic navigation attribute and bounded Composer ownership. Codex SHALL retain that official trigger unchanged. A Harness without selectable Permission Modes SHALL hide it without a replacement. Any external Harness that reports a validated Permission Mode catalog SHALL hide it and mount a codexhost picker in the same parent and position using only that Adapter catalog's identities and semantics. Renderer MAY apply shared locale-specific presentation to known catalog labels and descriptions, but Adapters MUST NOT construct locale-specific catalogs, and unknown presentation text MUST remain unchanged.
 
 #### Scenario: User selects Codex
 
@@ -495,11 +495,18 @@ On the supported Desktop build, Renderer SHALL identify the unique official perm
 - **WHEN** the current Composer belongs to Pi
 - **THEN** the official Codex permission control SHALL be hidden and no replacement mode picker SHALL be shown
 
-#### Scenario: User selects Claude Code
+#### Scenario: User selects an external Harness with Permission Modes
 
-- **WHEN** Claude inspection reports selectable Permission Modes
-- **THEN** the replacement picker SHALL display exactly the Adapter catalog with provider-native labels
-- **AND** it SHALL visually distinguish the dangerous bypass option without changing its semantics
+- **WHEN** external Harness inspection reports selectable Permission Modes
+- **THEN** the replacement picker SHALL display exactly the Adapter catalog entries with Renderer-owned localized presentation where a shared translation is known
+- **AND** unknown labels and descriptions SHALL remain unchanged
+- **AND** it SHALL visually distinguish dangerous options without changing their semantics
+
+#### Scenario: User selects DeepSeek Harness
+
+- **WHEN** DeepSeek inspection reports a dynamically discovered Permission Mode catalog
+- **THEN** the replacement picker SHALL display exactly that catalog without built-in preset rows
+- **AND** a locked Thread mode absent from the current catalog SHALL fail closed instead of falling back to the default
 
 #### Scenario: Current Claude catalog does not support Auto
 
@@ -600,11 +607,11 @@ Renderer SHALL display Grok Model, Thinking, Permission, Usage, and Thread contr
 - **AND** it SHALL NOT add a Grok-specific Fork, rollback, or Slash Command control
 
 ### Requirement: Renderer can select DeepSeek Harness for a new Thread
-A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inject its dedicated transport Model when selected.
+A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inject its dedicated transport Model when selected. Its bounded selected carrier SHALL preserve the opaque Model Ref and optional Permission Mode ID for that exact draft.
 
 #### Scenario: User selects DeepSeek Harness
 - **WHEN** DeepSeek Harness inspection is available and the user selects it for a new Thread
-- **THEN** the Renderer SHALL submit `codexhost/deepseek-harness-native` with the selected DeepSeek Model configuration
+- **THEN** the Renderer SHALL submit `codexhost/deepseek-harness-native` with the selected DeepSeek Model and optional Permission Mode configuration
 
 #### Scenario: DeepSeek Harness is unavailable
 - **WHEN** inspection reports the DeepSeek runtime unavailable
@@ -612,11 +619,11 @@ A compatible Renderer SHALL expose DeepSeek Harness as an external Agent and inj
 - **AND** existing Codex, Pi, and Claude Code choices SHALL remain usable
 
 ### Requirement: Existing Thread ownership restores DeepSeek Agent state
-The Renderer SHALL recognize `deepseek-harness` ownership records and display the corresponding Agent for an existing process-local Thread.
+The Renderer SHALL recognize `deepseek-harness` ownership records and display the corresponding Agent for an existing process-local Thread. It SHALL prefer Host-confirmed effective configuration and use the bounded carrier only as the persisted fallback.
 
 #### Scenario: DeepSeek-owned Thread is selected
 - **WHEN** Renderer reads ownership identifying `deepseek-harness`
-- **THEN** it SHALL restore the DeepSeek Agent label and transport selection without treating it as Pi or Claude Code
+- **THEN** it SHALL restore the DeepSeek Agent label, Model, and Permission Mode without treating them as Pi or Claude Code
 
 ### Requirement: Renderer routing SHALL bind Agent selection to the active Codex host
 

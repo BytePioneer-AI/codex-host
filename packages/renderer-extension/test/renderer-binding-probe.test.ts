@@ -14,8 +14,10 @@ import {
   isLateConversationTarget,
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
+  lockedPermissionMode,
   lateConversationTargetResolution,
   passiveHarnessAvailabilityAgents,
+  refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
   rendererUsageRefreshDelay,
@@ -44,6 +46,42 @@ import {
   formatRendererTokenCount,
   rendererUsageTriggerMaxWidth,
 } from "../src/renderer-usage-control.js";
+
+describe("Renderer connection diagnostics", () => {
+  it("waits for every Host refresh before completing", async () => {
+    let resolveLocal!: () => void;
+    let resolveRemote!: () => void;
+    const local = new Promise<void>((resolve) => {
+      resolveLocal = resolve;
+    });
+    const remote = new Promise<void>((resolve) => {
+      resolveRemote = resolve;
+    });
+    const refreshHost = vi.fn((hostId: string) => (hostId === "local" ? local : remote));
+    let completed = false;
+    const refresh = refreshConnectionHosts(["local", "remote"], refreshHost).then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(refreshHost).toHaveBeenCalledTimes(2);
+    expect(completed).toBe(false);
+    resolveLocal();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    resolveRemote();
+    await refresh;
+    expect(completed).toBe(true);
+  });
+
+  it("rejects when one Host refresh fails", async () => {
+    await expect(
+      refreshConnectionHosts(["local", "remote"], (hostId) =>
+        hostId === "remote" ? Promise.reject(new Error("remote unavailable")) : Promise.resolve(),
+      ),
+    ).rejects.toThrow("remote unavailable");
+  });
+});
 
 describe("Renderer Composer DOM behavior", () => {
   it("does not re-probe ready Agents when an optional Harness is not installed", () => {
@@ -926,16 +964,19 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "deepseek-harness",
-        transportModelId: "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g",
+        transportModelId:
+          "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g@team-safe",
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({
           id: "deepseek-harness-model-v1.Zmxhc2g",
         }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
         locked: true,
       }),
     ).toEqual({
       agent: "deepseek-harness",
       model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
+      permissionModeId: "trusted-run",
     });
     expect(() =>
       restoredThreadOwnership({
@@ -990,7 +1031,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
   });
 
-  it("selects only an Adapter-catalog Permission Mode and falls back to its default", () => {
+  it("falls back draft Permission Mode but fails closed for a stale locked carrier", () => {
     const catalog = harnessPermissionModeCatalogSchema.parse({
       modes: [
         { id: "plan", label: "Plan" },
@@ -1004,6 +1045,13 @@ describe("Renderer Composer DOM behavior", () => {
       "default",
     );
     expect(draftPermissionMode(catalog, undefined)).toBe("default");
+    const plan = harnessPermissionModeIdSchema.parse("plan");
+    const foreign = harnessPermissionModeIdSchema.parse("foreign");
+    expect(lockedPermissionMode(catalog, undefined, plan)).toBe(plan);
+    expect(lockedPermissionMode(catalog, plan, foreign)).toBe(plan);
+    expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
+      "absent from the current Catalog",
+    );
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

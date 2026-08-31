@@ -460,7 +460,7 @@ impl DesktopSession {
     }
 
     pub fn is_running(&mut self) -> Result<bool, PlatformError> {
-        self.tree.root_is_live()
+        self.tree.root_is_current()
     }
 
     pub fn terminate(&mut self) -> Result<(), PlatformError> {

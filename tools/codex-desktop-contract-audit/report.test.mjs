@@ -19,6 +19,13 @@ const contracts = {
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
   settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
+  transcript: {
+    turnCount: 0,
+    itemNodeCount: 0,
+    identifiedItemCount: 0,
+    textBodyCount: 0,
+    textBodyOwnerCount: 0,
+  },
   fork: { annotatedResponseCount: 0, candidateButtonCount: 0, verifiedButtonCount: 0 },
   production: {
     bindingPresent: false,
@@ -85,6 +92,64 @@ describe("Codex Desktop contract audit report", () => {
       baseline,
     );
     expect(surfaces.find(({ id }) => id === "fork")?.verdict).toBe("possible-impact");
+  });
+
+  it("reports an empty transcript as unverified rather than passing", () => {
+    const surfaces = buildSurfaceResults(contracts);
+    const transcript = surfaces.find(({ id }) => id === "transcript");
+    expect(transcript?.verdict).toBe("unverified");
+    expect(transcript?.evidence.liveStructure).toBe("inactive");
+  });
+
+  it("passes a transcript whose Items publish their Host Item ids", () => {
+    const surfaces = buildSurfaceResults({
+      ...contracts,
+      transcript: {
+        turnCount: 4,
+        itemNodeCount: 5,
+        identifiedItemCount: 9,
+        textBodyCount: 2,
+        textBodyOwnerCount: 2,
+      },
+    });
+    expect(surfaces.find(({ id }) => id === "transcript")?.verdict).toBe("no-impact");
+  });
+
+  it("reports transcript Items that stopped publishing Host Item ids", () => {
+    const surfaces = buildSurfaceResults({
+      ...contracts,
+      transcript: {
+        turnCount: 4,
+        itemNodeCount: 5,
+        identifiedItemCount: 0,
+        textBodyCount: 2,
+        textBodyOwnerCount: 2,
+      },
+    });
+    expect(surfaces.find(({ id }) => id === "transcript")?.verdict).toBe("confirmed-impact");
+    expect(aggregateVerdict(surfaces)).toBe("confirmed-impact");
+  });
+
+  it("flags a transcript that lost its retained text lane against a baseline", () => {
+    const active = {
+      ...contracts,
+      transcript: {
+        turnCount: 4,
+        itemNodeCount: 5,
+        identifiedItemCount: 9,
+        textBodyCount: 2,
+        textBodyOwnerCount: 2,
+      },
+    };
+    const baseline = validateAuditReport(reportFor(buildSurfaceResults(active)));
+    const surfaces = buildSurfaceResults(
+      {
+        ...active,
+        transcript: { ...active.transcript, textBodyCount: 0, textBodyOwnerCount: 0 },
+      },
+      baseline,
+    );
+    expect(surfaces.find(({ id }) => id === "transcript")?.verdict).toBe("possible-impact");
   });
 
   it("rejects unknown report fields instead of persisting them", () => {

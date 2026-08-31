@@ -120,7 +120,11 @@
 
       .settings-update-notes {
         display: grid;
+        max-height: 360px;
         gap: 12px;
+        padding-right: 8px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
         color: var(--settings-muted);
         font-size: 14px;
         line-height: 22px;
@@ -228,7 +232,7 @@
 
       .settings-update-actions {
         display: flex;
-        margin-top: 16px;
+        margin-bottom: 24px;
       }
 
       .settings-update-link {
@@ -269,14 +273,6 @@
           <strong>macOS DMG</strong>
         </div>
       </div>
-      <section class="settings-update-panel" data-update-state="current" aria-live="polite">
-        <div class="settings-update-version-row">
-          <span>最新版本</span>
-          <strong>v0.2.3</strong>
-        </div>
-        <p class="settings-update-summary">更新安装成功。</p>
-        <div id="release-notes"></div>
-      </section>
       <div class="settings-update-actions">
         <a
           class="settings-update-link"
@@ -296,6 +292,14 @@
           </svg>
         </a>
       </div>
+      <section class="settings-update-panel" data-update-state="current" aria-live="polite">
+        <div class="settings-update-version-row">
+          <span>最新版本</span>
+          <strong>v0.2.3</strong>
+        </div>
+        <p class="settings-update-summary">更新安装成功。</p>
+        <div id="release-notes"></div>
+      </section>
     </main>
     <script>
       const SAMPLE_MARKDOWN = `codexhost v0.2.3

@@ -18,7 +18,7 @@ impl InstalledResources {
         Self::from_executable(&executable)
     }
 
-    fn from_executable(executable: &Path) -> Result<Self, String> {
+    pub fn from_executable(executable: &Path) -> Result<Self, String> {
         if !executable.is_absolute() {
             return Err(format!(
                 "codexhost executable path must be absolute: {}",

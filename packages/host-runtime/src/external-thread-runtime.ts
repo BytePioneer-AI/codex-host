@@ -32,6 +32,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
+import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 
 export interface TurnProjectionGate {
@@ -204,17 +205,20 @@ export class ExternalThreadRuntime {
   readonly #adapters: Map<ExternalHarnessId, HarnessAdapter>;
   readonly #consumeOutputs: (thread: ExternalThread) => Promise<void>;
   readonly #diagnose: (error: unknown) => void;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #repository: ExternalThreadRepository;
   readonly #restores = new Map<string, Promise<ExternalThread>>();
   readonly #threads = new Map<string, ExternalThread>();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
+    environment?: NodeJS.ProcessEnv;
     repository: ExternalThreadRepository;
     consumeOutputs(thread: ExternalThread): Promise<void>;
     diagnose(error: unknown): void;
   }) {
     this.#adapters = input.adapters;
+    this.#environment = input.environment ?? process.env;
     this.#repository = input.repository;
     this.#consumeOutputs = input.consumeOutputs;
     this.#diagnose = input.diagnose;
@@ -491,6 +495,7 @@ export class ExternalThreadRuntime {
     const opened = await adapter.open({
       kind: "resume",
       cwd: record.cwd,
+      environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),

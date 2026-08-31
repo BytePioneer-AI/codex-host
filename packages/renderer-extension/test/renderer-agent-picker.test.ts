@@ -1,9 +1,32 @@
 import { describe, expect, it } from "vitest";
 
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
-import { rendererAgentPickerView } from "../src/renderer-agent-picker.js";
+import {
+  rendererAgentMenuPlacement,
+  rendererAgentPickerView,
+} from "../src/renderer-agent-picker.js";
 
 describe("Renderer Agent picker presentation", () => {
+  it("normalizes viewport coordinates against the Codex window zoom", () => {
+    expect(
+      rendererAgentMenuPlacement(
+        { right: 1_440, top: 1_312 },
+        { width: 1_920, height: 1_440 },
+        1.6,
+      ),
+    ).toEqual({ left: 700, bottom: 86 });
+  });
+
+  it("falls back to unscaled positioning when the Codex window zoom is unavailable", () => {
+    expect(
+      rendererAgentMenuPlacement(
+        { right: 900, top: 820 },
+        { width: 1_200, height: 900 },
+        Number.NaN,
+      ),
+    ).toEqual({ left: 700, bottom: 86 });
+  });
+
   it("keeps a Codex draft switchable while disabling unavailable external Agents", () => {
     expect(
       rendererAgentPickerView({ agent: "codex", phase: "draft" }, "unsupported", false, [

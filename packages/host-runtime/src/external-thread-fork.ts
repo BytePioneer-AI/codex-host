@@ -15,6 +15,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
+import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 
 export type ExternalThreadForkResult =
@@ -32,6 +33,7 @@ export async function executeExternalThreadFork(input: {
   adapters: Map<ExternalHarnessId, HarnessAdapter>;
   repository: ExternalThreadRepository;
   runtime: ExternalThreadRuntime;
+  environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadForkResult> {
   const { source, fork, adapters, repository, runtime } = input;
   const targetCwd = fork.cwd ?? source.cwd;
@@ -128,6 +130,10 @@ export async function executeExternalThreadFork(input: {
     opened = await adapter.open({
       kind: "fork",
       cwd: targetCwd,
+      environment: {
+        ...(input.environment ?? process.env),
+        [DELEGATION_THREAD_ID_ENV]: provisional.hostThreadId,
+      },
       sourceRef: nativeSessionRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });

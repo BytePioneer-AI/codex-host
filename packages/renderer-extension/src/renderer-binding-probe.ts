@@ -137,6 +137,13 @@ interface HostHarnessAvailabilityState {
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
 
+export function refreshConnectionHosts(
+  hostIds: Iterable<string>,
+  refreshHost: (hostId: string) => Promise<void>,
+): Promise<void> {
+  return Promise.all([...hostIds].map((hostId) => refreshHost(hostId))).then(() => undefined);
+}
+
 export function rendererUsageRefreshDelay(attempt: number): number {
   const index = Math.max(0, Math.min(Math.trunc(attempt), rendererUsageRefreshDelays.length - 1));
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
@@ -258,6 +265,18 @@ export function draftPermissionMode(
   );
 }
 
+export function lockedPermissionMode(
+  catalog: HarnessPermissionModeCatalog,
+  effective: HarnessPermissionModeId | undefined,
+  carrier: HarnessPermissionModeId | undefined,
+): HarnessPermissionModeId | undefined {
+  const restored = effective ?? carrier;
+  if (restored && !catalog.modes.some(({ id }) => id === restored)) {
+    throw new Error("Existing Thread Permission Mode is absent from the current Catalog");
+  }
+  return restored;
+}
+
 export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
   return phase === "draft";
 }
@@ -347,7 +366,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       throw new Error("DeepSeek Harness Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? transportSelection.model;
-    return { agent: "deepseek-harness", ...(model ? { model } : {}) };
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "deepseek-harness",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
   }
   throw new Error("Thread owner is not a Renderer Agent");
 }
@@ -543,6 +568,9 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
+    onLocaleChange() {
+      for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+    },
   });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
@@ -675,6 +703,7 @@ export function installRendererBindingProbe(
       mounted.permissionModeView,
       mounted.usage,
       mounted.accountCredits,
+      settingsLifecycle.locale,
     );
     bindNativeContextUsageRefresh(mounted);
   };
@@ -1050,9 +1079,13 @@ export function installRendererBindingProbe(
           throw new Error("External Harness omitted its Permission Mode catalog");
         }
         mounted.permissionModeView = { status: "loading", catalog: permissionModes };
-        const effectivePermissionModeId =
+        const restoredPermissionModeId =
           current.phase === "locked"
-            ? mounted.threadConfiguration?.effectivePermissionModeId
+            ? lockedPermissionMode(
+                permissionModes,
+                mounted.threadConfiguration?.effectivePermissionModeId,
+                previousPermissionModeId,
+              )
             : undefined;
         const preferredPermissionModeId =
           preferredConfiguration?.permissionModeId ??
@@ -1061,7 +1094,7 @@ export function installRendererBindingProbe(
             : undefined);
         selectedPermissionModeId = draftPermissionMode(
           permissionModes,
-          effectivePermissionModeId ?? previousPermissionModeId ?? preferredPermissionModeId,
+          restoredPermissionModeId ?? previousPermissionModeId ?? preferredPermissionModeId,
         );
         mounted.permissionModeView = {
           status: "loading",
@@ -1886,10 +1919,9 @@ export function installRendererBindingProbe(
       };
     },
     refresh(): Promise<void> {
-      for (const hostId of harnessAvailabilityByHost.keys()) {
-        void refreshHarnessAvailabilityForHost(hostId, true, false, true);
-      }
-      return Promise.resolve();
+      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
+        refreshHarnessAvailabilityForHost(hostId, true, false, true),
+      );
     },
     subscribe(listener: () => void): () => void {
       connectionListeners.add(listener);

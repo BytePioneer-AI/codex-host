@@ -53,6 +53,7 @@ import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
   type HarnessPermissionModeId,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -231,12 +232,36 @@ function nativeRef(sessionId: string): NativeSessionRef {
   });
 }
 
-function effectForOption(option: PermissionOption): "allowOnce" | "allowAlways" | "deny" {
-  return option.kind === "allow_always"
-    ? "allowAlways"
-    : option.kind === "allow_once"
-      ? "allowOnce"
-      : "deny";
+const grokGlobalAlwaysApproveOptionIds = new Set(["always-allow", "enable-always-approve"]);
+
+function projectGrokPermissionOptions(options: PermissionOption[]): Array<{
+  id: string;
+  label: string;
+  effect: "allowOnce" | "allowAlways" | "deny";
+  option: PermissionOption;
+}> {
+  const allowOnce = options.find(({ kind }) => kind === "allow_once");
+  const deny = options.find(({ kind }) => kind === "reject_once");
+  if (!allowOnce || !deny) return [];
+
+  const allowAlways = options.find(
+    ({ kind, optionId }) =>
+      kind === "allow_always" && !grokGlobalAlwaysApproveOptionIds.has(optionId),
+  );
+  return [
+    { id: "allow-once", label: "Allow once", effect: "allowOnce", option: allowOnce },
+    ...(allowAlways
+      ? [
+          {
+            id: "allow-always",
+            label: "Always allow",
+            effect: "allowAlways" as const,
+            option: allowAlways,
+          },
+        ]
+      : []),
+    { id: "deny", label: "Deny", effect: "deny", option: deny },
+  ];
 }
 
 function terminalOutcome(response: PromptResponse, cancelled: boolean): TurnOutcome {
@@ -811,13 +836,13 @@ class GrokHarnessSession implements HarnessSession {
     if (this.#active !== active || active.cancellationRequested) {
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
     }
+    const projectedOptions = projectGrokPermissionOptions(request.options);
+    if (projectedOptions.length === 0) {
+      return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    }
     const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
-    const options = new Map<string, PermissionOption>();
-    const actions = request.options.map((option, index) => {
-      const id = `native-${index + 1}`;
-      options.set(id, option);
-      return { id, label: option.name, effect: effectForOption(option) };
-    });
+    const options = new Map(projectedOptions.map(({ id, option }) => [id, option] as const));
+    const actions = projectedOptions.map(({ id, label, effect }) => ({ id, label, effect }));
     const interaction: HostApprovalInteraction = {
       type: "approval",
       interactionId,
@@ -1322,7 +1347,10 @@ export class GrokAdapter implements HarnessAdapter {
       };
     const requestedPermissionModeId =
       input.kind === "create"
-        ? (input.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID)
+        ? (input.permissionModeId ??
+          (input.executionPolicy === "unattended-full-access"
+            ? harnessPermissionModeIdSchema.parse("always-approve")
+            : GROK_DEFAULT_PERMISSION_MODE_ID))
         : GROK_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeGrokPermissionModeId(requestedPermissionModeId);
@@ -1350,7 +1378,11 @@ export class GrokAdapter implements HarnessAdapter {
       };
     }
     let session: GrokHarnessSession | null = null;
-    const transport = this.#createTransport(cwd, (error) => session?.handleTransportFault(error));
+    const transport = this.#createTransport(
+      cwd,
+      (error) => session?.handleTransportFault(error),
+      input.environment,
+    );
     let sourceConfiguration:
       | {
           model: HarnessModelRef;
@@ -1576,7 +1608,12 @@ export class GrokAdapter implements HarnessAdapter {
   #createTransport(
     cwd: string,
     onFault: (error: GrokTransportError) => void,
+    environment?: NodeJS.ProcessEnv,
   ): GrokAcpTransportLike {
-    return this.#dependencies.createTransport({ cwd, onFault });
+    return this.#dependencies.createTransport({
+      cwd,
+      onFault,
+      ...(environment ? { environment } : {}),
+    });
   }
 }

@@ -14,6 +14,7 @@ export const AUDIT_SURFACE_IDS = Object.freeze([
   "title",
   "settings",
   "sidebar",
+  "transcript",
   "usage-credits",
   "fork",
 ]);
@@ -362,6 +363,25 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
     reason: sidebarActive ? "sidebar-row-ownership" : "sidebar-thread-state-inactive",
     baseline,
   });
+  // Codex retains transcript text for the Command Execution lane only, and that
+  // is the lane external Harness Reasoning is projected through. Item nodes must
+  // keep publishing their Host Item ids, and the text-body counts ride the
+  // baseline so a Desktop update that drops the lane is not silently invisible.
+  const transcriptActive = contracts.transcript.itemNodeCount > 0;
+  const transcript = classifySurface({
+    id: "transcript",
+    observed: contracts.transcript,
+    live:
+      transcriptActive &&
+      contracts.transcript.identifiedItemCount >= contracts.transcript.itemNodeCount
+        ? "pass"
+        : transcriptActive
+          ? "fail"
+          : "inactive",
+    active: transcriptActive,
+    reason: transcriptActive ? "transcript-item-id-publication" : "transcript-item-state-inactive",
+    baseline,
+  });
   const usageActive = contracts.composer.contextUsageCandidateCount > 0;
   const usageCredits = classifySurface({
     id: "usage-credits",
@@ -389,7 +409,18 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
     reason: forkActive ? "fork-owner-cardinality" : "fork-surface-state-inactive",
     baseline,
   });
-  return [composer, model, permission, request, title, settings, sidebar, usageCredits, fork];
+  return [
+    composer,
+    model,
+    permission,
+    request,
+    title,
+    settings,
+    sidebar,
+    transcript,
+    usageCredits,
+    fork,
+  ];
 }
 
 export function auditReportMarkdown(report) {

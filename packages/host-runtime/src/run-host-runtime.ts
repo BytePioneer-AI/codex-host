@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +10,15 @@ import {
   prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import { DelegationControlRegistry } from "./delegation-control-registry.js";
+import { startDelegationControlServer } from "./delegation-control-server.js";
+import { installDelegationSkills } from "./delegation-skill.js";
+import type { DelegationControlRegistration } from "./delegation-types.js";
+import {
+  DELEGATION_CLI_PATH_ENV,
+  DELEGATION_RUNTIME_ENDPOINT_ENV,
+  DELEGATION_RUNTIME_TOKEN_ENV,
+} from "./delegation-types.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import {
   createRemoteControlAppServerPlan,
@@ -81,6 +91,48 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   return { stockCodexPath, defaultAgent };
 }
 
+function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
+  return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+}
+
+async function prepareDelegationRuntime(input: {
+  environment: NodeJS.ProcessEnv;
+  createHost(
+    environment: NodeJS.ProcessEnv,
+    onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
+    registry: DelegationControlRegistry,
+  ): Promise<number>;
+}): Promise<number> {
+  const registry = new DelegationControlRegistry();
+  const token = randomBytes(32).toString("hex");
+  const server = await startDelegationControlServer({ token, api: registry });
+  const cliPath = delegationCliPath(input.environment);
+  const environment = {
+    ...input.environment,
+    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
+    [DELEGATION_RUNTIME_TOKEN_ENV]: token,
+  };
+  await installDelegationSkills()
+    .then((results) => {
+      for (const result of results) {
+        if (result.status === "conflict") {
+          process.stderr.write(
+            `codexhost delegation Skill conflict: preserving user-managed file at ${result.path}\n`,
+          );
+        }
+      }
+    })
+    .catch((error) => {
+      process.stderr.write(`codexhost delegation Skill installation failed: ${String(error)}\n`);
+    });
+  try {
+    return await input.createHost(environment, (value) => registry.register(value), registry);
+  } finally {
+    await server.close();
+  }
+}
+
 export async function runHostRuntime(input: {
   arguments: string[];
   environment: NodeJS.ProcessEnv;
@@ -106,96 +158,111 @@ export async function runHostRuntime(input: {
     });
     const environment = remoteControlPlan?.environment ?? input.environment;
     if (!remoteControlPlan) {
-      const externalAdapters = createExternalHarnessAdapters(environment);
-      const host = new AppServerHost({
-        stockCodexPath,
-        arguments: input.arguments,
-        defaultAgent,
+      return prepareDelegationRuntime({
         environment,
-        externalAdapters,
-        ...(updateCoordinator ? { updateCoordinator } : {}),
+        createHost: async (delegationEnvironment, onDelegationApi) => {
+          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
+          const host = new AppServerHost({
+            stockCodexPath,
+            arguments: input.arguments,
+            defaultAgent,
+            environment: delegationEnvironment,
+            externalAdapters,
+            onDelegationApi,
+            ...(updateCoordinator ? { updateCoordinator } : {}),
+          });
+          void prefetchClaudeCodeModelCatalog(externalAdapters);
+          void prefetchAntigravityModelCatalog(externalAdapters);
+          return host.run();
+        },
       });
-      void prefetchClaudeCodeModelCatalog(externalAdapters);
-      void prefetchAntigravityModelCatalog(externalAdapters);
-      return host.run();
     }
 
-    const officialPlan = createRemoteControlOfficialAppServerPlan(
-      remoteControlPlan.officialArguments,
-    );
-    const officialListener = createLoopbackOfficialAppServerListener({
-      stockCodexPath,
-      arguments: officialPlan.listenerArguments,
-      environment: officialEnvironment(environment),
-      diagnosticOutput: process.stderr,
-    });
-    let officialEndpoint: string | null = null;
-    const createOfficialConnection = () => {
-      if (!officialEndpoint) throw new Error("Shared official app-server endpoint is unavailable");
-      return createRemoteOfficialAppServerConnection(officialEndpoint);
-    };
-    const mappingStore = createProductionExternalThreadStore(environment);
-    await mappingStore.initialize();
-    const externalAdapters = createExternalHarnessAdapters(environment);
-    const host = new AppServerHost({
-      stockCodexPath,
-      arguments: input.arguments,
-      defaultAgent,
+    return prepareDelegationRuntime({
       environment,
-      externalAdapters,
-      mappingStore,
-      closeMappingStoreOnExit: false,
-      createOfficialConnection,
-      ...(updateCoordinator ? { updateCoordinator } : {}),
-    });
-    const listener = createRemoteAppServerWebSocketListener({
-      socketPath: remoteControlPlan.pipePath,
-      diagnosticOutput: process.stderr,
-      createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-        const sessionAdapters = createExternalHarnessAdapters(environment);
-        void prefetchClaudeCodeModelCatalog(sessionAdapters);
-        void prefetchAntigravityModelCatalog(sessionAdapters);
-        return new AppServerHost({
+      createHost: async (delegationEnvironment, onDelegationApi, registry) => {
+        const officialPlan = createRemoteControlOfficialAppServerPlan(
+          remoteControlPlan.officialArguments,
+        );
+        const officialListener = createLoopbackOfficialAppServerListener({
           stockCodexPath,
-          arguments: [],
+          arguments: officialPlan.listenerArguments,
+          environment: officialEnvironment(delegationEnvironment),
+          diagnosticOutput: process.stderr,
+        });
+        let officialEndpoint: string | null = null;
+        const createOfficialConnection = () => {
+          if (!officialEndpoint) {
+            throw new Error("Shared official app-server endpoint is unavailable");
+          }
+          return createRemoteOfficialAppServerConnection(officialEndpoint);
+        };
+        const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+        await mappingStore.initialize();
+        const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
+        const host = new AppServerHost({
+          stockCodexPath,
+          arguments: input.arguments,
           defaultAgent,
-          environment,
-          desktopInput,
-          desktopOutput,
-          diagnosticOutput,
-          externalAdapters: sessionAdapters,
+          environment: delegationEnvironment,
+          externalAdapters,
           mappingStore,
           closeMappingStoreOnExit: false,
           createOfficialConnection,
+          onDelegationApi,
           ...(updateCoordinator ? { updateCoordinator } : {}),
         });
+        const listener = createRemoteAppServerWebSocketListener({
+          socketPath: remoteControlPlan.pipePath,
+          diagnosticOutput: process.stderr,
+          createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
+            const sessionAdapters = createExternalHarnessAdapters(delegationEnvironment);
+            void prefetchClaudeCodeModelCatalog(sessionAdapters);
+            void prefetchAntigravityModelCatalog(sessionAdapters);
+            return new AppServerHost({
+              stockCodexPath,
+              arguments: [],
+              defaultAgent,
+              environment: delegationEnvironment,
+              desktopInput,
+              desktopOutput,
+              diagnosticOutput,
+              externalAdapters: sessionAdapters,
+              mappingStore,
+              closeMappingStoreOnExit: false,
+              createOfficialConnection,
+              onDelegationApi: (api) => registry.register(api),
+              ...(updateCoordinator ? { updateCoordinator } : {}),
+            });
+          },
+        });
+        void prefetchClaudeCodeModelCatalog(externalAdapters);
+        void prefetchAntigravityModelCatalog(externalAdapters);
+        let hostStarted = false;
+        try {
+          officialEndpoint = await officialListener.listen();
+          await listener.listen();
+          await publishRemoteControlAppServerDescriptor(remoteControlPlan);
+          hostStarted = true;
+          return await host.run();
+        } finally {
+          if (!hostStarted) {
+            await Promise.allSettled(
+              [...new Set(externalAdapters.values())].map((adapter) => adapter.close()),
+            );
+          }
+          try {
+            await listener.close();
+          } finally {
+            try {
+              await officialListener.close();
+            } finally {
+              await mappingStore.close();
+            }
+          }
+        }
       },
     });
-    void prefetchClaudeCodeModelCatalog(externalAdapters);
-    void prefetchAntigravityModelCatalog(externalAdapters);
-    let hostStarted = false;
-    try {
-      officialEndpoint = await officialListener.listen();
-      await listener.listen();
-      await publishRemoteControlAppServerDescriptor(remoteControlPlan);
-      hostStarted = true;
-      return await host.run();
-    } finally {
-      if (!hostStarted) {
-        await Promise.allSettled(
-          [...new Set(externalAdapters.values())].map((adapter) => adapter.close()),
-        );
-      }
-      try {
-        await listener.close();
-      } finally {
-        try {
-          await officialListener.close();
-        } finally {
-          await mappingStore.close();
-        }
-      }
-    }
   }
 
   if (process.platform === "win32") {
@@ -203,76 +270,82 @@ export async function runHostRuntime(input: {
   }
   const listenUrl = remoteUnixListenerUrl(input.arguments);
   if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
-  const socketPath = remoteAppServerSocketPath(input.environment, listenUrl);
-  const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
-  const officialListener = createRemoteOfficialAppServerListener({
-    stockCodexPath,
-    arguments: officialPlan.listenerArguments,
-    socketPath: officialPlan.socketPath,
-    environment: officialEnvironment(input.environment),
-    diagnosticOutput: process.stderr,
-  });
-  const mappingStore = createProductionExternalThreadStore(input.environment);
-  await mappingStore.initialize();
-  const listener = createRemoteAppServerWebSocketListener({
-    socketPath,
-    diagnosticOutput: process.stderr,
-    createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-      const externalAdapters = createExternalHarnessAdapters(input.environment);
-      void prefetchClaudeCodeModelCatalog(externalAdapters);
-      void prefetchAntigravityModelCatalog(externalAdapters);
-      return new AppServerHost({
+  return prepareDelegationRuntime({
+    environment: input.environment,
+    createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
+      const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
+      const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
+      const officialListener = createRemoteOfficialAppServerListener({
         stockCodexPath,
-        arguments: [],
-        defaultAgent,
-        environment: input.environment,
-        desktopInput,
-        desktopOutput,
-        diagnosticOutput,
-        externalAdapters,
-        mappingStore,
-        closeMappingStoreOnExit: false,
-        createOfficialConnection: () =>
-          createRemoteOfficialAppServerConnection(officialPlan.socketPath),
-        ...(updateCoordinator ? { updateCoordinator } : {}),
+        arguments: officialPlan.listenerArguments,
+        socketPath: officialPlan.socketPath,
+        environment: officialEnvironment(delegationEnvironment),
+        diagnosticOutput: process.stderr,
       });
+      const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+      await mappingStore.initialize();
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: process.stderr,
+        createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
+          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
+          void prefetchClaudeCodeModelCatalog(externalAdapters);
+          void prefetchAntigravityModelCatalog(externalAdapters);
+          return new AppServerHost({
+            stockCodexPath,
+            arguments: [],
+            defaultAgent,
+            environment: delegationEnvironment,
+            desktopInput,
+            desktopOutput,
+            diagnosticOutput,
+            externalAdapters,
+            mappingStore,
+            closeMappingStoreOnExit: false,
+            createOfficialConnection: () =>
+              createRemoteOfficialAppServerConnection(officialPlan.socketPath),
+            onDelegationApi: (api) => registry.register(api),
+            ...(updateCoordinator ? { updateCoordinator } : {}),
+          });
+        },
+      });
+
+      let stopping = false;
+      const officialState: { unexpectedExit: RemoteOfficialAppServerExit | null } = {
+        unexpectedExit: null,
+      };
+      const stop = (): void => {
+        stopping = true;
+        void listener.close();
+      };
+      try {
+        await prepareRemoteAppServerSocketDirectory(socketPath);
+        await officialListener.listen();
+        await listener.listen();
+        void officialListener.closed.then((result) => {
+          if (stopping) return;
+          officialState.unexpectedExit = result;
+          void listener.close();
+        });
+        process.title = "codex app-server desktop-ssh-websocket-v0.sock";
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+        await listener.closed;
+        return officialState.unexpectedExit ? 1 : 0;
+      } finally {
+        stopping = true;
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
+        try {
+          await listener.close();
+        } finally {
+          try {
+            await officialListener.close();
+          } finally {
+            await mappingStore.close();
+          }
+        }
+      }
     },
   });
-
-  let stopping = false;
-  const officialState: { unexpectedExit: RemoteOfficialAppServerExit | null } = {
-    unexpectedExit: null,
-  };
-  const stop = (): void => {
-    stopping = true;
-    void listener.close();
-  };
-  try {
-    await prepareRemoteAppServerSocketDirectory(socketPath);
-    await officialListener.listen();
-    await listener.listen();
-    void officialListener.closed.then((result) => {
-      if (stopping) return;
-      officialState.unexpectedExit = result;
-      void listener.close();
-    });
-    process.title = "codex app-server desktop-ssh-websocket-v0.sock";
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
-    await listener.closed;
-    return officialState.unexpectedExit ? 1 : 0;
-  } finally {
-    stopping = true;
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
-    try {
-      await listener.close();
-    } finally {
-      try {
-        await officialListener.close();
-      } finally {
-        await mappingStore.close();
-      }
-    }
-  }
 }

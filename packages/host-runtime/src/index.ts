@@ -21,7 +21,11 @@ export {
   prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
-export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";
+export {
+  AppServerHost,
+  classifyCreateRequestRoute,
+  officialEnvironment,
+} from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
 export {
   createRemoteAppServerWebSocketListener,
@@ -35,6 +39,27 @@ export type {
   RemoteAppServerSessionStreams,
   RemoteAppServerWebSocketListener,
 } from "./remote-app-server.js";
+export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
+export { DelegationControlRegistry } from "./delegation-control-registry.js";
+export { startDelegationControlServer } from "./delegation-control-server.js";
+export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
+export {
+  DELEGATION_CLI_PATH_ENV,
+  DELEGATION_RUNTIME_ENDPOINT_ENV,
+  DELEGATION_RUNTIME_TOKEN_ENV,
+  DELEGATION_THREAD_ID_ENV,
+  DelegationControlError,
+} from "./delegation-types.js";
+export type {
+  DelegationControlApi,
+  DelegationStartInput,
+  DelegationStartResult,
+  DelegationThreadListResult,
+  DelegationThreadSnapshot,
+  ThreadListInput,
+  ThreadReadInput,
+  ThreadWaitInput,
+} from "./delegation-types.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export {
   REMOTE_CONTROL_BRIDGE_DESCRIPTOR_FILE,

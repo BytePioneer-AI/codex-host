@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -139,6 +140,67 @@ describe("DeepSeek local Host connection", () => {
     }
   });
 
+  it("executes the latest DSH Remote Command shape with an explicit empty image list", async () => {
+    const requests: Array<{ payload: { args: Record<string, unknown> }; rpcId: string }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const envelope = JSON.parse(Buffer.concat(chunks).toString()) as {
+          payload: { args: Record<string, unknown> };
+          rpcId: string;
+        };
+        requests.push(envelope);
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            type: "server-response",
+            rpcId: envelope.rpcId,
+            result:
+              requests.length === 1
+                ? {
+                    ok: false,
+                    error: {
+                      code: "internal",
+                      message:
+                        'typert gateway: commands/execute: args fields do not match the descriptor: missing "images"',
+                      details: {},
+                    },
+                  }
+                : {
+                    ok: true,
+                    value: {
+                      commandId: "command-1",
+                      result: { kind: "success", text: "preset danger-full-access" },
+                    },
+                  },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const client = new NodeDeepSeekHostClient(`http://127.0.0.1:${address.port}`);
+
+    await expect(
+      client.commands.execute("session-1" as never, "/permission danger-full-access"),
+    ).resolves.toEqual({
+      ok: true,
+      value: {
+        commandId: "command-1",
+        result: { kind: "success", text: "preset danger-full-access" },
+      },
+    });
+    expect(requests.map((request) => request.payload.args)).toEqual([
+      { agentId: "session-1", line: "/permission danger-full-access" },
+      { agentId: "session-1", line: "/permission danger-full-access", images: [] },
+    ]);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+
   it("connects to an existing compatible Host without spawning or stopping it", async () => {
     const spawn = vi.fn();
     const dependencies: DeepSeekHostConnectionDependencies = {
@@ -239,7 +301,7 @@ describe("DeepSeek local Host connection", () => {
     await connection.connect();
     const expectedInvocation = deepSeekProcessInvocation(
       executable,
-      ["web", "--host", "127.0.0.1", "--port", "43123"],
+      ["web", "--no-open", "--host", "127.0.0.1", "--port", "43123"],
       process.env,
     );
     expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
@@ -284,6 +346,7 @@ describe("DeepSeek local Host connection", () => {
         "--no-install",
         "@deepseek-ai/dsh",
         "web",
+        "--no-open",
         "--host",
         "127.0.0.1",
         "--port",

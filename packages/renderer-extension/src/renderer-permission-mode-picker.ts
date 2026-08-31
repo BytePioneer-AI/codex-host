@@ -11,6 +11,11 @@ import Shield from "lucide/dist/esm/icons/shield.mjs";
 import ShieldAlert from "lucide/dist/esm/icons/shield-alert.mjs";
 
 import {
+  rendererHarnessMessages,
+  rendererPermissionModePresentation,
+} from "./renderer-harness-localization.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
+import {
   ensureRendererTriggerChipStyle,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
@@ -40,6 +45,7 @@ export interface RendererPermissionModePickerControl {
   label: HTMLElement;
   menu: HTMLElement;
   options: Map<string, PermissionModeOptionControl>;
+  locale: RendererSettingsLocale;
   close(): void;
   dispose(): void;
 }
@@ -71,22 +77,48 @@ export function isPermissionModeControlReady(view: RendererPermissionModeControl
   return (view.status === "ready" || view.status === "error") && selectedMode(view) !== undefined;
 }
 
-export function rendererPermissionModeLabel(view: RendererPermissionModeControlView): string {
+export function rendererPermissionModeLabel(
+  view: RendererPermissionModeControlView,
+  locale: RendererSettingsLocale = "en",
+): string {
   const selected = selectedMode(view);
-  if (selected) return selected.label;
-  if (view.status === "loading") return "Loading permissions...";
-  if (view.status === "selecting") return "Selecting...";
-  if (view.status === "error") return "Permissions unavailable";
-  return "Permissions";
+  if (selected) return rendererPermissionModePresentation(selected, locale).label;
+  const messages = rendererHarnessMessages(locale);
+  if (view.status === "loading") return messages.loadingPermissions;
+  if (view.status === "selecting") return messages.selecting;
+  if (view.status === "error") return messages.permissionsUnavailable;
+  return messages.permissions;
+}
+
+export function rendererPermissionModeMenuPlacement(
+  triggerRect: Pick<DOMRectReadOnly, "left" | "top">,
+  viewport: { width: number; height: number },
+  windowZoom: number,
+): { width: number; left: number; bottom: number } {
+  const zoom = Number.isFinite(windowZoom) && windowZoom > 0 ? windowZoom : 1;
+  const viewportWidth = viewport.width / zoom;
+  const viewportHeight = viewport.height / zoom;
+  const width = Math.min(320, viewportWidth - 16);
+  return {
+    width,
+    left: Math.max(8, Math.min(triggerRect.left / zoom, viewportWidth - width - 8)),
+    bottom: Math.max(8, viewportHeight - triggerRect.top / zoom + 6),
+  };
 }
 
 function positionMenu(control: RendererPermissionModePickerControl): void {
   const rect = control.trigger.getBoundingClientRect();
-  const width = Math.min(320, window.innerWidth - 16);
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-  control.menu.style.width = `${width}px`;
-  control.menu.style.left = `${left}px`;
-  control.menu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
+  const rawWindowZoom = getComputedStyle(document.documentElement)
+    .getPropertyValue("--codex-window-zoom")
+    .trim();
+  const placement = rendererPermissionModeMenuPlacement(
+    rect,
+    { width: window.innerWidth, height: window.innerHeight },
+    Number.parseFloat(rawWindowZoom),
+  );
+  control.menu.style.width = `${placement.width}px`;
+  control.menu.style.left = `${placement.left}px`;
+  control.menu.style.bottom = `${placement.bottom}px`;
 }
 
 export function syncRendererPermissionModeTriggerClass(
@@ -103,6 +135,7 @@ export function syncRendererPermissionModeTriggerClass(
 export function mountRendererPermissionModePicker(
   composerId: string,
   onSelect: (permissionModeId: string) => void,
+  locale: RendererSettingsLocale = "en",
 ): RendererPermissionModePickerControl {
   ensureRendererTriggerChipStyle(document);
 
@@ -141,12 +174,13 @@ export function mountRendererPermissionModePicker(
   const menu = document.createElement("div");
   menu.id = `${composerId}-permission-mode-menu`;
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "Permission mode");
+  menu.setAttribute("aria-label", rendererHarnessMessages(locale).permissionMode);
   menu.setAttribute("popover", "auto");
   menu.hidden = typeof menu.showPopover !== "function";
   menu.className = MENU_CLASSES;
   menu.style.inset = "auto";
   menu.style.margin = "0";
+  menu.style.boxSizing = "border-box";
   menu.style.padding = "4px";
   menu.style.maxHeight = "min(420px, 70vh)";
   menu.style.overflowY = "auto";
@@ -248,6 +282,7 @@ export function mountRendererPermissionModePicker(
     label,
     menu,
     options,
+    locale,
     close,
     dispose() {
       close();
@@ -268,10 +303,12 @@ export function mountRendererPermissionModePicker(
 function rebuildOptions(
   control: RendererPermissionModePickerControl,
   catalog: HarnessPermissionModeCatalog,
+  locale: RendererSettingsLocale,
 ): void {
   control.options.clear();
   control.menu.replaceChildren();
   for (const mode of catalog.modes) {
+    const presentation = rendererPermissionModePresentation(mode, locale);
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.permissionModeId = mode.id;
@@ -287,13 +324,13 @@ function rebuildOptions(
     const copy = document.createElement("span");
     copy.className = "min-w-0 flex-1";
     const title = document.createElement("span");
-    title.textContent = mode.label;
+    title.textContent = presentation.label;
     title.className = "block font-medium";
     title.style.letterSpacing = "0";
     copy.append(title);
-    if (mode.description) {
+    if (presentation.description) {
       const description = document.createElement("span");
-      description.textContent = mode.description;
+      description.textContent = presentation.description;
       description.className = "mt-0.5 block text-xs text-token-text-tertiary";
       description.style.lineHeight = "16px";
       description.style.letterSpacing = "0";
@@ -314,7 +351,11 @@ export function renderRendererPermissionModePicker(
   control: RendererPermissionModePickerControl,
   view: RendererPermissionModeControlView,
   visible: boolean,
+  locale: RendererSettingsLocale = control.locale,
 ): void {
+  control.locale = locale;
+  const messages = rendererHarnessMessages(locale);
+  control.menu.setAttribute("aria-label", messages.permissionMode);
   control.root.style.display = visible ? "inline-flex" : "none";
   control.root.style.alignItems = "center";
   control.root.style.alignSelf = "center";
@@ -325,15 +366,15 @@ export function renderRendererPermissionModePicker(
     control.close();
     return;
   }
-  const signature = JSON.stringify(view.catalog);
+  const signature = `${locale}:${JSON.stringify(view.catalog)}`;
   if (view.catalog && control.root.dataset.catalogSignature !== signature) {
-    rebuildOptions(control, view.catalog);
+    rebuildOptions(control, view.catalog, locale);
     control.root.dataset.catalogSignature = signature;
   }
-  const label = rendererPermissionModeLabel(view);
+  const label = rendererPermissionModeLabel(view, locale);
   if (control.label.textContent !== label) control.label.textContent = label;
   control.trigger.title = view.error ? `${label}: ${view.error}` : label;
-  control.trigger.setAttribute("aria-label", `Permission mode: ${label}`);
+  control.trigger.setAttribute("aria-label", `${messages.permissionMode}: ${label}`);
   control.trigger.disabled =
     view.status === "loading" || view.status === "selecting" || view.catalog === undefined;
   control.trigger.setAttribute("aria-busy", String(view.status === "selecting"));

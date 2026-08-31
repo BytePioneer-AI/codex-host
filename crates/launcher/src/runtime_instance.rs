@@ -145,7 +145,13 @@ pub fn default_guard_path() -> io::Result<PathBuf> {
 }
 
 pub struct LauncherGuard {
-    _file: File,
+    file: File,
+}
+
+impl Drop for LauncherGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 pub fn try_acquire_launcher_guard(path: &Path) -> io::Result<Option<LauncherGuard>> {
@@ -168,7 +174,7 @@ pub fn try_acquire_launcher_guard(path: &Path) -> io::Result<Option<LauncherGuar
         .truncate(false)
         .open(path)?;
     match file.try_lock_exclusive() {
-        Ok(()) => Ok(Some(LauncherGuard { _file: file })),
+        Ok(()) => Ok(Some(LauncherGuard { file })),
         Err(error)
             if error.kind() == io::ErrorKind::WouldBlock || error.raw_os_error() == Some(33) =>
         {
@@ -407,12 +413,14 @@ mod tests {
                 .expect("contended guard")
                 .is_none()
         );
+        let inherited_file = first.file.try_clone().expect("duplicate guard descriptor");
         drop(first);
         assert!(
             try_acquire_launcher_guard(&path)
                 .expect("reacquire guard")
                 .is_some()
         );
+        drop(inherited_file);
         fs::remove_dir_all(path.parent().expect("fixture parent")).expect("remove fixture");
     }
 

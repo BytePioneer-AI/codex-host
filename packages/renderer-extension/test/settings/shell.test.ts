@@ -13,20 +13,8 @@ describe("Renderer settings foundation", () => {
     const registry = createDefaultRendererSettingsRegistry();
 
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
-    expect(pages.map(({ label }) => label)).toEqual([
-      "Connections",
-      "Model Pool",
-      "Routes",
-      "Gateway",
-      "Updates",
-    ]);
-    expect(pages.map(({ icon }) => icon)).toEqual([
-      "connections",
-      "model-pool",
-      "routes",
-      "gateway",
-      "updates",
-    ]);
+    expect(pages.map(({ label }) => label)).toEqual(["Connections", "Updates", "About"]);
+    expect(pages.map(({ icon }) => icon)).toEqual(["connections", "updates", "about"]);
     expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
     expect(pages.every((page) => Object.isFrozen(page))).toBe(true);
@@ -50,13 +38,10 @@ describe("Renderer settings foundation", () => {
     ).toBe(false);
   });
 
-  it("keeps product placeholders unavailable while Connections provides diagnostics", () => {
+  it("publishes only available settings pages", () => {
     const pages = createDefaultRendererSettingsPages();
-    const serializedPlaceholders = pages
-      .filter(({ id }) => !["connections", "updates"].includes(id))
-      .map(({ mount }) => mount.toString())
-      .join("\n");
-    expect(serializedPlaceholders).not.toMatch(/save|connect|start|test|api.?key|oauth|fetch/iu);
+
+    expect(pages.map(({ id }) => id)).toEqual(["connections", "updates", "about"]);
     expect(pages.find(({ id }) => id === "connections")?.mount.toString()).toContain(
       "connectionRefresh",
     );

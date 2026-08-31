@@ -6,9 +6,13 @@ import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   MappingStore,
   type CommitReadyThreadInput,
+  type CreateDelegationInput,
   type CreateProvisionalThreadInput,
+  type DelegationStatus,
+  type FindRecentDelegationInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
+  type StoredDelegationRecordV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "@codexhost/mapping-store";
@@ -26,6 +30,18 @@ export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
+  getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
+  getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
+  getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
+  findDelegationByRequest(requestId: string): Promise<StoredDelegationRecordV1 | null>;
+  findRecentDelegation(input: FindRecentDelegationInput): Promise<StoredDelegationRecordV1 | null>;
+  listDelegations(parentHostThreadId?: HostThreadId): Promise<StoredDelegationRecordV1[]>;
+  createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1>;
+  setDelegationStatus(
+    delegationId: HostThreadId,
+    status: DelegationStatus,
+  ): Promise<StoredDelegationRecordV1>;
+  removeDelegation(delegationId: HostThreadId): Promise<void>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
@@ -97,6 +113,45 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  findByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
+    return this.store.getThreadByCreateRequest(createRequestId);
+  }
+
+  getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null> {
+    return this.store.getDelegation(delegationId);
+  }
+
+  getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null> {
+    return this.store.getDelegationByChild(childHostThreadId);
+  }
+
+  findDelegationByRequest(requestId: string): Promise<StoredDelegationRecordV1 | null> {
+    return this.store.findDelegationByRequest(requestId);
+  }
+
+  findRecentDelegation(input: FindRecentDelegationInput): Promise<StoredDelegationRecordV1 | null> {
+    return this.store.findRecentDelegation(input);
+  }
+
+  listDelegations(parentHostThreadId?: HostThreadId): Promise<StoredDelegationRecordV1[]> {
+    return this.store.listDelegations(parentHostThreadId);
+  }
+
+  createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
+    return this.store.createDelegation(input);
+  }
+
+  setDelegationStatus(
+    delegationId: HostThreadId,
+    status: DelegationStatus,
+  ): Promise<StoredDelegationRecordV1> {
+    return this.store.setDelegationStatus(delegationId, status);
+  }
+
+  removeDelegation(delegationId: HostThreadId): Promise<void> {
+    return this.store.removeDelegation(delegationId);
   }
 
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
@@ -421,6 +476,7 @@ export class ExternalThreadRepository {
 
 export function createExternalThreadRecordInput(input: {
   hostThreadId?: HostThreadId;
+  createRequestId?: string;
   harnessId: CreateProvisionalThreadInput["harnessId"];
   cwd: string;
   title?: string;
@@ -432,7 +488,7 @@ export function createExternalThreadRecordInput(input: {
 }): CreateProvisionalThreadInput {
   return {
     hostThreadId: input.hostThreadId ?? hostThreadIdSchema.parse(randomUUID()),
-    createRequestId: randomUUID(),
+    createRequestId: input.createRequestId ?? randomUUID(),
     harnessId: input.harnessId,
     cwd: input.cwd,
     ...(input.title ? { title: input.title } : {}),

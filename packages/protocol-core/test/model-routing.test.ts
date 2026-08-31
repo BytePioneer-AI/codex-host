@@ -197,12 +197,20 @@ describe("external Harness transport model routing", () => {
     ).toMatchObject({ harnessId: "claude-code", model, permissionModeId, thinkingOptionId });
   });
 
-  it("round-trips a request-scoped DeepSeek Harness Model Ref", () => {
+  it("round-trips request-scoped DeepSeek Harness Model and Permission Mode", () => {
     const model = harnessModelRefSchema.parse({ id: "deepseek-harness-model-v1.Zmxhc2g" });
-    const transportModelId = encodeDeepSeekHarnessTransportModel(model);
+    const permissionModeId = harnessPermissionModeIdSchema.parse("team-safe");
+    const transportModelId = encodeDeepSeekHarnessTransportModel(model, permissionModeId);
+    const legacyTransportModelId = encodeDeepSeekHarnessTransportModel(model);
 
-    expect(transportModelId).toBe(`${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`);
-    expect(decodeDeepSeekHarnessTransportSelection(transportModelId)).toEqual({ model });
+    expect(transportModelId).toBe(
+      `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}`,
+    );
+    expect(decodeDeepSeekHarnessTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(decodeDeepSeekHarnessTransportSelection(legacyTransportModelId)).toEqual({ model });
     expect(
       decodeCreateRoute({ id: 10, method: "thread/start", params: { model: transportModelId } }),
     ).toEqual({
@@ -210,7 +218,14 @@ describe("external Harness transport model routing", () => {
       routeMode: "native",
       transportModelId,
       model,
+      permissionModeId,
     });
+    expect(() => encodeDeepSeekHarnessTransportModel(undefined, permissionModeId)).toThrow(
+      "requires a Model Ref",
+    );
+    expect(() => decodeDeepSeekHarnessTransportSelection(`${legacyTransportModelId}@`)).toThrow(
+      "empty Permission Mode",
+    );
   });
 
   it("round-trips request-scoped Grok Model, Permission Mode, and Thinking selection", () => {

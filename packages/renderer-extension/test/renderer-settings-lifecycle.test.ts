@@ -10,7 +10,9 @@ vi.mock("../src/codex-locale-adapter.js", () => ({
 
 vi.mock("../src/settings/localization.js", () => ({
   rendererSettingsMessages: vi.fn(() => ({})),
-  resolveRendererSettingsLocale: vi.fn(() => "en"),
+  resolveRendererSettingsLocale: vi.fn((languageTags: readonly string[]) =>
+    languageTags[0]?.toLowerCase().startsWith("zh") ? "zh-CN" : "en",
+  ),
 }));
 
 vi.mock("../src/settings/pages.js", () => ({
@@ -56,6 +58,23 @@ describe("Renderer Settings lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("notifies consumers when the resolved Codex locale changes", async () => {
+    const onLocaleChange = vi.fn();
+    const ownerWindow = {
+      navigator: { languages: ["zh-CN"] },
+      document: {},
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, { onLocaleChange });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onLocaleChange).toHaveBeenCalledWith("en");
+    lifecycle.dispose();
   });
 
   it("does not bypass update backoff when DOM reconciliation refreshes repeatedly", async () => {

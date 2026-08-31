@@ -16,6 +16,8 @@ export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-ha
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const GEMINI_NATIVE_TRANSPORT_MODEL_ID = "codexhost/gemini-native";
+export const GEMINI_NATIVE_TRANSPORT_MODEL_PREFIX = `${GEMINI_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
@@ -23,6 +25,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "claude-code",
   "deepseek-harness",
   "grok",
+  "gemini",
   "omp",
 ] as const;
 
@@ -34,6 +37,7 @@ const transportModelByHarness = {
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
+  gemini: GEMINI_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
@@ -68,6 +72,7 @@ export interface ExternalConfigurationSelection {
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
 }
+
 
 export function encodePiTransportModel(
   model?: HarnessModelRef,
@@ -331,6 +336,69 @@ export function decodeDeepSeekHarnessTransportSelection(
   };
 }
 
+export function encodeGeminiTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Gemini transport configuration requires a Model Ref");
+    }
+    return GEMINI_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const permission = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (thinking) {
+    return `${GEMINI_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${permission ?? ""}@${thinking}`;
+  }
+  return `${GEMINI_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${permission ? `@${permission}` : ""}`;
+}
+
+export function decodeGeminiTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === GEMINI_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(GEMINI_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(GEMINI_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 3) {
+    throw new Error("Gemini transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Gemini transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Gemini transport configuration has an empty Thinking option");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Gemini transport Model contains an invalid Model Ref");
+  const permission = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permission && !permission.success) {
+    throw new Error("Gemini transport configuration contains an invalid Permission Mode");
+  }
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Gemini transport configuration contains an invalid Thinking option");
+  }
+  return {
+    model: model.data,
+    ...(permission?.success ? { permissionModeId: permission.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
@@ -352,8 +420,16 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    case "gemini":
+      return encodeGeminiTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+    case "gemini":
+      return encodeGeminiTransportModel(selection.model, selection.permissionModeId, selection.thinkingOptionId);
   }
 }
 
@@ -370,8 +446,12 @@ export function decodeExternalTransportSelection(
       return decodeDeepSeekHarnessTransportSelection(value);
     case "grok":
       return decodeGrokTransportSelection(value);
+    case "gemini":
+      return decodeGeminiTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "gemini":
+      return decodeGeminiTransportSelection(value);
   }
 }
 
@@ -425,6 +505,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       ...grokSelection,
     };
   }
+  const geminiSelection = decodeGeminiTransportSelection(request.params.model);
+  if (geminiSelection !== null) {
+    return {
+      harnessId: "gemini",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...geminiSelection,
+    };
+  }
   const ompSelection = decodeOmpTransportSelection(request.params.model);
   if (ompSelection !== null) {
     return {
@@ -434,7 +523,6 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       ...ompSelection,
     };
   }
-
   const harnessId = harnessByTransportModel.get(request.params.model);
   return harnessId
     ? {

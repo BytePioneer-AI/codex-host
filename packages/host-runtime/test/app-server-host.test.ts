@@ -4734,7 +4734,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: {
         turn: {
           status: "completed",
-          items: [{ type: "agentMessage" }],
+          items: [{ type: "fileChange" }, { type: "agentMessage" }],
         },
       },
     });

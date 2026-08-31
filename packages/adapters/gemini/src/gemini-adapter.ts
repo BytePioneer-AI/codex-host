@@ -101,7 +101,7 @@ import {
   stateForGeminiModel,
   type GeminiModelState,
 } from "./gemini-models.js";
-import { fetchGeminiCredits, type GeminiCreditsSnapshot } from "./gemini-credits.js";
+import type { GeminiCreditsSnapshot } from "./gemini-credits.js";
 import {
   combineUsage,
   sessionUsageFromHistory,
@@ -1260,16 +1260,9 @@ export class GeminiAdapter implements HarnessAdapter {
       createTransport: (transportOptions) =>
         new GeminiAcpTransport({ ...options, ...transportOptions }),
     };
-    this.#fetchCredits =
-      this.#dependencies.fetchCredits ??
-      ((input) =>
-        fetchGeminiCredits(
-          input.environment
-            ? { environment: input.environment }
-            : this.#environment
-              ? { environment: this.#environment }
-              : {},
-        ));
+    // Gemini CLI does not expose a stable credits endpoint. Keep this hook injectable
+    // for hosts that provide account telemetry, but never probe an unrelated service.
+    this.#fetchCredits = this.#dependencies.fetchCredits ?? (async () => null);
   }
 
   credits(): GeminiCreditsSnapshot | null {

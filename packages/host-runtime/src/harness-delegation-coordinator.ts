@@ -47,6 +47,23 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
+const DELEGATION_TITLE_MAX_LENGTH = 120;
+const DELEGATION_TITLE_ELLIPSIS = "...";
+const ANSI_CSI_PATTERN = /\u001B\[[0-9;]*[a-zA-Z]/gu;
+const C0_AND_DEL_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/gu;
+const CONSECUTIVE_WHITESPACE = /\s+/gu;
+
+export function sanitizeDelegationTitle(task: string): string {
+  const withoutAnsi = task.replace(ANSI_CSI_PATTERN, "");
+  const withoutControls = withoutAnsi.replace(C0_AND_DEL_CONTROL_CHARACTERS, " ");
+  const collapsed = withoutControls.replace(CONSECUTIVE_WHITESPACE, " ");
+  const trimmed = collapsed.trim();
+  if (trimmed.length <= DELEGATION_TITLE_MAX_LENGTH) {
+    return trimmed;
+  }
+  const cutLength = Math.max(0, DELEGATION_TITLE_MAX_LENGTH - DELEGATION_TITLE_ELLIPSIS.length);
+  return `${trimmed.slice(0, cutLength)}${DELEGATION_TITLE_ELLIPSIS}`;
+}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -252,7 +269,7 @@ export class HarnessDelegationCoordinator {
         createRequestId,
         harnessId: harnessIdSchema.parse(targetHarnessId),
         cwd: path.resolve(input.cwd),
-        title: input.task.trim().slice(0, 120),
+        title: sanitizeDelegationTitle(input.task),
         transportModelId:
           input.model || input.thinkingOptionId
             ? encodeExternalTransportSelection(targetHarnessId, {

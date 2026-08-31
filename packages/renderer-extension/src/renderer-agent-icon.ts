@@ -8,6 +8,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   pi: "Pi",
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek Harness",
+  opencode: "OpenCode",
   grok: "Grok",
   omp: "Oh My Pi",
 };
@@ -79,6 +80,19 @@ export function createRendererAgentIcon(
       size,
       ownerDocument,
       "0 0 23.16 17.04",
+    );
+  }
+  if (agent === "opencode") {
+    return createSvgIcon(
+      [
+        {
+          d: "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm4 5v8h8V8H8zm2 2h4v4h-4v-4z",
+          fillRule: "evenodd",
+        },
+      ],
+      "currentColor",
+      size,
+      ownerDocument,
     );
   }
   if (agent === "omp") {

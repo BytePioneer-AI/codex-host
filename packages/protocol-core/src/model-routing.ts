@@ -14,6 +14,8 @@ export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-nati
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const OPENCODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
+export const OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
@@ -22,6 +24,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
   "deepseek-harness",
+  "opencode",
   "grok",
   "omp",
 ] as const;
@@ -33,6 +36,7 @@ const transportModelByHarness = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
+  opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
@@ -120,6 +124,50 @@ export function decodeOmpTransportSelection(value: unknown): ExternalConfigurati
 export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null | undefined {
   const selection = decodeOmpTransportSelection(value);
   return selection === null ? null : selection.model;
+}
+
+export function encodeOpenCodeTransportModel(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (thinkingOptionId) throw new Error("OpenCode transport Thinking requires a Model Ref");
+    return OPENCODE_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function decodeOpenCodeTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === OPENCODE_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("OpenCode transport configuration has an invalid component count");
+  }
+  const [modelId, thinkingOptionId] = components;
+  if (components.length === 2 && !thinkingOptionId) {
+    throw new Error("OpenCode transport configuration has an empty Thinking option");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("OpenCode transport Model contains an invalid Model Ref");
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("OpenCode transport configuration contains an invalid Thinking option");
+  }
+  return {
+    model: model.data,
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function decodePiTransportSelection(value: unknown): ExternalConfigurationSelection | null {
@@ -346,6 +394,8 @@ export function encodeExternalTransportSelection(
       );
     case "deepseek-harness":
       return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
+    case "opencode":
+      return encodeOpenCodeTransportModel(selection.model, selection.thinkingOptionId);
     case "grok":
       return encodeGrokTransportModel(
         selection.model,
@@ -368,6 +418,8 @@ export function decodeExternalTransportSelection(
       return decodeClaudeTransportSelection(value);
     case "deepseek-harness":
       return decodeDeepSeekHarnessTransportSelection(value);
+    case "opencode":
+      return decodeOpenCodeTransportSelection(value);
     case "grok":
       return decodeGrokTransportSelection(value);
     case "omp":
@@ -414,6 +466,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...deepSeekSelection,
+    };
+  }
+  const openCodeSelection = decodeOpenCodeTransportSelection(request.params.model);
+  if (openCodeSelection !== null) {
+    return {
+      harnessId: "opencode",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...openCodeSelection,
     };
   }
   const grokSelection = decodeGrokTransportSelection(request.params.model);

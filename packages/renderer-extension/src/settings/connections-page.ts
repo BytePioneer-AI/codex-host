@@ -14,6 +14,7 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
   "deepseek-harness": "https://deepseek-harness.github.io/deepseek-harness/",
+  opencode: "https://opencode.ai/docs/",
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
 });

@@ -9,23 +9,27 @@ import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
+  OPENCODE_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   isClaudeTransportModelId,
   isGrokTransportModelId,
+  isOpenCodeTransportModelId,
   isPiTransportModelId,
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
   deepSeekHarnessTransportModelId,
   grokTransportModelId,
+  openCodeTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
@@ -446,6 +450,7 @@ describe("current Codex Renderer Agent adapter", () => {
       DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
     );
     expect(modelSelectionForAgent(null, null, "grok")?.model).toBe(GROK_TRANSPORT_MODEL_ID);
+    expect(modelSelectionForAgent(null, null, "opencode")?.model).toBe(OPENCODE_TRANSPORT_MODEL_ID);
     expect(modelSelectionForAgent(null, null, "codex")).toBeNull();
   });
 
@@ -521,6 +526,20 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(
       decodeGrokTransportModelId(`${GROK_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
+  });
+
+  it("encodes OpenCode Model and Thinking without a Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({
+      id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
+    });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("ocv.aGlnaA");
+    const carrier = openCodeTransportModelId(model, thinkingOptionId);
+
+    expect(isOpenCodeTransportModelId(carrier)).toBe(true);
+    expect(decodeOpenCodeTransportModelId(carrier)).toEqual({ model, thinkingOptionId });
+    expect(modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId)?.model).toBe(
+      carrier,
+    );
   });
 
   it("extracts only a validated conversation Thread identity", () => {

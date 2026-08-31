@@ -587,7 +587,7 @@ button {
 .settings-connection-table-header,
 .settings-connection-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(92px, auto) 82px;
+  grid-template-columns: minmax(160px, 1fr) minmax(92px, auto) 108px;
   align-items: center;
   min-width: 0;
   gap: 14px;
@@ -715,6 +715,122 @@ button {
   align-items: center;
   justify-content: flex-end;
   min-width: 0;
+  gap: 4px;
+}
+
+.settings-connection-row__handle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: var(--settings-muted);
+  cursor: grab;
+  opacity: 0.6;
+}
+
+.settings-connection-row__handle:hover {
+  opacity: 1;
+}
+
+.settings-connection-row[draggable="true"] {
+  cursor: grab;
+}
+
+.settings-connection-row[data-connection-dragging="true"] {
+  opacity: 0.4;
+}
+
+.settings-connection-row[data-connection-drop-indicator="before"] {
+  box-shadow: inset 0 2px 0 0 var(--settings-focus);
+}
+
+.settings-connection-row[data-connection-drop-indicator="after"] {
+  box-shadow: inset 0 -2px 0 0 var(--settings-focus);
+}
+
+.settings-connection-row__group-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--settings-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-connection-row__group-toggle:hover {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-connection-group-divider {
+  padding: 10px 12px 6px;
+  color: var(--settings-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  /* No border-top here: the row immediately above already carries its own
+     border-bottom (it is no longer :last-child once this divider follows
+     it), so adding one here would double the separator line. */
+}
+
+.settings-connection-group-more[data-connection-drag-over="true"] {
+  background: rgb(51 156 255 / 8%);
+}
+
+.settings-connection-group-hint {
+  display: grid;
+  gap: 3px;
+  margin: 0 12px 12px;
+  padding: 14px 16px;
+  text-align: center;
+  border: 1.5px dashed var(--settings-border);
+  border-radius: 10px;
+}
+
+.settings-connection-group-more[data-connection-drag-over="true"] .settings-connection-group-hint {
+  border-color: var(--settings-focus);
+}
+
+.settings-connection-group-hint strong {
+  color: var(--settings-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.settings-connection-group-hint span {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.settings-connection-group-reset {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--settings-divider);
+  cursor: pointer;
+}
+
+.settings-connection-group-reset:hover {
+  color: var(--settings-text);
+  background: var(--settings-hover);
 }
 
 .settings-connection-install-link {

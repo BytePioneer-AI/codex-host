@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -823,6 +823,88 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor((message) => requestId(message, 23)),
     ).resolves.toMatchObject({ error: { code: -32090 } });
     await stopFixture(fixture);
+  });
+
+  it("inspects and saves masked Harness configuration locally", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-config-rpc-test-"));
+    const configPath = path.join(directory, "harnesses.json");
+    const fixture = createFixture({
+      environment: { CODEXHOST_HARNESS_CONFIG: configPath },
+    });
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 25,
+        method: "codexhost/harness/configuration/inspect",
+        params: {},
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 25)),
+      ).resolves.toMatchObject({
+        result: {
+          path: configPath,
+          source: "environment",
+          restartRequired: false,
+          harnesses: [{ harnessId: "pi", activeProfileId: "default" }],
+        },
+      });
+
+      writeRequest(fixture.desktopInput, {
+        id: 26,
+        method: "codexhost/harness/configuration/save",
+        params: {
+          harnessId: "pi",
+          enabled: true,
+          activeProfileId: "gateway",
+          profiles: [
+            {
+              id: "gateway",
+              label: "Gateway",
+              authType: "third-party-gateway",
+              baseUrl: "https://gateway.example/pi",
+              ["api" + "Key"]: "rpc-managed-secret",
+              environment: { CUSTOM_TOKEN: "environment-secret" },
+            },
+          ],
+        },
+      });
+      const saved = await fixture.collector.waitFor((message) => requestId(message, 26));
+      expect(saved).toMatchObject({
+        result: {
+          snapshot: {
+            restartRequired: true,
+            harnesses: [
+              {
+                harnessId: "pi",
+                activeProfileId: "gateway",
+                profiles: [
+                  {
+                    id: "gateway",
+                    apiKeyConfigured: true,
+                    environmentKeys: ["CUSTOM_TOKEN"],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      expect(JSON.stringify(saved)).not.toContain("rpc-managed-secret");
+      expect(JSON.stringify(saved)).not.toContain("environment-secret");
+      expect(readFileSync(configPath, "utf8")).toContain("rpc-managed-secret");
+
+      writeRequest(fixture.desktopInput, {
+        id: 27,
+        method: "codexhost/harness/configuration/save",
+        params: { harnessId: "pi", enabled: true, activeProfileId: "missing", profiles: [] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 27)),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    } finally {
+      await stopFixture(fixture);
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("handles Pi inspection locally without opening a Thread Session", async () => {

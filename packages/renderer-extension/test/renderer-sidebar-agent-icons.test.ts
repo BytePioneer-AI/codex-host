@@ -91,6 +91,8 @@ function clientWith(
   return {
     forkThread: vi.fn(),
     inspectHarness: vi.fn(),
+    inspectHarnessConfiguration: vi.fn(),
+    saveHarnessConfiguration: vi.fn(),
     inspectThread: vi.fn(),
     inspectThreadCommands: vi.fn(),
     executeThreadCommand: vi.fn(),

@@ -39,6 +39,7 @@ vi.mock("../src/settings/trigger.js", () => ({
 }));
 
 import { installRendererSettingsLifecycle } from "../src/renderer-settings-lifecycle.js";
+import { createDefaultRendererSettingsPages } from "../src/settings/pages.js";
 
 function failedUpdateCheck(): UpdateCheckResult {
   return {
@@ -74,6 +75,28 @@ describe("Renderer Settings lifecycle", () => {
     await Promise.resolve();
 
     expect(onLocaleChange).toHaveBeenCalledWith("en");
+    lifecycle.dispose();
+  });
+
+  it("provides the Harness configuration client to Settings pages", () => {
+    const harnessConfigurationClient = {
+      inspectHarnessConfiguration: vi.fn(),
+      saveHarnessConfiguration: vi.fn(),
+    };
+    const ownerWindow = {
+      navigator: { languages: ["en"] },
+      document: {},
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
+      getHarnessConfigurationClient: () => harnessConfigurationClient,
+    });
+
+    const pageFactory = vi.mocked(createDefaultRendererSettingsPages);
+    const getClient = pageFactory.mock.calls[0]?.[3];
+    expect(getClient?.()).toBe(harnessConfigurationClient);
     lifecycle.dispose();
   });
 

@@ -12,12 +12,14 @@ import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
+import Plus from "lucide/dist/esm/icons/plus.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
+import Trash2 from "lucide/dist/esm/icons/trash-2.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import codexLogoUrl from "../assets/codex-logo-bright.png";
 
@@ -42,6 +44,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "download",
   "chevron-left",
   "chevron-right",
+  "plus",
+  "trash",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -67,6 +71,8 @@ const iconNodes = {
   download: Download,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
+  plus: Plus,
+  trash: Trash2,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

@@ -222,6 +222,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
+    harnesses: "Harnesses",
     updates: "Updates",
     about: "About",
   }),
@@ -332,6 +333,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
+    harnesses: "Harness 配置",
     updates: "更新",
     about: "关于",
   }),

@@ -12,6 +12,10 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import {
+  FileHarnessConfigurationStore,
+  type HarnessConfigurationStore,
+} from "@codexhost/harness-config";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
@@ -24,6 +28,10 @@ import {
   externalThreadForkResultSchema,
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
+  harnessConfigurationInspectParamsSchema,
+  harnessConfigurationSaveParamsSchema,
+  harnessConfigurationSaveResultSchema,
+  harnessConfigurationSnapshotSchema,
   harnessInspectionSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
@@ -182,6 +190,7 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  harnessConfigurationStore?: HarnessConfigurationStore;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
 }
 
@@ -250,6 +259,16 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_PI_COMMAND",
     "CODEXHOST_ENABLE_CLAUDE_CODE",
     "CODEXHOST_CLAUDE_COMMAND",
+    "CODEXHOST_DEEPSEEK_HARNESS_COMMAND",
+    "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT",
+    "CODEXHOST_GROK_COMMAND",
+    "CODEXHOST_GEMINI_COMMAND",
+    "CODEXHOST_GEMINI_BASE_URL",
+    "CODEXHOST_GEMINI_API_KEY_ENV",
+    "CODEXHOST_GEMINI_API_KEY",
+    "CODEXHOST_GEMINI_MODEL",
+    "CODEXHOST_HARNESS_CONFIG",
+    "CODEXHOST_OMP_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
     "CODEXHOST_LAUNCHER_PID",
     "CODEXHOST_LAUNCHER_EXECUTABLE",
@@ -424,6 +443,7 @@ export class AppServerHost {
   #official: OfficialAppServerConnection | null = null;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #externalRuntime: ExternalThreadRuntime;
+  #harnessConfigurationStore: HarnessConfigurationStore;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -471,6 +491,12 @@ export class AppServerHost {
         throw new Error(`External Adapter '${harnessId}' has mismatched Harness ID`);
       }
     }
+    this.#harnessConfigurationStore =
+      options.harnessConfigurationStore ??
+      new FileHarnessConfigurationStore({
+        environment: this.#options.environment ?? process.env,
+        harnessIds: [...this.#externalAdapters.keys()],
+      });
     this.#externalRuntime = new ExternalThreadRuntime({
       adapters: this.#externalAdapters,
       environment: this.#options.environment ?? process.env,
@@ -619,6 +645,14 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/harness/inspect") {
         this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/configuration/inspect") {
+        this.#dispatchDesktopRequest(() => this.#inspectHarnessConfiguration(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/configuration/save") {
+        this.#dispatchDesktopRequest(() => this.#saveHarnessConfiguration(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -1646,6 +1680,50 @@ export class AppServerHost {
     await this.#writer.json(
       rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
     );
+  }
+
+  async #inspectHarnessConfiguration(request: JsonRpcRequest): Promise<void> {
+    const params = harnessConfigurationInspectParamsSchema.safeParse(
+      request.params === undefined ? {} : request.params,
+    );
+    if (!params.success) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Invalid Harness configuration inspection params"),
+      );
+      return;
+    }
+    try {
+      const snapshot = harnessConfigurationSnapshotSchema.parse(
+        await this.#harnessConfigurationStore.inspect(),
+      );
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(snapshot) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32092,
+          `Harness configuration inspection failed: ${errorMessage(error)}`,
+        ),
+      );
+    }
+  }
+
+  async #saveHarnessConfiguration(request: JsonRpcRequest): Promise<void> {
+    const params = harnessConfigurationSaveParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Harness configuration params"));
+      return;
+    }
+    try {
+      const result = harnessConfigurationSaveResultSchema.parse(
+        await this.#harnessConfigurationStore.save(params.data),
+      );
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32093, `Harness configuration save failed: ${errorMessage(error)}`),
+      );
+    }
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

@@ -113,6 +113,8 @@ describe("Remote Control app-server bridge", () => {
       environment: {
         CODEXHOST_HOST_NODE_PATH: path.resolve("fixture", "node.exe"),
         CODEXHOST_HOST_RUNTIME_PATH: path.resolve("fixture", "host-runtime.mjs"),
+        CODEXHOST_HARNESS_CONFIG: path.resolve("fixture", "harnesses.json"),
+        CODEXHOST_GEMINI_API_KEY: "must-not-reach-stock-codex",
         LOCALAPPDATA: path.resolve("fixture", "local-app-data"),
       },
       platform: "win32",
@@ -124,6 +126,8 @@ describe("Remote Control app-server bridge", () => {
     const childEnvironment = officialEnvironment(plan?.environment ?? {});
     expect(childEnvironment).not.toHaveProperty("CODEXHOST_HOST_NODE_PATH");
     expect(childEnvironment).not.toHaveProperty("CODEXHOST_HOST_RUNTIME_PATH");
+    expect(childEnvironment).not.toHaveProperty("CODEXHOST_HARNESS_CONFIG");
+    expect(childEnvironment).not.toHaveProperty("CODEXHOST_GEMINI_API_KEY");
     expect(childEnvironment).toMatchObject({
       [REMOTE_CONTROL_BRIDGE_PIPE_ENV]: plan?.pipePath,
       [REMOTE_CONTROL_BRIDGE_NODE_ENV]: path.resolve("fixture", "node.exe"),

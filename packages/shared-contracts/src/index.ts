@@ -105,6 +105,26 @@ export {
 } from "./ids.js";
 export type { HarnessId, HostInteractionId, HostItemId, HostThreadId, HostTurnId } from "./ids.js";
 export {
+  harnessAuthenticationTypeSchema,
+  harnessConfigurationEntrySummarySchema,
+  harnessConfigurationInspectParamsSchema,
+  harnessConfigurationProfileInputSchema,
+  harnessConfigurationProfileSummarySchema,
+  harnessConfigurationSaveParamsSchema,
+  harnessConfigurationSaveResultSchema,
+  harnessConfigurationSnapshotSchema,
+} from "./harness-configurations.js";
+export type {
+  HarnessAuthenticationType,
+  HarnessConfigurationEntrySummary,
+  HarnessConfigurationInspectParams,
+  HarnessConfigurationProfileInput,
+  HarnessConfigurationProfileSummary,
+  HarnessConfigurationSaveParams,
+  HarnessConfigurationSaveResult,
+  HarnessConfigurationSnapshot,
+} from "./harness-configurations.js";
+export {
   jsonRpcEnvelopeSchema,
   jsonRpcErrorResponseSchema,
   jsonRpcErrorSchema,

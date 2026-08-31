@@ -1,11 +1,23 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+export {
+  FileHarnessConfigurationStore,
+  HARNESS_CONFIG_PATH_ENV,
+  resolveHarnessConfigurationPath,
+  type HarnessConfigurationStore,
+} from "./store.js";
+
 const envName = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name");
 const endpoint = z.string().url();
 const runtimeEnvironment = z.record(z.string(), z.string());
+const profileId = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9._~-]+$/, "must use transport-safe characters");
 
 export const harnessEndpointConfigSchema = z.object({
   command: z.string().min(1).optional(),
@@ -20,16 +32,55 @@ export const harnessEndpointConfigSchema = z.object({
   models: z.array(z.string().min(1)).optional(),
 });
 
-export const harnessConfigFileSchema = z.object({
+export const harnessConfigFileV1Schema = z.object({
   version: z.literal(1).default(1),
   harnesses: z.record(z.string().min(1), harnessEndpointConfigSchema),
 });
 
+export const harnessProfileConfigSchema = harnessEndpointConfigSchema.extend({
+  label: z.string().min(1).max(128),
+  authType: z.enum(["none", "oauth", "official-api-key", "third-party-gateway", "environment"]),
+});
+
+export const harnessProfileSetSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    activeProfile: profileId,
+    profiles: z.record(profileId, harnessProfileConfigSchema),
+  })
+  .superRefine((value, context) => {
+    if (!Object.hasOwn(value.profiles, value.activeProfile)) {
+      context.addIssue({
+        code: "custom",
+        message: "activeProfile must reference an existing profile",
+        path: ["activeProfile"],
+      });
+    }
+  });
+
+export const harnessConfigFileV2Schema = z.object({
+  version: z.literal(2),
+  harnesses: z.record(z.string().min(1), harnessProfileSetSchema),
+});
+
+export const harnessConfigFileSchema = z.discriminatedUnion("version", [
+  harnessConfigFileV1Schema,
+  harnessConfigFileV2Schema,
+]);
+
 export type HarnessEndpointConfig = z.infer<typeof harnessEndpointConfigSchema>;
+export type HarnessProfileConfig = z.infer<typeof harnessProfileConfigSchema>;
+export type HarnessProfileSet = z.infer<typeof harnessProfileSetSchema>;
+export type HarnessConfigFileV1 = z.infer<typeof harnessConfigFileV1Schema>;
+export type HarnessConfigFileV2 = z.infer<typeof harnessConfigFileV2Schema>;
 export type HarnessConfigFile = z.infer<typeof harnessConfigFileSchema>;
 
 export function parseHarnessConfig(value: unknown): HarnessConfigFile {
-  return harnessConfigFileSchema.parse(value);
+  const candidate =
+    typeof value === "object" && value !== null && !("version" in value)
+      ? { ...value, version: 1 }
+      : value;
+  return harnessConfigFileSchema.parse(candidate);
 }
 
 /** Parse the JSON representation used by CODEXHOST_HARNESS_CONFIG. */
@@ -41,7 +92,34 @@ export function getHarnessConfig(
   config: HarnessConfigFile,
   harnessId: string,
 ): HarnessEndpointConfig | undefined {
-  return config.harnesses[harnessId];
+  if (config.version === 1) return config.harnesses[harnessId];
+  const harness = config.harnesses[harnessId];
+  if (!harness?.enabled) return undefined;
+  const profile = harness.profiles[harness.activeProfile];
+  if (!profile) return undefined;
+  const endpoint = harnessEndpointConfigSchema.parse(profile);
+  const common = {
+    ...(endpoint.command ? { command: endpoint.command } : {}),
+    ...(endpoint.cwd ? { cwd: endpoint.cwd } : {}),
+    ...(endpoint.environment ? { environment: endpoint.environment } : {}),
+    ...(endpoint.model ? { model: endpoint.model } : {}),
+    ...(endpoint.models ? { models: endpoint.models } : {}),
+  };
+  if (profile.authType === "third-party-gateway") return { ...common, ...endpoint };
+  if (profile.authType === "official-api-key") {
+    return {
+      ...common,
+      ...(endpoint.apiKey ? { apiKey: endpoint.apiKey } : {}),
+      ...(endpoint.apiKeyEnv ? { apiKeyEnv: endpoint.apiKeyEnv } : {}),
+    };
+  }
+  if (profile.authType === "environment") {
+    return {
+      ...common,
+      ...(endpoint.apiKeyEnv ? { apiKeyEnv: endpoint.apiKeyEnv } : {}),
+    };
+  }
+  return common;
 }
 
 /** Resolve a configured model while preventing a model from another harness leaking into this session. */
@@ -65,12 +143,23 @@ export function resolveHarnessRuntimeEnv(
 ): NodeJS.ProcessEnv {
   if (!config) return { ...parent };
   const environment = { ...parent, ...config.environment };
-  if (harnessId !== "gemini") return environment;
-  if (config.baseUrl) environment.GOOGLE_GEMINI_BASE_URL = config.baseUrl;
-  if (config.apiKey) environment.GEMINI_API_KEY = config.apiKey;
-  else if (config.apiKeyEnv && parent[config.apiKeyEnv])
-    environment.GEMINI_API_KEY = parent[config.apiKeyEnv];
-  if (config.model) environment.GEMINI_MODEL = config.model;
+  const apiKey = config.apiKey ?? (config.apiKeyEnv ? environment[config.apiKeyEnv] : undefined);
+  if (harnessId === "gemini") {
+    if (config.baseUrl) environment.GOOGLE_GEMINI_BASE_URL = config.baseUrl;
+    if (apiKey) environment.GEMINI_API_KEY = apiKey;
+    if (config.model) environment.GEMINI_MODEL = config.model;
+  } else if (harnessId === "claude-code") {
+    if (config.baseUrl) environment.ANTHROPIC_BASE_URL = config.baseUrl;
+    if (apiKey) environment.ANTHROPIC_API_KEY = apiKey;
+    if (config.model) environment.ANTHROPIC_MODEL = config.model;
+  } else if (harnessId === "grok") {
+    if (config.baseUrl) environment.GROK_MODELS_BASE_URL = config.baseUrl;
+    if (apiKey) environment.XAI_API_KEY = apiKey;
+    if (config.model) environment.GROK_DEFAULT_MODEL = config.model;
+  } else if (harnessId === "deepseek-harness") {
+    if (config.baseUrl) environment.DEEPSEEK_BASE_URL = config.baseUrl;
+    if (apiKey) environment.DEEPSEEK_API_KEY = apiKey;
+  }
   return environment;
 }
 

@@ -10,6 +10,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  HARNESS_CONFIGURATION_INSPECT_METHOD,
+  HARNESS_CONFIGURATION_SAVE_METHOD,
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
@@ -60,6 +62,62 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("uses validated Harness configuration inspect and save RPCs", async () => {
+    const snapshot = {
+      path: "/tmp/codexhost/harnesses.json",
+      source: "managed",
+      writable: true,
+      restartRequired: false,
+      harnesses: [
+        {
+          harnessId: "gemini",
+          enabled: true,
+          activeProfileId: "official",
+          profiles: [
+            {
+              id: "official",
+              label: "Official",
+              authType: "official-api-key",
+              apiKeyConfigured: true,
+              apiKeyHint: "...1234",
+              environmentKeys: [],
+            },
+          ],
+        },
+      ],
+    };
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce({ snapshot: { ...snapshot, restartRequired: true } });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(client.inspectHarnessConfiguration({})).resolves.toMatchObject(snapshot);
+    await expect(
+      client.saveHarnessConfiguration({
+        harnessId: harnessIdSchema.parse("gemini"),
+        enabled: true,
+        activeProfileId: "official",
+        profiles: [
+          {
+            id: "official",
+            label: "Official",
+            authType: "official-api-key",
+            ["api" + "Key"]: "replacement-secret",
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ snapshot: { restartRequired: true } });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_CONFIGURATION_INSPECT_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(
+      2,
+      HARNESS_CONFIGURATION_SAVE_METHOD,
+      expect.objectContaining({ harnessId: "gemini", enabled: true }),
+    );
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -139,11 +197,13 @@ describe("Renderer fixed Model request client", () => {
       "executeThreadCommand",
       "forkThread",
       "inspectHarness",
+      "inspectHarnessConfiguration",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listThreadOwnership",
       "readUpdateStatus",
+      "saveHarnessConfiguration",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",

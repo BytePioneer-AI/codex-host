@@ -1415,6 +1415,340 @@ button {
   outline-offset: 2px;
 }
 
+.settings-harness-loading,
+.settings-harness-error {
+  min-height: 96px;
+  padding: 20px;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-harness-error {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+}
+
+.settings-harness-error p {
+  margin: 0;
+}
+
+.settings-harness-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(390px, 1.6fr);
+  align-items: start;
+  min-width: 0;
+  overflow: hidden;
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-harness-list {
+  min-width: 0;
+  border-right: 1px solid var(--settings-border);
+}
+
+.settings-harness-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: 64px;
+  gap: 10px;
+  padding: 10px 12px;
+  color: var(--settings-text);
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--settings-divider);
+  cursor: pointer;
+}
+
+.settings-harness-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-harness-row:hover {
+  background: var(--settings-hover);
+}
+
+.settings-harness-row[aria-current="true"] {
+  background: var(--settings-active);
+}
+
+.settings-harness-row:focus-visible,
+.settings-harness-field input:focus-visible,
+.settings-harness-field select:focus-visible,
+.settings-harness-environment-row input:focus-visible,
+.settings-harness-environment-remove:focus-visible,
+.settings-harness-advanced summary:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: -2px;
+}
+
+.settings-harness-row__identity,
+.settings-harness-editor__identity {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+}
+
+.settings-harness-row__identity strong,
+.settings-harness-editor__identity strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-harness-row__state {
+  display: grid;
+  justify-items: end;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.settings-harness-row__state small {
+  max-width: 110px;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-harness-editor {
+  min-width: 0;
+}
+
+.settings-harness-metadata {
+  min-width: 0;
+  padding: 9px 16px;
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgb(0 0 0 / 14%);
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-harness-form {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+  padding: 16px;
+}
+
+.settings-harness-editor__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 16px;
+}
+
+.settings-harness-enabled,
+.settings-harness-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--settings-text);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-harness-enabled input,
+.settings-harness-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--settings-focus);
+}
+
+.settings-harness-fields,
+.settings-harness-auth-fields,
+.settings-harness-advanced__fields {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.settings-harness-profile-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  min-width: 0;
+  gap: 8px;
+}
+
+.settings-harness-profile-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 1px;
+}
+
+.settings-harness-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--settings-muted);
+  background: transparent;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-harness-icon-action:hover:not(:disabled) {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-harness-icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.settings-harness-icon-action:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
+}
+
+.settings-harness-native-hint {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 17px;
+  background: rgb(255 255 255 / 3%);
+  border-left: 2px solid var(--settings-border);
+}
+
+.settings-harness-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 17px;
+}
+
+.settings-harness-field input,
+.settings-harness-field select,
+.settings-harness-environment-row input {
+  min-width: 0;
+  height: 36px;
+  padding: 7px 9px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  background: rgb(0 0 0 / 18%);
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+}
+
+.settings-harness-field input::placeholder,
+.settings-harness-environment-row input::placeholder {
+  color: var(--settings-muted);
+  opacity: 0.78;
+}
+
+.settings-harness-field input:disabled,
+.settings-harness-field select:disabled,
+.settings-harness-environment-row input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.settings-harness-advanced {
+  padding-top: 4px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-harness-advanced summary {
+  padding: 10px 0;
+  color: var(--settings-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.settings-harness-advanced__fields > strong {
+  margin-top: 4px;
+  color: var(--settings-text);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.settings-harness-environment {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.settings-harness-environment-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1.2fr) 32px;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.settings-harness-environment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--settings-muted);
+  font-size: 18px;
+  background: transparent;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-harness-environment-remove:hover:not(:disabled) {
+  color: #fca5a5;
+  border-color: rgb(248 113 113 / 45%);
+}
+
+.settings-harness-add-environment {
+  min-height: 32px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.settings-harness-status {
+  min-height: 18px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.settings-harness-save {
+  justify-self: end;
+}
+
 .codexhost-settings-icon {
   display: block;
   flex: none;
@@ -1516,6 +1850,42 @@ button {
   .settings-status-row__detail {
     grid-column: 1 / -1;
     margin: -8px 0 0 58px;
+  }
+
+  .settings-harness-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-harness-list {
+    display: flex;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--settings-border);
+  }
+
+  .settings-harness-row {
+    width: 180px;
+    min-width: 180px;
+    border-right: 1px solid var(--settings-divider);
+    border-bottom: 0;
+  }
+
+  .settings-harness-environment-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .settings-harness-environment-row input:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .settings-harness-environment-remove {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .settings-harness-save {
+    width: 100%;
   }
 }
 

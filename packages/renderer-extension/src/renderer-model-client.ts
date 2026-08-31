@@ -2,6 +2,10 @@ import {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
+  harnessConfigurationInspectParamsSchema,
+  harnessConfigurationSaveParamsSchema,
+  harnessConfigurationSaveResultSchema,
+  harnessConfigurationSnapshotSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
@@ -26,6 +30,10 @@ import {
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
   type HarnessCommandCatalog,
+  type HarnessConfigurationInspectParams,
+  type HarnessConfigurationSaveParams,
+  type HarnessConfigurationSaveResult,
+  type HarnessConfigurationSnapshot,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
@@ -48,6 +56,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_CONFIGURATION_INSPECT_METHOD = "codexhost/harness/configuration/inspect";
+export const HARNESS_CONFIGURATION_SAVE_METHOD = "codexhost/harness/configuration/save";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
@@ -101,6 +111,12 @@ export interface RendererModelClient {
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  inspectHarnessConfiguration(
+    input: HarnessConfigurationInspectParams,
+  ): Promise<HarnessConfigurationSnapshot>;
+  saveHarnessConfiguration(
+    input: HarnessConfigurationSaveParams,
+  ): Promise<HarnessConfigurationSaveResult>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -221,6 +237,20 @@ export function createRendererModelClient(
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async inspectHarnessConfiguration(
+      input: HarnessConfigurationInspectParams,
+    ): Promise<HarnessConfigurationSnapshot> {
+      const params = harnessConfigurationInspectParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_CONFIGURATION_INSPECT_METHOD, params);
+      return harnessConfigurationSnapshotSchema.parse(result);
+    },
+    async saveHarnessConfiguration(
+      input: HarnessConfigurationSaveParams,
+    ): Promise<HarnessConfigurationSaveResult> {
+      const params = harnessConfigurationSaveParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_CONFIGURATION_SAVE_METHOD, params);
+      return harnessConfigurationSaveResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);

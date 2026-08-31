@@ -66,28 +66,39 @@ npm install -g @codexhost/cli
 codexhost
 ```
 
-### Gemini Harness 与独立端点配置
+### Harness 配置管理
 
-CodexHost 通过 Gemini CLI 的原生 ACP 会话启动 Gemini（需要先安装并登录 `gemini` 命令）。每个 Harness 的端点、密钥环境变量和模型可以独立配置；Host 只把配置注入 Gemini 子进程，不会在 CodexHost 中自行实现模型请求或替换 ACP 能力。
+在 codexhost Settings 的 **Harness 配置** 页面中，可以为 Gemini、Claude Code、Grok、DeepSeek Harness、Pi 和 Oh My Pi 分别维护启用状态与多个 Profile。API Key 只会以脱敏状态显示；保存后的配置在重启 codexhost 后应用到新启动的原生 Harness 进程。
 
-设置 `CODEXHOST_HARNESS_CONFIG` 指向一个 JSON 文件即可加载配置：
+默认配置文件为 `~/.codexhost/harnesses.json`，也可以用 `CODEXHOST_HARNESS_CONFIG` 指向其他文件。Settings 写入 v2 Profile 格式，并继续兼容读取已有的 v1 文件：
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "harnesses": {
     "gemini": {
-      "baseUrl": "https://your-gateway.example/v1",
-      "apiKey": "your-provider-key",
-      "model": "gemini-2.5-pro",
-      "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
-      "command": "gemini"
+      "enabled": true,
+      "activeProfile": "gateway",
+      "profiles": {
+        "oauth": {
+          "label": "Google OAuth",
+          "authType": "oauth"
+        },
+        "gateway": {
+          "label": "Team gateway",
+          "authType": "third-party-gateway",
+          "baseUrl": "https://your-gateway.example/v1",
+          "apiKey": "your-provider-key",
+          "model": "gemini-2.5-pro",
+          "command": "gemini"
+        }
+      }
     }
   }
 }
 ```
 
-`apiKey` 可以直接由 CodexHost 配置文件管理，不需要再写 Gemini CLI 配置；生产环境也可以使用 `apiKeyEnv` 引用外部密钥环境变量。也可以用环境变量覆盖单个字段：`CODEXHOST_GEMINI_BASE_URL`、`CODEXHOST_GEMINI_API_KEY`、`CODEXHOST_GEMINI_API_KEY_ENV`、`CODEXHOST_GEMINI_MODEL` 和 `CODEXHOST_GEMINI_COMMAND`。Gemini 子进程最终使用官方变量 `GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY` 和 `GEMINI_MODEL`。
+codexhost 不直接请求模型 API。它把当前 Profile 翻译为 Harness 原生环境或启动配置，再由原生 Harness 执行模型、工具、会话和权限能力。目前 Gemini、Claude Code、Grok 和 DeepSeek Harness 有显式的端点与 Key 环境翻译器；Pi 和 Oh My Pi 可以从 Settings 注入各自支持的环境变量。Pi/Oh My Pi 的任意自定义 Provider 仍依赖其原生模型注册文件，不能用一个通用 Base URL 字段替代。
 
 **或下载** [安装包](https://github.com/BytePioneer-AI/codex-host/releases)（macOS、Windows）
 

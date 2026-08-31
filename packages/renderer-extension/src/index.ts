@@ -28,6 +28,8 @@ export type {
 } from "./agent-selection-state.js";
 export {
   HARNESS_INSPECT_METHOD,
+  HARNESS_CONFIGURATION_INSPECT_METHOD,
+  HARNESS_CONFIGURATION_SAVE_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_COMMANDS_INSPECT_METHOD,
@@ -203,6 +205,7 @@ export type {
   RendererConnectionSnapshot,
   RendererUpdateClient,
 } from "./settings/pages.js";
+export type { RendererHarnessConfigurationClient } from "./settings/harness-configuration-page.js";
 export {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   RENDERER_SETTINGS_LANGUAGE_SELECTIONS,

@@ -150,12 +150,9 @@ describe("remote Host lifecycle", () => {
       startRemoteHost({ platform: "linux", environment: { HOME: home } }),
     ).rejects.toThrow("socket owner does not match");
     expect(launch).not.toHaveBeenCalled();
-    expect(terminate).toHaveBeenCalledWith(
-      expect.objectContaining(manifest),
-      socketPath,
-      "stock",
-      { HOME: home },
-    );
+    expect(terminate).toHaveBeenCalledWith(expect.objectContaining(manifest), socketPath, "stock", {
+      HOME: home,
+    });
   });
 
   it("stops only a protocol-verified managed Host", async () => {

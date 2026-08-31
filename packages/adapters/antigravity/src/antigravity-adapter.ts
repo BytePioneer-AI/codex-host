@@ -66,6 +66,17 @@ import {
   decodeAntigravityPermissionModeId,
   type AntigravityPermissionMode,
 } from "./permission-modes.js";
+import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
+import {
+  antigravityToolErrorMessage,
+  isAntigravityPermissionDenial,
+  isRecord,
+  parseAntigravityStreamLine,
+  type AntigravityResultEvent,
+  type AntigravityStepUpdateEvent,
+  type AntigravityStreamEvent,
+  type AntigravityUsage,
+} from "./stream-events.js";
 
 export interface AntigravityAdapterOptions {
   command?: string;
@@ -74,66 +85,6 @@ export interface AntigravityAdapterOptions {
   printTimeout?: string;
   toolOutputLimit?: number;
 }
-
-interface AntigravityUsage {
-  input_tokens?: unknown;
-  output_tokens?: unknown;
-  thinking_tokens?: unknown;
-  cache_read_tokens?: unknown;
-  total_tokens?: unknown;
-  context_used_tokens?: unknown;
-  context_window_tokens?: unknown;
-  estimated_tokens_used?: unknown;
-  max_context_tokens?: unknown;
-}
-
-interface AntigravityInitEvent {
-  event: "init";
-  conversation_id: string;
-  init?: { permission_mode?: string };
-}
-
-interface AntigravityStepUpdateEvent {
-  event: "step_update";
-  step_update: {
-    conversation_id: string;
-    step_index: number;
-    state: "ACTIVE" | "DONE" | "ERROR" | string;
-    step_type: string;
-    text_delta?: string;
-    duration_seconds?: number;
-    usage?: AntigravityUsage;
-    tool_name?: string;
-    tool_info?: {
-      name?: string;
-      parameters?: unknown;
-      output?: unknown;
-      error?: unknown;
-    };
-  };
-}
-
-interface AntigravityResultEvent {
-  event: "result";
-  result: {
-    conversation_id: string;
-    status: string;
-    response?: string;
-    num_turns: number;
-    usage?: AntigravityUsage;
-  };
-}
-
-interface AntigravityCommandResultEvent {
-  event: "command_result";
-  command: unknown;
-}
-
-export type AntigravityStreamEvent =
-  | AntigravityInitEvent
-  | AntigravityStepUpdateEvent
-  | AntigravityResultEvent
-  | AntigravityCommandResultEvent;
 
 interface ActiveTurn {
   command: TurnStartCommand;
@@ -146,6 +97,10 @@ interface ActiveTurn {
   stderr: string;
   cancellationRequested: boolean;
   receivedResult: boolean;
+  /** agy's own effective permission mode, as reported by the `init` event. */
+  nativePermissionMode: string | null;
+  /** First tool denial of the Turn, kept to explain an otherwise empty result. */
+  permissionDenial: string | null;
   latestUsage: HostUsage | null;
   contextUsagePromise: Promise<Pick<
     HostUsage,
@@ -171,10 +126,6 @@ const CAPABILITIES: HarnessSessionCapabilities = {
   subagents: { observe: false, readTranscript: false },
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -185,6 +136,24 @@ function invalidState(message: string): HarnessError {
 
 function unsupported(message: string): HarnessError {
   return { code: "unsupported", message, retryable: false };
+}
+
+/**
+ * Headless agy answers a permission request by denying it, then reports the
+ * Turn as successful with an empty response. Without this the user sees a Turn
+ * that silently did nothing.
+ */
+function permissionDeniedTurnError(nativeMode: string | null, denial: string): HarnessError {
+  const mode = nativeMode ? ` '${nativeMode}'` : "";
+  return {
+    code: "nativeFailure",
+    message:
+      `Antigravity denied a tool call under its${mode} permission mode and produced no response. ` +
+      "Headless Antigravity evaluates its own permission rules and cannot ask for approval; " +
+      "retry with the Skip permissions Permission Mode.",
+    retryable: false,
+    diagnostic: denial,
+  };
 }
 
 function jsonValue(value: unknown): JsonValue {
@@ -368,44 +337,6 @@ export function parseAntigravityModels(output: string): HarnessModelCatalog {
     defaultModel: models[0]?.ref,
     thinkingOptions: [],
   });
-}
-
-export function parseAntigravityStreamLine(line: string): AntigravityStreamEvent | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || typeof parsed.event !== "string") return null;
-  if (
-    parsed.event === "init" &&
-    typeof parsed.conversation_id === "string" &&
-    parsed.conversation_id.length > 0
-  ) {
-    return parsed as unknown as AntigravityInitEvent;
-  }
-  if (
-    parsed.event === "step_update" &&
-    isRecord(parsed.step_update) &&
-    typeof parsed.step_update.conversation_id === "string" &&
-    typeof parsed.step_update.step_index === "number" &&
-    typeof parsed.step_update.state === "string" &&
-    typeof parsed.step_update.step_type === "string"
-  ) {
-    return parsed as unknown as AntigravityStepUpdateEvent;
-  }
-  if (
-    parsed.event === "result" &&
-    isRecord(parsed.result) &&
-    typeof parsed.result.conversation_id === "string" &&
-    typeof parsed.result.status === "string" &&
-    typeof parsed.result.num_turns === "number"
-  ) {
-    return parsed as unknown as AntigravityResultEvent;
-  }
-  if (parsed.event === "command_result") return parsed as unknown as AntigravityCommandResultEvent;
-  return null;
 }
 
 function normalizedProcessError(stderr: string, fallback: string): HarnessError {
@@ -617,6 +548,8 @@ class AntigravitySession implements HarnessSession {
       stderr: "",
       cancellationRequested: false,
       receivedResult: false,
+      nativePermissionMode: null,
+      permissionDenial: null,
       latestUsage: null,
       contextUsagePromise: null,
     };
@@ -684,6 +617,7 @@ class AntigravitySession implements HarnessSession {
   #handleEvent(active: ActiveTurn, event: AntigravityStreamEvent): void {
     if (this.#active !== active) return;
     if (event.event === "init") {
+      active.nativePermissionMode = event.init?.permission_mode ?? null;
       if (this.#nativeRef && this.#nativeRef.nativeSessionId !== event.conversation_id) {
         this.#completeTurn(active, {
           status: "failed",
@@ -758,7 +692,18 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
-      this.#completeTurn(active, { status: "succeeded" }, nativeTurnRef);
+      if (active.permissionDenial !== null && !active.agentItem) {
+        this.#completeTurn(
+          active,
+          {
+            status: "failed",
+            error: permissionDeniedTurnError(active.nativePermissionMode, active.permissionDenial),
+          },
+          nativeTurnRef,
+        );
+      } else {
+        this.#completeTurn(active, { status: "succeeded" }, nativeTurnRef);
+      }
     } else {
       this.#completeTurn(
         active,
@@ -810,6 +755,10 @@ class AntigravitySession implements HarnessSession {
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
     if (step.state !== "DONE" && step.state !== "ERROR") return;
+    const toolError = antigravityToolErrorMessage(step.tool_info?.error);
+    if (toolError !== null && active.permissionDenial === null) {
+      if (isAntigravityPermissionDenial(toolError)) active.permissionDenial = toolError;
+    }
     const output = boundedText(
       step.tool_info?.output ?? step.tool_info?.error,
       this.#toolOutputLimit,
@@ -834,7 +783,9 @@ class AntigravitySession implements HarnessSession {
             status: "failed",
             error: {
               code: "nativeFailure",
-              message: `Antigravity tool '${completed.toolName}' failed`,
+              message: toolError
+                ? `Antigravity tool '${completed.toolName}' failed: ${toolError}`
+                : `Antigravity tool '${completed.toolName}' failed`,
               retryable: false,
             },
           }
@@ -978,6 +929,9 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
   #closed = false;
+  #quota: AntigravityQuotaSnapshot | null = null;
+  #quotaCwd: string | null = null;
+  #quotaRefresh: Promise<AntigravityQuotaSnapshot | null> | null = null;
 
   constructor(options: AntigravityAdapterOptions = {}) {
     this.#command = options.command;
@@ -1000,7 +954,11 @@ export class AntigravityAdapter implements HarnessAdapter {
     }
 
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready") {
+        this.#inspectionCache.set(cwd, result);
+        this.#quotaCwd = cwd;
+        void this.refreshCredits().catch(() => undefined);
+      }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -1048,6 +1006,41 @@ export class AntigravityAdapter implements HarnessAdapter {
         error: { ...normalized, stage: "model-catalog" },
       };
     }
+  }
+
+  /** Duck-typed by the Host Runtime to populate the account credits surface. */
+  credits(): AntigravityQuotaSnapshot | null {
+    return this.#quota;
+  }
+
+  refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
+    if (this.#quotaRefresh) return this.#quotaRefresh;
+    this.#quotaRefresh = this.#loadQuota().finally(() => {
+      this.#quotaRefresh = null;
+    });
+    return this.#quotaRefresh;
+  }
+
+  async #loadQuota(): Promise<AntigravityQuotaSnapshot | null> {
+    if (this.#closed) return null;
+    const executable = resolveAntigravityExecutable({
+      ...(this.#command ? { command: this.#command } : {}),
+      environment: this.#environment,
+    });
+    if (!executable) return null;
+    const cwd = this.#quotaCwd ?? process.cwd();
+    const snapshot = await fetchAntigravityQuota(async (arguments_) => {
+      const { stdout } = await runBuffered(
+        executable,
+        [...arguments_],
+        cwd,
+        this.#environment,
+        this.#inspectTimeoutMs,
+      );
+      return stdout;
+    });
+    if (snapshot) this.#quota = snapshot;
+    return snapshot;
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -1122,6 +1115,8 @@ export class AntigravityAdapter implements HarnessAdapter {
     if (this.#closed) return;
     this.#closed = true;
     this.#inspectionCache.clear();
+    this.#quota = null;
+    this.#quotaCwd = null;
     await Promise.all([...this.#sessions].map((session) => session.close()));
   }
 }

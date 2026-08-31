@@ -5,10 +5,21 @@ export {
   AntigravityAdapter,
   parseAntigravityContextUsage,
   parseAntigravityModels,
-  parseAntigravityStreamLine,
 } from "./antigravity-adapter.js";
-export type { AntigravityAdapterOptions, AntigravityStreamEvent } from "./antigravity-adapter.js";
+export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";
 export { resolveAntigravityExecutable } from "./command.js";
+export { fetchAntigravityQuota, parseAntigravityUsageCommand } from "./quota.js";
+export type {
+  AntigravityCommandRunner,
+  AntigravityQuotaBucket,
+  AntigravityQuotaSnapshot,
+} from "./quota.js";
+export {
+  antigravityToolErrorMessage,
+  isAntigravityPermissionDenial,
+  parseAntigravityStreamLine,
+} from "./stream-events.js";
+export type { AntigravityStreamEvent } from "./stream-events.js";
 
 export const packageMetadata = {
   name: "@codexhost/adapter-antigravity",

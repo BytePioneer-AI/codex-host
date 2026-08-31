@@ -54,6 +54,38 @@ const { outputFiles } = await build({
           selected: catalog.defaultModeId,
         }, true, "zh-CN");
       };
+
+      globalThis.setupPermissionModePickerZoomed = () => {
+        document.documentElement.style.setProperty("--codex-window-zoom", "1.6");
+
+        const shell = document.createElement("div");
+        shell.style.position = "fixed";
+        shell.style.inset = "0";
+        shell.style.display = "flex";
+        shell.style.alignItems = "flex-end";
+        shell.style.justifyContent = "center";
+        shell.style.boxSizing = "border-box";
+        shell.style.paddingBottom = "60px";
+        shell.style.width = "calc(100vw / var(--codex-window-zoom))";
+        shell.style.height = "calc(100vh / var(--codex-window-zoom))";
+        shell.style.zoom = "var(--codex-window-zoom)";
+
+        const permissions = mountRendererPermissionModePicker("zoomed-permissions", () => {});
+        const catalog = harnessPermissionModeCatalogSchema.parse({
+          modes: [
+            { id: "default", label: "Default" },
+            { id: "full-access", label: "Full access", dangerous: true },
+          ],
+          defaultModeId: "default",
+        });
+        renderRendererPermissionModePicker(permissions, {
+          status: "ready",
+          catalog,
+          selected: catalog.defaultModeId,
+        }, true);
+        shell.append(permissions.root);
+        document.body.append(shell);
+      };
     `,
     resolveDir: repositoryRoot,
     sourcefile: "renderer-harness-controls-localization-entry.ts",
@@ -101,4 +133,29 @@ test("localizes shared Harness command and Permission Mode controls in Chinese",
   await expect(permissionMenu).toContainText("写入");
   await expect(permissionMenu).toContainText("完全访问");
   await expect(permissionMenu).toContainText("无需批准提示即可运行所有工具操作。");
+});
+
+test("keeps the Permission Mode menu anchored inside the Codex window zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 1_920, height: 1_440 });
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupPermissionModePickerZoomed");
+    if (typeof setup !== "function") throw new Error("Permission Mode picker setup is unavailable");
+    setup();
+  });
+
+  const trigger = page.locator(
+    '[data-codexhost-permission-mode-control="zoomed-permissions"] > button',
+  );
+  const menu = page.locator("#zoomed-permissions-permission-mode-menu");
+  await trigger.click();
+  await expect(menu).toBeVisible();
+
+  const [triggerBox, menuBox] = await Promise.all([trigger.boundingBox(), menu.boundingBox()]);
+  if (!triggerBox || !menuBox) throw new Error("Permission Mode picker geometry is unavailable");
+
+  expect(menuBox.x).toBeCloseTo(triggerBox.x, 0);
+  expect(menuBox.width).toBeCloseTo(320 * 1.6, 0);
+  expect(triggerBox.y - (menuBox.y + menuBox.height)).toBeCloseTo(6 * 1.6, 0);
 });

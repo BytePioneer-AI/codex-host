@@ -46,6 +46,24 @@ export interface RendererAgentPickerView {
   downloadVisible: Partial<Record<ExternalRendererAgent, boolean>>;
 }
 
+export function rendererAgentMenuPlacement(
+  triggerRect: Pick<DOMRectReadOnly, "right" | "top">,
+  viewport: { width: number; height: number },
+  windowZoom: number,
+): { left: number; bottom: number } {
+  const zoom = Number.isFinite(windowZoom) && windowZoom > 0 ? windowZoom : 1;
+  const viewportWidth = viewport.width / zoom;
+  const viewportHeight = viewport.height / zoom;
+  const left = Math.max(
+    8,
+    Math.min(triggerRect.right / zoom - AGENT_MENU_WIDTH, viewportWidth - AGENT_MENU_WIDTH - 8),
+  );
+  return {
+    left,
+    bottom: Math.max(8, viewportHeight - triggerRect.top / zoom + 6),
+  };
+}
+
 export function rendererAgentPickerView(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
@@ -77,10 +95,16 @@ export function rendererAgentPickerView(
 
 function setMenuPosition(control: RendererAgentPickerControl): void {
   const rect = control.trigger.getBoundingClientRect();
-  const width = AGENT_MENU_WIDTH;
-  const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-  control.menu.style.left = `${left}px`;
-  control.menu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
+  const rawWindowZoom = getComputedStyle(document.documentElement)
+    .getPropertyValue("--codex-window-zoom")
+    .trim();
+  const placement = rendererAgentMenuPlacement(
+    rect,
+    { width: window.innerWidth, height: window.innerHeight },
+    Number.parseFloat(rawWindowZoom),
+  );
+  control.menu.style.left = `${placement.left}px`;
+  control.menu.style.bottom = `${placement.bottom}px`;
 }
 
 function popoverOpen(menu: HTMLElement): boolean {

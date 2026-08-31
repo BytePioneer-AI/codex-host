@@ -90,13 +90,35 @@ export function rendererPermissionModeLabel(
   return messages.permissions;
 }
 
+export function rendererPermissionModeMenuPlacement(
+  triggerRect: Pick<DOMRectReadOnly, "left" | "top">,
+  viewport: { width: number; height: number },
+  windowZoom: number,
+): { width: number; left: number; bottom: number } {
+  const zoom = Number.isFinite(windowZoom) && windowZoom > 0 ? windowZoom : 1;
+  const viewportWidth = viewport.width / zoom;
+  const viewportHeight = viewport.height / zoom;
+  const width = Math.min(320, viewportWidth - 16);
+  return {
+    width,
+    left: Math.max(8, Math.min(triggerRect.left / zoom, viewportWidth - width - 8)),
+    bottom: Math.max(8, viewportHeight - triggerRect.top / zoom + 6),
+  };
+}
+
 function positionMenu(control: RendererPermissionModePickerControl): void {
   const rect = control.trigger.getBoundingClientRect();
-  const width = Math.min(320, window.innerWidth - 16);
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-  control.menu.style.width = `${width}px`;
-  control.menu.style.left = `${left}px`;
-  control.menu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
+  const rawWindowZoom = getComputedStyle(document.documentElement)
+    .getPropertyValue("--codex-window-zoom")
+    .trim();
+  const placement = rendererPermissionModeMenuPlacement(
+    rect,
+    { width: window.innerWidth, height: window.innerHeight },
+    Number.parseFloat(rawWindowZoom),
+  );
+  control.menu.style.width = `${placement.width}px`;
+  control.menu.style.left = `${placement.left}px`;
+  control.menu.style.bottom = `${placement.bottom}px`;
 }
 
 export function syncRendererPermissionModeTriggerClass(
@@ -158,6 +180,7 @@ export function mountRendererPermissionModePicker(
   menu.className = MENU_CLASSES;
   menu.style.inset = "auto";
   menu.style.margin = "0";
+  menu.style.boxSizing = "border-box";
   menu.style.padding = "4px";
   menu.style.maxHeight = "min(420px, 70vh)";
   menu.style.overflowY = "auto";

@@ -67,6 +67,7 @@ import {
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import { installRendererLocalMediaPlayback } from "./renderer-local-media.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import type {
   RendererConnectionDiagnostics,
@@ -539,6 +540,7 @@ export function installRendererBindingProbe(
     getClient: (hostId) => modelClientForHost(hostId),
     getLocalAgent: localAgentForSidebarThread,
   });
+  const localMediaPlayback = installRendererLocalMediaPlayback(document);
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
@@ -2353,6 +2355,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       sidebarAgentIcons.dispose();
+      localMediaPlayback.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

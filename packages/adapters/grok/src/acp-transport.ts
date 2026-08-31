@@ -339,18 +339,24 @@ function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): str
   return environment.GROK_HOME ?? path.join(home, ".grok");
 }
 
-function nativeSessionFile(
-  options: GrokAcpTransportOptions,
+export function grokNativeSessionDirectory(
+  options: Pick<GrokAcpTransportOptions, "cwd" | "environment">,
   sessionId: string,
-  fileName: string,
 ): string {
   return path.join(
     grokHomeDir(options),
     "sessions",
     encodeURIComponent(path.resolve(options.cwd)),
     sessionId,
-    fileName,
   );
+}
+
+function nativeSessionFile(
+  options: GrokAcpTransportOptions,
+  sessionId: string,
+  fileName: string,
+): string {
+  return path.join(grokNativeSessionDirectory(options, sessionId), fileName);
 }
 
 function nativeHistoryPath(options: GrokAcpTransportOptions, sessionId: string): string {

@@ -14,7 +14,9 @@ const forbiddenBundleReferences = ["sourceMappingURL="];
 const allowedRuntimePackages = new Set([
   "@agentclientprotocol/sdk",
   "@anthropic-ai/claude-agent-sdk",
+  "@deepseek-ai/cosmokit",
   "@deepseek-ai/dsh-host-apiproxy",
+  "@deepseek-ai/schemastery",
   "diff",
   "ws",
   "zod",
@@ -57,7 +59,9 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/adapters/qwen-code/",
     "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
+    "/node_modules/@deepseek-ai/cosmokit/",
     "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
+    "/node_modules/@deepseek-ai/schemastery/",
     "/node_modules/ws/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {

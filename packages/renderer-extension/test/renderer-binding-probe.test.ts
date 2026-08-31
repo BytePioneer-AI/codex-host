@@ -14,6 +14,7 @@ import {
   isLateConversationTarget,
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
+  lockedPermissionMode,
   lateConversationTargetResolution,
   passiveHarnessAvailabilityAgents,
   refreshConnectionHosts,
@@ -948,16 +949,19 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "deepseek-harness",
-        transportModelId: "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g",
+        transportModelId:
+          "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g@team-safe",
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({
           id: "deepseek-harness-model-v1.Zmxhc2g",
         }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
         locked: true,
       }),
     ).toEqual({
       agent: "deepseek-harness",
       model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
+      permissionModeId: "trusted-run",
     });
     expect(() =>
       restoredThreadOwnership({
@@ -1012,7 +1016,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
   });
 
-  it("selects only an Adapter-catalog Permission Mode and falls back to its default", () => {
+  it("falls back draft Permission Mode but fails closed for a stale locked carrier", () => {
     const catalog = harnessPermissionModeCatalogSchema.parse({
       modes: [
         { id: "plan", label: "Plan" },
@@ -1026,6 +1030,13 @@ describe("Renderer Composer DOM behavior", () => {
       "default",
     );
     expect(draftPermissionMode(catalog, undefined)).toBe("default");
+    const plan = harnessPermissionModeIdSchema.parse("plan");
+    const foreign = harnessPermissionModeIdSchema.parse("foreign");
+    expect(lockedPermissionMode(catalog, undefined, plan)).toBe(plan);
+    expect(lockedPermissionMode(catalog, plan, foreign)).toBe(plan);
+    expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
+      "absent from the current Catalog",
+    );
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

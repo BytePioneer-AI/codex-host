@@ -12,6 +12,10 @@ import {
   type RendererSidebarContractInspection,
 } from "./renderer-sidebar-agent-icons.js";
 import {
+  inspectRendererTranscriptContract,
+  type RendererTranscriptContractInspection,
+} from "./renderer-transcript-dom.js";
+import {
   inspectRendererSettingsContract,
   type RendererSettingsContractInspection,
 } from "./settings/trigger.js";
@@ -37,6 +41,7 @@ export interface RendererContractAuditInspection {
   };
   settings: RendererSettingsContractInspection;
   sidebar: RendererSidebarContractInspection;
+  transcript: RendererTranscriptContractInspection;
   fork: RendererForkContractInspection;
   production: {
     bindingPresent: boolean;
@@ -82,6 +87,7 @@ export function inspectRendererContracts(
     model: modelCounts(composers.map(inspectComposerModelContract)),
     settings: inspectRendererSettingsContract(ownerWindow.document),
     sidebar: inspectRendererSidebarContract(ownerWindow.document),
+    transcript: inspectRendererTranscriptContract(ownerWindow.document),
     fork: inspectRendererForkContract(ownerWindow.document),
     production: {
       bindingPresent: binding !== undefined,

@@ -44,10 +44,9 @@ The Session SHALL map `turn.cancel` to a DSH `session/cancel` RPC and SHALL only
 - **THEN** the Session SHALL return a protocol or unsupported failure
 - **AND** it SHALL NOT report successful cancellation
 
-### Requirement: Unsupported fast-path capabilities are explicit
-The fast-path Adapter SHALL reject resume, fork, rollback, interaction response, runtime Model/Thinking selection, and permission selection as unsupported.
+### Requirement: Unsupported DeepSeek history mutations are explicit
+The Adapter SHALL report native Session resume as supported while keeping fork and rollback capabilities false. It SHALL reject unsupported open kinds without creating another Native Session.
 
-#### Scenario: Host attempts resume
-- **WHEN** Host opens the Adapter with a resume input
+#### Scenario: Host attempts fork or rollback
+- **WHEN** Host opens the Adapter with a fork or rollback input
 - **THEN** the Adapter SHALL return an `unsupported` error without creating a new Session
-

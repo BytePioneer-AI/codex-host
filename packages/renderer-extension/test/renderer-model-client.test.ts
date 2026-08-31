@@ -24,9 +24,7 @@ import {
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
   createRendererModelClient,
-  createThreadReasoningSubscriptionRelay,
   createThreadUsageSubscriptionRelay,
-  type RendererModelClient,
 } from "../src/renderer-model-client.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
@@ -150,7 +148,6 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "startUpdate",
-      "subscribeThreadReasoning",
       "subscribeThreadUsage",
     ]);
 
@@ -271,155 +268,6 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
-  });
-
-  it("subscribes to validated native reasoning summary notifications", () => {
-    let reasoningNotification: ((notification: unknown) => void) | undefined;
-    const removeReasoningNotification = vi.fn();
-    const addNotificationCallback = vi.fn(
-      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
-        reasoningNotification = callback;
-        return removeReasoningNotification;
-      },
-    );
-    const client = createRendererModelClient([{ addNotificationCallback, sendRequest: vi.fn() }]);
-    if (!client) throw new Error("Synthetic Model client was not created");
-    const listener = vi.fn();
-
-    const unsubscribe = client.subscribeThreadReasoning?.(listener);
-    reasoningNotification?.({
-      method: "item/reasoning/summaryTextDelta",
-      params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
-        itemId: "reasoning-1",
-        summaryIndex: 0,
-        delta: "Visible summary",
-      },
-    });
-    reasoningNotification?.({
-      method: "item/reasoning/contentTextDelta",
-      params: { threadId: "thread-1", itemId: "reasoning-1", delta: "private" },
-    });
-
-    expect(listener).toHaveBeenCalledOnce();
-    expect(listener).toHaveBeenCalledWith({
-      kind: "delta",
-      threadId: "thread-1",
-      turnId: "turn-1",
-      itemId: "reasoning-1",
-      text: "Visible summary",
-    });
-    unsubscribe?.();
-    expect(removeReasoningNotification).toHaveBeenCalledOnce();
-  });
-
-  it("moves reasoning listeners to a replacement manager and ignores its stale callback", () => {
-    const relay = createThreadReasoningSubscriptionRelay();
-    const listener = vi.fn();
-    const firstRemove = vi.fn();
-    const secondRemove = vi.fn();
-    let firstNotify:
-      Parameters<NonNullable<RendererModelClient["subscribeThreadReasoning"]>>[0] | undefined;
-    let secondNotify:
-      Parameters<NonNullable<RendererModelClient["subscribeThreadReasoning"]>>[0] | undefined;
-    const first = {
-      subscribeThreadReasoning: vi.fn((notify: typeof firstNotify) => {
-        firstNotify = notify;
-        return firstRemove;
-      }),
-    };
-    const second = {
-      subscribeThreadReasoning: vi.fn((notify: typeof secondNotify) => {
-        secondNotify = notify;
-        return secondRemove;
-      }),
-    };
-    const staleEvent = {
-      kind: "delta" as const,
-      threadId: hostThreadIdSchema.parse("thread-1"),
-      turnId: hostTurnIdSchema.parse("turn-1"),
-      itemId: "reasoning-1",
-      text: "stale",
-    };
-    const currentEvent = { ...staleEvent, text: "current" };
-
-    const unsubscribe = relay.subscribe(listener);
-    relay.connect(first);
-    relay.connect(second);
-    if (!firstNotify || !secondNotify) throw new Error("Reasoning callbacks were not registered");
-    firstNotify(staleEvent);
-    secondNotify(currentEvent);
-
-    expect(firstRemove).toHaveBeenCalledOnce();
-    expect(second.subscribeThreadReasoning).toHaveBeenCalledOnce();
-    expect(listener).toHaveBeenCalledOnce();
-    expect(listener).toHaveBeenCalledWith(currentEvent);
-    unsubscribe();
-    expect(secondRemove).toHaveBeenCalledOnce();
-    relay.dispose();
-  });
-
-  it("explicitly disconnects reasoning notifications and rejects late callbacks", () => {
-    const relay = createThreadReasoningSubscriptionRelay();
-    const listener = vi.fn();
-    const remove = vi.fn();
-    let notify:
-      Parameters<NonNullable<RendererModelClient["subscribeThreadReasoning"]>>[0] | undefined;
-    relay.subscribe(listener);
-    relay.connect({
-      subscribeThreadReasoning(callback) {
-        notify = callback;
-        return remove;
-      },
-    });
-
-    relay.disconnect();
-    if (!notify) throw new Error("Reasoning callback was not registered");
-    notify({
-      kind: "delta",
-      threadId: hostThreadIdSchema.parse("thread-1"),
-      turnId: hostTurnIdSchema.parse("turn-1"),
-      itemId: "reasoning-1",
-      text: "late",
-    });
-
-    expect(remove).toHaveBeenCalledOnce();
-    expect(listener).not.toHaveBeenCalled();
-  });
-
-  it("remains disconnected and can reconnect when a reasoning remover throws", () => {
-    const relay = createThreadReasoningSubscriptionRelay();
-    const listener = vi.fn();
-    const throwingRemove = vi.fn(() => {
-      throw new Error("source teardown failed");
-    });
-    const replacementRemove = vi.fn();
-    const replacementSubscribe = vi.fn(() => replacementRemove);
-    relay.subscribe(listener);
-    relay.connect({ subscribeThreadReasoning: vi.fn(() => throwingRemove) });
-
-    expect(() => relay.disconnect()).not.toThrow();
-    expect(throwingRemove).toHaveBeenCalledOnce();
-    relay.connect({ subscribeThreadReasoning: replacementSubscribe });
-
-    expect(replacementSubscribe).toHaveBeenCalledOnce();
-    expect(() => relay.dispose()).not.toThrow();
-    expect(replacementRemove).toHaveBeenCalledOnce();
-  });
-
-  it("can reconnect when a request manager exposes no reasoning subscription", () => {
-    const relay = createThreadReasoningSubscriptionRelay();
-    const replacementRemove = vi.fn();
-    const replacementSubscribe = vi.fn(() => replacementRemove);
-    relay.subscribe(vi.fn());
-
-    relay.connect({});
-    relay.connect({ subscribeThreadReasoning: replacementSubscribe });
-
-    expect(replacementSubscribe).toHaveBeenCalledOnce();
-    relay.dispose();
-    expect(replacementRemove).toHaveBeenCalledOnce();
   });
 
   it("defers Usage notification registration until a request manager is available", () => {

@@ -49,7 +49,7 @@ Codex Desktop
 | OMP | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | 无 Host Interaction | Usage、Commands、Compaction、Subagent、Autonomous Turn |
 | Claude Code | Claude Agent SDK | create、resume、fork、rollback；fork 不跨 cwd | Model、Thinking、Permission Mode | Approval、Question | Usage、Credits、Commands、Subagent、Autonomous Turn |
 | Grok | ACP 加私有扩展 | create、resume、fork、跨 cwd fork、rollback | Model、Thinking、Permission Mode | Approval | Usage、Credits、Commands、Compaction |
-| DeepSeek Harness | 原生 Host API / RPC | create、resume | Model | Approval、Question | Usage、分页历史、共享 Host 连接 |
+| DeepSeek Harness | 原生 Host API / RPC | create、resume、fork；fork 不跨 cwd | Model、Thinking | Approval、Question | Usage、Commands、Compaction、分页历史、共享 Host 连接 |
 
 原生 Codex 通过官方 App Server 协议接入，不实现外部 `HarnessAdapter`，不是新增外部 Harness 的参考模板。
 
@@ -80,18 +80,18 @@ Codex Desktop
 | SDK Transport 与复杂流式事件 | Claude Code | — |
 | RPC Transport、进程管理与历史文件 | Pi | OMP |
 | 共享长连接、多 Session 订阅与分页历史 | DeepSeek Harness | — |
-| Model Catalog 与 Model/Thinking 联动 | Pi | OMP、Claude Code |
+| Model Catalog 与 Model/Thinking 联动 | Pi | OMP、Claude Code、DeepSeek Harness |
 | Permission Mode 与 unattended execution policy | Claude Code | Grok、OMP |
 | Approval + Question | Claude Code | DeepSeek Harness |
 | 仅 Question | Pi | DeepSeek Harness |
 | Usage 与 Context Window | Pi | OMP、DeepSeek Harness |
 | Account Credits | Claude Code | Grok |
 | Fork 和跨 cwd Fork | Pi | OMP、Grok |
-| 同 cwd Fork、原生 Transcript Fork | Claude Code | — |
+| 同 cwd Fork、原生 Transcript Fork | Claude Code | DeepSeek Harness |
 | Last-Turn Rollback | Pi | OMP、Claude Code、Grok |
 | Subagent 生命周期和 Transcript | OMP | Claude Code |
 | Autonomous Turn | OMP | Claude Code |
-| Harness Commands / compaction | Pi | Claude Code、Grok、OMP |
+| Harness Commands / compaction | Pi | Claude Code、Grok、OMP、DeepSeek Harness |
 | Tool、Command 和 File Change 投影 | Claude Code | Pi、OMP、Grok、DeepSeek Harness |
 | Approval/Question 响应校验 | `packages/harness-adapter/src/interaction.ts` | Claude Code、DeepSeek Harness |
 | 测试公共契约与完整事件顺序 | `packages/harness-adapter/src/testing.ts` 和 `test/text-session.test.ts` | 对应 Adapter 测试 |
@@ -160,10 +160,12 @@ DeepSeek Harness 最适合参考服务化 Host 接入：
 - Session 订阅和 Mux 路由；
 - 原生 Approval/Question RPC；
 - 分页读取完整历史；
-- 原生 Model 目录；
+- 原生 Model/Thinking 目录与选择；
+- 显式注册的 Harness Commands 和原生 compaction；
+- 基于 `turn/end` Checkpoint 的同 cwd 精确 Fork；
 - Usage 基线和增量合并。
 
-当前它不支持 fork、rollback、Thinking、Permission Mode、Subagent 或 Harness Commands。不要从它推断这些能力可以省略；应根据目标 Harness 的原生能力决定。
+当前它不支持跨 cwd Fork、rollback、Permission Mode 或 Subagent。不要从它推断这些能力可以省略；应根据目标 Harness 的原生能力决定。
 
 ## 公共契约的核心语义
 

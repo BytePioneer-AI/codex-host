@@ -7,17 +7,12 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
-  readRendererReasoningDisplayPreference,
-  setRendererReasoningDisplayPreference,
-} from "../renderer-reasoning-preference.js";
-
-import {
   createRendererSettingsPageRegistry,
   type RendererSettingsPageDefinition,
   type RendererSettingsPageMountContext,
   type RendererSettingsPageRegistry,
 } from "./core.js";
-import { createRendererSettingsIcon } from "./icons.js";
+import { createRendererSettingsIcon, type RendererSettingsIconName } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
   type RendererSettingsMessages,
@@ -39,33 +34,38 @@ import {
   runBoundedRendererUpdateRequest,
 } from "./update-request.js";
 
-export const CODEXHOST_RELEASES_LATEST_URL =
-  "https://github.com/BytePioneer-AI/codex-host/releases/latest";
+export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
+export const CODEXHOST_RELEASES_LATEST_URL = `${CODEXHOST_GITHUB_REPOSITORY_URL}/releases/latest`;
 export const CODEXHOST_NPM_MANUAL_UPDATE_COMMAND = "npm install -g @codexhost/cli@latest";
 
-export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
-  "connections",
-  "model-pool",
-  "routes",
-  "gateway",
-  "updates",
-] as const;
-
-export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
-type UnavailableRendererSettingsPageId = Exclude<
-  DefaultRendererSettingsPageId,
-  "connections" | "model-pool" | "updates"
->;
-
-export interface RendererReasoningDisplayPreference {
-  isEnabled(): boolean;
-  setEnabled(enabled: boolean): void;
+interface RendererUserAgentData {
+  readonly platform?: string;
+  readonly architecture?: string;
+  readonly bitness?: string;
 }
 
-const DEFAULT_REASONING_DISPLAY_PREFERENCE: RendererReasoningDisplayPreference = Object.freeze({
-  isEnabled: () => readRendererReasoningDisplayPreference(),
-  setEnabled: (enabled: boolean) => setRendererReasoningDisplayPreference(enabled),
-});
+function rendererUserAgentData(navigator: Navigator): RendererUserAgentData | undefined {
+  return (navigator as Navigator & { userAgentData?: RendererUserAgentData }).userAgentData;
+}
+
+function isWindowsRenderer(window: Window | null | undefined): boolean {
+  const navigator = window?.navigator;
+  if (!navigator) return false;
+  const identity = `${rendererUserAgentData(navigator)?.platform ?? ""} ${navigator.platform ?? ""} ${navigator.userAgent}`;
+  return /windows|win32|win64/iu.test(identity);
+}
+
+function windowsInstallerDownloadUrl(window: Window | null | undefined, version: string): string {
+  const navigator = window?.navigator;
+  const hints = navigator ? rendererUserAgentData(navigator) : undefined;
+  const identity = `${hints?.architecture ?? ""} ${hints?.platform ?? ""} ${navigator?.platform ?? ""} ${navigator?.userAgent ?? ""}`;
+  const architecture = /arm64|aarch64|\barm\b/iu.test(identity) ? "arm64" : "x64";
+  return `https://github.com/BytePioneer-AI/codex-host/releases/download/v${version}/codexhost-${version}-windows-${architecture}.exe`;
+}
+
+export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates", "about"] as const;
+
+export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
 export interface RendererUpdateClient {
   checkUpdate(): Promise<UpdateCheckResult>;
@@ -73,101 +73,28 @@ export interface RendererUpdateClient {
   readUpdateStatus(): Promise<UpdateStatusResult>;
 }
 
-function appendUnavailableStatus(content: HTMLElement, messages: RendererSettingsMessages): void {
-  const status = content.ownerDocument.createElement("div");
-  status.className = "settings-empty";
-
-  const copy = content.ownerDocument.createElement("div");
-  const title = content.ownerDocument.createElement("strong");
-  title.textContent = messages.inDevelopment;
-  copy.append(title);
-  status.append(copy);
-  content.append(status);
+function panelIconName(view: string): RendererSettingsIconName {
+  if (view === "failed" || view === "error") return "alert";
+  if (view === "unavailable") return "unavailable";
+  if (view === "current") return "check";
+  return "updates";
 }
 
-function unavailablePage(
-  id: UnavailableRendererSettingsPageId,
-  messages: RendererSettingsMessages,
-): RendererSettingsPageDefinition {
-  return Object.freeze({
-    id,
-    label: messages.pageLabels[id],
-    icon: id,
-    mount(context: RendererSettingsPageMountContext) {
-      appendUnavailableStatus(context.content, messages);
-      return undefined;
-    },
-  });
+function createPanelHead(document: Document, view: string, title: string): HTMLElement {
+  const head = document.createElement("div");
+  head.className = "settings-update-panel__head";
+  const label = document.createElement("strong");
+  label.className = "settings-update-panel__title";
+  label.textContent = title;
+  head.append(createRendererSettingsIcon(panelIconName(view), 16), label);
+  return head;
 }
 
-function modelPoolPage(
-  messages: RendererSettingsMessages,
-  preference: RendererReasoningDisplayPreference,
-): RendererSettingsPageDefinition {
-  return Object.freeze({
-    id: "model-pool",
-    label: messages.pageLabels["model-pool"],
-    icon: "model-pool",
-    mount(context: RendererSettingsPageMountContext) {
-      const document = context.content.ownerDocument;
-      const heading = document.createElement("div");
-      heading.className = "settings-section-label";
-      heading.textContent = messages.pageLabels["model-pool"];
-      const description = document.createElement("p");
-      description.className = "settings-page-description";
-      description.textContent = messages.modelPoolDescription;
-
-      const row = document.createElement("div");
-      row.className = "settings-preference-row";
-      const copy = document.createElement("div");
-      copy.className = "settings-preference-row__copy";
-      const title = document.createElement("strong");
-      title.textContent = messages.reasoningDisplayTitle;
-      const detail = document.createElement("span");
-      detail.textContent = messages.reasoningDisplayDescription;
-      copy.append(title, detail);
-
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "settings-preference-switch";
-      toggle.setAttribute("role", "switch");
-      const thumb = document.createElement("span");
-      thumb.className = "settings-preference-switch__thumb";
-      toggle.append(thumb);
-      const render = (enabled: boolean): void => {
-        toggle.setAttribute("aria-checked", String(enabled));
-        toggle.setAttribute(
-          "aria-label",
-          `${messages.reasoningDisplayTitle}: ${enabled ? messages.enabled : messages.disabled}`,
-        );
-        toggle.title = enabled ? messages.enabled : messages.disabled;
-      };
-      render(preference.isEnabled());
-      toggle.addEventListener("click", () => {
-        const enabled = toggle.getAttribute("aria-checked") !== "true";
-        preference.setEnabled(enabled);
-        render(enabled);
-      });
-      row.append(copy, toggle);
-      context.content.append(heading, description, row);
-      return undefined;
-    },
-  });
-}
-
-function versionRow(
-  context: RendererSettingsPageMountContext,
-  label: string,
-  version: string,
-): HTMLElement {
-  const row = context.content.ownerDocument.createElement("div");
-  row.className = "settings-update-version-row";
-  const name = context.content.ownerDocument.createElement("span");
-  name.textContent = label;
-  const value = context.content.ownerDocument.createElement("strong");
-  value.textContent = `v${version}`;
-  row.append(name, value);
-  return row;
+function createPanelActions(document: Document, ...buttons: readonly HTMLElement[]): HTMLElement {
+  const actions = document.createElement("div");
+  actions.className = "settings-update-actions";
+  actions.append(...buttons);
+  return actions;
 }
 
 function installationLabel(
@@ -215,6 +142,59 @@ function formatUpdateBytes(value: number): string {
   return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${unit}`;
 }
 
+function aboutPage(messages: RendererSettingsMessages): RendererSettingsPageDefinition {
+  return Object.freeze({
+    id: "about",
+    label: messages.pageLabels.about,
+    icon: "about",
+    mount(context: RendererSettingsPageMountContext) {
+      const document = context.content.ownerDocument;
+      const heading = document.createElement("div");
+      heading.className = "settings-section-label";
+      heading.textContent = messages.pageLabels.about;
+
+      const panel = document.createElement("section");
+      panel.className = "settings-about-panel";
+      const product = document.createElement("strong");
+      product.className = "settings-about-product";
+      product.textContent = "CodexHost";
+      const tagline = document.createElement("strong");
+      tagline.className = "settings-about-tagline";
+      tagline.textContent = messages.aboutTagline;
+      const introduction = document.createElement("div");
+      introduction.className = "settings-about-copy";
+      for (const paragraphText of messages.aboutParagraphs) {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = paragraphText;
+        introduction.append(paragraph);
+      }
+      const starCallout = document.createElement("p");
+      starCallout.className = "settings-about-star-callout";
+      starCallout.textContent = messages.aboutStarCallout;
+      const repositorySection = document.createElement("div");
+      repositorySection.className = "settings-about-repository";
+      const openSource = document.createElement("p");
+      openSource.textContent = messages.aboutOpenSource;
+      const repository = document.createElement("a");
+      repository.className = "settings-about-repository-link";
+      repository.href = CODEXHOST_GITHUB_REPOSITORY_URL;
+      repository.target = "_blank";
+      repository.rel = "noopener noreferrer";
+      const repositoryUrl = document.createElement("code");
+      repositoryUrl.textContent = CODEXHOST_GITHUB_REPOSITORY_URL;
+      repository.append(
+        createRendererSettingsIcon("external-link", 14),
+        messages.aboutRepository,
+        repositoryUrl,
+      );
+      repositorySection.append(openSource, repository);
+      panel.append(product, tagline, introduction, starCallout, repositorySection);
+      context.content.append(heading, panel);
+      return undefined;
+    },
+  });
+}
+
 function updatesPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererUpdateClient | null,
@@ -225,37 +205,98 @@ function updatesPage(
     icon: "updates",
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
+      const windows = isWindowsRenderer(document.defaultView);
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.updates;
+
+      // Version summary: current, latest, and installation sit side by side so the
+      // comparison is readable without scrolling.
       const metadata = document.createElement("div");
       metadata.className = "settings-update-metadata";
-      const currentVersion = document.createElement("div");
-      currentVersion.className = "settings-update-metadata__item";
-      const currentVersionLabel = document.createElement("span");
-      currentVersionLabel.textContent = messages.updateCurrentVersion;
-      const currentVersionValue = document.createElement("strong");
-      currentVersionValue.textContent = "-";
-      currentVersion.append(currentVersionLabel, currentVersionValue);
-      const installation = document.createElement("div");
-      installation.className = "settings-update-metadata__item";
-      const installationName = document.createElement("span");
-      installationName.textContent = messages.updateInstallation;
-      const installationValue = document.createElement("strong");
-      installationValue.textContent = "-";
-      installation.append(installationName, installationValue);
-      metadata.append(currentVersion, installation);
+      const createMetadataItem = (label: string): HTMLElement => {
+        const item = document.createElement("div");
+        item.className = "settings-update-metadata__item";
+        const name = document.createElement("span");
+        name.textContent = label;
+        const value = document.createElement("strong");
+        value.textContent = "-";
+        item.append(name, value);
+        metadata.append(item);
+        return value;
+      };
+      const currentVersionValue = createMetadataItem(messages.updateCurrentVersion);
+      const latestVersionValue = createMetadataItem(messages.updateLatestVersion);
+      const installationValue = createMetadataItem(messages.updateInstallation);
+
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
       panel.setAttribute("aria-live", "polite");
+
+      // Manual update stays visible directly under the status panel: automatic
+      // updates can fail for reasons local to the machine, and the fallback path
+      // should never be more than a glance away.
+      const controls = document.createElement("div");
+      controls.className = "settings-update-controls";
+      const manualTitle = document.createElement("div");
+      manualTitle.className = "settings-update-manual-title";
+      manualTitle.textContent = messages.updateManualTitle;
       const manualNpm = document.createElement("div");
       manualNpm.className = "settings-update-manual";
       manualNpm.hidden = true;
-      const manualNpmDescription = document.createElement("span");
+      const manualNpmDescription = document.createElement("p");
+      manualNpmDescription.className = "settings-update-manual-description";
       manualNpmDescription.textContent = messages.updateManualNpmDescription;
+      const manualNpmCommandRow = document.createElement("div");
+      manualNpmCommandRow.className = "settings-update-command";
       const manualNpmCommand = document.createElement("code");
       manualNpmCommand.textContent = CODEXHOST_NPM_MANUAL_UPDATE_COMMAND;
-      manualNpm.append(manualNpmDescription, manualNpmCommand);
+      const copyCommand = document.createElement("button");
+      copyCommand.type = "button";
+      copyCommand.className = "settings-update-command__copy";
+      const setCopyLabel = (label: string): void => {
+        copyCommand.replaceChildren(createRendererSettingsIcon("copy", 14), label);
+      };
+      setCopyLabel(messages.updateCopyCommand);
+      copyCommand.addEventListener("click", () => {
+        const clipboard = document.defaultView?.navigator.clipboard;
+        const restore = (label: string): void => {
+          setCopyLabel(label);
+          document.defaultView?.setTimeout(() => setCopyLabel(messages.updateCopyCommand), 2_000);
+        };
+        if (!clipboard) {
+          restore(messages.updateCopyFailed);
+          return;
+        }
+        void clipboard.writeText(CODEXHOST_NPM_MANUAL_UPDATE_COMMAND).then(
+          () => restore(messages.updateCommandCopied),
+          () => restore(messages.updateCopyFailed),
+        );
+      });
+      manualNpmCommandRow.append(manualNpmCommand, copyCommand);
+      manualNpm.append(manualNpmDescription, manualNpmCommandRow);
+      const manualWindowsInstaller = document.createElement("div");
+      manualWindowsInstaller.className = "settings-update-manual";
+      manualWindowsInstaller.hidden = true;
+      const manualWindowsInstallerDescription = document.createElement("p");
+      manualWindowsInstallerDescription.className = "settings-update-manual-description";
+      manualWindowsInstallerDescription.textContent = messages.updateWindowsInstallerDescription;
+      const manualWindowsInstallerActions = document.createElement("div");
+      manualWindowsInstallerActions.className = "settings-update-actions";
+      const manualWindowsInstallerLink = document.createElement("a");
+      manualWindowsInstallerLink.className = "settings-update-link";
+      manualWindowsInstallerLink.href = CODEXHOST_RELEASES_LATEST_URL;
+      manualWindowsInstallerLink.target = "_blank";
+      manualWindowsInstallerLink.rel = "noopener noreferrer";
+      manualWindowsInstallerLink.append(
+        messages.updateDownloadWindowsInstaller,
+        createRendererSettingsIcon("external-link", 14),
+      );
+      manualWindowsInstallerActions.append(manualWindowsInstallerLink);
+      manualWindowsInstaller.append(
+        manualWindowsInstallerDescription,
+        manualWindowsInstallerActions,
+      );
       const actions = document.createElement("div");
       actions.className = "settings-update-actions";
       const releaseLink = document.createElement("a");
@@ -268,7 +309,27 @@ function updatesPage(
         createRendererSettingsIcon("external-link", 14),
       );
       actions.append(releaseLink);
-      context.content.append(heading, metadata, panel, manualNpm, actions);
+      controls.append(manualTitle, manualNpm, manualWindowsInstaller, actions);
+
+      // Release notes render below the fold, in the page scroller rather than a
+      // nested one.
+      const notes = document.createElement("div");
+      notes.className = "settings-update-notes-section";
+
+      context.content.append(heading, metadata, panel, controls, notes);
+
+      // Presentation-only: emphasise the manual path once the automatic one has
+      // visibly failed.
+      const setManualFallback = (fallback: boolean): void => {
+        manualNpmDescription.textContent = windows
+          ? messages.updateWindowsNpmDescription
+          : fallback
+            ? messages.updateManualFallbackDescription
+            : messages.updateManualNpmDescription;
+        manualNpmDescription.className = fallback
+          ? "settings-update-manual-description is-fallback"
+          : "settings-update-manual-description";
+      };
       let pollTimer: number | undefined;
       let pollAttempts = 0;
       let pending = false;
@@ -283,11 +344,11 @@ function updatesPage(
       const renderUnavailable = (detail: string): void => {
         panel.dataset.updateState = "unavailable";
         panel.replaceChildren();
-        const title = document.createElement("strong");
-        title.textContent = messages.notAvailable;
-        const copy = document.createElement("span");
+        const copy = document.createElement("p");
+        copy.className = "settings-update-summary";
         copy.textContent = detail;
-        panel.append(title, copy);
+        panel.append(createPanelHead(document, "unavailable", messages.notAvailable), copy);
+        notes.replaceChildren();
       };
 
       const renderRequestFailure = (error: unknown): void => {
@@ -334,9 +395,8 @@ function updatesPage(
       ): void => {
         panel.dataset.updateState = viewPhase;
         panel.replaceChildren();
-        const state = document.createElement("strong");
-        state.textContent = message;
-        panel.append(state);
+        panel.append(createPanelHead(document, viewPhase, message));
+        setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&
           status.totalBytes !== undefined &&
@@ -362,7 +422,7 @@ function updatesPage(
           retry.className = "settings-command-button";
           retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
           retry.addEventListener("click", () => void load());
-          panel.append(retry);
+          panel.append(createPanelActions(document, retry));
         }
       };
 
@@ -391,8 +451,22 @@ function updatesPage(
 
       const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
         currentVersionValue.textContent = `v${result.currentVersion}`;
+        latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
+        latestVersionValue.className = result.updateAvailable
+          ? "settings-update-metadata__value--newer"
+          : "";
         installationValue.textContent = installationLabel(result.installation, messages);
         manualNpm.hidden = result.installation !== "npm";
+        manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
+        releaseLink.hidden = windows;
+        manualTitle.hidden =
+          windows && !["npm", "windows-installer"].includes(result.installation ?? "");
+        if (windows && result.installation === "windows-installer" && result.latestVersion) {
+          manualWindowsInstallerLink.href = windowsInstallerDownloadUrl(
+            document.defaultView,
+            result.latestVersion,
+          );
+        }
         if (result.releaseNotesUrl) releaseLink.href = result.releaseNotesUrl;
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
@@ -400,52 +474,62 @@ function updatesPage(
           scheduleStatusPoll(client, true);
           return;
         }
-        panel.dataset.updateState = result.error
-          ? "error"
-          : result.updateAvailable
-            ? "available"
-            : "current";
+        const actionableStatus =
+          result.status?.phase === "failed" && result.status.version === result.latestVersion
+            ? result.status
+            : null;
+        const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
+        panel.dataset.updateState = view;
         panel.replaceChildren();
-        if (result.latestVersion) {
-          panel.append(versionRow(context, messages.updateLatestVersion, result.latestVersion));
+        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        if (result.error || !result.updateAvailable || windows || actionableStatus) {
+          panel.append(
+            createPanelHead(
+              document,
+              view,
+              actionableStatus
+                ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
+                : result.error
+                  ? messages.updateFailed
+                  : result.updateAvailable
+                    ? messages.updateWindowsManualRequired
+                    : messages.updateUpToDate,
+            ),
+          );
         }
-        const summary = document.createElement("p");
-        summary.className = "settings-update-summary";
-        summary.textContent =
-          operationMessage ??
-          (result.error
-            ? messages.updateFailed
-            : result.updateAvailable
-              ? messages.updateAvailable
-              : messages.updateUpToDate);
-        panel.append(summary);
-        if (result.releaseNotes) {
-          panel.append(createReleaseNotesElement(document, result.releaseNotes));
-        }
-        if (result.status?.phase === "failed" && result.status.error) {
+        if (actionableStatus?.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";
-          error.textContent = result.status.error;
+          error.textContent = actionableStatus.error;
           panel.append(error);
-        }
-        if (result.updateAvailable && result.installationAvailable) {
-          const update = document.createElement("button");
-          update.type = "button";
-          update.className = "settings-command-button";
-          update.append(createRendererSettingsIcon("updates", 16), messages.updateAndRestart);
-          update.addEventListener("click", () => start(client));
-          panel.append(update);
         }
         if (result.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";
           error.textContent = result.error;
+          panel.append(error);
+        }
+        const buttons: HTMLElement[] = [];
+        if (!windows && result.updateAvailable && result.installationAvailable) {
+          const update = document.createElement("button");
+          update.type = "button";
+          update.className = "settings-command-button";
+          update.append(createRendererSettingsIcon("updates", 16), messages.updateAndRestart);
+          update.addEventListener("click", () => start(client));
+          buttons.push(update);
+        }
+        if (result.error) {
           const retry = document.createElement("button");
           retry.type = "button";
           retry.className = "settings-command-button settings-command-button--secondary";
           retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
           retry.addEventListener("click", () => void load());
-          panel.append(error, retry);
+          buttons.push(retry);
+        }
+        if (buttons.length > 0) panel.append(createPanelActions(document, ...buttons));
+        notes.replaceChildren();
+        if (result.releaseNotes) {
+          notes.append(createReleaseNotesElement(document, result.releaseNotes));
         }
       };
 
@@ -482,17 +566,11 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
-  reasoningDisplayPreference: RendererReasoningDisplayPreference = DEFAULT_REASONING_DISPLAY_PREFERENCE,
 ): readonly RendererSettingsPageDefinition[] {
-  const unavailableIds = DEFAULT_RENDERER_SETTINGS_PAGE_IDS.filter(
-    (id): id is UnavailableRendererSettingsPageId =>
-      id !== "updates" && id !== "connections" && id !== "model-pool",
-  );
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
-    modelPoolPage(messages, reasoningDisplayPreference),
-    ...unavailableIds.map((id) => unavailablePage(id, messages)),
     updatesPage(messages, getUpdateClient),
+    aboutPage(messages),
   ]);
 }
 
@@ -500,14 +578,8 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
-  reasoningDisplayPreference: RendererReasoningDisplayPreference = DEFAULT_REASONING_DISPLAY_PREFERENCE,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(
-      messages,
-      getUpdateClient,
-      getDiagnostics,
-      reasoningDisplayPreference,
-    ),
+    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
   );
 }

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export { codexhostErrorSchema } from "./errors.js";
+export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
 export {
   externalThreadForkParamsSchema,

@@ -16,6 +16,12 @@ A `HarnessAdapter` MAY expose a strict browser-safe Permission Mode catalog toge
 - **THEN** it SHALL return its normalized provider-native catalog and `selectPermissionMode=true`
 - **AND** no Claude SDK enum or settings payload SHALL cross the Adapter boundary
 
+#### Scenario: DeepSeek exposes dynamic native presets
+
+- **WHEN** DeepSeek Harness inspection finds a valid native `permission` settings namespace
+- **THEN** it SHALL derive the Permission Mode IDs, order, labels, and default from that namespace's schema and value
+- **AND** codexhost SHALL NOT hardcode the deployment's preset catalog
+
 #### Scenario: Pi has no native Permission Mode
 
 - **WHEN** Pi is inspected or opened
@@ -41,12 +47,24 @@ A capable Session SHALL accept an optional create-time mode and `permissionMode.
 - **THEN** the command SHALL return a normal native failure and the Session SHALL retain its prior current mode
 - **AND** rejection alone SHALL NOT fault the Session
 
-### Requirement: Permission Mode remains independent from Approval and rules
+#### Scenario: DeepSeek confirms a selected preset
 
-Permission Mode SHALL define the native Session execution baseline only. Selecting a mode SHALL NOT create a permission rule, answer a pending Approval, change Sandbox configuration, or imply that every Tool will execute without a callback.
+- **WHEN** the DSH permission command reports success
+- **THEN** the Adapter SHALL read the authoritative `permissions` projection and publish only its confirmed current value
+- **AND** a missing, malformed, stale, or mismatched confirmation SHALL fail closed
+
+### Requirement: Permission Mode remains Adapter-owned and independent from codexhost Approval and rules
+
+Permission Mode SHALL define the provider-native Session execution baseline only. codexhost SHALL NOT create a permission rule, answer a pending Approval, synthesize a Sandbox change, or infer Tool behavior from the selected ID. A provider-native mode MAY atomically update its own Sandbox or Approval knobs; those effects SHALL remain owned and reported by that provider rather than translated into codexhost rules.
 
 #### Scenario: Tool callback still occurs after mode selection
 
 - **WHEN** Claude Code invokes `canUseTool` under the selected mode
 - **THEN** the callback SHALL continue through the separate Approval capability
 - **AND** codexhost SHALL NOT derive an allow rule from the selected mode
+
+#### Scenario: DSH preset bundles native enforcement knobs
+
+- **WHEN** DSH applies one permission preset by changing its native Sandbox and Approval policy
+- **THEN** codexhost SHALL treat the resulting projection as one opaque Permission Mode
+- **AND** it SHALL NOT expose, duplicate, or independently mutate those native knobs

@@ -397,9 +397,14 @@ pub fn activate_packaged_desktop(
     let _apartment = ComApartment::initialize()?;
     let environment = windows_environment_block(environment)?;
     let mut package_environment = PackageEnvironment::enable(package_full_name, &environment)?;
-    let manager: IApplicationActivationManager =
-        unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER) }
-            .map_err(|error| windows_error("cannot initialize AppX activation manager", error))?;
+    let manager: IApplicationActivationManager = unsafe {
+        CoCreateInstance(
+            &ApplicationActivationManager,
+            None,
+            CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+        )
+    }
+    .map_err(|error| windows_error("cannot initialize AppX activation manager", error))?;
     let activation_process_id = unsafe {
         manager.ActivateApplication(
             &HSTRING::from(app_user_model_id),
@@ -446,9 +451,14 @@ pub fn activate_stock_desktop(
     } {
         let _ = unsafe { settings.DisableDebugging(&HSTRING::from(package_full_name)) };
     }
-    let manager: IApplicationActivationManager =
-        unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER) }
-            .map_err(|error| windows_error("cannot initialize AppX activation manager", error))?;
+    let manager: IApplicationActivationManager = unsafe {
+        CoCreateInstance(
+            &ApplicationActivationManager,
+            None,
+            CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+        )
+    }
+    .map_err(|error| windows_error("cannot initialize AppX activation manager", error))?;
     let activation_process_id = unsafe {
         manager.ActivateApplication(
             &HSTRING::from(app_user_model_id),

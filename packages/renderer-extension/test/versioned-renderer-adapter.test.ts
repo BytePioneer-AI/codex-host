@@ -14,6 +14,7 @@ import {
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
+  decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodePiTransportModelId,
   decodeQwenCodeTransportModelId,
@@ -26,6 +27,7 @@ import {
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
+  deepSeekHarnessTransportModelId,
   grokTransportModelId,
   piTransportModelId,
   qwenTransportModelId,
@@ -483,6 +485,24 @@ describe("current Codex Renderer Agent adapter", () => {
     });
     expect(
       modelSelectionForAgent(null, null, "claude-code", model, thinkingOptionId, permissionModeId)
+        ?.model,
+    ).toBe(carrier);
+  });
+
+  it("encodes DeepSeek Harness Model and Permission Mode in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "deepseek-harness-model-v1.Zmxhc2g" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("team-safe");
+    const carrier = deepSeekHarnessTransportModelId(model, permissionModeId);
+
+    expect(decodeDeepSeekHarnessTransportModelId(carrier)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(decodeDeepSeekHarnessTransportModelId(deepSeekHarnessTransportModelId(model))).toEqual({
+      model,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "deepseek-harness", model, undefined, permissionModeId)
         ?.model,
     ).toBe(carrier);
   });

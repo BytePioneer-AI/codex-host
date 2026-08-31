@@ -42,6 +42,13 @@ export interface RendererContractAuditInspection {
     resolvedThreadCount: number;
     ambiguousThreadCount: number;
   };
+  transcript: {
+    turnCount: number;
+    itemNodeCount: number;
+    identifiedItemCount: number;
+    textBodyCount: number;
+    textBodyOwnerCount: number;
+  };
   fork: {
     annotatedResponseCount: number;
     candidateButtonCount: number;
@@ -117,7 +124,16 @@ export function validateRendererContractAuditInspection(
   if (!isRecord(value)) throw new Error("Renderer contract audit must be an object");
   strictKeys(
     value,
-    ["schemaVersion", "composer", "model", "settings", "sidebar", "fork", "production"],
+    [
+      "schemaVersion",
+      "composer",
+      "model",
+      "settings",
+      "sidebar",
+      "transcript",
+      "fork",
+      "production",
+    ],
     "Renderer contract audit",
   );
   if (value.schemaVersion !== 1) throw new Error("Renderer contract audit schema is unsupported");
@@ -177,6 +193,17 @@ export function validateRendererContractAuditInspection(
       value.sidebar,
       ["rowCount", "titleOwnerCount", "resolvedThreadCount", "ambiguousThreadCount"] as const,
       "Renderer sidebar contract",
+    ),
+    transcript: integerRecord(
+      value.transcript,
+      [
+        "turnCount",
+        "itemNodeCount",
+        "identifiedItemCount",
+        "textBodyCount",
+        "textBodyOwnerCount",
+      ] as const,
+      "Renderer transcript contract",
     ),
     fork: integerRecord(
       value.fork,

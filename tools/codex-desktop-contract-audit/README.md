@@ -32,6 +32,33 @@ npm run audit:codex-desktop -- --mode controlled
 
 Controlled mode reuses the existing production `RendererControlSession`. It can reload the Renderer and install Title, Draft/Prewarm, and Renderer binding policies. It still does not automatically submit, create a Thread, open Settings, execute Fork, or exercise title creation, so those behavior checks remain `unverified`.
 
+## Transcript surface
+
+The `transcript` surface covers the contract that external Harness Reasoning depends on.
+Codex retains transcript text for the Command Execution lane only, so codexhost projects
+Reasoning through that lane; if a Desktop update drops it, projected Reasoning disappears
+without any error.
+
+It records bounded counts from the currently open Thread:
+
+- `turnCount`, `itemNodeCount` — rendered Turns and transcript nodes;
+- `identifiedItemCount` — Host Item ids published through
+  `data-local-conversation-item-target-ids`, the hook that maps a projected Item to its node;
+- `textBodyCount`, `textBodyOwnerCount` — Command Execution text bodies
+  (`data-testid="exec-shell-body"`), the retained-text surface itself.
+
+Verdicts:
+
+- an open Thread with no rendered Items is `unverified`, never `no-impact`;
+- Item nodes that stop publishing Host Item ids are `confirmed-impact`;
+- the text-body counts are baseline-compared, so losing the retained-text lane surfaces as
+  `possible-impact` rather than passing silently.
+
+The surface reads the live transcript only. Whether streamed text survives Item completion,
+whether a derived Item id renders at all, and whether the Reasoning summary lane still
+produces its ephemeral preview are behavioral properties that need a submitted Turn, so
+they stay outside this read-only tool.
+
 ## Evidence
 
 Reports are written under ignored `.codexhost/update-impact/<desktop-version>/` as:

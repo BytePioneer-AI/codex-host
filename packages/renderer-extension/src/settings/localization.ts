@@ -23,6 +23,8 @@ export interface RendererSettingsMessages {
   readonly close: string;
   readonly starOnGitHub: string;
   readonly sectionsLabel: string;
+  readonly generalSection: string;
+  readonly otherSection: string;
   readonly pageUnavailable: string;
   readonly inDevelopment: string;
   readonly notAvailable: string;
@@ -67,11 +69,6 @@ export interface RendererSettingsMessages {
   readonly connectionIssueDescription: string;
   readonly connectionReadyDescription: string;
   readonly connectionUnavailableDescription: string;
-  readonly modelPoolDescription: string;
-  readonly reasoningDisplayTitle: string;
-  readonly reasoningDisplayDescription: string;
-  readonly reasoningDisplayLive: string;
-  readonly reasoningDisplayCompleted: string;
   readonly enabled: string;
   readonly disabled: string;
   readonly openSettings: string;
@@ -86,6 +83,7 @@ export interface RendererSettingsMessages {
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
+  readonly updateWindowsManualRequired: string;
   readonly updateAndRestart: string;
   readonly updateChecking: string;
   readonly updateDownloading: string;
@@ -99,7 +97,20 @@ export interface RendererSettingsMessages {
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
+  readonly updateWindowsNpmDescription: string;
+  readonly updateWindowsInstallerDescription: string;
+  readonly updateManualTitle: string;
+  readonly updateManualFallbackDescription: string;
+  readonly updateCopyCommand: string;
+  readonly updateCommandCopied: string;
+  readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
+  readonly updateDownloadWindowsInstaller: string;
+  readonly aboutTagline: string;
+  readonly aboutParagraphs: readonly string[];
+  readonly aboutOpenSource: string;
+  readonly aboutStarCallout: string;
+  readonly aboutRepository: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -109,6 +120,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   close: "Close settings",
   starOnGitHub: "Give us a Star~",
   sectionsLabel: "Settings sections",
+  generalSection: "General",
+  otherSection: "Other",
   pageUnavailable: "Page unavailable",
   inDevelopment: "In development",
   notAvailable: "Not available",
@@ -157,12 +170,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReadyDescription: "This component is available on the selected Host.",
   connectionUnavailableDescription:
     "This component is not currently available on the selected Host.",
-  modelPoolDescription: "Configure how external Harness capabilities appear in Codex.",
-  reasoningDisplayTitle: "Show reasoning summaries",
-  reasoningDisplayDescription:
-    "Display explicit reasoning summaries emitted by external Harnesses. Hidden and encrypted reasoning is never shown. Off by default.",
-  reasoningDisplayLive: "Reasoning",
-  reasoningDisplayCompleted: "Reasoning complete",
   enabled: "Enabled",
   disabled: "Disabled",
   openSettings: "Open codexhost settings",
@@ -177,7 +184,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
-  updateAndRestart: "Update and restart",
+  updateWindowsManualRequired:
+    "Automatic updates are unavailable on Windows. Update manually below.",
+  updateAndRestart: "Update",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
   updatePreparing: "Preparing update...",
@@ -190,13 +199,31 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
+  updateWindowsNpmDescription:
+    "Automatic updates are unavailable on Windows. Quit codexhost and run this command in a terminal:",
+  updateWindowsInstallerDescription:
+    "Automatic updates are unavailable on Windows. Download and run the installer for this system.",
+  updateManualTitle: "Manual update",
+  updateManualFallbackDescription:
+    "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
+  updateCopyCommand: "Copy",
+  updateCommandCopied: "Copied",
+  updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
+  updateDownloadWindowsInstaller: "Download Windows installer",
+  aboutTagline: "Run Pi and other Harnesses in Codex Desktop",
+  aboutParagraphs: Object.freeze([
+    "We believe Codex Desktop offers the best desktop development experience available today.",
+    "But Codex is not the only excellent Agent Harness. Some developers prefer Claude Code or Pi Agent.",
+    "codexhost lets you choose the Agent that actually executes tasks inside Codex Desktop, while preserving the native Codex experience and enabling them to collaborate.",
+  ]),
+  aboutOpenSource: "codexhost is an open-source project. The source code is available at:",
+  aboutStarCallout: "⭐ If this project helps you, please give us a Star! ⭐",
+  aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
-    "model-pool": "Model Pool",
-    routes: "Routes",
-    gateway: "Gateway",
     updates: "Updates",
+    about: "About",
   }),
 });
 
@@ -206,6 +233,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   close: "关闭设置",
   starOnGitHub: "点个 Star~",
   sectionsLabel: "设置分类",
+  generalSection: "通用",
+  otherSection: "其他",
   pageUnavailable: "页面不可用",
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
@@ -251,12 +280,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionIssueDescription: "提交前请复制错误日志，并在 Issue 中说明当前 Host 与复现步骤。",
   connectionReadyDescription: "该组件在当前 Host 上可用。",
   connectionUnavailableDescription: "该组件当前无法在所选 Host 上使用。",
-  modelPoolDescription: "配置外部 Harness 能力在 Codex 中的显示方式。",
-  reasoningDisplayTitle: "显示推理摘要",
-  reasoningDisplayDescription:
-    "显示外部 Harness 明确输出的推理摘要；隐藏或加密的推理内容永远不会展示。默认关闭。",
-  reasoningDisplayLive: "推理中",
-  reasoningDisplayCompleted: "推理完成",
   enabled: "已开启",
   disabled: "已关闭",
   openSettings: "打开 codexhost 设置",
@@ -271,7 +294,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
-  updateAndRestart: "更新并重启",
+  updateWindowsManualRequired: "Windows 暂不支持自动更新，请在下方手动更新。",
+  updateAndRestart: "更新",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
   updatePreparing: "正在准备更新...",
@@ -285,13 +309,31 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+  updateWindowsNpmDescription:
+    "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。",
+  updateWindowsInstallerDescription:
+    "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+  updateManualTitle: "手动更新",
+  updateManualFallbackDescription:
+    "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",
+  updateCopyCommand: "复制",
+  updateCommandCopied: "已复制",
+  updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
+  updateDownloadWindowsInstaller: "下载 Windows 安装包",
+  aboutTagline: "在 Codex Desktop 中运行 Pi 和其他 Harness",
+  aboutParagraphs: Object.freeze([
+    "我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验。",
+    "但 Codex 并不是唯一优秀的 Agent Harness，也有人偏好 Claude Code 和 Pi Agent。",
+    "codexhost 让你在 Codex Desktop 中选择真正执行任务的 Agent，同时保留 Codex 的原生体验，并让它们协作完成任务。",
+  ]),
+  aboutOpenSource: "codexhost 是一个开源项目，开源地址：",
+  aboutStarCallout: "⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐",
+  aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
-    "model-pool": "模型池",
-    routes: "路由",
-    gateway: "网关",
     updates: "更新",
+    about: "关于",
   }),
 });
 

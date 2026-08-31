@@ -47,12 +47,6 @@ import {
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 
-import {
-  RENDERER_REASONING_NOTIFICATION_METHODS,
-  decodeRendererReasoningNotification,
-  type RendererReasoningEvent,
-} from "./renderer-reasoning-events.js";
-
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
@@ -113,7 +107,6 @@ export interface RendererModelClient {
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
-  subscribeThreadReasoning?(listener: (event: RendererReasoningEvent) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -122,70 +115,6 @@ export interface RendererModelClient {
   checkUpdate(): Promise<UpdateCheckResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
-}
-
-export function createThreadReasoningSubscriptionRelay(): {
-  connect(client: Pick<RendererModelClient, "subscribeThreadReasoning">): void;
-  disconnect(): void;
-  subscribe(listener: (event: RendererReasoningEvent) => void): () => void;
-  dispose(): void;
-} {
-  const listeners = new Set<(event: RendererReasoningEvent) => void>();
-  let connectedClient: Pick<RendererModelClient, "subscribeThreadReasoning"> | null = null;
-  let removeNotificationCallback: (() => void) | null = null;
-  let connectionToken = 0;
-
-  const disconnect = (): void => {
-    connectionToken += 1;
-    const remove = removeNotificationCallback;
-    removeNotificationCallback = null;
-    connectedClient = null;
-    try {
-      remove?.();
-    } catch {
-      // The source is already detached from the relay. A broken source-side
-      // remover must not preserve stale routing or prevent a replacement.
-    }
-  };
-
-  return {
-    connect(client) {
-      if (connectedClient === client || listeners.size === 0) return;
-      disconnect();
-      connectedClient = client;
-      const token = connectionToken;
-      try {
-        const remove = client.subscribeThreadReasoning?.((event) => {
-          if (connectionToken !== token || connectedClient !== client) return;
-          for (const listener of listeners) listener(event);
-        });
-        if (connectionToken === token && connectedClient === client && remove) {
-          removeNotificationCallback = remove;
-        } else {
-          if (connectionToken === token && connectedClient === client) disconnect();
-          try {
-            remove?.();
-          } catch {
-            // A newer connection remains authoritative even if stale cleanup fails.
-          }
-        }
-      } catch {
-        disconnect();
-      }
-    },
-    disconnect,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) disconnect();
-      };
-    },
-    dispose() {
-      disconnect();
-      listeners.clear();
-    },
-  };
 }
 
 export function createThreadUsageSubscriptionRelay(): {
@@ -314,19 +243,6 @@ export function createRendererModelClient(
       return result;
     },
     inspectThreadUsage,
-    subscribeThreadReasoning(listener: (event: RendererReasoningEvent) => void): () => void {
-      const notifications = notificationTarget(manager);
-      if (!notifications?.addNotificationCallback) {
-        throw new Error("Renderer Reasoning notification callback is unavailable");
-      }
-      return notifications.addNotificationCallback(
-        RENDERER_REASONING_NOTIFICATION_METHODS,
-        (notification) => {
-          const event = decodeRendererReasoningNotification(notification);
-          if (event) listener(event);
-        },
-      );
-    },
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
       const notifications = notificationTarget(manager);
       if (!notifications?.addNotificationCallback) {

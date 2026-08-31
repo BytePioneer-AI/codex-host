@@ -11,3 +11,4 @@ playwright-report/
 test-results/
 package-lock.json
 Cargo.lock
+packages/renderer-extension/src/settings/windows-update.preview.html

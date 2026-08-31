@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   AssistantMessage,
   Message,
@@ -9,6 +11,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 
 import type {
+  HarnessExecutionPolicy,
   HistoricalTurnOutcome,
   HostAgentMessageItem,
   HostContextCompactionItem,
@@ -51,15 +54,53 @@ export interface OpenCodeHistoryInput {
 
 const openCodeHarnessId: HarnessId = harnessIdSchema.parse("opencode");
 
+export const openCodeExecutionPolicySchema = z.enum(["default", "unattended-full-access"]);
+export type OpenCodeExecutionPolicy = HarnessExecutionPolicy;
+
+const openCodeSessionLocatorSchema = z.strictObject({
+  directory: z.string().min(1),
+  executionPolicy: openCodeExecutionPolicySchema.optional(),
+});
+
+export function parseOpenCodeSessionRef(ref: unknown): {
+  ref: NativeSessionRef;
+  directory?: string;
+  executionPolicy: OpenCodeExecutionPolicy;
+} {
+  const parsed = nativeSessionRefSchema.safeParse(ref);
+  if (!parsed.success) {
+    throw new Error(`Invalid OpenCode Native Session Ref: ${parsed.error.message}`);
+  }
+  if (parsed.data.harnessId !== openCodeHarnessId) {
+    throw new Error("Invalid OpenCode Native Session Ref harnessId");
+  }
+  const locator = parsed.data.locator;
+  if (locator === undefined) {
+    return { ref: parsed.data, executionPolicy: "default" };
+  }
+  const locatorResult = openCodeSessionLocatorSchema.safeParse(locator);
+  if (!locatorResult.success) {
+    throw new Error(`Invalid OpenCode Native Session locator: ${locatorResult.error.message}`);
+  }
+  return {
+    ref: parsed.data,
+    directory: locatorResult.data.directory,
+    executionPolicy: locatorResult.data.executionPolicy ?? "default",
+  };
+}
+
 function itemId(nativeId: string): HostItemId {
   return hostItemIdSchema.parse(nativeId);
 }
 
-export function openCodeNativeSessionRef(session: Session): NativeSessionRef {
+export function openCodeNativeSessionRef(
+  session: Session,
+  executionPolicy: OpenCodeExecutionPolicy = "default",
+): NativeSessionRef {
   return nativeSessionRefSchema.parse({
     harnessId: openCodeHarnessId,
     nativeSessionId: session.id,
-    locator: { directory: session.directory },
+    locator: { directory: session.directory, executionPolicy },
     formatVersion: 1,
   });
 }

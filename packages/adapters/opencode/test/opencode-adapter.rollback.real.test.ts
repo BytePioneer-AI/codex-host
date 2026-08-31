@@ -268,7 +268,7 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
       enabled_providers: [PROVIDER_ID],
       model: `${PROVIDER_ID}/${MODEL_ID}`,
       small_model: `${PROVIDER_ID}/${MODEL_ID}`,
-      permission: "allow",
+      permission: "ask",
       provider: {
         [PROVIDER_ID]: {
           npm: "@ai-sdk/openai-compatible",
@@ -305,10 +305,15 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
       if (inspection.status !== "ready") {
         throw new Error(`OpenCode inspection failed: ${JSON.stringify(inspection)}`);
       }
-      const opened = await adapter.open({ kind: "create", cwd: workspace });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: workspace,
+        executionPolicy: "unattended-full-access",
+      });
       if (!opened.ok) throw new Error(opened.error.message);
       const sourceRef = opened.value.initialState.nativeRef;
       if (!sourceRef) throw new Error("OpenCode Session did not expose a Native Ref");
+      expect(sourceRef.locator).toMatchObject({ executionPolicy: "unattended-full-access" });
       const outputs = await waitForTurn(opened.value, "real-edit");
       expect(outputs).toContainEqual(
         expect.objectContaining({
@@ -358,6 +363,9 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
       adapter = new OpenCodeAdapter(adapterOptions);
       const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: workspace });
       if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(resumed.value.initialState.nativeRef?.locator).toMatchObject({
+        executionPolicy: "unattended-full-access",
+      });
       await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
         value: { turns: [] },

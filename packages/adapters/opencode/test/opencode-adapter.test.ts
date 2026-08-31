@@ -449,6 +449,125 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it("persists unattended execution policy through resume, fork, and rollback", async () => {
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+    ]);
+    const connectionOptions: OpenCodeServerOptions[] = [];
+    const adapter = new OpenCodeAdapter(
+      {},
+      {
+        createConnection: (options) => {
+          connectionOptions.push(options);
+          return {
+            stderrTail: "",
+            client: async () => ({}) as never,
+            close: async () => undefined,
+          };
+        },
+        createTransport: () => transport,
+        randomUUID: () => "uuid-1",
+      },
+    );
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    const nativeRef = created.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("OpenCode Session did not expose a Native Ref");
+    expect(nativeRef.locator).toEqual({
+      directory: cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    await created.value.close();
+
+    const resumed = await adapter.open({ kind: "resume", nativeRef, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.nativeRef).toEqual(nativeRef);
+    await resumed.value.close();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+    ]);
+
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      checkpointId: "assistant-1",
+      formatVersion: 1,
+    });
+    const forked = await adapter.open({ kind: "fork", sourceRef: nativeRef, checkpoint, cwd });
+    if (!forked.ok) throw new Error(forked.error.message);
+    expect(forked.value.initialState.nativeRef?.locator).toEqual({
+      directory: cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    await forked.value.close();
+    const rolledBack = await adapter.open({ kind: "rollbackLastTurn", sourceRef: nativeRef, cwd });
+    if (!rolledBack.ok) throw new Error(rolledBack.error.message);
+    expect(rolledBack.value.initialState.nativeRef?.locator).toEqual({
+      directory: cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    await rolledBack.value.close();
+
+    expect(
+      connectionOptions.map(({ environment }) => environment?.OPENCODE_CONFIG_CONTENT),
+    ).toEqual([
+      JSON.stringify({ permission: "allow" }),
+      JSON.stringify({ permission: "allow" }),
+      JSON.stringify({ permission: "allow" }),
+      JSON.stringify({ permission: "allow" }),
+    ]);
+    await adapter.close();
+  });
+
+  it("keeps default policy for old and default Native Session Refs", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const connectionOptions: OpenCodeServerOptions[] = [];
+    const adapter = new OpenCodeAdapter(
+      {},
+      {
+        createConnection: (options) => {
+          connectionOptions.push(options);
+          return {
+            stderrTail: "",
+            client: async () => ({}) as never,
+            close: async () => undefined,
+          };
+        },
+        createTransport: () => transport,
+        randomUUID: () => "uuid-1",
+      },
+    );
+    const created = await adapter.open({ kind: "create", cwd });
+    if (!created.ok) throw new Error(created.error.message);
+    const nativeRef = created.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("OpenCode Session did not expose a Native Ref");
+    await created.value.close();
+    const oldRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const resumed = await adapter.open({ kind: "resume", nativeRef: oldRef, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.nativeRef?.locator).toEqual({
+      directory: cwd,
+      executionPolicy: "default",
+    });
+    await resumed.value.close();
+    expect(
+      connectionOptions.every(({ environment }) => !environment?.OPENCODE_CONFIG_CONTENT),
+    ).toBe(true);
+    await adapter.close();
+  });
+
   it("preserves environment scope across create, resume, fork, and rollback", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [

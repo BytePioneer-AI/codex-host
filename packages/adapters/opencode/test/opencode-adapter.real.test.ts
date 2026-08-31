@@ -40,11 +40,18 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         },
       });
-      const opened = await adapter.open({ kind: "create", cwd: workspace });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: workspace,
+        executionPolicy: "unattended-full-access",
+      });
       if (!opened.ok) throw new Error(opened.error.message);
       expect(opened.value.initialState.nativeRef).toMatchObject({
         harnessId: "opencode",
-        locator: { directory: await fs.realpath(workspace) },
+        locator: {
+          directory: await fs.realpath(workspace),
+          executionPolicy: "unattended-full-access",
+        },
       });
       await expect(opened.value.readSnapshot()).resolves.toMatchObject({
         ok: true,

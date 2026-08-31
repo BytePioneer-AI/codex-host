@@ -66,23 +66,23 @@ import {
   hostItemIdSchema,
   jsonValueSchema,
   nativeCheckpointRefSchema,
-  nativeSessionRefSchema,
   type HarnessCommandCatalog,
   type HarnessId,
   type HostInteractionId,
   type HostItemId,
   type NativeCheckpointRef,
-  type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import {
   openCodeAssistantMessages,
   openCodeNativeSessionRef,
+  parseOpenCodeSessionRef,
   projectOpenCodeHistory,
   reliableOpenCodeFileChanges,
   resolveOpenCodeForkBoundary,
   resolveOpenCodeLastTurnBoundary,
+  type OpenCodeExecutionPolicy,
   type OpenCodeMessageWithParts,
 } from "./history.js";
 import {
@@ -336,6 +336,7 @@ function sessionState(
   modelCatalog: ReturnType<typeof normalizeOpenCodeModelCatalog>,
   model?: OpenCodeNativeModelRef,
   variant?: string,
+  executionPolicy: OpenCodeExecutionPolicy = "default",
 ): HarnessSessionState {
   const effectiveModel = model ? encodeOpenCodeModelRef(model) : undefined;
   const modelEntry = effectiveModel
@@ -346,7 +347,7 @@ function sessionState(
     .filter((option): option is (typeof modelCatalog.thinkingOptions)[number] => Boolean(option));
   const effectiveThinkingOptionId = encodeOpenCodeVariant(variant);
   return {
-    nativeRef: openCodeNativeSessionRef(session),
+    nativeRef: openCodeNativeSessionRef(session, executionPolicy),
     ...(effectiveModel ? { effectiveModel } : {}),
     ...(modelEntry?.resolvedModelLabel
       ? { resolvedModelLabel: modelEntry.resolvedModelLabel }
@@ -415,6 +416,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   readonly #toolOutputLimit: number;
   readonly #transport: OpenCodeTransport;
   readonly #connection: OpenCodeServerConnectionLike;
+  readonly #executionPolicy: OpenCodeExecutionPolicy;
   readonly #uuid: () => string;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -436,6 +438,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     toolOutputLimit: number;
     closeTimeoutMs: number;
     randomUUID(): string;
+    executionPolicy: OpenCodeExecutionPolicy;
     onClosed(): void;
   }) {
     this.#transport = input.transport;
@@ -450,7 +453,14 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.#uuid = input.randomUUID;
     this.#onClosed = input.onClosed;
     this.#connection = input.connection;
-    this.#state = sessionState(this.#session, this.#modelCatalog, this.#model, this.#variant);
+    this.#executionPolicy = input.executionPolicy;
+    this.#state = sessionState(
+      this.#session,
+      this.#modelCatalog,
+      this.#model,
+      this.#variant,
+      this.#executionPolicy,
+    );
     this.initialState = this.#state;
     this.#usage = input.projection.usage;
     this.initialUsage = this.#usage;
@@ -1380,7 +1390,13 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.#snapshot = projection.snapshot;
     this.#model = projection.model ?? this.#model;
     this.#variant = projection.variant;
-    this.#state = sessionState(this.#session, this.#modelCatalog, this.#model, this.#variant);
+    this.#state = sessionState(
+      this.#session,
+      this.#modelCatalog,
+      this.#model,
+      this.#variant,
+      this.#executionPolicy,
+    );
     if (JSON.stringify(this.#state) !== JSON.stringify(previousState)) {
       this.#event({ type: "session.state.changed", state: this.#state });
     }
@@ -1395,7 +1411,13 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   #publishState(): void {
-    this.#state = sessionState(this.#session, this.#modelCatalog, this.#model, this.#variant);
+    this.#state = sessionState(
+      this.#session,
+      this.#modelCatalog,
+      this.#model,
+      this.#variant,
+      this.#executionPolicy,
+    );
     this.#event({ type: "session.state.changed", state: this.#state });
   }
 
@@ -1576,8 +1598,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
     let createdForCleanup: Session | undefined;
     let revertedForCleanup: string | undefined;
     try {
+      const sourceRef =
+        input.kind === "create"
+          ? undefined
+          : parseOpenCodeSessionRef(input.kind === "resume" ? input.nativeRef : input.sourceRef);
       const executionPolicy =
-        input.kind === "create" ? (input.executionPolicy ?? "default") : "default";
+        input.kind === "create"
+          ? (input.executionPolicy ?? "default")
+          : (sourceRef?.executionPolicy ?? "default");
       const sessionEnvironment = input.environment ?? this.#options.environment ?? process.env;
       const serverOptions: OpenCodeServerOptions = {
         ...this.#options,
@@ -1605,10 +1633,10 @@ export class OpenCodeAdapter implements HarnessAdapter {
         });
         createdForCleanup = session;
       } else {
-        const sourceRef = nativeSessionRefSchema.parse(
-          input.kind === "resume" ? input.nativeRef : input.sourceRef,
-        ) as NativeSessionRef;
-        if (sourceRef.harnessId !== this.harnessId) {
+        if (!sourceRef) {
+          throw new OpenCodeTransportError("protocolError", "OpenCode source ref is missing");
+        }
+        if (sourceRef.ref.harnessId !== this.harnessId) {
           await transport.close().catch(() => undefined);
           await connection.close().catch(() => undefined);
           return {
@@ -1620,8 +1648,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
             },
           };
         }
-        const source = await transport.getSession(sourceRef.nativeSessionId);
-        if (source.id !== sourceRef.nativeSessionId) {
+        const source = await transport.getSession(sourceRef.ref.nativeSessionId);
+        if (source.id !== sourceRef.ref.nativeSessionId) {
           throw new OpenCodeTransportError(
             "protocolError",
             "OpenCode resumed Session identity changed",
@@ -1639,6 +1667,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
           session = source;
         } else if (input.kind === "fork") {
           const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
+          if (checkpoint.harnessId !== this.harnessId || checkpoint.nativeSessionId !== source.id) {
+            throw new OpenCodeTransportError(
+              "protocolError",
+              "OpenCode Checkpoint does not belong to the source Session",
+            );
+          }
           const sourceMessages = await transport.getMessages(source.id);
           const boundary = resolveOpenCodeForkBoundary(source, sourceMessages, checkpoint);
           if (!boundary) {
@@ -1709,6 +1743,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
         toolOutputLimit: this.#toolOutputLimit,
         closeTimeoutMs: this.#closeTimeoutMs,
         randomUUID: this.#uuid,
+        executionPolicy,
         onClosed: () => this.#sessions.delete(harnessSession),
       });
       await harnessSession.start();

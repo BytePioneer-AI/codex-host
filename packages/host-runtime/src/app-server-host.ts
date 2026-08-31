@@ -366,7 +366,10 @@ function requestObject(request: JsonRpcRequest): JsonObject {
   return request.params as JsonObject;
 }
 
-function requestText(params: JsonObject): string {
+function requestExternalInput(params: JsonObject): {
+  text: string;
+  hasImages: boolean;
+} {
   if (!Array.isArray(params.input)) throw new Error("turn/start input must be an array");
   const text = params.input
     .filter((item): item is JsonObject => isRecord(item) && item.type === "text")
@@ -374,7 +377,10 @@ function requestText(params: JsonObject): string {
     .filter((value): value is string => typeof value === "string")
     .join("\n");
   if (!text) throw new Error("turn/start must contain text input");
-  return text;
+  const hasImages = params.input.some(
+    (item) => isRecord(item) && (item.type === "image" || item.type === "localImage"),
+  );
+  return { text, hasImages };
 }
 
 function sandboxResult(params: JsonObject): JsonObject {
@@ -446,6 +452,7 @@ export class AppServerHost {
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
+  #pendingExternalCommandRequests = new Set<string>();
   #closeRequested = false;
 
   constructor(options: AppServerHostOptions) {
@@ -656,7 +663,7 @@ export class AppServerHost {
         continue;
       }
       if (request.method === "codexhost/thread/command/execute") {
-        await this.#executeThreadCommand(request);
+        this.#dispatchDesktopRequest(() => this.#executeThreadCommand(request));
         continue;
       }
       if (request.method === "thread/list") {
@@ -855,7 +862,7 @@ export class AppServerHost {
         }
         if (await this.#writeResolutionError(request, resolution)) continue;
         if (resolution.kind === "external") {
-          await this.#startExternalTurn(request, resolution.thread);
+          this.#dispatchDesktopRequest(() => this.#startExternalTurn(request, resolution.thread));
           continue;
         }
       }
@@ -1892,49 +1899,54 @@ export class AppServerHost {
       return;
     }
     const thread = resolution.thread;
-    if (thread.running) {
+    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
       return;
     }
-    const commands = thread.session.commands;
-    if (!commands) {
-      await this.#writer.json(
-        rpcError(request, -32078, "External Harness does not expose commands"),
-      );
-      return;
-    }
-    const catalog = await commands.list();
-    if (!catalog.ok) {
-      await this.#writer.json(rpcError(request, -32078, catalog.error.message));
-      return;
-    }
-    if (!catalog.value.commands.some(({ id }) => id === params.data.commandId)) {
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32078,
-          `External Harness does not expose command '${params.data.commandId}'`,
-        ),
-      );
-      return;
-    }
-
+    this.#pendingExternalCommandRequests.add(thread.id);
     try {
-      await this.#startExternalCommand(
-        request,
-        thread,
-        params.data.commandId,
-        params.data.arguments,
-        params.data.turnId,
-        "command",
-      );
-    } catch (error) {
-      this.#diagnose(error);
-      await this.#writer.json(
-        rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-      );
+      const commands = thread.session.commands;
+      if (!commands) {
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not expose commands"),
+        );
+        return;
+      }
+      const catalog = await commands.list();
+      if (!catalog.ok) {
+        await this.#writer.json(rpcError(request, -32078, catalog.error.message));
+        return;
+      }
+      const descriptor = catalog.value.commands.find(({ id }) => id === params.data.commandId);
+      if (!descriptor) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `External Harness does not expose command '${params.data.commandId}'`,
+          ),
+        );
+        return;
+      }
+      try {
+        await this.#startExternalCommand(
+          request,
+          thread,
+          params.data.commandId,
+          params.data.arguments,
+          params.data.turnId,
+          "command",
+        );
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(
+          rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
+        );
+      }
+    } finally {
+      this.#pendingExternalCommandRequests.delete(thread.id);
     }
   }
 
@@ -2809,7 +2821,10 @@ export class AppServerHost {
     thread.running = true;
     thread.activeTurnId = turnId;
     thread.projectedTurns.set(turnId, projection);
-    thread.responseGates.set(turnId, { promise: Promise.resolve(), resolve: () => undefined });
+    thread.responseGates.set(turnId, {
+      promise: Promise.resolve(),
+      resolve: () => undefined,
+    });
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
@@ -2825,7 +2840,7 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (thread.running) {
+    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -2847,43 +2862,64 @@ export class AppServerHost {
         return;
       }
     }
-    let text: string;
+    let input: ReturnType<typeof requestExternalInput>;
     try {
-      text = requestText(params);
+      input = requestExternalInput(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    const { text, hasImages } = input;
+    const commandText = text.trimStart();
+    if (hasImages) {
+      await this.#writer.json(
+        rpcError(request, -32078, "External Harness text Turns do not accept image input"),
+      );
+      return;
+    }
     if (thread.session.commands) {
-      const catalog = await thread.session.commands.list();
-      if (!catalog.ok) {
-        await this.#writer.json(rpcError(request, -32073, catalog.error.message));
-        return;
-      }
-      const matched = catalog.value.commands
-        .toSorted((left, right) => right.invocation.length - left.invocation.length)
-        .find((command) => {
-          if (text === command.invocation) return true;
-          return command.argumentMode === "text" && text.startsWith(`${command.invocation} `);
-        });
-      if (matched) {
-        const argumentText = text.slice(matched.invocation.length).trimStart();
-        try {
-          await this.#startExternalCommand(
-            request,
-            thread,
-            matched.id,
-            argumentText.length > 0 ? { text: argumentText } : undefined,
-            undefined,
-            "turn",
-          );
-        } catch (error) {
-          this.#diagnose(error);
-          await this.#writer.json(
-            rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-          );
+      this.#pendingExternalCommandRequests.add(thread.id);
+      try {
+        const catalog = await thread.session.commands.list();
+        if (!catalog.ok) {
+          await this.#writer.json(rpcError(request, -32073, catalog.error.message));
+          return;
         }
-        return;
+        const matched = catalog.value.commands
+          .toSorted((left, right) => right.invocation.length - left.invocation.length)
+          .find((command) => {
+            if (commandText === command.invocation) return true;
+            return (
+              command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
+            );
+          });
+        if (matched) {
+          const argumentText = commandText.slice(matched.invocation.length).trimStart();
+          try {
+            await this.#startExternalCommand(
+              request,
+              thread,
+              matched.id,
+              argumentText.length > 0 ? { text: argumentText } : undefined,
+              undefined,
+              "turn",
+            );
+          } catch (error) {
+            this.#diagnose(error);
+            await this.#writer.json(
+              rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
+            );
+          }
+          return;
+        }
+        if (/^\/[^\s/]+(?:\s|$)/u.test(commandText)) {
+          await this.#writer.json(
+            rpcError(request, -32078, "External Harness does not expose the requested command"),
+          );
+          return;
+        }
+      } finally {
+        this.#pendingExternalCommandRequests.delete(thread.id);
       }
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
@@ -2941,12 +2977,22 @@ export class AppServerHost {
       return;
     }
     const turnId = thread.activeTurnId;
-    const gate = turnProjectionGate();
+    const cancellationGate = turnProjectionGate();
+    const gate: TurnProjectionGate = {
+      promise: Promise.all([
+        thread.responseGates.get(turnId)?.promise ?? Promise.resolve(),
+        cancellationGate.promise,
+      ]).then(() => undefined),
+      resolve: cancellationGate.resolve,
+    };
     thread.responseGates.set(turnId, gate);
     const result = await thread.session.execute({ type: "turn.cancel", turnId });
     if (!result.ok) {
-      gate.resolve();
-      await this.#writer.json(rpcError(request, -32074, result.error.message));
+      try {
+        await this.#writer.json(rpcError(request, -32074, result.error.message));
+      } finally {
+        gate.resolve();
+      }
       return;
     }
     try {
@@ -3107,6 +3153,7 @@ export class AppServerHost {
           turnId: event.turnId,
           cwd: thread.cwd,
           startedAtMs: Date.now(),
+          initialInput: event.input,
         }),
       };
       thread.running = true;

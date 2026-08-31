@@ -2734,6 +2734,40 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("projects autonomous Harness Turn input in the live turn/started payload", async () => {
+    const fixture = createFixture();
+    await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const turnId = hostTurnIdSchema.parse("autonomous-turn");
+
+    session.publishAutonomousTurn(turnId, [
+      { type: "text", text: "native follow-up" },
+      { type: "text", text: "second line" },
+    ]);
+
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId)),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          id: turnId,
+          items: [
+            {
+              type: "userMessage",
+              content: [
+                { type: "text", text: "native follow-up" },
+                { type: "text", text: "second line" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await stopFixture(fixture);
+  });
+
   it("acknowledges an accepted Harness command through the public command contract", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
@@ -2758,7 +2792,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
           type: "contextCompaction",
           itemId: hostItemIdSchema.parse("fake-command-compaction-item"),
         });
-        return { ok: true, value: { turnId } };
+        return {
+          ok: true,
+          value: { turnId },
+        };
       },
     };
     const turnId = hostTurnIdSchema.parse("manual-compact");
@@ -2778,6 +2815,172 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurnId));
     session.succeedTurn();
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
+    await stopFixture(fixture);
+  });
+
+  it("rejects images for registered commands and ordinary external text Turns", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const executeCommand = vi.fn();
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.plan",
+              invocation: "/plan",
+              label: "Plan",
+              argumentMode: "text",
+            }),
+          ],
+        },
+      }),
+      execute: executeCommand,
+    };
+    const execute = vi.spyOn(session, "execute");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [
+          { type: "text", text: "/plan inspect" },
+          { type: "image", url: "data:image/png;base64,AA==" },
+        ],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: expect.stringContaining("text Turns") },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [
+          { type: "text", text: "ordinary message" },
+          { type: "localImage", path: "C:\\images\\ordinary.png" },
+        ],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: expect.stringContaining("text Turns") },
+    });
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("forwards Codex-owned image input without applying Harness command routing", async () => {
+    const fixture = createFixture();
+    const forwarded: JsonObject[] = [];
+    fixture.official.stdin.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n")) {
+        if (line) forwarded.push(JSON.parse(line) as JsonObject);
+      }
+    });
+    const input = [
+      { type: "text", text: "/plan keep this native" },
+      { type: "image", url: "data:image/png;base64,AA==" },
+      { type: "localImage", path: "C:\\images\\native.webp" },
+    ];
+
+    writeRequest(fixture.desktopInput, {
+      id: 99,
+      method: "turn/start",
+      params: { threadId: "official-thread", input },
+    });
+    await vi.waitFor(() => {
+      expect(forwarded.some((message) => message.id === 99)).toBe(true);
+    });
+    expect(forwarded.find((message) => message.id === 99)).toEqual({
+      id: 99,
+      method: "turn/start",
+      params: { threadId: "official-thread", input },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("serializes command catalog admission and releases it after discovery failure", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let resolveCatalog:
+      | ((value: {
+          ok: false;
+          error: {
+            code: "unavailable";
+            message: string;
+            retryable: true;
+          };
+        }) => void)
+      | undefined;
+    const descriptor = harnessCommandDescriptorSchema.parse({
+      id: "fake.compact",
+      invocation: "/compact",
+      label: "Compact",
+      argumentMode: "none",
+    });
+    const list = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveCatalog = resolve;
+          }),
+      )
+      .mockResolvedValue({ ok: true, value: { commands: [descriptor] } });
+    const execute = vi.fn(async ({ turnId }) => {
+      session.publishEphemeralCommand(turnId, {
+        type: "contextCompaction",
+        itemId: hostItemIdSchema.parse(`retried-command-${turnId}`),
+      });
+      return { ok: true as const, value: { turnId } };
+    });
+    session.commands = { list, execute };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+
+    resolveCatalog?.({
+      ok: false,
+      error: { code: "unavailable", message: "catalog offline", retryable: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ error: { code: -32078, message: "catalog offline" } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ result: { accepted: true } });
+    expect(execute).toHaveBeenCalledOnce();
     await stopFixture(fixture);
   });
 

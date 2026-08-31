@@ -262,6 +262,21 @@ export class FakeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
   }
 
+  publishAutonomousTurn(turnId: HostTurnId, input: TurnStartCommand["input"]): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    if (this.#active) throw new Error("Fake Harness Session already has an active Turn");
+    this.#active = {
+      command: { type: "turn.start", turnId, input },
+      items: new Map(),
+      completedItems: [],
+      interactions: new Map(),
+      cancellationRequested: false,
+    };
+    this.#event({ type: "turn.autonomous.started", turnId, input });
+    this.#event({ type: "turn.started", turnId });
+    this.succeedTurn();
+  }
+
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {
     if (this.#closed) throw new Error("Fake Harness Session is closed");
     this.#event({

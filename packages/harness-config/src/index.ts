@@ -29,6 +29,19 @@ export function getHarnessConfig(config: HarnessConfigFile, harnessId: string): 
   return config.harnesses[harnessId];
 }
 
+/** Resolve a configured model while preventing a model from another harness leaking into this session. */
+export function selectHarnessModel(
+  config: HarnessEndpointConfig | undefined,
+  requested?: string,
+): string | undefined {
+  if (!config) return requested;
+  const selected = requested ?? config.model;
+  if (selected && config.models && !config.models.includes(selected)) {
+    throw new Error(`Model is not enabled for this harness: ${selected}`);
+  }
+  return selected;
+}
+
 /** Build the child-process environment without ever exposing secret values in config objects. */
 export function resolveHarnessRuntimeEnv(
   config: HarnessEndpointConfig | undefined,

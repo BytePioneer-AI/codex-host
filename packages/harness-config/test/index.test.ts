@@ -3,6 +3,7 @@ import {
   getHarnessConfig,
   parseHarnessConfig,
   resolveHarnessRuntimeEnv,
+  selectHarnessModel,
   sessionConfigFingerprint,
 } from "../src/index.js";
 
@@ -39,5 +40,12 @@ describe("harness configuration", () => {
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
     expect(a).toHaveLength(64);
+  });
+
+  it("only selects models enabled by the harness configuration", () => {
+    const config = { models: ["gemini-pro", "gemini-flash"], model: "gemini-pro" };
+    expect(selectHarnessModel(config)).toBe("gemini-pro");
+    expect(selectHarnessModel(config, "gemini-flash")).toBe("gemini-flash");
+    expect(() => selectHarnessModel(config, "other-model")).toThrow(/not enabled/);
   });
 });

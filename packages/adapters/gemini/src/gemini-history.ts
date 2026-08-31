@@ -1,0 +1,342 @@
+import type {
+  HistoricalTurnOutcome,
+  HostAgentMessageItem,
+  HostFileChangeItem,
+  HostItemSnapshot,
+  HostReasoningItem,
+  HostThreadSnapshot,
+  HostTurnSnapshot,
+} from "@codexhost/harness-adapter";
+import {
+  hostItemIdSchema,
+  nativeCheckpointRefSchema,
+  nativeTurnRefSchema,
+  type HarnessId,
+  type NativeTurnRef,
+} from "@codexhost/shared-contracts";
+
+import type { GeminiTransportEvent } from "./acp-transport.js";
+import { projectGeminiFileChanges } from "./gemini-file-change.js";
+import {
+  applyGeminiToolProjection,
+  DEFAULT_GEMINI_TOOL_OUTPUT_LIMIT,
+  geminiToolLabel,
+  hasGeminiToolProjection,
+  projectGeminiToolOutput,
+  startGeminiToolItem,
+  type GeminiProjectedToolItem,
+} from "./gemini-tool-output.js";
+
+function stableId(
+  kind: string,
+  turn: number,
+  index: number,
+): ReturnType<typeof hostItemIdSchema.parse> {
+  return hostItemIdSchema.parse(`gemini-history-${kind}-${turn}-${index}`);
+}
+
+function terminalOutcome(stopReason: string): HistoricalTurnOutcome {
+  if (stopReason === "end_turn") return { status: "succeeded" };
+  if (stopReason === "cancelled") return { status: "cancelled", reason: "Cancelled by user" };
+  return {
+    status: "failed",
+    error: {
+      code: "nativeFailure",
+      message: `Gemini stopped the Turn: ${stopReason}`,
+      retryable: stopReason === "max_tokens" || stopReason === "max_turn_requests",
+    },
+  };
+}
+
+const systemReminderPattern = /^\s*<system-reminder>[\s\S]*$/u;
+const taskCompletedTurnKeyPattern = /^task-completed-/u;
+
+function isSyntheticGeminiUserText(text: string): boolean {
+  return systemReminderPattern.test(text);
+}
+
+function isSyntheticGeminiTurnKey(nativeTurnKey: string): boolean {
+  return taskCompletedTurnKeyPattern.test(nativeTurnKey);
+}
+
+function isHostTurnEvent(event: GeminiTransportEvent): boolean {
+  return event.metadata?.hostTurn === true || event.metadata?.host_turn === true;
+}
+
+function userEventIdentity(
+  event: Extract<GeminiTransportEvent, { type: "user.text" }>,
+): string | null {
+  const eventId = event.metadata?.eventId;
+  if (typeof eventId === "string" && eventId.length > 0) return eventId;
+  return event.messageId && event.messageId.length > 0 ? event.messageId : null;
+}
+
+function explicitPromptIndex(event: GeminiTransportEvent): number | null {
+  const value = event.metadata?.promptIndex ?? event.metadata?.prompt_index;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+export function geminiCheckpointId(promptIndex: number): string {
+  return String(promptIndex);
+}
+
+export function parseGeminiPromptIndex(checkpointId: string): number | null {
+  if (!/^\d+$/u.test(checkpointId)) return null;
+  const index = Number(checkpointId);
+  return Number.isInteger(index) ? index : null;
+}
+
+export function mapGeminiReplay(
+  replay: readonly GeminiTransportEvent[],
+  harnessId: HarnessId,
+  sessionId: string,
+  cwd: string,
+  knownTurnRefs: readonly NativeTurnRef[] = [],
+  toolOutputLimit = DEFAULT_GEMINI_TOOL_OUTPUT_LIMIT,
+): HostThreadSnapshot {
+  const knownByNativeKey = new Map(
+    knownTurnRefs
+      .filter((ref) => ref.harnessId === harnessId && ref.nativeSessionId === sessionId)
+      .map((ref) => [ref.nativeTurnKey, ref] as const),
+  );
+  let turns: HostTurnSnapshot[] = [];
+  let input = "";
+  let items: HostItemSnapshot[] = [];
+  let turnIndex = 0;
+  let messageIndex = 0;
+  let nativeTurnKey: string | null = null;
+  let nativePromptIndex = 0;
+  let currentPromptIndex: number | null = null;
+  let agent: HostAgentMessageItem | null = null;
+  let reasoning: HostReasoningItem | null = null;
+  const tools = new Map<string, GeminiProjectedToolItem>();
+
+  const completeAgent = (): void => {
+    if (!agent || agent.text.length === 0) return;
+    items.push({ item: agent, outcome: { status: "succeeded" } });
+    agent = null;
+  };
+  const completeReasoning = (): void => {
+    if (!reasoning || reasoning.text.length === 0) return;
+    items.push({ item: reasoning, outcome: { status: "succeeded" } });
+    reasoning = null;
+  };
+  const completeTools = (): void => {
+    for (const tool of tools.values()) {
+      items.push({ item: tool, outcome: { status: "succeeded" } });
+    }
+    tools.clear();
+  };
+  const applyToolProjection = (
+    callId: string,
+    content?: readonly unknown[] | null,
+    rawOutput?: unknown,
+  ): void => {
+    const tool = tools.get(callId);
+    if (!tool) return;
+    const projection = projectGeminiToolOutput(content, rawOutput, toolOutputLimit);
+    if (hasGeminiToolProjection(projection)) {
+      tools.set(callId, applyGeminiToolProjection(tool, projection));
+    }
+  };
+  const completeTool = (
+    callId: string,
+    status: string,
+    content?: readonly unknown[] | null,
+    rawOutput?: unknown,
+  ): void => {
+    applyToolProjection(callId, content, rawOutput);
+    const tool = tools.get(callId);
+    if (!tool) return;
+    tools.delete(callId);
+    const outcome: HostItemSnapshot["outcome"] =
+      status === "failed"
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: `Gemini Tool '${geminiToolLabel(tool)}' failed`,
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" };
+    items.push({ item: tool, outcome });
+    if (status !== "completed") return;
+    const changes = projectGeminiFileChanges(content, cwd);
+    if (!changes) return;
+    const fileItem: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: stableId("file-change", turnIndex, ++messageIndex),
+      changes,
+    };
+    items.push({ item: fileItem, outcome: { status: "succeeded" } });
+  };
+  const completeTurn = (outcome: HistoricalTurnOutcome, terminalKey?: string): void => {
+    if (input.length === 0) return;
+    const reconstructedKey = terminalKey ?? nativeTurnKey;
+    if (!reconstructedKey) throw new Error("Gemini Native history Turn has no stable identity");
+    const known = knownByNativeKey.get(reconstructedKey);
+    const stableKey = known?.nativeTurnKey ?? reconstructedKey;
+    completeReasoning();
+    completeAgent();
+    completeTools();
+    if (currentPromptIndex === null) {
+      throw new Error("Gemini Native history Turn has no Prompt Index");
+    }
+    turns.push({
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId,
+        nativeSessionId: sessionId,
+        nativeTurnKey: stableKey,
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId,
+        nativeSessionId: sessionId,
+        checkpointId: geminiCheckpointId(currentPromptIndex),
+        formatVersion: 1,
+      }),
+      input: [{ type: "text", text: input }],
+      items,
+      outcome,
+    });
+    turnIndex += 1;
+    messageIndex = 0;
+    nativeTurnKey = null;
+    currentPromptIndex = null;
+    input = "";
+    items = [];
+  };
+
+  for (const event of replay) {
+    if (event.type === "rewind.marker") {
+      turns = turns.filter((turn) => {
+        const index = turn.checkpoint ? parseGeminiPromptIndex(turn.checkpoint.checkpointId) : null;
+        return index !== null && index < event.targetPromptIndex;
+      });
+      turnIndex = turns.length;
+      messageIndex = 0;
+      nativeTurnKey = null;
+      nativePromptIndex = event.targetPromptIndex;
+      currentPromptIndex = null;
+      input = "";
+      items = [];
+      agent = null;
+      reasoning = null;
+      tools.clear();
+      continue;
+    }
+    if (event.type === "user.text") {
+      if (isHostTurnEvent(event)) continue;
+      if (isSyntheticGeminiUserText(event.text)) {
+        if (input.length > 0) {
+          completeTurn({
+            status: "unknown",
+            reason: "Gemini Native history has no terminal signal",
+          });
+        }
+        nativePromptIndex = (explicitPromptIndex(event) ?? nativePromptIndex) + 1;
+        continue;
+      }
+      if (input.length > 0) {
+        input += event.text;
+        continue;
+      }
+      currentPromptIndex = explicitPromptIndex(event) ?? nativePromptIndex;
+      nativePromptIndex = currentPromptIndex + 1;
+      input = event.text;
+      nativeTurnKey = userEventIdentity(event);
+      continue;
+    }
+    if (input.length === 0) continue;
+    if (event.type === "turn.completed") {
+      if (isSyntheticGeminiTurnKey(event.nativeTurnKey)) continue;
+      completeTurn(terminalOutcome(event.stopReason), event.nativeTurnKey);
+    } else if (event.type === "compaction.started") {
+      completeReasoning();
+      completeAgent();
+    } else if (event.type === "compaction.completed") {
+      completeReasoning();
+      completeAgent();
+      const outcome: HostItemSnapshot["outcome"] =
+        event.outcome === "succeeded"
+          ? { status: "succeeded" }
+          : event.outcome === "cancelled"
+            ? { status: "cancelled", reason: "Context compaction was cancelled" }
+            : {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: event.errorMessage ?? "Gemini context compaction failed",
+                  retryable: true,
+                },
+              };
+      items.push({
+        item: {
+          type: "contextCompaction",
+          itemId: stableId("compaction", turnIndex, ++messageIndex),
+        },
+        outcome,
+      });
+    } else if (event.type === "agent.text") {
+      if (!agent) {
+        completeReasoning();
+        agent = {
+          type: "agentMessage",
+          itemId: stableId("message", turnIndex, ++messageIndex),
+          text: "",
+        };
+      }
+      agent = { ...agent, text: agent.text + event.text };
+    } else if (event.type === "agent.thought") {
+      if (!reasoning) {
+        reasoning = {
+          type: "reasoning",
+          itemId: stableId("reasoning", turnIndex, ++messageIndex),
+          text: "",
+        };
+      }
+      reasoning = { ...reasoning, text: reasoning.text + event.text };
+    } else if (event.type === "tool.call") {
+      completeReasoning();
+      completeAgent();
+      tools.set(
+        event.callId,
+        startGeminiToolItem({
+          itemId: stableId("tool", turnIndex, ++messageIndex),
+          name: event.name,
+          title: event.title,
+          kind: event.kind,
+          rawInput: event.rawInput,
+          cwd,
+        }),
+      );
+      applyToolProjection(event.callId, event.content, event.rawOutput);
+      if (event.status === "completed" || event.status === "failed") {
+        completeTool(event.callId, event.status, event.content, event.rawOutput);
+      }
+    } else if (event.type === "tool.update") {
+      applyToolProjection(event.callId, event.content, event.rawOutput);
+      if (event.status === "completed" || event.status === "failed") {
+        completeTool(event.callId, event.status, event.content, event.rawOutput);
+      }
+    }
+  }
+  completeTurn({ status: "unknown", reason: "Gemini Native history has no terminal signal" });
+  return { turns };
+}
+
+export function resolveGeminiTargetPromptIndex(
+  snapshot: HostThreadSnapshot,
+  checkpointId: string,
+): number | null {
+  const turn = snapshot.turns.find((entry) => entry.checkpoint?.checkpointId === checkpointId);
+  if (!turn?.checkpoint) return null;
+  return parseGeminiPromptIndex(turn.checkpoint.checkpointId);
+}
+
+export function resolveGeminiLastTurnPromptIndex(snapshot: HostThreadSnapshot): number | null {
+  const last = snapshot.turns.at(-1);
+  if (!last?.checkpoint) return null;
+  return parseGeminiPromptIndex(last.checkpoint.checkpointId);
+}

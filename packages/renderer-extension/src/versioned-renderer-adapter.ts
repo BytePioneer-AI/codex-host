@@ -791,6 +791,29 @@ export function geminiTransportModelId(
   return `${GEMINI_TRANSPORT_MODEL_PREFIX}${parsed.id}${permissionModeId || thinkingOptionId ? `@${permissionModeId ?? ""}@${thinkingOptionId ?? ""}` : ""}`;
 }
 
+export function decodeGeminiTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === GEMINI_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(GEMINI_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(GEMINI_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length !== 1 && components.length !== 3) return null;
+  const model = harnessModelRefSchema.safeParse({ id: components[0] });
+  if (!model.success) return null;
+  if (components.length === 1) return { model: model.data };
+  if (!components[1] || !components[2]) return null;
+  const permissionMode = harnessPermissionModeIdSchema.safeParse(components[1]);
+  const thinkingOption = harnessThinkingOptionIdSchema.safeParse(components[2]);
+  if (!permissionMode.success || !thinkingOption.success) return null;
+  return {
+    model: model.data,
+    permissionModeId: permissionMode.data,
+    thinkingOptionId: thinkingOption.data,
+  };
+}
+
 export function installCurrentRendererAdapter(): {
   status: RendererAdapterStatus;
   modelControl: RendererModelClient | null;

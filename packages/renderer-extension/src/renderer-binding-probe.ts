@@ -44,6 +44,7 @@ import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeGeminiTransportModelId,
   decodeOmpTransportModelId,
   decodePiTransportModelId,
   findComposerModelTarget,
@@ -307,6 +308,19 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "grok",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
+  if (inspection.harnessId === "gemini") {
+    const transportSelection = decodeGeminiTransportModelId(inspection.transportModelId);
+    if (!transportSelection) throw new Error("Gemini Thread reported an incompatible transport Model");
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId = selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId = inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "gemini",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),

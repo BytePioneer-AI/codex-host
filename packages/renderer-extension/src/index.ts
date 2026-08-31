@@ -113,6 +113,7 @@ export {
   decodeDeepSeekHarnessTransportModelId,
   deepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeGeminiTransportModelId,
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,

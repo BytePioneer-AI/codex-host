@@ -19,6 +19,7 @@ const productionRendererAgents = Object.freeze([
   "claude-code",
   "deepseek-harness",
   "grok",
+  "gemini",
   "omp",
 ]);
 

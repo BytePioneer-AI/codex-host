@@ -238,7 +238,7 @@ export async function runDesktopController(
       {
         inspectorEndpoint: options.inspectorEndpoint,
         rendererSource: `${configuration}\n${rendererSource}`,
-        enabledAgents: ["codex", "pi", "claude-code", "deepseek-harness", "grok", "omp"],
+        enabledAgents: ["codex", "pi", "claude-code", "deepseek-harness", "grok", "gemini", "omp"],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },
       dependencies,

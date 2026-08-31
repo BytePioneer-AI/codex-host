@@ -277,6 +277,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "claude-code") state.claudeModel = model;
     else if (agent === "deepseek-harness") state.deepSeekHarnessModel = model;
     else if (agent === "grok") state.grokModel = model;
+    else if (agent === "gemini") state.geminiModel = model;
     else state.ompModel = model;
     return state;
   }
@@ -313,6 +314,10 @@ export class DraftAgentController<Composer extends object> {
       state.grokThinkingOptionId = thinkingOptionId;
     } else if (agent === "grok") {
       delete state.grokThinkingOptionId;
+    } else if (agent === "gemini" && thinkingOptionId) {
+      state.geminiThinkingOptionId = thinkingOptionId;
+    } else if (agent === "gemini") {
+      delete state.geminiThinkingOptionId;
     } else if (agent === "omp" && thinkingOptionId) {
       state.ompThinkingOptionId = thinkingOptionId;
     } else if (agent === "omp") {

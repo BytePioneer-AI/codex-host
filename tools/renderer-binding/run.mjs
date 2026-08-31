@@ -20,6 +20,7 @@ export const RENDERER_PROBE_AGENTS = Object.freeze([
   "claude-code",
   "deepseek-harness",
   "grok",
+  "gemini",
 ]);
 
 function usage() {

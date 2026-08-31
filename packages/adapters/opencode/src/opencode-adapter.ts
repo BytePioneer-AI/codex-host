@@ -144,6 +144,11 @@ type ActiveInteraction =
       interaction: HostApprovalInteraction;
     };
 
+interface BufferedOutput {
+  output: HarnessOutput;
+  sequence: number;
+}
+
 interface ActiveTurn {
   kind: ActiveKind;
   turnId: TurnStartCommand["turnId"];
@@ -160,6 +165,9 @@ interface ActiveTurn {
   interactions: Map<HostInteractionId, ActiveInteraction>;
   completion: Promise<void>;
   resolveCompletion(): void;
+  finished: boolean;
+  admissionBuffer: BufferedOutput[];
+  admissionSequence: number;
 }
 
 interface OpenCodeSnapshotProjection {
@@ -581,7 +589,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     }
     const active = this.#createActive("prompt", command.turnId, this.#newMessageId());
     this.#active = active;
-    this.#event({ type: "turn.started", turnId: command.turnId });
+    active.admissionBuffer.push({
+      output: { kind: "event", event: { type: "turn.started", turnId: command.turnId } },
+      sequence: active.admissionSequence++,
+    });
     try {
       await this.#transport.promptAsync({
         sessionID: this.#session.id,
@@ -591,10 +602,13 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         ...(this.#variant ? { variant: this.#variant } : {}),
       });
       active.admissionCompleted = true;
+      this.#flushAdmission(active);
       return { ok: true, value: { turnId: command.turnId } };
     } catch (error) {
       const normalized = normalizeError(error, "nativeFailure");
-      this.#completeTurn(active, { status: "failed", error: normalized });
+      active.admissionBuffer.length = 0;
+      active.finished = true;
+      if (this.#active === active) this.#active = null;
       return { ok: false, error: normalized };
     }
   }
@@ -646,6 +660,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         };
       }
       const active = this.#createActive("compact", command.turnId, null);
+      active.admissionCompleted = true;
       this.#active = active;
       this.#event({ type: "turn.started", turnId: command.turnId });
       const item: HostContextCompactionItem = {
@@ -702,6 +717,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       };
     }
     const active = this.#createActive("command", command.turnId, this.#newMessageId());
+    active.admissionCompleted = true;
     this.#active = active;
     this.#event({ type: "turn.started", turnId: command.turnId });
     void this.#transport
@@ -1118,7 +1134,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       nativeId: request.id,
       interaction,
     });
-    this.#channel.emit({ kind: "interaction", interaction });
+    this.#output({ kind: "interaction", interaction });
   }
 
   #openApproval(active: ActiveTurn, request: PermissionRequest): void {
@@ -1143,7 +1159,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       nativeId: request.id,
       interaction,
     });
-    this.#channel.emit({ kind: "interaction", interaction });
+    this.#output({ kind: "interaction", interaction });
   }
 
   #closeInteraction(
@@ -1317,7 +1333,8 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
-    if (this.#active !== active) return;
+    if (this.#active !== active || active.finished || !active.admissionCompleted) return;
+    active.finished = true;
     this.#active = null;
     for (const interactionId of [...active.interactions.keys()]) {
       this.#closeInteraction(
@@ -1352,8 +1369,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       kind,
       turnId,
       userMessageID,
+      admissionBuffer: [],
+      admissionSequence: 0,
       cancellationRequested: false,
       admissionCompleted: false,
+      finished: false,
       nativeCompleted: false,
       sawBusy: false,
       reconciledAfterReconnect: false,
@@ -1365,6 +1385,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       completion,
       resolveCompletion,
     };
+  }
+
+  #flushAdmission(active: ActiveTurn): void {
+    if (!active.admissionCompleted || this.#active !== active) return;
+    active.admissionBuffer.sort((left, right) => left.sequence - right.sequence);
+    for (const { output } of active.admissionBuffer.splice(0)) this.#channel.emit(output);
   }
 
   async #refreshProjection(observedForTurnId?: ActiveTurn["turnId"]): Promise<void> {
@@ -1424,7 +1450,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   #fault(error: unknown): void {
     if (this.#phase === "faulted" || this.#phase === "closed") return;
     const normalized = normalizeError(error, "internalError");
-    if (this.#active) {
+    if (this.#active && !this.#active.admissionCompleted) {
+      this.#active.admissionBuffer.length = 0;
+      this.#active.finished = true;
+      this.#active = null;
+    } else if (this.#active) {
       this.#completeTurn(this.#active, { status: "failed", error: normalized });
     }
     this.#phase = "faulted";
@@ -1459,8 +1489,17 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     }
   }
 
+  #output(output: HarnessOutput): void {
+    const active = this.#active;
+    if (active && !active.admissionCompleted) {
+      active.admissionBuffer.push({ output, sequence: active.admissionSequence++ });
+      return;
+    }
+    this.#channel.emit(output);
+  }
+
   #event(event: HostEvent): void {
-    this.#channel.emit({ kind: "event", event });
+    this.#output({ kind: "event", event });
   }
 
   #newMessageId(): string {

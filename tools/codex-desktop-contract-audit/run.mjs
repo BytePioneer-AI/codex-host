@@ -18,6 +18,7 @@ const productionRendererAgents = Object.freeze([
   "pi",
   "claude-code",
   "deepseek-harness",
+  "opencode",
   "grok",
   "omp",
 ]);

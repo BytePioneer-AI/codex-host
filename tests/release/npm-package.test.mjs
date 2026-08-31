@@ -469,6 +469,7 @@ describe("npm package release", () => {
         root: "/repo/source",
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
+      expect(paths).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");

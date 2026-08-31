@@ -225,8 +225,13 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
     return session;
   }
 
+  promptError: Error | undefined;
+  promptAdmissionHook: (() => void) | undefined;
+
   async promptAsync(input: OpenCodePromptInput) {
     this.promptCalls.push(input);
+    this.promptAdmissionHook?.();
+    if (this.promptError) throw this.promptError;
     const info: UserMessage = {
       id: input.messageID,
       sessionID: input.sessionID,
@@ -791,6 +796,80 @@ describe("OpenCode HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toMatchObject({ type: "item.completed" });
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
     expect(transport.summarizeCalls).toEqual(["session-1"]);
+    await session.close();
+    await adapter.close();
+  });
+
+  it("buffers synchronous and asynchronous SSE until prompt admission commits", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    let resolveAdmission: (() => void) | undefined;
+    transport.promptAdmissionHook = () => {
+      transport.emit({
+        id: "sync-connected",
+        type: "server.connected",
+        properties: {},
+      });
+      void Promise.resolve().then(() => {
+        transport.emit({
+          id: "async-status",
+          type: "session.status",
+          properties: { sessionID: "session-1", status: { type: "busy" } },
+        });
+      });
+    };
+    const admission = new Promise<void>((resolve) => {
+      resolveAdmission = resolve;
+    });
+    const originalPrompt = transport.promptAsync.bind(transport);
+    transport.promptAsync = async (input) => {
+      transport.promptCalls.push(input);
+      transport.promptAdmissionHook?.();
+      await admission;
+      const info = userMessage(input.messageID, input.text);
+      transport.messages.get(input.sessionID)?.push(info);
+    };
+    const executePromise = session.execute(turn("buffered"));
+    await flush();
+    const pending = iterator.next();
+    await flush();
+    resolveAdmission?.();
+    await expect(executePromise).resolves.toEqual({ ok: true, value: { turnId: "buffered" } });
+    await expect(pending).resolves.toMatchObject({
+      done: false,
+      value: { kind: "event", event: { type: "turn.started" } },
+    });
+    await flush();
+    appendTerminal(transport);
+    transport.status = { type: "busy" };
+    transport.emit({
+      id: "finish-busy",
+      type: "session.status",
+      properties: { sessionID: "session-1", status: transport.status },
+    });
+    transport.status = { type: "idle" };
+    transport.emit({
+      id: "finish-idle",
+      type: "session.status",
+      properties: { sessionID: "session-1", status: transport.status },
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({ type: "turn.completed" });
+    transport.promptAsync = originalPrompt;
+    await session.close();
+    await adapter.close();
+  });
+
+  it("returns admission failure without publishing an orphan lifecycle", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    transport.promptError = new Error("prompt rejected");
+    await expect(session.execute(turn("rejected"))).resolves.toMatchObject({ ok: false });
+    const next = iterator.next();
+    const settled = await Promise.race([
+      next.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+    ]);
+    expect(settled).toBe(false);
     await session.close();
     await adapter.close();
   });

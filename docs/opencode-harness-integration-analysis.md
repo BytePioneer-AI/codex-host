@@ -216,7 +216,7 @@ codexhost 应负责 Server 的启动、健康检查、退出和重启：
 
 官方 SDK 自带的 [`createOpencodeServer()`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/sdk/js/src/v2/server.ts) 硬编码从 `PATH` 启动 `opencode`，没有显式 executable 参数，也没有替 codexhost 建立随机 Basic Auth。codexhost 因此应自己实现很小的 `OpenCodeServerTransport`，复用现有 Harness executable discovery、bounded stderr 和跨平台 process-tree shutdown，只把已连接的 `createOpencodeClient()` 交给业务 Adapter。
 
-初版建议一个 Host Runtime 管理一个 OpenCode Server，多个 Native Session 复用它；OpenCode 的 directory/workspace request scope 与 child Session 模型支持这一形态。发布前仍需验证并发 Session、跨 cwd、Server 崩溃隔离和关闭语义。如果共享进程的隔离 Gate 不通过，再退到每 cwd 一个 Server。不要每个 Turn 启动一次 Server，也不要将 loopback 端口暴露给 Renderer。
+初版建议一个 Host Runtime 管理一个 OpenCode Server，多个 Native Session 复用它；但该方案已被 per-Session environment 与 execution-policy 隔离要求否决。当前拓扑是每次 OpenSession 启动一个独立的受管 OpenCode Server；共享 Server 仅保留为后续实验方向，不是当前实现。不要每个 Turn 启动一次 Server，也不要将 loopback 端口暴露给 Renderer。
 
 Remote SSH 场景中，Server 应由远端 Host Runtime 在 workspace 所在机器上启动并只监听远端 `127.0.0.1`；不应通过 SSH 对本机开放 OpenCode 端口。Windows 则需沿用现有 Adapter 的进程树终止策略，避免只退出父进程而残留 OpenCode 子进程。
 

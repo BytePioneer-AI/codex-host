@@ -5,6 +5,7 @@ export {
   AntigravityAdapter,
   parseAntigravityContextUsage,
   parseAntigravityModels,
+  permissionDeniedTurnError,
 } from "./antigravity-adapter.js";
 export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";
 export { resolveAntigravityExecutable } from "./command.js";

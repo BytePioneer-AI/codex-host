@@ -9,6 +9,7 @@ import type { Readable, Writable } from "node:stream";
 
 import {
   HarnessOutputChannel,
+  sanitizeDiagnosticTail,
   type HarnessAdapter,
   type HarnessError,
   type HarnessInspection,
@@ -141,9 +142,10 @@ function unsupported(message: string): HarnessError {
 /**
  * Headless agy answers a permission request by denying it, then reports the
  * Turn as successful with an empty response. Without this the user sees a Turn
- * that silently did nothing.
+ * that silently did nothing. The denial echoes the rejected command line, so it
+ * is redacted before it leaves the Adapter.
  */
-function permissionDeniedTurnError(nativeMode: string | null, denial: string): HarnessError {
+export function permissionDeniedTurnError(nativeMode: string | null, denial: string): HarnessError {
   const mode = nativeMode ? ` '${nativeMode}'` : "";
   return {
     code: "nativeFailure",
@@ -152,7 +154,7 @@ function permissionDeniedTurnError(nativeMode: string | null, denial: string): H
       "Headless Antigravity evaluates its own permission rules and cannot ask for approval; " +
       "retry with the Skip permissions Permission Mode.",
     retryable: false,
-    diagnostic: denial,
+    diagnostic: sanitizeDiagnosticTail(denial),
   };
 }
 
@@ -340,7 +342,8 @@ export function parseAntigravityModels(output: string): HarnessModelCatalog {
 }
 
 function normalizedProcessError(stderr: string, fallback: string): HarnessError {
-  const diagnostic = stderr.trim();
+  // stderr can echo the invoked command line, so redact before it is surfaced.
+  const diagnostic = sanitizeDiagnosticTail(stderr.trim());
   if (/sign[ -]?in|authenticat|credential|login/iu.test(diagnostic)) {
     return {
       code: "authenticationRequired",

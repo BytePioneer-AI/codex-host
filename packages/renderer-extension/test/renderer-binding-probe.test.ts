@@ -247,6 +247,16 @@ describe("Renderer Composer DOM behavior", () => {
       ),
     ).toBe(false);
     expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
+    // Antigravity reads plan quota from its own CLI, so Usage can land before
+    // the first quota refresh finishes.
+    expect(shouldRetryExternalThreadUsage("antigravity", { totalCostUsd: 0.168 })).toBe(true);
+    expect(
+      shouldRetryExternalThreadUsage(
+        "antigravity",
+        { totalCostUsd: 0.168 },
+        { usedPercent: 3.41, periodType: "weekly" },
+      ),
+    ).toBe(false);
     expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(

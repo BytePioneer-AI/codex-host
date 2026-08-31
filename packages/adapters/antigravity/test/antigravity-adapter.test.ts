@@ -9,6 +9,7 @@ import {
   parseAntigravityModels,
   parseAntigravityStreamLine,
   parseAntigravityUsageCommand,
+  permissionDeniedTurnError,
 } from "../src/index.js";
 
 const FETCHED_AT = "2026-08-31T14:40:00.000Z";
@@ -117,6 +118,8 @@ describe("Antigravity Adapter", () => {
   it("projects the CLI /usage command into an account credits snapshot", () => {
     const snapshot = parseAntigravityUsageCommand(USAGE_COMMAND, FETCHED_AT);
     // The Gemini weekly bucket is the most consumed, so it leads the pill.
+    // Labels come from the window, not the CLI's "… Remaining" naming, because
+    // the values are consumed percentages.
     expect(snapshot).toEqual({
       usedPercent: 2.65,
       periodType: "weekly",
@@ -124,17 +127,24 @@ describe("Antigravity Adapter", () => {
       fetchedAt: FETCHED_AT,
       productUsage: [
         {
-          product: "Gemini Models · Five Hour Limit Remaining",
+          product: "Gemini Models · 5-hour window",
           usagePercent: 0,
           resetsAt: "2026-08-31T19:38:13Z",
         },
         {
-          product: "Claude and GPT models · Weekly Limit Remaining",
+          product: "Claude and GPT models · Weekly window",
           usagePercent: 0,
           resetsAt: "2026-09-07T14:38:13Z",
         },
       ],
     });
+  });
+
+  it("never labels a consumed percentage as remaining", () => {
+    const snapshot = parseAntigravityUsageCommand(USAGE_COMMAND, FETCHED_AT);
+    const labels = (snapshot?.productUsage ?? []).map(({ product }) => product);
+    expect(labels).not.toHaveLength(0);
+    for (const label of labels) expect(label).not.toMatch(/remaining/iu);
   });
 
   it("keeps the quota snapshot valid against the Host credits contract", () => {
@@ -185,5 +195,18 @@ describe("Antigravity Adapter", () => {
     expect(isAntigravityPermissionDenial(denial)).toBe(true);
     expect(antigravityToolErrorMessage({ type: "TOOL_ERROR" })).toBeNull();
     expect(isAntigravityPermissionDenial("file not found")).toBe(false);
+  });
+
+  it("redacts credentials echoed by the denied command line", () => {
+    const denial =
+      "permission check failed for command \"curl -H 'Authorization: Bearer sk-live-abc123' https://api.example.com\": " +
+      "user denied permission to run command";
+    const error = permissionDeniedTurnError("request-review", denial);
+    // The exact redaction shape belongs to sanitizeDiagnosticTail's own tests;
+    // what matters here is that the Adapter routes the denial through it.
+    expect(error.diagnostic).not.toContain("sk-live-abc123");
+    expect(error.diagnostic).toContain("[redacted]");
+    expect(error.message).toContain("'request-review'");
+    expect(error.retryable).toBe(false);
   });
 });

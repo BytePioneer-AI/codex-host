@@ -53,6 +53,19 @@ function periodTypeFrom(window: string): AntigravityQuotaSnapshot["periodType"] 
   return "unknown";
 }
 
+/**
+ * The CLI names buckets from the remaining side ("Weekly Limit Remaining"),
+ * while `AccountCreditsSnapshot` carries consumed percentages. Labelling from
+ * the window instead keeps the label and the number on the same side.
+ */
+function windowLabel(window: string, bucketId: string | undefined): string | undefined {
+  const normalized = window.trim().toLowerCase();
+  if (normalized === "weekly") return "Weekly window";
+  if (normalized === "5h") return "5-hour window";
+  if (normalized) return `${normalized} window`;
+  return bucketId;
+}
+
 function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
   const buckets: ParsedBucket[] = [];
   for (const group of groups) {
@@ -62,13 +75,14 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
       if (!isRecord(bucket)) continue;
       const usagePercent = usedPercentFrom(bucket.remaining_fraction);
       if (usagePercent === null) continue;
-      const bucketName = nonEmptyString(bucket.name) ?? nonEmptyString(bucket.id);
-      if (!bucketName) continue;
+      const window = nonEmptyString(bucket.window) ?? "";
+      const label = windowLabel(window, nonEmptyString(bucket.id));
+      if (!label) continue;
       const resetsAt = nonEmptyString(bucket.reset_time);
       buckets.push({
-        product: groupName ? `${groupName} · ${bucketName}` : bucketName,
+        product: groupName ? `${groupName} · ${label}` : label,
         usagePercent,
-        window: nonEmptyString(bucket.window) ?? "",
+        window,
         ...(resetsAt ? { resetsAt } : {}),
       });
     }

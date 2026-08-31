@@ -107,6 +107,17 @@ describe("Renderer tooling observer", () => {
     }
   });
 
+  it("accepts the complete production external Agent set", () => {
+    for (const agent of ["opencode", "grok", "omp"]) {
+      expect(
+        validateRendererObserverStatus({
+          ...validStatus,
+          observations: [{ ...validStatus.observations[0], agent }],
+        }),
+      ).toBeTruthy();
+    }
+  });
+
   it("validates sanitized submission observations", () => {
     expect(validateRendererObserverStatus(validStatus)).toBe(validStatus);
   });

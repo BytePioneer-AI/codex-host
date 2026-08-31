@@ -9,6 +9,8 @@ import {
   expectedPayloadPaths,
   npmReleaseCommand,
   numericPackageVersion,
+  resolveRuntimeLicenseSource,
+  writeThirdPartyNotices,
   prepareReleasePayload,
   releaseBuildCommands,
   validatePayload,
@@ -120,6 +122,30 @@ describe("release Payload", () => {
     expect(() => numericPackageVersion("preview")).toThrow("major.minor.patch");
     expect(() => numericPackageVersion("1.2.3/../../outside")).toThrow("major.minor.patch");
     expect(() => numericPackageVersion("256.0.0")).toThrow("version limits");
+  });
+
+  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+    const root = process.cwd();
+    const output = await temporaryDirectory();
+    try {
+      await writeThirdPartyNotices(root, output);
+      const notice = await readFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "utf8");
+      const license = await readFile(
+        path.join(output, "licenses/OpenCode-SDK-LICENSE.txt"),
+        "utf8",
+      );
+      expect(
+        resolveRuntimeLicenseSource(root, {
+          packageName: "@opencode-ai/sdk",
+          source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+        }),
+      ).toBe(path.join(root, "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt"));
+      expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
+      expect(license).toContain("Copyright (c) 2025 opencode");
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
   });
 
   it("keeps the third-party notice paths relative to the Payload", async () => {

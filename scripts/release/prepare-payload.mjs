@@ -30,7 +30,7 @@ const runtimeLicenses = [
   {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
-    source: "../../licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+    source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
     output: "OpenCode-SDK-LICENSE.txt",
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
@@ -147,7 +147,11 @@ function packageManifest(value, packageName) {
   return value;
 }
 
-async function writeThirdPartyNotices(root, payloadRoot) {
+export function resolveRuntimeLicenseSource(root, dependency) {
+  return path.resolve(root, dependency.source);
+}
+
+export async function writeThirdPartyNotices(root, payloadRoot) {
   const licensesDirectory = path.join(payloadRoot, "licenses");
   await mkdir(licensesDirectory, { recursive: true });
   const notices = [
@@ -169,7 +173,9 @@ async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      path.join(dependencyRoot, dependency.source),
+      dependency.packageName === "@opencode-ai/sdk"
+        ? resolveRuntimeLicenseSource(root, dependency)
+        : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
       `${dependency.packageName} license`,
     );

@@ -155,10 +155,14 @@ interface ActiveTurn {
   userMessageID: string | null;
   cancellationRequested: boolean;
   admissionCompleted: boolean;
+  admissionFailure: HarnessError | null;
+  admissionFailurePromise: Promise<void>;
+  resolveAdmissionFailure(error: HarnessError): void;
   nativeCompleted: boolean;
   sawBusy: boolean;
   reconciledAfterReconnect: boolean;
   finishing: boolean;
+  reconcilePending: boolean;
   terminalAssistant: AssistantMessage | null;
   items: Map<string, LiveItem>;
   toolItemByCallId: Map<string, HostItemId>;
@@ -370,6 +374,13 @@ function nativeCommandId(name: string): string {
   return `${NATIVE_COMMAND_PREFIX}${Buffer.from(name, "utf8").toString("base64url")}`;
 }
 
+function boundedCommandDescription(description: string | undefined): string | undefined {
+  if (!description) return undefined;
+  const trimmed = description.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= 512 ? trimmed : `${trimmed.slice(0, 509)}...`;
+}
+
 function nativeCommandCatalog(commands: readonly NativeCommand[]): HarnessCommandCatalog {
   return harnessCommandCatalogSchema.parse({
     commands: [
@@ -384,7 +395,9 @@ function nativeCommandCatalog(commands: readonly NativeCommand[]): HarnessComman
         id: nativeCommandId(command.name),
         invocation: `/${command.name}`,
         label: command.name,
-        ...(command.description ? { description: command.description } : {}),
+        ...(boundedCommandDescription(command.description)
+          ? { description: boundedCommandDescription(command.description) }
+          : {}),
         argumentMode:
           command.hints.length > 0 || command.template.includes("$ARGUMENTS") ? "text" : "none",
       })),
@@ -594,20 +607,25 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       sequence: active.admissionSequence++,
     });
     try {
-      await this.#transport.promptAsync({
+      const prompt = this.#transport.promptAsync({
         sessionID: this.#session.id,
         messageID: active.userMessageID as string,
         text,
         ...(this.#model ? { model: this.#model } : {}),
         ...(this.#variant ? { variant: this.#variant } : {}),
       });
+      void prompt.catch(() => undefined);
+      await Promise.race([prompt, active.admissionFailurePromise]);
+      if (active.admissionFailure) return { ok: false, error: active.admissionFailure };
       active.admissionCompleted = true;
       this.#flushAdmission(active);
+      void this.#reconcileAndFinish(active);
       return { ok: true, value: { turnId: command.turnId } };
     } catch (error) {
       const normalized = normalizeError(error, "nativeFailure");
       active.admissionBuffer.length = 0;
       active.finished = true;
+      active.resolveCompletion();
       if (this.#active === active) this.#active = null;
       return { ok: false, error: normalized };
     }
@@ -1208,7 +1226,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   async #reconcileAndFinish(active: ActiveTurn): Promise<void> {
-    if (this.#active !== active || active.finishing || active.kind === "compact") return;
+    if (this.#active !== active || active.kind === "compact") return;
+    if (active.finishing) {
+      active.reconcilePending = true;
+      return;
+    }
     active.finishing = true;
     try {
       const [status, messages] = await Promise.all([
@@ -1318,6 +1340,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       }
     } finally {
       active.finishing = false;
+      if (active.reconcilePending && this.#active === active && !active.finished) {
+        active.reconcilePending = false;
+        void this.#reconcileAndFinish(active);
+      }
     }
   }
 
@@ -1365,6 +1391,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
+    let resolveAdmissionFailure: (error: HarnessError) => void = () => undefined;
+    const admissionFailurePromise = new Promise<void>((resolve) => {
+      resolveAdmissionFailure = () => resolve();
+    });
     return {
       kind,
       turnId,
@@ -1373,11 +1403,15 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       admissionSequence: 0,
       cancellationRequested: false,
       admissionCompleted: false,
+      admissionFailure: null,
+      admissionFailurePromise,
+      resolveAdmissionFailure,
       finished: false,
       nativeCompleted: false,
       sawBusy: false,
       reconciledAfterReconnect: false,
       finishing: false,
+      reconcilePending: false,
       terminalAssistant: null,
       items: new Map(),
       toolItemByCallId: new Map(),
@@ -1451,8 +1485,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase === "faulted" || this.#phase === "closed") return;
     const normalized = normalizeError(error, "internalError");
     if (this.#active && !this.#active.admissionCompleted) {
-      this.#active.admissionBuffer.length = 0;
-      this.#active.finished = true;
+      const active = this.#active;
+      active.admissionBuffer.length = 0;
+      active.admissionFailure = normalized;
+      active.resolveAdmissionFailure(normalized);
+      active.finished = true;
+      active.resolveCompletion();
       this.#active = null;
     } else if (this.#active) {
       this.#completeTurn(this.#active, { status: "failed", error: normalized });

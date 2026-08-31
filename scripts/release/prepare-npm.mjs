@@ -66,7 +66,7 @@ const runtimeLicenses = [
   {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
-    source: "../../licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+    source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
     output: "OpenCode-SDK-LICENSE.txt",
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
@@ -666,7 +666,11 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 `;
 }
 
-async function writeThirdPartyNotices(root, packageRoot) {
+export function resolveRuntimeLicenseSource(root, dependency) {
+  return path.resolve(root, dependency.source);
+}
+
+export async function writeThirdPartyNotices(root, packageRoot) {
   const licensesDirectory = path.join(packageRoot, "licenses");
   await mkdir(licensesDirectory, { recursive: true });
   const notices = ["codexhost npm package third-party notices", ""];
@@ -682,7 +686,9 @@ async function writeThirdPartyNotices(root, packageRoot) {
       );
     }
     await copyReleaseFile(
-      path.join(dependencyRoot, dependency.source),
+      dependency.packageName === "@opencode-ai/sdk"
+        ? resolveRuntimeLicenseSource(root, dependency)
+        : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
       `${dependency.packageName} license`,
     );

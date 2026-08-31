@@ -756,6 +756,31 @@ describe("OpenCode HarnessAdapter", () => {
     );
     const review = catalog.value.commands.find(({ invocation }) => invocation === "/review");
     if (!review) throw new Error("OpenCode did not publish the review command");
+    expect(review.description).toBe("Review the workspace");
+
+    transport.commandsValue = [
+      {
+        name: "long-description",
+        description: `${"x".repeat(600)}   `,
+        template: "Long $ARGUMENTS",
+        hints: [],
+      },
+    ];
+    const longCatalog = await commands.list();
+    if (!longCatalog.ok) throw new Error(longCatalog.error.message);
+    const longCommand = longCatalog.value.commands.find(
+      ({ invocation }) => invocation === "/long-description",
+    );
+    expect(longCommand?.description).toHaveLength(512);
+    expect(longCommand?.description?.endsWith("...")).toBe(true);
+    transport.commandsValue = [
+      {
+        name: "review",
+        description: "Review the workspace",
+        template: "Review $ARGUMENTS",
+        hints: ["focus"],
+      },
+    ];
     const iterator = session.outputs[Symbol.asyncIterator]();
 
     await expect(
@@ -871,6 +896,76 @@ describe("OpenCode HarnessAdapter", () => {
     ]);
     expect(settled).toBe(false);
     await session.close();
+    await adapter.close();
+  });
+
+  it("reconciles a terminal Turn that reaches idle before prompt admission resolves", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    let resolveAdmission: (() => void) | undefined;
+    const admission = new Promise<void>((resolve) => {
+      resolveAdmission = resolve;
+    });
+    transport.promptAsync = async (input) => {
+      transport.promptCalls.push(input);
+      transport.messages.get(input.sessionID)?.push(userMessage(input.messageID, input.text));
+      const terminal = assistantMessage("assistant-early", input.messageID);
+      terminal.info.sessionID = input.sessionID;
+      transport.messages.get(input.sessionID)?.push(terminal);
+      transport.status = { type: "busy" };
+      transport.emit({
+        id: "early-busy",
+        type: "session.status",
+        properties: { sessionID: input.sessionID, status: transport.status },
+      });
+      transport.status = { type: "idle" };
+      transport.emit({
+        id: "early-idle",
+        type: "session.status",
+        properties: { sessionID: input.sessionID, status: transport.status },
+      });
+      await flush();
+      await admission;
+    };
+
+    const executePromise = session.execute(turn("early-terminal"));
+    await flush();
+    resolveAdmission?.();
+    await expect(executePromise).resolves.toEqual({
+      ok: true,
+      value: { turnId: "early-terminal" },
+    });
+    const events = [await nextEvent(iterator), await nextEvent(iterator)];
+    expect(events.map((event) => event.type)).toEqual(["turn.started", "turn.completed"]);
+    expect(events[1]).toMatchObject({
+      type: "turn.completed",
+      turnId: "early-terminal",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("rejects prompt admission and settles close when the transport faults first", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    let resolveAdmission: (() => void) | undefined;
+    const admission = new Promise<void>((resolve) => {
+      resolveAdmission = resolve;
+    });
+    transport.promptAsync = async (input) => {
+      transport.promptCalls.push(input);
+      await admission;
+    };
+
+    const executePromise = session.execute(turn("fault-during-admission"));
+    await flush();
+    transport.listener?.onFault(new Error("synthetic transport fault") as never);
+    await expect(executePromise).resolves.toMatchObject({ ok: false });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "session.faulted" });
+    resolveAdmission?.();
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    await expect(session.close()).resolves.toBeUndefined();
     await adapter.close();
   });
 

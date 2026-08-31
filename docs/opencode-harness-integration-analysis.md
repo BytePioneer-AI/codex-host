@@ -66,7 +66,7 @@ OpenCodeAdapter
 
 生产 Bundle 只导入 `@opencode-ai/sdk/v2/client`。没有使用 SDK 顶层 `v2` 入口，因为后者会把 SDK 自带的 `createOpencodeServer()` 和 `cross-spawn` 一并打包，重复 codexhost 已拥有的进程监管责任。
 
-当前验证结果：
+当前验证结果（最近一次完整验证需在 admission race 修复后重跑）：
 
 | 验证 | 结果 |
 | --- | --- |
@@ -265,6 +265,12 @@ Adapter 应在提交 prompt **之前**建立 SSE 订阅，并为每个 Host Turn
 `MessageAbortedError` 在 Host 已请求 cancel 时映射为 cancelled；其他原生 error 映射为 failed；无 error 且达到 idle barrier 才映射为 succeeded。SSE 断线时不能猜结果，应暂停增量完成、重连后读取 status + messages + pending interactions 对账，再决定是否补发终态。
 
 历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。一个 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；Native Turn/Item identity 必须直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。
+
+### Adapter 内部责任边界
+
+`packages/adapters/opencode/src/opencode-adapter.ts` 仍保留为一个 Session façade，但它内部有四类必须保持同一状态机原子性的职责：Turn admission/completion、OpenCode SSE 到 Host Item/Interaction 的投影、Session state/usage projection，以及 history lifecycle/reconnect reconciliation。当前已将受管 Server 的进程生命周期与 SDK transport 拆到 `server-connection.ts` / `sdk-transport.ts`；暂不把上述四类状态机进一步拆成多个对象，因为它们共享 `ActiveTurn`、admission buffer、interaction closure 和 exactly-once completion invariant。下一次拆分应以可观察的 HarnessSession seam 为边界，并先为跨模块事件顺序建立契约测试，避免用 event bus 或共享可变全局状态替代现有显式状态机。
+
+本文件不把当前约 1,840 行实现视为已完成的结构优化：这是后续设计审查信号，而不是已经满足的重构目标。
 
 ### Question 与 Approval 的保真映射
 

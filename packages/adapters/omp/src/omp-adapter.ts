@@ -1520,6 +1520,7 @@ class OmpHarnessSession implements HarnessSession {
           type: "toolExecution",
           itemId: this.#newItemId(),
           toolName: event.toolName,
+          presentation: "commandExecution",
           arguments: event.arguments,
         };
     active.tools.set(event.callId, {

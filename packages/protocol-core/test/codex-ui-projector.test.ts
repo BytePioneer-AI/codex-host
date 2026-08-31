@@ -608,7 +608,7 @@ describe("Codex UI projector", () => {
     ]);
   });
 
-  it("projects Generic Tool output only through the generic dynamic Tool shape", () => {
+  it("projects Generic Tool output through the generic dynamic Tool shape by default", () => {
     const value = projector();
     const toolId = itemId("tool-1");
     const tool: HostToolExecutionItem = {
@@ -733,6 +733,52 @@ describe("Codex UI projector", () => {
       outcome: { status: "succeeded" },
     });
     expect(completed.completedTurn).toMatchObject({ items: [] });
+  });
+
+  it("projects text-only Tool output through a command card when requested", () => {
+    const value = projector();
+    const toolId = itemId("tool-command-presentation");
+    const tool: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: toolId,
+      toolName: "read",
+      presentation: "commandExecution",
+      arguments: { path: "a.txt" },
+    };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: tool }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "read",
+            status: "inProgress",
+            aggregatedOutput: null,
+          },
+        },
+      },
+    ]);
+    const output = { content: [{ type: "text" as const, text: "contents" }] };
+    const completed = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: { ...tool, output }, outcome: { status: "succeeded" } },
+    });
+    expect(completed.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "read",
+            status: "completed",
+            aggregatedOutput: "contents",
+            exitCode: 0,
+          },
+        },
+      },
+    ]);
   });
 
   it("projects standalone Questions through a synthetic Generic Tool lifecycle", () => {

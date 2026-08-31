@@ -228,6 +228,7 @@ function snapshotItems(entries: OmpEntry[], outcome: HistoricalTurnOutcome): Hos
       type: "toolExecution",
       itemId: itemId(call.entryId, "tool", call.ordinal),
       toolName: call.name,
+      presentation: "commandExecution",
       arguments: call.arguments,
       ...(output ? { output } : {}),
     };

@@ -137,6 +137,8 @@ export interface GeminiAcpTransportOptions {
   baseUrl?: string;
   /** Name of the environment variable containing the provider API key. */
   apiKeyEnv?: string;
+  /** Direct provider API key managed by CodexHost configuration. */
+  apiKey?: string;
   /** Optional default model passed to Gemini CLI. */
   model?: string;
 }
@@ -748,7 +750,9 @@ export class GeminiAcpTransport {
       ...(this.#options.model ? { GEMINI_MODEL: this.#options.model } : {}),
     };
     // apiKeyEnv deliberately references an existing env var; never copy or expose its value.
-    if (this.#options.apiKeyEnv && environment[this.#options.apiKeyEnv]) {
+    if (this.#options.apiKey) {
+      environment.GEMINI_API_KEY = this.#options.apiKey;
+    } else if (this.#options.apiKeyEnv && environment[this.#options.apiKeyEnv]) {
       environment.GEMINI_API_KEY = environment[this.#options.apiKeyEnv];
     }
     const child = spawn(invocation.command, invocation.arguments, {

@@ -11,6 +11,8 @@ export const harnessEndpointConfigSchema = z.object({
   cwd: z.string().min(1).optional(),
   baseUrl: endpoint.optional(),
   apiKeyEnv: envName.optional(),
+  /** Direct key managed by CodexHost configuration. */
+  apiKey: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   models: z.array(z.string().min(1)).optional(),
 });
@@ -60,7 +62,8 @@ export function resolveHarnessRuntimeEnv(
   if (!config) return { ...parent };
   const environment = { ...parent };
   if (config.baseUrl) environment.GOOGLE_GEMINI_BASE_URL = config.baseUrl;
-  if (config.apiKeyEnv && parent[config.apiKeyEnv])
+  if (config.apiKey) environment.GEMINI_API_KEY = config.apiKey;
+  else if (config.apiKeyEnv && parent[config.apiKeyEnv])
     environment.GEMINI_API_KEY = parent[config.apiKeyEnv];
   if (config.model) environment.GEMINI_MODEL = config.model;
   return environment;

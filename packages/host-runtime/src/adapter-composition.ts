@@ -18,6 +18,7 @@ export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const GEMINI_COMMAND_ENV = "CODEXHOST_GEMINI_COMMAND";
 export const GEMINI_BASE_URL_ENV = "CODEXHOST_GEMINI_BASE_URL";
 export const GEMINI_API_KEY_ENV = "CODEXHOST_GEMINI_API_KEY_ENV";
+export const GEMINI_API_KEY_VALUE_ENV = "CODEXHOST_GEMINI_API_KEY";
 /** @deprecated Use GEMINI_API_KEY_ENV. */
 export const GEMINI_API_KEY_ENV_ENV = GEMINI_API_KEY_ENV;
 export const GEMINI_MODEL_ENV = "CODEXHOST_GEMINI_MODEL";
@@ -43,6 +44,7 @@ export function createExternalHarnessAdapters(
   const geminiCommand = environment[GEMINI_COMMAND_ENV] ?? configuredGemini?.command;
   const geminiBaseUrl = environment[GEMINI_BASE_URL_ENV] ?? configuredGemini?.baseUrl;
   const geminiApiKeyEnv = environment[GEMINI_API_KEY_ENV] ?? configuredGemini?.apiKeyEnv;
+  const geminiApiKey = environment[GEMINI_API_KEY_VALUE_ENV] ?? configuredGemini?.apiKey;
   const geminiModel = environment[GEMINI_MODEL_ENV] ?? configuredGemini?.model;
   return new Map<ExternalHarnessId, HarnessAdapter>([
     [
@@ -86,6 +88,7 @@ export function createExternalHarnessAdapters(
         ...(geminiCommand ? { command: geminiCommand } : {}),
         ...(geminiBaseUrl ? { baseUrl: geminiBaseUrl } : {}),
         ...(geminiApiKeyEnv ? { apiKeyEnv: geminiApiKeyEnv } : {}),
+        ...(geminiApiKey ? { apiKey: geminiApiKey } : {}),
         ...(geminiModel ? { model: geminiModel } : {}),
         ...(configuredGemini?.models ? { models: configuredGemini.models } : {}),
         environment,

@@ -78,7 +78,7 @@ CodexHost 通过 Gemini CLI 的原生 ACP 会话启动 Gemini（需要先安装�
   "harnesses": {
     "gemini": {
       "baseUrl": "https://your-gateway.example/v1",
-      "apiKeyEnv": "MY_GEMINI_API_KEY",
+      "apiKey": "your-provider-key",
       "model": "gemini-2.5-pro",
       "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
       "command": "gemini"
@@ -87,7 +87,7 @@ CodexHost 通过 Gemini CLI 的原生 ACP 会话启动 Gemini（需要先安装�
 }
 ```
 
-`apiKeyEnv` 只保存环境变量名，密钥本身仍由 `MY_GEMINI_API_KEY` 提供。也可以用环境变量覆盖单个字段：`CODEXHOST_GEMINI_BASE_URL`、`CODEXHOST_GEMINI_API_KEY_ENV`、`CODEXHOST_GEMINI_MODEL` 和 `CODEXHOST_GEMINI_COMMAND`。Gemini 子进程最终使用官方变量 `GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY` 和 `GEMINI_MODEL`。
+`apiKey` 可以直接由 CodexHost 配置文件管理，不需要再写 Gemini CLI 配置；生产环境也可以使用 `apiKeyEnv` 引用外部密钥环境变量。也可以用环境变量覆盖单个字段：`CODEXHOST_GEMINI_BASE_URL`、`CODEXHOST_GEMINI_API_KEY`、`CODEXHOST_GEMINI_API_KEY_ENV`、`CODEXHOST_GEMINI_MODEL` 和 `CODEXHOST_GEMINI_COMMAND`。Gemini 子进程最终使用官方变量 `GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY` 和 `GEMINI_MODEL`。
 
 **或下载** [安装包](https://github.com/BytePioneer-AI/codex-host/releases)（macOS、Windows）
 

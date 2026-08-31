@@ -121,6 +121,7 @@ export interface GeminiAdapterOptions {
   toolOutputLimit?: number;
   baseUrl?: string;
   apiKeyEnv?: string;
+  apiKey?: string;
   model?: string;
   /** Optional per-instance allowlist for models exposed to Codex. */
   models?: string[];
@@ -1305,6 +1306,7 @@ export class GeminiAdapter implements HarnessAdapter {
   readonly #allowedModels: ReadonlySet<string> | undefined;
   readonly #baseUrl: string | undefined;
   readonly #apiKeyEnv: string | undefined;
+  readonly #apiKey: string | undefined;
   readonly #model: string | undefined;
   #closePromise: Promise<void> | null = null;
   #credits: GeminiCreditsSnapshot | null = null;
@@ -1315,6 +1317,7 @@ export class GeminiAdapter implements HarnessAdapter {
     this.#environment = options.environment;
     this.#baseUrl = options.baseUrl;
     this.#apiKeyEnv = options.apiKeyEnv;
+    this.#apiKey = options.apiKey;
     this.#model = options.model;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GEMINI_TOOL_OUTPUT_LIMIT;
     this.#allowedModels = options.models ? new Set(options.models) : undefined;
@@ -1382,11 +1385,14 @@ export class GeminiAdapter implements HarnessAdapter {
       if (!modelState)
         throw new GeminiTransportError("protocolError", "Gemini returned an invalid Model catalog");
       await transport.close();
+      const capabilities = capabilitiesForModels(modelState, initialize);
       const ready: Extract<HarnessInspection, { status: "ready" }> = {
         status: "ready",
         catalog: modelState.catalog,
-        permissionModes: GEMINI_PERMISSION_MODE_CATALOG,
-        capabilities: capabilitiesForModels(modelState, initialize),
+        capabilities,
+        ...(capabilities.configuration.selectPermissionMode
+          ? { permissionModes: GEMINI_PERMISSION_MODE_CATALOG }
+          : {}),
       };
       this.#inspectionCache.set(cwd, ready);
       this.#scheduleCreditsRefresh();
@@ -1699,6 +1705,7 @@ export class GeminiAdapter implements HarnessAdapter {
         : {}),
       ...(this.#baseUrl ? { baseUrl: this.#baseUrl } : {}),
       ...(this.#apiKeyEnv ? { apiKeyEnv: this.#apiKeyEnv } : {}),
+      ...(this.#apiKey ? { apiKey: this.#apiKey } : {}),
       ...(this.#model ? { model: this.#model } : {}),
     });
   }

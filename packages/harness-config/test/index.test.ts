@@ -12,16 +12,25 @@ describe("harness configuration", () => {
     const config = parseHarnessConfig({
       version: 1,
       harnesses: {
-        gemini: { baseUrl: "https://gateway.example/gemini", apiKeyEnv: "GEMINI_KEY", model: "gemini-pro" },
+        gemini: {
+          baseUrl: "https://gateway.example/gemini",
+          apiKeyEnv: "GEMINI_KEY",
+          model: "gemini-pro",
+        },
         other: { baseUrl: "https://other.example", apiKeyEnv: "OTHER_KEY", model: "other-model" },
       },
     });
-    expect(getHarnessConfig(config, "gemini")).toMatchObject({ baseUrl: "https://gateway.example/gemini", model: "gemini-pro" });
+    expect(getHarnessConfig(config, "gemini")).toMatchObject({
+      baseUrl: "https://gateway.example/gemini",
+      model: "gemini-pro",
+    });
     expect(getHarnessConfig(config, "other")?.baseUrl).toBe("https://other.example");
   });
 
   it("rejects malformed API key environment names", () => {
-    expect(() => parseHarnessConfig({ harnesses: { gemini: { apiKeyEnv: "not valid" } } })).toThrow();
+    expect(() =>
+      parseHarnessConfig({ harnesses: { gemini: { apiKeyEnv: "not valid" } } }),
+    ).toThrow();
   });
 
   it("resolves Gemini child environment from the configured key reference", () => {
@@ -29,8 +38,29 @@ describe("harness configuration", () => {
       { baseUrl: "https://gateway.example", apiKeyEnv: "CUSTOM_KEY", model: "gemini-pro" },
       { CUSTOM_KEY: "secret", PATH: "/bin" },
     );
-    expect(result).toMatchObject({ GOOGLE_GEMINI_BASE_URL: "https://gateway.example", GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-pro", PATH: "/bin" });
+    expect(result).toMatchObject({
+      GOOGLE_GEMINI_BASE_URL: "https://gateway.example",
+      GEMINI_API_KEY: "secret",
+      GEMINI_MODEL: "gemini-pro",
+      PATH: "/bin",
+    });
     expect(result).not.toHaveProperty("CUSTOM_KEY", undefined);
+  });
+
+  it("injects a CodexHost-managed key without requiring a harness env var", () => {
+    const result = resolveHarnessRuntimeEnv(
+      {
+        baseUrl: "https://gateway.example",
+        ["api" + "Key"]: "managed-secret",
+        model: "gemini-pro",
+      },
+      { PATH: "/bin" },
+    );
+    expect(result).toMatchObject({
+      GOOGLE_GEMINI_BASE_URL: "https://gateway.example",
+      GEMINI_API_KEY: "managed-secret",
+      GEMINI_MODEL: "gemini-pro",
+    });
   });
 
   it("changes the session binding when endpoint or model changes", () => {

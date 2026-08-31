@@ -1,5 +1,10 @@
 import type { CodexhostError } from "@codexhost/shared-contracts";
 
+import {
+  getSharedAgentGroupPreferenceStore,
+  type AgentGroupPreferenceStore,
+  type AgentGroupSection,
+} from "../agent-group-preference.js";
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
 import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
@@ -249,12 +254,25 @@ function createConnectionIdentityIcon(
   return container;
 }
 
+interface ConnectionRowGroupController {
+  readonly section: AgentGroupSection;
+  readonly moveLabel: string;
+  readonly dragHandleTitle: string;
+  toggleSection(): void;
+  onDragStart(event: DragEvent): void;
+  onDragOver(event: DragEvent): void;
+  onDragLeave(event: DragEvent): void;
+  onDrop(event: DragEvent): void;
+  onDragEnd(event: DragEvent): void;
+}
+
 function createConnectionRow(
   document: Document,
   item: ConnectionListItem,
   messages: RendererSettingsMessages,
   selected: boolean,
   select: () => void,
+  group: ConnectionRowGroupController | null = null,
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = "settings-connection-row";
@@ -266,6 +284,14 @@ function createConnectionRow(
   const identity = document.createElement("div");
   identity.className = "settings-connection-row__identity";
   identity.setAttribute("role", "cell");
+  if (group) {
+    const handle = document.createElement("span");
+    handle.className = "settings-connection-row__handle";
+    handle.setAttribute("aria-hidden", "true");
+    handle.title = group.dragHandleTitle;
+    handle.append(createRendererSettingsIcon("grip-vertical", 15));
+    identity.append(handle);
+  }
   const label = document.createElement("strong");
   label.textContent = item.name;
   identity.append(createConnectionIdentityIcon(document, item, 19), label);
@@ -300,6 +326,21 @@ function createConnectionRow(
     });
     action.append(viewError);
   }
+  if (group) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "settings-connection-row__group-toggle";
+    toggle.title = group.moveLabel;
+    toggle.setAttribute("aria-label", group.moveLabel);
+    toggle.append(
+      createRendererSettingsIcon(group.section === "main" ? "chevron-down" : "chevron-up", 15),
+    );
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      group.toggleSection();
+    });
+    action.append(toggle);
+  }
 
   row.addEventListener("click", (event) => {
     const target = event.target as Element | null;
@@ -311,6 +352,15 @@ function createConnectionRow(
     event.preventDefault();
     select();
   });
+  if (group) {
+    row.draggable = true;
+    row.dataset.connectionGroupSection = group.section;
+    row.addEventListener("dragstart", group.onDragStart);
+    row.addEventListener("dragover", group.onDragOver);
+    row.addEventListener("dragleave", group.onDragLeave);
+    row.addEventListener("drop", group.onDrop);
+    row.addEventListener("dragend", group.onDragEnd);
+  }
   row.append(identity, status, action);
   return row;
 }
@@ -465,9 +515,59 @@ function connectionItems(
   ];
 }
 
+// Lets another surface (currently: the Agent picker's error indicator, see
+// renderer-agent-picker.ts) ask the Connections page to focus a specific
+// Agent's row the next time it mounts, instead of falling back to "the
+// first Agent that needs attention". Consumed once, then cleared — if the
+// requested Agent isn't present under whichever Host tab is selected by
+// default, this silently falls through to the existing fallback below.
+let pendingFocusAgent: string | null = null;
+
+export function requestConnectionsPageFocus(agentKey: string): void {
+  pendingFocusAgent = agentKey;
+}
+
+function createGroupDivider(
+  document: Document,
+  messages: RendererSettingsMessages,
+  count: number,
+): HTMLElement {
+  const divider = document.createElement("div");
+  divider.className = "settings-connection-group-divider";
+  divider.setAttribute("role", "presentation");
+  divider.textContent = `${messages.connectionGroupMoreLabel} (${count})`;
+  return divider;
+}
+
+function createGroupMoreHint(document: Document, messages: RendererSettingsMessages): HTMLElement {
+  const hint = document.createElement("div");
+  hint.className = "settings-connection-group-hint";
+  hint.setAttribute("role", "presentation");
+  const title = document.createElement("strong");
+  title.textContent = messages.connectionGroupMoreHintTitle;
+  const body = document.createElement("span");
+  body.textContent = messages.connectionGroupMoreHintBody;
+  hint.append(title, body);
+  return hint;
+}
+
+function createGroupResetButton(
+  document: Document,
+  messages: RendererSettingsMessages,
+  onReset: () => void,
+): HTMLElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "settings-connection-group-reset";
+  button.append(createRendererSettingsIcon("undo", 14), messages.connectionGroupReset);
+  button.addEventListener("click", onReset);
+  return button;
+}
+
 export function createConnectionsSettingsPage(
   messages: RendererSettingsMessages,
   getDiagnostics: () => RendererConnectionDiagnostics | null,
+  groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "connections",
@@ -642,7 +742,12 @@ export function createConnectionsSettingsPage(
         inspector.setAttribute("aria-live", "polite");
         const items = connectionItems(snapshot, selectedHost, messages);
         if (!items.some((item) => item.key === selectedItemKey)) {
+          const requestedFocus = pendingFocusAgent;
+          pendingFocusAgent = null;
           selectedItemKey =
+            (requestedFocus && items.some((item) => item.key === requestedFocus)
+              ? requestedFocus
+              : undefined) ??
             items.find(
               (item) => item.agentSnapshot?.availability === "notInstalled" || item.error !== null,
             )?.key ??
@@ -659,17 +764,182 @@ export function createConnectionsSettingsPage(
           }
           renderConnectionInspector(document, inspector, item, selectedHost.hostId, messages);
         };
-        for (const item of items) {
+
+        const pinnedItem = items.find((item) => item.key === "renderer-adapter");
+        if (pinnedItem) {
+          const row = createConnectionRow(
+            document,
+            pinnedItem,
+            messages,
+            pinnedItem.key === selectedItemKey,
+            () => selectItem(pinnedItem),
+          );
+          rowElements.set(pinnedItem.key, row);
+          rows.append(row);
+        }
+
+        // Only real, switchable external Agents participate in the
+        // Main / More grouping — the Renderer adapter above stays pinned.
+        const groupableItems = items.filter(
+          (item): item is ConnectionListItem & { agentSnapshot: RendererConnectionAgentSnapshot } =>
+            item.agentSnapshot !== undefined,
+        );
+        const agentByKey = new Map(groupableItems.map((item) => [item.key, item]));
+        const preferenceOrder = groupPreference
+          .list()
+          .filter((entry) => agentByKey.has(entry.agent));
+        for (const item of groupableItems) {
+          if (!preferenceOrder.some((entry) => entry.agent === item.key)) {
+            preferenceOrder.push({ agent: item.key as ExternalRendererAgent, section: "main" });
+          }
+        }
+        const mainEntries = preferenceOrder.filter((entry) => entry.section === "main");
+        const moreEntries = preferenceOrder.filter((entry) => entry.section === "more");
+        const nextInSection = (
+          section: AgentGroupSection,
+          agent: ExternalRendererAgent,
+        ): ExternalRendererAgent | null => {
+          const list = section === "main" ? mainEntries : moreEntries;
+          const index = list.findIndex((entry) => entry.agent === agent);
+          return index >= 0 ? (list[index + 1]?.agent ?? null) : null;
+        };
+
+        let draggingAgent: ExternalRendererAgent | null = null;
+        // Assigned below only when there is at least one groupable Agent to
+        // show a More zone for; guarded everywhere it's read.
+        let moreZone: HTMLElement | null = null;
+        const clearDropIndicators = (): void => {
+          for (const row of rowElements.values()) row.dataset.connectionDropIndicator = "";
+          if (moreZone) moreZone.dataset.connectionDragOver = "false";
+        };
+        const dropTargetSection = (
+          agent: ExternalRendererAgent,
+          event: DragEvent,
+        ): { before: boolean; beforeAgent: ExternalRendererAgent | null } => {
+          const row = rowElements.get(agent);
+          const rect =
+            row && typeof row.getBoundingClientRect === "function"
+              ? row.getBoundingClientRect()
+              : null;
+          const before = rect ? event.clientY - rect.top < rect.height / 2 : true;
+          const section = (row?.dataset.connectionGroupSection ?? "main") as AgentGroupSection;
+          return { before, beforeAgent: before ? agent : nextInSection(section, agent) };
+        };
+        const createGroupController = (
+          agent: ExternalRendererAgent,
+          section: AgentGroupSection,
+        ): ConnectionRowGroupController => ({
+          section,
+          moveLabel:
+            section === "main"
+              ? messages.connectionGroupMoveToMore
+              : messages.connectionGroupMoveToMain,
+          dragHandleTitle: messages.connectionGroupDragHandle,
+          toggleSection() {
+            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null);
+          },
+          onDragStart(event) {
+            draggingAgent = agent;
+            event.dataTransfer?.setData("text/plain", agent);
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+            const row = rowElements.get(agent);
+            if (row) row.dataset.connectionDragging = "true";
+          },
+          onDragOver(event) {
+            if (!draggingAgent || draggingAgent === agent) return;
+            event.preventDefault();
+            const row = rowElements.get(agent);
+            if (!row) return;
+            const { before } = dropTargetSection(agent, event);
+            clearDropIndicators();
+            row.dataset.connectionDropIndicator = before ? "before" : "after";
+          },
+          onDragLeave() {
+            const row = rowElements.get(agent);
+            if (row) row.dataset.connectionDropIndicator = "";
+          },
+          onDrop(event) {
+            event.preventDefault();
+            if (!draggingAgent) return;
+            const { beforeAgent } = dropTargetSection(agent, event);
+            groupPreference.moveAgent(draggingAgent, section, beforeAgent);
+            draggingAgent = null;
+            clearDropIndicators();
+          },
+          onDragEnd() {
+            draggingAgent = null;
+            const row = rowElements.get(agent);
+            if (row) row.dataset.connectionDragging = "false";
+            clearDropIndicators();
+          },
+        });
+
+        const appendGroupRow = (agent: ExternalRendererAgent, section: AgentGroupSection): void => {
+          const item = agentByKey.get(agent);
+          if (!item) return;
           const row = createConnectionRow(
             document,
             item,
             messages,
             item.key === selectedItemKey,
             () => selectItem(item),
+            createGroupController(agent, section),
           );
           rowElements.set(item.key, row);
           rows.append(row);
+        };
+
+        for (const entry of mainEntries) appendGroupRow(entry.agent, "main");
+
+        if (groupableItems.length > 0) {
+          rows.append(createGroupDivider(document, messages, moreEntries.length));
+          const zone = document.createElement("div");
+          moreZone = zone;
+          zone.className = "settings-connection-group-more";
+          zone.setAttribute("role", "presentation");
+          zone.addEventListener("dragover", (event) => {
+            if (!draggingAgent) return;
+            event.preventDefault();
+            zone.dataset.connectionDragOver = "true";
+          });
+          zone.addEventListener("dragleave", () => {
+            zone.dataset.connectionDragOver = "false";
+          });
+          zone.addEventListener("drop", (event) => {
+            event.preventDefault();
+            zone.dataset.connectionDragOver = "false";
+            if (!draggingAgent) return;
+            groupPreference.moveAgent(draggingAgent, "more", null);
+            draggingAgent = null;
+            clearDropIndicators();
+          });
+          if (moreEntries.length === 0) {
+            zone.append(createGroupMoreHint(document, messages));
+          } else {
+            for (const entry of moreEntries) {
+              const item = agentByKey.get(entry.agent);
+              if (!item) continue;
+              const row = createConnectionRow(
+                document,
+                item,
+                messages,
+                item.key === selectedItemKey,
+                () => selectItem(item),
+                createGroupController(entry.agent, "more"),
+              );
+              rowElements.set(item.key, row);
+              zone.append(row);
+            }
+          }
+          rows.append(zone);
+
+          rows.append(
+            createGroupResetButton(document, messages, () => {
+              groupPreference.resetToDefault();
+            }),
+          );
         }
+
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];
         if (selectedItem) selectItem(selectedItem);
         list.append(hostStrip, tableHeader, rows);
@@ -689,15 +959,24 @@ export function createConnectionsSettingsPage(
       };
 
       render(diagnostics?.snapshot() ?? null);
+      // Keep the Main / More grouping in sync with any other open picker or
+      // settings instance (e.g. the Agent picker's "Manage" shortcut).
+      const unsubscribeGroup = groupPreference.subscribe(() =>
+        render(diagnostics?.snapshot() ?? latestSnapshot),
+      );
       if (!diagnostics) {
         refresh.disabled = true;
-        return undefined;
+        return () => {
+          disposeHostScroller();
+          unsubscribeGroup();
+        };
       }
       refresh.addEventListener("click", runRefresh);
       const unsubscribe = diagnostics.subscribe(() => render(diagnostics.snapshot()));
       return () => {
         disposeHostScroller();
         unsubscribe();
+        unsubscribeGroup();
       };
     },
   });

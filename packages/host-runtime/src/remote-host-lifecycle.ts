@@ -361,9 +361,6 @@ export async function startRemoteHost(
   }
   let replacedStockCodex = false;
   if (current.state !== "stopped") {
-    if (current.protocol !== "stock-codex") {
-      throw new Error(current.message ?? `Unknown process owns Remote Host socket ${socketPath}`);
-    }
     await lifecycle.runTerminator(manifest, socketPath, "stock", environment);
     replacedStockCodex = true;
   }

@@ -20,6 +20,7 @@
     "@codexhost/adapter-claude-code": "0.0.0",
     "@codexhost/adapter-deepseek-harness": "0.0.0",
     "@codexhost/adapter-grok": "0.0.0",
+    "@codexhost/adapter-gemini": "0.0.0",
     "@codexhost/adapter-pi": "0.0.0",
     "@codexhost/adapter-omp": "0.0.0",
     "@codexhost/desktop-control": "0.0.0",

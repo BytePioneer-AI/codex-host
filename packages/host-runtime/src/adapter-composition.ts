@@ -1,6 +1,7 @@
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
+import { GeminiAdapter } from "@codexhost/adapter-gemini";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
@@ -11,6 +12,10 @@ export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND"
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
+export const GEMINI_COMMAND_ENV = "CODEXHOST_GEMINI_COMMAND";
+export const GEMINI_BASE_URL_ENV = "CODEXHOST_GEMINI_BASE_URL";
+export const GEMINI_API_KEY_ENV_ENV = "CODEXHOST_GEMINI_API_KEY_ENV";
+export const GEMINI_MODEL_ENV = "CODEXHOST_GEMINI_MODEL";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
@@ -61,6 +66,18 @@ export function createExternalHarnessAdapters(
       "grok",
       new GrokAdapter({
         ...(environment[GROK_COMMAND_ENV] ? { command: environment[GROK_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "gemini",
+      new GeminiAdapter({
+        ...(environment[GEMINI_COMMAND_ENV] ? { command: environment[GEMINI_COMMAND_ENV] } : {}),
+        ...(environment[GEMINI_BASE_URL_ENV] ? { baseUrl: environment[GEMINI_BASE_URL_ENV] } : {}),
+        ...(environment[GEMINI_API_KEY_ENV_ENV]
+          ? { apiKeyEnv: environment[GEMINI_API_KEY_ENV_ENV] }
+          : {}),
+        ...(environment[GEMINI_MODEL_ENV] ? { model: environment[GEMINI_MODEL_ENV] } : {}),
         environment,
       }),
     ],

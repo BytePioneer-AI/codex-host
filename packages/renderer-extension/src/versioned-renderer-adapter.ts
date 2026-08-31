@@ -38,6 +38,8 @@ export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
+export const GEMINI_TRANSPORT_MODEL_ID = "codexhost/gemini-native";
+export const GEMINI_TRANSPORT_MODEL_PREFIX = `${GEMINI_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -133,6 +135,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
+  if (agent === "gemini") return GEMINI_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -770,10 +773,22 @@ export function modelSelectionForAgent(
           ? deepSeekHarnessTransportModelId(model, permissionModeId)
           : agent === "grok"
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
+            : agent === "gemini"
+              ? geminiTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "omp"
               ? ompTransportModelId(model, thinkingOptionId)
               : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
+}
+
+function geminiTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) return GEMINI_TRANSPORT_MODEL_ID;
+  const parsed = harnessModelRefSchema.parse(model);
+  return `${GEMINI_TRANSPORT_MODEL_PREFIX}${parsed.id}${permissionModeId || thinkingOptionId ? `@${permissionModeId ?? ""}@${thinkingOptionId ?? ""}` : ""}`;
 }
 
 export function installCurrentRendererAdapter(): {

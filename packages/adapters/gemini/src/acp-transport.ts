@@ -48,7 +48,6 @@ import {
 } from "./gemini-rewind.js";
 import {
   decodeGeminiPermissionModeId,
-  geminiPermissionModeNotification,
   geminiPermissionModeSessionMeta,
 } from "./permission-modes.js";
 
@@ -866,20 +865,23 @@ export class GeminiAcpTransport {
   async setModel(modelId: string, reasoningEffort?: string): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Gemini ACP Session is unavailable");
-    const response = await connection.request<unknown, Record<string, unknown>>(
-      "session/set_model",
-      {
+    try {
+      await connection.request("session/set_model", {
         sessionId: this.#sessionId,
         modelId,
         ...(reasoningEffort ? { reasoningEffort } : {}),
-      },
-    );
-    if (!isRecord(response) || !isRecord(response._meta) || !isRecord(response._meta.model)) {
-      throw new GeminiTransportError("protocolError", "Gemini rejected Model configuration");
-    }
-    const selected = response._meta.model.Ok;
-    if (selected !== modelId) {
-      throw new GeminiTransportError("protocolError", "Gemini activated a different Model");
+      });
+    } catch (error) {
+      if (error instanceof RequestError && error.code === -32601) {
+        throw new GeminiTransportError(
+          "protocolError",
+          "Gemini ACP does not support session model selection",
+          { cause: error },
+        );
+      }
+      throw new GeminiTransportError("unavailable", "Gemini Model configuration failed", {
+        cause: error,
+      });
     }
   }
 
@@ -895,11 +897,28 @@ export class GeminiAcpTransport {
       );
     }
     const permissionMode = decodeGeminiPermissionModeId(permissionModeId);
-    await withTimeout(
-      connection.notify("x.ai/yolo_mode_changed", geminiPermissionModeNotification(permissionMode)),
-      this.#options.commandTimeoutMs,
-      "Gemini Permission Mode configuration",
-    );
+    try {
+      await withTimeout(
+        connection.setSessionMode({ sessionId: this.#sessionId, modeId: permissionMode }),
+        this.#options.commandTimeoutMs,
+        "Gemini Permission Mode configuration",
+      );
+    } catch (error) {
+      if (error instanceof RequestError && error.code === -32601) {
+        // `default` is the ACP baseline. Older Gemini CLI builds do not
+        // expose session/set_mode, so retaining their native default is
+        // equivalent and must not prevent session creation.
+        if (permissionMode === "default") return;
+        throw new GeminiTransportError(
+          "protocolError",
+          "Gemini ACP does not support session mode selection",
+          { cause: error },
+        );
+      }
+      throw new GeminiTransportError("unavailable", "Gemini Permission Mode configuration failed", {
+        cause: error,
+      });
+    }
   }
 
   cancel(): Promise<void> {

@@ -39,23 +39,26 @@ function thinkingOptions(value: unknown): HarnessThinkingOption[] {
 }
 
 export function parseGeminiModelState(value: unknown): GeminiModelState | null {
-  if (
-    !isRecord(value) ||
-    !nonBlank(value.currentModelId) ||
-    !Array.isArray(value.availableModels)
-  ) {
+  if (!isRecord(value)) {
     return null;
   }
-  const currentModel = harnessModelRefSchema.safeParse({ id: value.currentModelId });
+  const modelContainer =
+    isRecord(value.models) && Array.isArray(value.models.availableModels) ? value.models : value;
+  if (!nonBlank(modelContainer.currentModelId) || !Array.isArray(modelContainer.availableModels))
+    return null;
+  const currentModel = harnessModelRefSchema.safeParse({ id: modelContainer.currentModelId });
   if (!currentModel.success) return null;
 
   const allThinking = new Map<string, HarnessThinkingOption>();
   const contextWindowTokensByModel = new Map<string, number>();
   const models: HarnessModelCatalog["models"] = [];
   let currentThinkingOptionId: HarnessThinkingOptionId | undefined;
-  for (const candidate of value.availableModels) {
-    if (!isRecord(candidate) || !nonBlank(candidate.modelId) || !nonBlank(candidate.name)) continue;
-    const ref = harnessModelRefSchema.safeParse({ id: candidate.modelId });
+  for (const candidate of modelContainer.availableModels) {
+    if (!isRecord(candidate)) continue;
+    const modelId = candidate.modelId ?? candidate.id;
+    const label = candidate.name ?? candidate.label ?? modelId;
+    if (!nonBlank(modelId) || !nonBlank(label)) continue;
+    const ref = harnessModelRefSchema.safeParse({ id: modelId });
     if (!ref.success) continue;
     const metadata = isRecord(candidate._meta) ? candidate._meta : {};
     const options = thinkingOptions(metadata.reasoningEfforts);
@@ -67,7 +70,7 @@ export function parseGeminiModelState(value: unknown): GeminiModelState | null {
       contextWindowTokensByModel.set(ref.data.id, metadata.totalContextTokens);
     }
     for (const option of options) allThinking.set(option.id, option);
-    if (candidate.modelId === value.currentModelId && nonBlank(metadata.reasoningEffort)) {
+    if (modelId === modelContainer.currentModelId && nonBlank(metadata.reasoningEffort)) {
       const parsed = harnessThinkingOptionIdSchema.safeParse(metadata.reasoningEffort);
       if (parsed.success && options.some(({ id }) => id === parsed.data)) {
         currentThinkingOptionId = parsed.data;
@@ -75,7 +78,7 @@ export function parseGeminiModelState(value: unknown): GeminiModelState | null {
     }
     models.push({
       ref: ref.data,
-      label: candidate.name,
+      label,
       ...(options.length > 0 ? { supportedThinkingOptionIds: options.map(({ id }) => id) } : {}),
     });
   }

@@ -5,13 +5,12 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-export type GeminiPermissionMode = "default" | "ask" | "auto" | "always-approve";
+export type GeminiPermissionMode = "default" | "auto_edit" | "yolo";
 
 const nativePermissionModes = new Set<GeminiPermissionMode>([
   "default",
-  "ask",
-  "auto",
-  "always-approve",
+  "auto_edit",
+  "yolo",
 ]);
 
 export const GEMINI_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse("default");
@@ -48,10 +47,16 @@ export function decodeGeminiPermissionModeId(
   permissionModeId: HarnessPermissionModeId,
 ): GeminiPermissionMode {
   const parsed = harnessPermissionModeIdSchema.parse(permissionModeId);
-  if (!nativePermissionModes.has(parsed as GeminiPermissionMode)) {
+  const mapped: Record<string, GeminiPermissionMode> = {
+    default: "default",
+    ask: "default",
+    auto: "auto_edit",
+    "always-approve": "yolo",
+  };
+  const native = mapped[parsed];
+  if (!native || !nativePermissionModes.has(native))
     throw new Error("Gemini Permission Mode belongs to another Adapter");
-  }
-  return parsed as GeminiPermissionMode;
+  return native;
 }
 
 export function geminiPermissionModeSessionMeta(permissionMode: GeminiPermissionMode): {
@@ -59,8 +64,8 @@ export function geminiPermissionModeSessionMeta(permissionMode: GeminiPermission
   autoMode: boolean;
 } {
   return {
-    yoloMode: permissionMode === "always-approve",
-    autoMode: permissionMode === "auto",
+    yoloMode: permissionMode === "yolo",
+    autoMode: permissionMode === "auto_edit",
   };
 }
 
@@ -75,4 +80,24 @@ export function geminiPermissionModeNotification(permissionMode: GeminiPermissio
     auto_mode: state.autoMode,
     permission_mode: permissionMode,
   };
+}
+
+/** Extract a previously selected mode when Gemini includes it in load metadata. */
+export function permissionModeFromNativeResponse(value: unknown): HarnessPermissionModeId | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const metadata =
+    typeof record._meta === "object" && record._meta !== null && !Array.isArray(record._meta)
+      ? (record._meta as Record<string, unknown>)
+      : record;
+  const modes =
+    typeof metadata.modes === "object" && metadata.modes !== null && !Array.isArray(metadata.modes)
+      ? (metadata.modes as Record<string, unknown>)
+      : metadata;
+  const candidate = modes.currentModeId ?? metadata.permissionMode ?? metadata.permission_mode;
+  if (candidate === "default") return harnessPermissionModeIdSchema.parse("default");
+  if (candidate === "auto_edit") return harnessPermissionModeIdSchema.parse("auto");
+  if (candidate === "yolo") return harnessPermissionModeIdSchema.parse("always-approve");
+  const parsed = harnessPermissionModeIdSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }

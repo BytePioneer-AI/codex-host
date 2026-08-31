@@ -85,6 +85,7 @@ import {
   GEMINI_DEFAULT_PERMISSION_MODE_ID,
   GEMINI_PERMISSION_MODE_CATALOG,
   decodeGeminiPermissionModeId,
+  permissionModeFromNativeResponse,
 } from "./permission-modes.js";
 import {
   applyGeminiToolProjection,
@@ -197,14 +198,32 @@ const geminiCommandCatalog = harnessCommandCatalogSchema.parse({
     },
   ],
 });
-function capabilitiesForModels(modelState: GeminiModelState): HarnessSessionCapabilities {
+function capabilitiesForModels(
+  modelState: GeminiModelState,
+  initialize?: GeminiOpenResult["initialize"],
+  session?: unknown,
+): HarnessSessionCapabilities {
+  const availableModes =
+    session && typeof session === "object" && !Array.isArray(session)
+      ? (() => {
+          const record = session as Record<string, unknown>;
+          const modes = record.modes;
+          return modes && typeof modes === "object" && !Array.isArray(modes)
+            ? (modes as Record<string, unknown>).availableModes
+            : record.availableModes;
+        })()
+      : undefined;
   return {
     configuration: {
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
-      selectPermissionMode: true,
+      selectPermissionMode: Array.isArray(availableModes) && availableModes.length > 0,
     },
-    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    history: {
+      fork: Boolean(initialize?.agentCapabilities?.sessionCapabilities?.fork),
+      forkAcrossCwd: false,
+      rollbackLastTurn: false,
+    },
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -339,7 +358,7 @@ class GeminiHarnessSession implements HarnessSession {
     this.#allowedModels = options.allowedModels;
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
-    this.capabilities = capabilitiesForModels(modelState);
+    this.capabilities = capabilitiesForModels(modelState, opened.initialize, opened.session);
     this.commands = {
       list: async () => ({ ok: true, value: geminiCommandCatalog }),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -1351,7 +1370,18 @@ export class GeminiAdapter implements HarnessAdapter {
       stage = "startup";
       const initialize = await transport.inspect();
       stage = "model-catalog";
-      const modelState = modelStateFromInitialize(initialize);
+      let modelState = modelStateFromInitialize(initialize);
+      // Gemini ACP versions may expose the catalog only on session/new.
+      // Probe one native session for inspection, then close it immediately;
+      // no synthetic catalog is created by the Host.
+      if (!modelState) {
+        stage = "model-catalog-session";
+        const opened = await transport.open({
+          kind: "create",
+          permissionModeId: GEMINI_DEFAULT_PERMISSION_MODE_ID,
+        });
+        modelState = modelStateFromSessionResponse(opened.session);
+      }
       if (!modelState)
         throw new GeminiTransportError("protocolError", "Gemini returned an invalid Model catalog");
       await transport.close();
@@ -1359,7 +1389,7 @@ export class GeminiAdapter implements HarnessAdapter {
         status: "ready",
         catalog: modelState.catalog,
         permissionModes: GEMINI_PERMISSION_MODE_CATALOG,
-        capabilities: capabilitiesForModels(modelState),
+        capabilities: capabilitiesForModels(modelState, initialize),
       };
       this.#inspectionCache.set(cwd, ready);
       this.#scheduleCreditsRefresh();
@@ -1532,6 +1562,10 @@ export class GeminiAdapter implements HarnessAdapter {
         modelStateFromInitialize(opened.initialize);
       if (!modelState)
         throw new GeminiTransportError("protocolError", "Gemini returned an invalid Model catalog");
+      if (input.kind === "resume") {
+        initialPermissionModeId =
+          permissionModeFromNativeResponse(opened.session) ?? initialPermissionModeId;
+      }
       const retainedConfiguration = sourceConfiguration;
       if ((input.kind === "rollbackLastTurn" || input.kind === "fork") && retainedConfiguration) {
         const operation = input.kind === "rollbackLastTurn" ? "Rewind" : "Fork";

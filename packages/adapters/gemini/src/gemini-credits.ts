@@ -23,6 +23,8 @@ export interface FetchGeminiCreditsInput {
   now?: Date;
   readAuthFile?(filePath: string): Promise<string>;
   fetch?(url: string, init: RequestInit): Promise<Response>;
+  /** A provider-specific endpoint must be explicitly supplied for network access. */
+  endpoint?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -124,6 +126,10 @@ export async function fetchGeminiCredits(
   input: FetchGeminiCreditsInput = {},
 ): Promise<GeminiCreditsSnapshot | null> {
   try {
+    // Gemini CLI does not define a stable credits API. Never contact a
+    // hard-coded service from the default adapter path; callers must inject
+    // both the endpoint and fetch implementation explicitly.
+    if (!input.endpoint || !input.fetch) return null;
     const environment = input.environment ?? process.env;
     const now = input.now ?? new Date();
     const authPath = path.join(geminiHome(environment), "auth.json");
@@ -132,8 +138,7 @@ export async function fetchGeminiCredits(
       : await readFile(authPath, "utf8");
     const token = selectAccessToken(JSON.parse(raw) as unknown, now);
     if (!token) return null;
-    const fetchImpl = input.fetch ?? fetch;
-    const response = await fetchImpl(GEMINI_CREDITS_ENDPOINT, {
+    const response = await input.fetch(input.endpoint, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,

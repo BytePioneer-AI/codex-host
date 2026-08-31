@@ -144,7 +144,7 @@ describe("remote SSH Host installation", () => {
           "--noprofile",
           "--norc",
           "-c",
-          `. ${shellQuote(profilePath)}; printf '%s\\n%s\\n' "$CODEXHOST_REMOTE_SSH_MANAGED" "$CODEX_INSTALL_DIR"`,
+          `unset PATH; . ${shellQuote(profilePath)}; printf '%s\\n%s\\n%s\\n' "$CODEXHOST_REMOTE_SSH_MANAGED" "$CODEX_INSTALL_DIR" "$PATH"`,
         ];
         const localProbe = spawnSync("/bin/bash", probeArguments, {
           encoding: "utf8",
@@ -155,7 +155,7 @@ describe("remote SSH Host installation", () => {
           signal: localProbe.signal,
           stderr: localProbe.stderr,
           stdout: localProbe.stdout,
-        }).toEqual({ status: 0, signal: null, stderr: "", stdout: "\n\n" });
+        }).toEqual({ status: 0, signal: null, stderr: "", stdout: "\n\n\n" });
 
         const sshProbe = spawnSync("/bin/bash", probeArguments, {
           encoding: "utf8",
@@ -170,7 +170,9 @@ describe("remote SSH Host installation", () => {
           signal: null,
           stderr: "",
         });
-        expect(sshProbe.stdout).toBe(`1\n${path.dirname(installed.wrapperPath)}\n`);
+        expect(sshProbe.stdout).toBe(
+          `1\n${path.dirname(installed.wrapperPath)}\n${path.dirname(installed.wrapperPath)}:${home}:${home}:/usr/local/bin:/usr/bin:/bin\n`,
+        );
         await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
           state: "ready",
         });
@@ -214,6 +216,9 @@ describe("remote SSH Host installation", () => {
       expect(await readFile(first.wrapperPath)).toEqual(await readFile(shimPath));
       expect(profile).toContain(`export CODEXHOST_STOCK_CODEX_PATH='${stockCodexPath}'`);
       expect(profile).toContain(`export CODEXHOST_HOST_NODE_PATH='${nodePath}'`);
+      expect(profile).toContain(
+        `export PATH='${path.dirname(first.wrapperPath)}':'${path.dirname(nodePath)}':'${path.dirname(stockCodexPath)}':\"\${PATH:-/usr/local/bin:/usr/bin:/bin}\"`,
+      );
       expect(profile).toContain(`export CODEXHOST_HOST_RUNTIME_PATH='${hostRuntimePath}'`);
       expect(profile).toContain("export CODEXHOST_REMOTE_SSH_MANAGED='1'");
       expect(profile).toContain(`export CODEXHOST_CLAUDE_COMMAND='${claudeCommand}'`);

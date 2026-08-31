@@ -1,3 +1,7 @@
+import {
+  getSharedAgentGroupPreferenceStore,
+  type AgentGroupPreferenceStore,
+} from "./agent-group-preference.js";
 import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
@@ -5,7 +9,40 @@ import type {
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
+import { requestConnectionsPageFocus } from "./settings/connections-page.js";
+import {
+  rendererSettingsMessages,
+  resolveRendererSettingsLocale,
+} from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
+
+// The picker's own strings (labels, tooltips, "Install ...") stay hardcoded
+// English by longstanding convention in this file — only the newer
+// Main/More grouping copy below is localized, since it mirrors text the
+// user already sees (translated) on the Connections settings page.
+function pickerGroupMessages(): Pick<
+  ReturnType<typeof rendererSettingsMessages>,
+  "pickerMoreAgentsLabel" | "pickerManageLink" | "pickerHideUnusedAgentsCta"
+> {
+  const languages = typeof navigator !== "undefined" ? navigator.languages : [];
+  return rendererSettingsMessages(resolveRendererSettingsLocale(languages));
+}
+
+// Opens the Connections settings page from the picker's "More Agents" group.
+// The shell installs this handle globally (see settings/shell.ts) as
+// `window.__codexhostSettingsShellV1`; it is a no-op before the settings
+// surface has mounted. Read through a local structural type instead of
+// augmenting the global `Window` interface, so this stays a no-op import
+// away from the settings module.
+interface MinimalSettingsShellHandle {
+  openSettings(opener?: HTMLElement, pageId?: string): boolean;
+}
+
+function openConnectionsSettings(opener?: HTMLElement): void {
+  const shell = (window as unknown as { __codexhostSettingsShellV1?: MinimalSettingsShellHandle })
+    .__codexhostSettingsShellV1;
+  shell?.openSettings(opener, "connections");
+}
 
 export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
   pi: "https://pi.dev/",
@@ -20,11 +57,20 @@ type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvai
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
 const AGENT_MENU_WIDTH = 200;
+// Below this many enabled Agents, the picker stays a flat list — grouping
+// only earns its keep once there are enough Harnesses to make scanning slow.
+const AGENT_GROUP_CTA_THRESHOLD = 5;
 
 interface AgentOptionControl {
   button: HTMLButtonElement;
   check: HTMLElement;
-  download: HTMLButtonElement | null;
+  // Shared 24x24 slot: renders as an Install ("+") action when the Agent is
+  // not installed, or a red error ("!") action once it has failed — the two
+  // are mutually exclusive since `RendererAgentAvailability` is a single
+  // enum value. The error mode has no error *details* to show inline (the
+  // picker only ever receives the coarse availability enum, not the full
+  // `CodexhostError`), so it links out to Settings → Connections instead.
+  action: HTMLButtonElement | null;
 }
 
 export interface RendererAgentPickerControl {
@@ -45,6 +91,8 @@ export interface RendererAgentPickerView {
   nativeModelHidden: boolean;
   optionDisabled: Partial<Record<RendererAgent, boolean>>;
   downloadVisible: Partial<Record<ExternalRendererAgent, boolean>>;
+  /** True once a not-installed/checking Agent has moved to `RendererAgentAvailability: "error"`. */
+  errorVisible: Partial<Record<ExternalRendererAgent, boolean>>;
 }
 
 export function rendererAgentMenuPlacement(
@@ -85,12 +133,18 @@ export function rendererAgentPickerView(
       .filter((agent): agent is ExternalRendererAgent => agent !== "codex")
       .map((agent) => [agent, availability[agent] === "notInstalled"]),
   ) as Partial<Record<ExternalRendererAgent, boolean>>;
+  const errorVisible = Object.fromEntries(
+    agents
+      .filter((agent): agent is ExternalRendererAgent => agent !== "codex")
+      .map((agent) => [agent, availability[agent] === "error"]),
+  ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
     label: RENDERER_AGENT_LABELS[state.agent],
     triggerDisabled: switching || state.phase === "locked" || agents.length < 2,
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
     downloadVisible,
+    errorVisible,
   };
 }
 
@@ -121,6 +175,7 @@ export function mountRendererAgentPicker(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
+  groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -199,6 +254,8 @@ export function mountRendererAgentPicker(
   trigger.setAttribute("aria-controls", menu.id);
 
   const options: Partial<Record<RendererAgent, AgentOptionControl>> = {};
+  const rowsByAgent = new Map<RendererAgent, HTMLDivElement>();
+  const groupMessages = pickerGroupMessages();
 
   const close = (): void => {
     if (!popoverOpen(menu)) return;
@@ -206,8 +263,10 @@ export function mountRendererAgentPicker(
     else menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
   };
+  const visibleAgentOrder = (): readonly RendererAgent[] =>
+    moreOpen ? [...mainAgents, ...moreAgents] : mainAgents;
   const focusOption = (position: "first" | "last" | "selected"): void => {
-    const available = enabledAgents
+    const available = visibleAgentOrder()
       .map((agent) => options[agent]?.button)
       .filter((button): button is HTMLButtonElement => button !== undefined && !button.disabled);
     const selected = available.find((button) => button.getAttribute("aria-checked") === "true");
@@ -280,15 +339,12 @@ export function mountRendererAgentPicker(
       if (!selected) onSelect(agent);
     });
 
-    const download =
+    const action =
       agent === "codex"
         ? null
         : (() => {
             const control = document.createElement("button");
             control.type = "button";
-            control.textContent = "+";
-            control.setAttribute("aria-label", `Install ${RENDERER_AGENT_LABELS[agent]}`);
-            control.title = `Install ${RENDERER_AGENT_LABELS[agent]}`;
             control.style.position = "absolute";
             control.style.inset = "0";
             control.style.display = "inline-flex";
@@ -301,10 +357,7 @@ export function mountRendererAgentPicker(
             control.style.border = "0";
             control.style.borderRadius = "4px";
             control.style.background = "transparent";
-            control.style.color = "inherit";
             control.style.cursor = "pointer";
-            control.style.font = "600 18px/1 system-ui, sans-serif";
-            control.style.opacity = "0.72";
             control.addEventListener("pointerenter", () => {
               if (!control.disabled) control.style.background = "rgba(127, 127, 127, 0.16)";
             });
@@ -313,11 +366,21 @@ export function mountRendererAgentPicker(
             });
             control.addEventListener("click", (event) => {
               event.stopPropagation();
-              onDownload(agent);
+              // "error" mode has nothing more to show inline — the picker
+              // only knows the coarse availability enum, not the full
+              // `CodexhostError` — so it hands off to Settings, which does.
+              // `requestConnectionsPageFocus` makes sure Settings opens
+              // straight to *this* Agent's row, not just the page.
+              if (control.dataset.mode === "error") {
+                requestConnectionsPageFocus(agent);
+                openConnectionsSettings(trigger);
+              } else {
+                onDownload(agent);
+              }
             });
             return control;
           })();
-    options[agent] = { button, check, download };
+    options[agent] = { button, check, action };
     const row = document.createElement("div");
     row.style.display = "flex";
     row.style.alignItems = "center";
@@ -329,10 +392,165 @@ export function mountRendererAgentPicker(
     actionSlot.style.height = "24px";
     actionSlot.style.flex = "none";
     actionSlot.append(check);
-    if (download) actionSlot.append(download);
+    if (action) actionSlot.append(action);
     row.append(actionSlot, button);
-    menu.append(row);
+    rowsByAgent.set(agent, row);
   }
+
+  // "Main" holds every enabled Agent by default; a user can fold the ones
+  // they never switch to into "More" from the Connections settings page.
+  // Codex always stays pinned to Main — it is the always-on default and is
+  // not offered in Connections' grouping list.
+  const mainGroup = document.createElement("div");
+  mainGroup.style.display = "flex";
+  mainGroup.style.flexDirection = "column";
+  mainGroup.style.gap = "2px";
+
+  let moreOpen = false;
+  const moreToggle = document.createElement("button");
+  moreToggle.type = "button";
+  moreToggle.style.display = "none";
+  moreToggle.style.alignItems = "center";
+  moreToggle.style.gap = "6px";
+  moreToggle.style.width = "100%";
+  moreToggle.style.height = "32px";
+  moreToggle.style.marginTop = "2px";
+  moreToggle.style.padding = "0 8px";
+  moreToggle.style.border = "0";
+  moreToggle.style.borderRadius = "4px";
+  moreToggle.style.background = "transparent";
+  moreToggle.style.color = "inherit";
+  moreToggle.style.font = "500 12px/1 system-ui, sans-serif";
+  moreToggle.style.opacity = "0.72";
+  moreToggle.style.cursor = "pointer";
+  moreToggle.addEventListener("pointerenter", () => {
+    moreToggle.style.background = "rgba(127, 127, 127, 0.1)";
+  });
+  moreToggle.addEventListener("pointerleave", () => {
+    moreToggle.style.background = "transparent";
+  });
+  const moreArrow = document.createElement("span");
+  moreArrow.setAttribute("aria-hidden", "true");
+  moreArrow.style.width = "12px";
+  moreArrow.style.flex = "none";
+  moreArrow.textContent = "▸";
+  const moreLabel = document.createElement("span");
+  moreToggle.append(moreArrow, moreLabel);
+
+  const morePanel = document.createElement("div");
+  morePanel.style.display = "none";
+  morePanel.style.flexDirection = "column";
+  morePanel.style.gap = "2px";
+  morePanel.style.paddingLeft = "8px";
+  const moreRows = document.createElement("div");
+  moreRows.style.display = "flex";
+  moreRows.style.flexDirection = "column";
+  moreRows.style.gap = "2px";
+  const manageLink = document.createElement("button");
+  manageLink.type = "button";
+  manageLink.textContent = `${groupMessages.pickerManageLink} →`;
+  manageLink.style.display = "flex";
+  manageLink.style.width = "100%";
+  manageLink.style.height = "28px";
+  manageLink.style.marginTop = "2px";
+  manageLink.style.padding = "0 12px";
+  manageLink.style.border = "0";
+  manageLink.style.borderRadius = "4px";
+  manageLink.style.background = "transparent";
+  manageLink.style.color = "#6d9fff";
+  manageLink.style.font = "500 11px/1 system-ui, sans-serif";
+  manageLink.style.cursor = "pointer";
+  manageLink.addEventListener("click", () => openConnectionsSettings(trigger));
+  morePanel.append(moreRows, manageLink);
+
+  const cta = document.createElement("button");
+  cta.type = "button";
+  cta.style.display = "none";
+  cta.style.alignItems = "center";
+  cta.style.gap = "6px";
+  cta.style.width = "100%";
+  cta.style.height = "32px";
+  cta.style.marginTop = "2px";
+  cta.style.padding = "0 8px";
+  cta.style.borderWidth = "1px 0 0 0";
+  cta.style.borderStyle = "solid";
+  cta.style.borderColor = "rgba(127, 127, 127, 0.16)";
+  cta.style.background = "transparent";
+  cta.style.color = "inherit";
+  cta.style.font = "500 12px/1 system-ui, sans-serif";
+  cta.style.opacity = "0.72";
+  cta.style.cursor = "pointer";
+  cta.textContent = `⚙ ${groupMessages.pickerHideUnusedAgentsCta} →`;
+  cta.addEventListener("pointerenter", () => {
+    cta.style.background = "rgba(127, 127, 127, 0.1)";
+  });
+  cta.addEventListener("pointerleave", () => {
+    cta.style.background = "transparent";
+  });
+  cta.addEventListener("click", () => openConnectionsSettings(trigger));
+
+  let mainAgents: RendererAgent[] = [...enabledAgents];
+  let moreAgents: RendererAgent[] = [];
+  const regroup = (): void => {
+    const enabledSet = new Set(enabledAgents);
+    const seen = new Set<RendererAgent>();
+    const nextMain: RendererAgent[] = [];
+    const nextMore: RendererAgent[] = [];
+
+    // Codex is always pinned to Main and isn't tracked by the preference
+    // store (it's the always-on default, not offered in Connections'
+    // grouping list).
+    if (enabledSet.has("codex")) {
+      nextMain.push("codex");
+      seen.add("codex");
+    }
+
+    // Order follows `groupPreference.list()` — the same order the user just
+    // dragged into on the Connections page — not `enabledAgents`'s fixed
+    // (host-configured) order, so reordering actually shows up here too.
+    for (const entry of groupPreference.list()) {
+      const agent = entry.agent as RendererAgent;
+      if (!enabledSet.has(agent) || seen.has(agent)) continue;
+      seen.add(agent);
+      (entry.section === "more" ? nextMore : nextMain).push(agent);
+    }
+
+    // Defensive: an enabled Agent the preference store hasn't recorded yet
+    // (should not normally happen) still needs to render somewhere.
+    for (const agent of enabledAgents) {
+      if (seen.has(agent)) continue;
+      seen.add(agent);
+      nextMain.push(agent);
+    }
+
+    mainAgents = nextMain;
+    moreAgents = nextMore;
+    mainGroup.replaceChildren(
+      ...mainAgents
+        .map((agent) => rowsByAgent.get(agent))
+        .filter((el): el is HTMLDivElement => !!el),
+    );
+    moreRows.replaceChildren(
+      ...moreAgents
+        .map((agent) => rowsByAgent.get(agent))
+        .filter((el): el is HTMLDivElement => !!el),
+    );
+    const showMoreGroup = moreAgents.length > 0;
+    const showCta = !showMoreGroup && enabledAgents.length > AGENT_GROUP_CTA_THRESHOLD;
+    moreToggle.style.display = showMoreGroup ? "flex" : "none";
+    morePanel.style.display = showMoreGroup && moreOpen ? "flex" : "none";
+    cta.style.display = showCta ? "flex" : "none";
+    moreLabel.textContent = `${groupMessages.pickerMoreAgentsLabel} (${moreAgents.length})`;
+    moreArrow.textContent = moreOpen ? "▾" : "▸";
+  };
+  moreToggle.addEventListener("click", () => {
+    moreOpen = !moreOpen;
+    regroup();
+  });
+  regroup();
+  const unsubscribeGroup = groupPreference.subscribe(regroup);
+
+  menu.append(mainGroup, moreToggle, morePanel, cta);
   root.append(trigger, menu);
 
   const onTriggerClick = (): void => {
@@ -345,7 +563,7 @@ export function mountRendererAgentPicker(
     open(event.key === "ArrowUp" ? "last" : "first");
   };
   const onMenuKeyDown = (event: KeyboardEvent): void => {
-    const buttons = enabledAgents
+    const buttons = visibleAgentOrder()
       .map((agent) => options[agent]?.button)
       .filter((button): button is HTMLButtonElement => button !== undefined && !button.disabled);
     const current = event.target instanceof Element ? event.target.closest("button") : null;
@@ -395,6 +613,7 @@ export function mountRendererAgentPicker(
     close,
     dispose() {
       close();
+      unsubscribeGroup();
       trigger.removeEventListener("click", onTriggerClick);
       trigger.removeEventListener("keydown", onTriggerKeyDown);
       menu.removeEventListener("keydown", onMenuKeyDown);
@@ -450,14 +669,36 @@ export function renderRendererAgentPicker(
     option.button.style.cursor = option.button.disabled ? "not-allowed" : "pointer";
     option.button.style.opacity = option.button.disabled && !selected ? "0.5" : "1";
     option.check.style.visibility = selected ? "visible" : "hidden";
-    if (option.download) {
-      const visible = view.downloadVisible[agent as ExternalRendererAgent] === true;
-      option.download.hidden = false;
-      option.download.disabled = !visible;
-      option.download.setAttribute("aria-hidden", String(!visible));
-      option.download.style.display = "inline-flex";
-      option.download.style.visibility = visible ? "visible" : "hidden";
-      option.download.style.pointerEvents = visible ? "auto" : "none";
+    if (option.action) {
+      const externalAgent = agent as ExternalRendererAgent;
+      const showInstall = view.downloadVisible[externalAgent] === true;
+      const showError = view.errorVisible[externalAgent] === true;
+      const visible = showInstall || showError;
+      option.action.hidden = false;
+      option.action.disabled = !visible;
+      option.action.style.display = "inline-flex";
+      option.action.style.visibility = visible ? "visible" : "hidden";
+      option.action.style.pointerEvents = visible ? "auto" : "none";
+      if (showError) {
+        option.action.dataset.mode = "error";
+        option.action.textContent = "!";
+        option.action.style.color = "#f87171";
+        option.action.style.font = "800 13px/1 system-ui, sans-serif";
+        option.action.style.opacity = "1";
+        const label = `${RENDERER_AGENT_LABELS[agent]} connection error — open Settings for details`;
+        option.action.setAttribute("aria-label", label);
+        option.action.title = label;
+      } else {
+        option.action.dataset.mode = "install";
+        option.action.textContent = "+";
+        option.action.style.color = "inherit";
+        option.action.style.font = "600 18px/1 system-ui, sans-serif";
+        option.action.style.opacity = "0.72";
+        const label = `Install ${RENDERER_AGENT_LABELS[agent]}`;
+        option.action.setAttribute("aria-label", label);
+        option.action.title = label;
+      }
+      option.action.setAttribute("aria-hidden", String(!visible));
     }
   }
   return view;

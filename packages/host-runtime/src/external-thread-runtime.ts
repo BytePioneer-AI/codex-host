@@ -232,6 +232,7 @@ export class ExternalThreadRuntime {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    transportModelId?: string;
     restoredState?: HarnessSessionState;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
@@ -267,7 +268,7 @@ export class ExternalThreadRuntime {
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(observerState),
       thread: input.thread,
-      transportModelId: input.record.transportModelId,
+      transportModelId: input.transportModelId ?? input.record.transportModelId,
       turns: input.turns,
       historyHydrated: true,
       running: false,
@@ -499,27 +500,26 @@ export class ExternalThreadRuntime {
       }
       let aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const restoredState = snapshot.value.state;
-      const effectiveModel = restoredState?.effectiveModel ?? restoredSelection?.model;
-      const effectiveThinkingOptionId =
-        restoredState?.effectiveThinkingOptionId ?? restoredSelection?.thinkingOptionId;
-      const effectivePermissionModeId =
-        restoredState?.effectivePermissionModeId ?? restoredSelection?.permissionModeId;
+      const effectiveModel = restoredState
+        ? restoredState.effectiveModel
+        : restoredSelection?.model;
+      const effectiveThinkingOptionId = restoredState
+        ? restoredState.effectiveThinkingOptionId
+        : restoredSelection?.thinkingOptionId;
+      const effectivePermissionModeId = restoredState
+        ? restoredState.effectivePermissionModeId
+        : restoredSelection?.permissionModeId;
+      let transportModelId = aligned.record.transportModelId;
       // OMP can silently replace an unavailable Model during resume; persist the live selection
       // so the next restore does not reapply the obsolete transport token.
       if (harnessId === "omp" && restoredState?.effectiveModel) {
         const liveSelection: ExternalConfigurationSelection = {
-          ...(restoredSelection ?? {}),
           model: restoredState.effectiveModel,
+          ...(restoredState.effectiveThinkingOptionId
+            ? { thinkingOptionId: restoredState.effectiveThinkingOptionId }
+            : {}),
         };
-        if (restoredState.effectiveThinkingOptionId) {
-          liveSelection.thinkingOptionId = restoredState.effectiveThinkingOptionId;
-        } else {
-          delete liveSelection.thinkingOptionId;
-        }
-        if (restoredState.effectivePermissionModeId) {
-          liveSelection.permissionModeId = restoredState.effectivePermissionModeId;
-        }
-        const transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);
+        transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);
         if (transportModelId !== aligned.record.transportModelId) {
           try {
             aligned = {
@@ -553,6 +553,7 @@ export class ExternalThreadRuntime {
           ? { requestedPermissionModeId: effectivePermissionModeId }
           : {}),
         ...(restoredState ? { restoredState } : {}),
+        transportModelId,
       });
     } catch (error) {
       await session.close().catch(() => undefined);

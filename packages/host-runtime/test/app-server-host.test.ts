@@ -2984,6 +2984,51 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("rejects an ordinary Turn when an autonomous Turn starts during command discovery", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const catalog = { ok: true as const, value: { commands: [] } };
+    let releaseCatalog = (): void => undefined;
+    const list = vi.fn(
+      () =>
+        new Promise<typeof catalog>((resolve) => {
+          releaseCatalog = () => resolve(catalog);
+        }),
+    );
+    session.commands = { list, execute: vi.fn() };
+    const execute = vi.spyOn(session, "execute");
+    const autonomousTurnId = hostTurnIdSchema.parse("catalog-race-autonomous-turn");
+    const completeAutonomousTurn = vi
+      .spyOn(session, "succeedTurn")
+      .mockImplementationOnce(() => undefined);
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "ordinary message" }] },
+    });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    session.publishAutonomousTurn(autonomousTurnId, [{ type: "text", text: "native follow-up" }]);
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/started", autonomousTurnId),
+    );
+
+    releaseCatalog();
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    expect(execute).not.toHaveBeenCalled();
+
+    completeAutonomousTurn.mockRestore();
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", autonomousTurnId),
+    );
+    await stopFixture(fixture);
+  });
+
   it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

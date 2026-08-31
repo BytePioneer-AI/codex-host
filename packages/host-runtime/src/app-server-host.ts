@@ -2922,6 +2922,12 @@ export class AppServerHost {
         this.#pendingExternalCommandRequests.delete(thread.id);
       }
     }
+    if (thread.running || thread.activeTurnId) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread already has an active Turn"),
+      );
+      return;
+    }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
     const projection: ProjectedTurn = {

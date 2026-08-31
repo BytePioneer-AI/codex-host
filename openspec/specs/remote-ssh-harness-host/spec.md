@@ -46,9 +46,18 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 - **AND** consecutive Turns use the same mapped Native Session
 - **AND** no Claude credential file is installed on the client
 
+#### Scenario: Grok is installed only on the development host
+
+- **GIVEN** Grok CLI is authenticated on the SSH host and not on the client
+- **WHEN** remote installation discovers Grok or is supplied `--grok-command`
+- **THEN** the managed profile and listener environment export `CODEXHOST_GROK_COMMAND`
+- **AND** the client can inspect Grok and start a Grok Thread in a remote workspace
+- **AND** the Grok process uses stdio ACP on the SSH host rather than `grok agent serve`
+- **AND** no Grok credential file is installed on the client
+
 ### Requirement: Remote installation SHALL be isolated and reversible
 
-`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded SSH-scoped environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, malformed, or legacy managed resources as degraded. Install and uninstall SHALL remain fail-closed for a malformed managed profile block. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
+`codexhost remote install` SHALL create a managed native Shim entrypoint in a dedicated `CODEX_INSTALL_DIR`, record the installed entrypoint's SHA-256 digest, add one bounded SSH-scoped environment export block to the appropriate non-interactive shell startup file, back up that file before changing it, and preserve the existing Codex entrypoint. If the packaged native Shim cannot load on that Linux host because glibc is older than the native baseline, installation SHALL write a Node entrypoint instead, using the Node that ran `codexhost`, with the same detach and foreground routing rules. It SHALL refuse unmanaged entrypoint conflicts and SHALL migrate its legacy managed shell wrapper in place. In that managed environment, only an invocation containing exactly one default `app-server --listen unix://` listener and no stdio mode SHALL detach from the SSH bootstrap after a newly created expected socket accepts a connection; proxy, stdio, duplicate-listener, custom-listener, and ordinary Codex invocations SHALL retain their foreground lifecycle. `status` SHALL report missing, modified, malformed, or legacy managed resources as degraded. Install and uninstall SHALL remain fail-closed for a malformed managed profile block. `uninstall` SHALL remove only an integrity-verified managed entrypoint, manifest, and profile block while preserving backups and remote Host data.
 
 #### Scenario: OpenCodex already owns the normal Codex command
 
@@ -63,6 +72,16 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 - **THEN** the managed entrypoint starts the listener in a new Unix session and waits for a newly created expected control socket to accept a connection
 - **AND** the SSH bootstrap command returns successfully without waiting for the listener lifetime
 - **AND** the native listener process remains alive and owns the expected Unix control socket
+
+#### Scenario: Older glibc cannot load the packaged native Shim
+
+- **GIVEN** the SSH host has a glibc older than the packaged native Shim baseline
+- **AND** Node and the packaged Host Runtime are available on that host
+- **WHEN** remote installation probes the packaged Shim and the dynamic loader reports a missing GLIBC symbol
+- **THEN** installation writes a Node entrypoint at the managed Codex path instead of leaving the unloadable native binary
+- **AND** that Node entrypoint still detaches only the default `app-server --listen unix://` listener
+- **AND** `app-server proxy` and ordinary Codex commands still exec the stock Codex entrypoint
+- **AND** a local interactive `codex` session on the same machine does not inherit remote Host ownership
 
 #### Scenario: Non-listener commands retain foreground ownership
 

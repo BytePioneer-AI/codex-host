@@ -1,14 +1,14 @@
 # Remote SSH Harness Host
 
-Codex Desktop can open a project on another machine through its native SSH workflow. Installing codexhost on both machines lets that remote workspace use Harnesses that are installed and authenticated only on the development host, including Claude Code.
+Codex Desktop can open a project on another machine through its native SSH workflow. Installing codexhost on both machines lets that remote workspace use Harnesses that are installed and authenticated only on the development host, including Claude Code and Grok.
 
-This path keeps the native Codex Desktop UI and SSH transport. It does not turn a Claude login into an OpenAI-compatible API: Claude Code itself owns the Native Session on the remote machine.
+This path keeps the native Codex Desktop UI and SSH transport. It does not turn a Claude or Grok login into an OpenAI-compatible API: the selected Harness itself owns the Native Session on the remote machine.
 
 ## Prerequisites
 
 - Codex Desktop and codexhost on the client machine.
 - Codex CLI and the same codexhost version on a macOS or x64/ARM64 Linux SSH host.
-- The desired Harness installed and authenticated on the SSH host. For Claude Code, run its normal login there; do not copy its account files to the client.
+- The desired Harness installed and authenticated on the SSH host. For Claude Code or Grok, run its normal login there; do not copy its account files to the client.
 - A working Codex Desktop SSH workspace before enabling codexhost.
 
 Windows is supported as the client. A Windows machine is not currently supported as the remote Host because Codex's remote control transport uses Unix sockets.
@@ -27,14 +27,15 @@ If `codex` already resolves to OpenCodex or another wrapper, pass the real offic
 ```bash
 codexhost remote install \
   --stock-codex /absolute/path/to/official/codex \
-  --claude-command /absolute/path/to/claude
+  --claude-command /absolute/path/to/claude \
+  --grok-command /absolute/path/to/grok
 ```
 
 The command:
 
-- installs the packaged native Shim as `~/.codexhost/remote/bin/codex`. In the managed remote environment, the exact default `app-server --listen unix://` invocation starts a detached listener, waits until a freshly created control socket accepts connections, and then lets Codex Desktop's background SSH bootstrap return;
+- installs the packaged native Shim as `~/.codexhost/remote/bin/codex`. If that binary cannot load because the Linux glibc is older than the packaged native baseline, installation writes a Node entrypoint with the same detach semantics and uses the Node that ran `codexhost`. In the managed remote environment, the exact default `app-server --listen unix://` invocation starts a detached listener, waits until a freshly created control socket accepts connections, and then lets Codex Desktop's background SSH bootstrap return. Local interactive `codex` is unchanged because the managed `CODEX_INSTALL_DIR` is SSH-scoped;
 - stores remote Mapping Store data separately under `~/.codexhost/remote/data`;
-- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. The block activates only for an SSH session, so local shells and a local codexhost Desktop on the same machine do not inherit remote Host ownership. In `.bashrc`, the guarded block is placed before the standard non-interactive early-return guard used by Linux distributions such as Ubuntu. It selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code paths used by the native entrypoint;
+- adds one marked environment block to `.zshenv`, `.bashrc`, or the explicitly selected profile. The block activates only for an SSH session, so local shells and a local codexhost Desktop on the same machine do not inherit remote Host ownership. In `.bashrc`, the guarded block is placed before the standard non-interactive early-return guard used by Linux distributions such as Ubuntu. It selects `CODEX_INSTALL_DIR` and supplies the absolute stock Codex, Node, Host Runtime, data, and optional Claude Code and Grok paths used by the native entrypoint;
 - writes a timestamped profile backup before changing it;
 - records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.
@@ -57,7 +58,7 @@ Start the client-side Codex Desktop through codexhost, open the SSH workspace, a
 
 A newly opened task in a remote project remains a draft and should allow Agent selection. Current Desktop builds are classified from the active Composer's own marker, so a background/prewarmed conversation elsewhere on the project page cannot incorrectly lock the new task. Once the first Turn binds the draft, the resulting Thread identity becomes authoritative.
 
-The remote Claude Code process sees the remote cwd and account. Prompts, streamed output, tool status, approvals, and diffs are projected through the existing SSH channel so Codex Desktop can render them; credential files are not forwarded.
+Remote Claude Code and Grok processes see the remote cwd and account. Prompts, streamed output, tool status, approvals, and diffs are projected through the existing SSH channel so Codex Desktop can render them; credential files are not forwarded. Grok still uses its local stdio ACP adapter on the SSH host. It does not require a separate `grok agent serve` daemon.
 
 ## Diagnose and roll back
 

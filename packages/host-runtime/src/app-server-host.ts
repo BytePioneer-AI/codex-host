@@ -45,6 +45,8 @@ import {
   updateEmptyParamsSchema,
   updateStartResultSchema,
   updateStatusResultSchema,
+  remoteSshPreflightParamsSchema,
+  remoteSshProvisionParamsSchema,
   type AccountCreditsSnapshot,
   type HarnessModelRef,
   type HarnessPermissionModeId,
@@ -53,6 +55,13 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import {
+  REMOTE_SSH_PREFLIGHT_METHOD,
+  REMOTE_SSH_PROVISION_LOG_METHOD,
+  REMOTE_SSH_PROVISION_METHOD,
+  preflightRemoteSshGrokHost,
+  provisionRemoteSshGrokHost,
+} from "./remote-ssh-provision.js";
 import {
   ExternalHistoryRequestError,
   listExternalItems,
@@ -250,6 +259,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_PI_COMMAND",
     "CODEXHOST_ENABLE_CLAUDE_CODE",
     "CODEXHOST_CLAUDE_COMMAND",
+    "CODEXHOST_GROK_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
     "CODEXHOST_LAUNCHER_PID",
     "CODEXHOST_LAUNCHER_EXECUTABLE",
@@ -617,6 +627,14 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/harness/inspect") {
         this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+        continue;
+      }
+      if (request.method === REMOTE_SSH_PREFLIGHT_METHOD) {
+        this.#dispatchDesktopRequest(() => this.#preflightRemoteSshGrok(request));
+        continue;
+      }
+      if (request.method === REMOTE_SSH_PROVISION_METHOD) {
+        this.#dispatchDesktopRequest(() => this.#provisionRemoteSshGrok(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -1603,6 +1621,45 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
     } catch (error) {
       await this.#writer.json(rpcError(request, -32091, errorMessage(error).slice(0, 500)));
+    }
+  }
+
+  async #preflightRemoteSshGrok(request: JsonRpcRequest): Promise<void> {
+    const params = remoteSshPreflightParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid remote Host preflight params"));
+      return;
+    }
+    try {
+      const result = await preflightRemoteSshGrokHost({
+        params: params.data,
+        environment: this.#options.environment ?? process.env,
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32077, errorMessage(error).slice(0, 1500)));
+    }
+  }
+
+  async #provisionRemoteSshGrok(request: JsonRpcRequest): Promise<void> {
+    const params = remoteSshProvisionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid remote Host setup params"));
+      return;
+    }
+    try {
+      const result = await provisionRemoteSshGrokHost({
+        params: params.data,
+        environment: this.#options.environment ?? process.env,
+        onLog: (chunk) =>
+          this.#writer.json({
+            method: REMOTE_SSH_PROVISION_LOG_METHOD,
+            params: { hostId: params.data.hostId, chunk },
+          }),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32077, errorMessage(error).slice(0, 1500)));
     }
   }
 

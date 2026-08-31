@@ -5362,6 +5362,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         CODEXHOST_DATA_DIR: "/synthetic/codexhost-data",
         CODEXHOST_ENABLE_CLAUDE_CODE: "1",
         CODEXHOST_CLAUDE_COMMAND: "/synthetic/claude",
+        CODEXHOST_GROK_COMMAND: "/synthetic/grok",
         CODEXHOST_PI_COMMAND: "/synthetic/pi",
       },
     });

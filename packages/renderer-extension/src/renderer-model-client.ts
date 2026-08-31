@@ -45,6 +45,16 @@ import {
   type UpdateCheckResult,
   type UpdateStartResult,
   type UpdateStatusResult,
+  remoteSshPreflightParamsSchema,
+  remoteSshPreflightResultSchema,
+  remoteSshProvisionLogNotificationSchema,
+  remoteSshProvisionParamsSchema,
+  remoteSshProvisionResultSchema,
+  type RemoteSshPreflightParams,
+  type RemoteSshPreflightResult,
+  type RemoteSshProvisionLogNotification,
+  type RemoteSshProvisionParams,
+  type RemoteSshProvisionResult,
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
@@ -62,6 +72,9 @@ export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
+export const REMOTE_SSH_PREFLIGHT_METHOD = "codexhost/remote-ssh/preflight";
+export const REMOTE_SSH_PROVISION_METHOD = "codexhost/remote-ssh/provision";
+export const REMOTE_SSH_PROVISION_LOG_METHOD = "codexhost/remote-ssh/provision/log";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -115,6 +128,11 @@ export interface RendererModelClient {
   checkUpdate(): Promise<UpdateCheckResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  preflightRemoteSshGrok?(input: RemoteSshPreflightParams): Promise<RemoteSshPreflightResult>;
+  provisionRemoteSshGrok?(input: RemoteSshProvisionParams): Promise<RemoteSshProvisionResult>;
+  subscribeRemoteSshProvisionLog?(
+    listener: (update: RemoteSshProvisionLogNotification) => void,
+  ): () => void;
 }
 
 export function createThreadUsageSubscriptionRelay(): {
@@ -294,6 +312,38 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async preflightRemoteSshGrok(
+      input: RemoteSshPreflightParams,
+    ): Promise<RemoteSshPreflightResult> {
+      const params = remoteSshPreflightParamsSchema.parse(input);
+      const result = await manager.sendRequest(REMOTE_SSH_PREFLIGHT_METHOD, params);
+      return remoteSshPreflightResultSchema.parse(result);
+    },
+    async provisionRemoteSshGrok(
+      input: RemoteSshProvisionParams,
+    ): Promise<RemoteSshProvisionResult> {
+      const params = remoteSshProvisionParamsSchema.parse(input);
+      const result = await manager.sendRequest(REMOTE_SSH_PROVISION_METHOD, params);
+      return remoteSshProvisionResultSchema.parse(result);
+    },
+    subscribeRemoteSshProvisionLog(
+      listener: (update: RemoteSshProvisionLogNotification) => void,
+    ): () => void {
+      const notifications = notificationTarget(manager);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Remote Host setup log callback is unavailable");
+      }
+      return notifications.addNotificationCallback(
+        REMOTE_SSH_PROVISION_LOG_METHOD,
+        (notification) => {
+          if (!isRecord(notification) || notification.method !== REMOTE_SSH_PROVISION_LOG_METHOD) {
+            return;
+          }
+          const parsed = remoteSshProvisionLogNotificationSchema.safeParse(notification.params);
+          if (parsed.success) listener(parsed.data);
+        },
+      );
     },
   });
 }

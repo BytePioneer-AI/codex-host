@@ -33,6 +33,7 @@ describe("remote SSH Host CLI", () => {
       }),
     ).resolves.toBe(0);
     expect(stdout.text()).toContain("codexhost remote install");
+    expect(stdout.text()).toContain("--grok-command PATH");
     expect(stdout.text()).toContain("codexhost remote start");
     expect(stdout.text()).toContain("codexhost remote stop");
     expect(stdout.text()).toContain("codexhost remote uninstall");

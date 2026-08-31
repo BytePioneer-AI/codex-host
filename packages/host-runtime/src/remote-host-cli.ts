@@ -49,6 +49,9 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
       case "--claude-command":
         options.claudeCommand = value;
         break;
+      case "--grok-command":
+        options.grokCommand = value;
+        break;
       case "--node":
         resources.nodePath = value;
         break;
@@ -81,7 +84,7 @@ export async function runRemoteHostCli(input: {
       output.write(
         [
           "usage:",
-          "  codexhost remote install [--stock-codex PATH] [--claude-command PATH]",
+          "  codexhost remote install [--stock-codex PATH] [--claude-command PATH] [--grok-command PATH]",
           "  codexhost remote start",
           "  codexhost remote stop",
           "  codexhost remote status",

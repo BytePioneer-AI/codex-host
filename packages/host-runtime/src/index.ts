@@ -74,6 +74,17 @@ export type {
 } from "./remote-control-app-server.js";
 export { runRemoteHostCli } from "./remote-host-cli.js";
 export {
+  REMOTE_SSH_PREFLIGHT_METHOD,
+  REMOTE_SSH_PROVISION_LOG_METHOD,
+  REMOTE_SSH_PROVISION_METHOD,
+  occupancyMessage,
+  preflightRemoteSshGrokHost,
+  provisionRemoteSshGrokHost,
+  remoteGrokProvisionScript,
+  remoteSshPreflightScript,
+  resolveRemoteSshProvisionTarget,
+} from "./remote-ssh-provision.js";
+export {
   inspectRemoteHostInstallation,
   installRemoteHost,
   uninstallRemoteHost,

@@ -854,10 +854,12 @@ export function installCurrentRendererAdapter(): {
     clientForHost(hostId: string): RendererModelClient | null {
       const route = currentRequestRoute();
       if (route?.policy.hostId === hostId) return modelClientForTargets(route.targets);
+      const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
+      const client = modelClientForTargets(targets ?? []);
+      if (client) return client;
       const policy = window.__codexhostDraftPrewarmPolicyV1;
       if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
-      const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
-      return modelClientForTargets(targets ?? []);
+      return null;
     },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),

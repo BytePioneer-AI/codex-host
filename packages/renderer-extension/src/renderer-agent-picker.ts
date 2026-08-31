@@ -52,19 +52,23 @@ export function rendererAgentPickerView(
   switching: boolean,
   agents: readonly RendererAgent[],
   availability: AgentAvailability = {},
+  setupAgents: readonly RendererAgent[] = [],
 ): RendererAgentPickerView {
+  const setup = new Set(setupAgents);
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
       agent,
       switching ||
         state.phase === "locked" ||
-        (agent !== "codex" && (adapterState !== "ready" || availability[agent] !== "ready")),
+        (agent !== "codex" &&
+          !setup.has(agent) &&
+          (adapterState !== "ready" || availability[agent] !== "ready")),
     ]),
   ) as Partial<Record<RendererAgent, boolean>>;
   const downloadVisible = Object.fromEntries(
     agents
       .filter((agent): agent is ExternalRendererAgent => agent !== "codex")
-      .map((agent) => [agent, availability[agent] === "notInstalled"]),
+      .map((agent) => [agent, availability[agent] === "notInstalled" && !setup.has(agent)]),
   ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
     label: RENDERER_AGENT_LABELS[state.agent],
@@ -388,6 +392,7 @@ export function renderRendererAgentPicker(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   availability: AgentAvailability = {},
+  setupAgents: readonly RendererAgent[] = [],
 ): RendererAgentPickerView {
   const view = rendererAgentPickerView(
     state,
@@ -395,6 +400,7 @@ export function renderRendererAgentPicker(
     switching,
     control.agents,
     availability,
+    setupAgents,
   );
   if (control.iconSlot.dataset.agent !== state.agent) {
     control.iconSlot.replaceChildren(createRendererAgentIcon(state.agent));

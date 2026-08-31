@@ -226,7 +226,7 @@ function installedManifest(status: RemoteHostInstallationStatus): RemoteHostMani
   return status;
 }
 
-function managedEnvironment(
+export function managedRemoteHostEnvironment(
   manifest: RemoteHostManifestV1,
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
@@ -240,6 +240,7 @@ function managedEnvironment(
     CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     ...(manifest.claudeCommand ? { CODEXHOST_CLAUDE_COMMAND: manifest.claudeCommand } : {}),
+    ...(manifest.grokCommand ? { CODEXHOST_GROK_COMMAND: manifest.grokCommand } : {}),
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };
 }
@@ -251,7 +252,7 @@ async function defaultRunTerminator(
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
   const child = spawn(
-    manifest.shimPath,
+    manifest.wrapperPath,
     [
       "--codexhost-remote-terminate",
       role,
@@ -302,7 +303,7 @@ function defaultLaunch(manifest: RemoteHostManifestV1, environment: NodeJS.Proce
   const child = spawn(
     manifest.wrapperPath,
     ["-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"],
-    { env: managedEnvironment(manifest, environment), stdio: "ignore", detached: true },
+    { env: managedRemoteHostEnvironment(manifest, environment), stdio: "ignore", detached: true },
   );
   child.unref();
 }

@@ -37,6 +37,7 @@ import {
   installRemoteHost,
   uninstallRemoteHost,
 } from "../src/remote-host-install.js";
+import { JS_ENTRYPOINT_MARKER } from "../src/remote-host-js-entrypoint.js";
 
 async function executable(filePath: string): Promise<string> {
   await writeFile(filePath, "fixture\n", "utf8");
@@ -203,6 +204,7 @@ describe("remote SSH Host installation", () => {
         hostRuntimePath,
         claudeCommand,
         platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
       };
       const first = await installRemoteHost(options);
       const second = await installRemoteHost(options);
@@ -230,6 +232,64 @@ describe("remote SSH Host installation", () => {
         profilePath,
         dataDirectory: path.join(home, ".codexhost", "remote", "data"),
       });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers Grok from its default install root and exports CODEXHOST_GROK_COMMAND", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-grok-"));
+    const grokBin = path.join(home, ".grok", "bin");
+    await mkdir(grokBin, { recursive: true });
+    const grokCommand = await executable(path.join(grokBin, "grok"));
+    const options = {
+      home,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "darwin" as const,
+      environment: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
+    };
+
+    try {
+      const installed = await installRemoteHost(options);
+      const profile = await readFile(installed.profilePath, "utf8");
+
+      expect(installed.grokCommand).toBe(grokCommand);
+      expect(profile).toContain(`export CODEXHOST_GROK_COMMAND='${grokCommand}'`);
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "ready",
+        grokCommand,
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("pins an explicit Grok command ahead of install-root discovery", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-grok-explicit-"));
+    const grokBin = path.join(home, ".grok", "bin");
+    await mkdir(grokBin, { recursive: true });
+    await executable(path.join(grokBin, "grok"));
+    const grokCommand = await executable(path.join(home, "custom-grok"));
+    const options = {
+      home,
+      grokCommand,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "darwin" as const,
+      environment: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
+    };
+
+    try {
+      const installed = await installRemoteHost(options);
+      expect(installed.grokCommand).toBe(grokCommand);
+      expect(await readFile(installed.profilePath, "utf8")).toContain(
+        `export CODEXHOST_GROK_COMMAND='${grokCommand}'`,
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -740,4 +800,36 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "installs a Node entrypoint when requested and still verifies uninstall",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-js-entrypoint-"));
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "darwin" as const,
+        entrypoint: "js" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+
+      try {
+        const installed = await installRemoteHost(options);
+        const wrapper = await readFile(installed.wrapperPath, "utf8");
+        expect(wrapper.startsWith(`#!${options.nodePath}\n${JS_ENTRYPOINT_MARKER}\n`)).toBe(true);
+        expect(wrapper).not.toBe(await readFile(options.shimPath, "utf8"));
+        await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+          state: "ready",
+          issues: [],
+        });
+        await uninstallRemoteHost(options);
+        await expect(readFile(installed.wrapperPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

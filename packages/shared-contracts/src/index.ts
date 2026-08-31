@@ -3,6 +3,25 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export { codexhostErrorSchema } from "./errors.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
+export {
+  classifyRemoteSshOccupancy,
+  isRemoteSshHostId,
+  remoteSshOccupancyKindSchema,
+  remoteSshPreflightParamsSchema,
+  remoteSshPreflightResultSchema,
+  remoteSshProvisionLogNotificationSchema,
+  remoteSshProvisionParamsSchema,
+  remoteSshProvisionResultSchema,
+  sshTargetFromRemoteHostId,
+} from "./remote-ssh-provision.js";
+export type {
+  RemoteSshOccupancyKind,
+  RemoteSshPreflightParams,
+  RemoteSshPreflightResult,
+  RemoteSshProvisionLogNotification,
+  RemoteSshProvisionParams,
+  RemoteSshProvisionResult,
+} from "./remote-ssh-provision.js";
 export type { CodexhostError } from "./errors.js";
 export {
   externalThreadForkParamsSchema,

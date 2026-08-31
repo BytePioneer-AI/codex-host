@@ -9,6 +9,7 @@ import type {
 import {
   classifyRemoteHostProbeResponse,
   inspectRemoteHost,
+  managedRemoteHostEnvironment,
   setRemoteHostLifecycleDependenciesForTest,
   startRemoteHost,
   stopRemoteHost,
@@ -48,6 +49,19 @@ function runtime(
 }
 
 describe("remote Host lifecycle", () => {
+  it("exports a pinned Grok command into the managed listener environment", () => {
+    const grokCommand = "/home/developer/.local/bin/grok";
+    expect(
+      managedRemoteHostEnvironment(
+        { ...manifest, grokCommand },
+        { HOME: home, PATH: "/usr/bin:/bin" },
+      ),
+    ).toMatchObject({
+      CODEXHOST_GROK_COMMAND: grokCommand,
+      CODEXHOST_REMOTE_SSH_MANAGED: "1",
+    });
+  });
+
   it("uses the lightweight update status method to identify the managed Host", () => {
     expect(
       classifyRemoteHostProbeResponse(

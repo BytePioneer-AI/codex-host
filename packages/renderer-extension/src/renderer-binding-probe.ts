@@ -13,6 +13,11 @@ import {
   type ThreadUsageSnapshot,
   type CodexhostError,
 } from "@codexhost/shared-contracts";
+import {
+  openRemoteGrokSetupDialog,
+  remoteGrokNeedsSetup,
+  remoteGrokSetupVariant,
+} from "./renderer-remote-grok-setup.js";
 
 import {
   DEFAULT_RENDERER_AGENTS,
@@ -630,6 +635,8 @@ export function installRendererBindingProbe(
   };
 
   const renderMounted = (mounted: MountedComposer): void => {
+    const hostId = activeModelHostId();
+    const grokAvailability = activeHarnessAvailabilityState().availability.grok;
     renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
@@ -642,6 +649,7 @@ export function installRendererBindingProbe(
       mounted.usage,
       mounted.accountCredits,
       settingsLifecycle.locale,
+      remoteGrokNeedsSetup(hostId, grokAvailability) ? ["grok"] : [],
     );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
@@ -1565,11 +1573,87 @@ export function installRendererBindingProbe(
     }
   };
 
+  const provisionRemoteGrok = async (hostId: string): Promise<boolean> => {
+    const localClient = modelClientForHost("local") ?? modelControl;
+    const preflightRemote = localClient?.preflightRemoteSshGrok;
+    const provisionRemote = localClient?.provisionRemoteSshGrok;
+    if (!localClient || !preflightRemote || !provisionRemote) {
+      window.alert("无法连接本机 codexhost。请用 codexhost 启动 Codex Desktop。");
+      return false;
+    }
+    const subscribeSetupLog = localClient.subscribeRemoteSshProvisionLog;
+    const startRemoteInstall = provisionRemote;
+    let variant: ReturnType<typeof remoteGrokSetupVariant> = "install";
+    try {
+      const preflight = await preflightRemote({ hostId });
+      variant = remoteGrokSetupVariant(preflight.kind);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    return await new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        unsubscribeLog?.();
+        resolve(value);
+      };
+      let unsubscribeLog: (() => void) | undefined;
+      const dialog = openRemoteGrokSetupDialog({
+        hostId,
+        locale: settingsLifecycle.locale,
+        variant,
+        onDecline() {
+          finish(false);
+        },
+        onAcknowledge() {
+          finish(false);
+        },
+        onConfirm() {
+          runInstall(false);
+        },
+        onReplace() {
+          runInstall(true);
+        },
+      });
+      function runInstall(replaceOfficialDaemon: boolean): void {
+        try {
+          unsubscribeLog = subscribeSetupLog?.((update) => {
+            if (update.hostId === hostId) dialog.appendLog(update.chunk);
+          });
+        } catch {
+          unsubscribeLog = undefined;
+        }
+        void startRemoteInstall({ hostId, replaceOfficialDaemon })
+          .then((result) => {
+            dialog.appendLog(`\n${result.message}\n`);
+            if (result.ok) dialog.setDone(result.message);
+            else dialog.setFailed(result.message);
+          })
+          .catch((error) => {
+            dialog.setFailed(error instanceof Error ? error.message : String(error));
+          });
+      }
+    });
+  };
+
   const switchComposerAgent = async (
     mounted: MountedComposer,
     agent: RendererAgent,
   ): Promise<boolean> => {
-    if (agent !== "codex" && activeHarnessAvailabilityState().availability[agent] !== "ready") {
+    const hostId = activeModelHostId();
+    if (agent === "grok") {
+      const grokAvailability = activeHarnessAvailabilityState().availability.grok;
+      if (remoteGrokNeedsSetup(hostId, grokAvailability) && hostId) {
+        await provisionRemoteGrok(hostId);
+        return false;
+      }
+      if (grokAvailability !== "ready") return false;
+    } else if (
+      agent !== "codex" &&
+      activeHarnessAvailabilityState().availability[agent] !== "ready"
+    ) {
       return false;
     }
     controller.clearPendingSubmission(mounted.composer);

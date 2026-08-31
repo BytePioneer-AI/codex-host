@@ -675,6 +675,7 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
+  setupAgents: readonly RendererAgent[] = [],
 ): void {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -713,6 +714,7 @@ export function renderComposerAgentControl(
     adapterState,
     switching,
     availability,
+    setupAgents,
   );
   reconcileComposerNativeControls(
     control,

@@ -15,6 +15,13 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { GrokExecutableError, resolveGrokExecutable } from "@codexhost/adapter-grok";
+
+import {
+  nativeShimNeedsJsFallback,
+  renderRemoteHostJsEntrypoint,
+} from "./remote-host-js-entrypoint.js";
+
 const MANIFEST_FORMAT = 1;
 // Kept only so status/install can identify and migrate preview installs.
 const WRAPPER_MARKER = "# codexhost remote SSH wrapper v1";
@@ -32,6 +39,7 @@ export interface RemoteHostManifestV1 {
   dataDirectory: string;
   entrypointSha256?: string;
   claudeCommand?: string;
+  grokCommand?: string;
   profileBackupPath?: string;
 }
 
@@ -44,8 +52,10 @@ export interface RemoteHostInstallOptions {
   shimPath?: string;
   hostRuntimePath?: string;
   claudeCommand?: string;
+  grokCommand?: string;
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
+  entrypoint?: "native" | "js";
 }
 
 export type RemoteHostInstallationStatus =
@@ -154,6 +164,15 @@ async function discoverExecutable(
   return null;
 }
 
+async function discoverGrokCommand(environment: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    return resolveGrokExecutable({ environment });
+  } catch (error) {
+    if (error instanceof GrokExecutableError) return null;
+    throw error;
+  }
+}
+
 async function writeAtomic(
   filePath: string,
   contents: string | Uint8Array,
@@ -247,6 +266,9 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     ...(manifest.claudeCommand
       ? [`export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}`]
       : []),
+    ...(manifest.grokCommand
+      ? [`export CODEXHOST_GROK_COMMAND=${shellQuote(manifest.grokCommand)}`]
+      : []),
   ];
   const block = [
     PROFILE_START,
@@ -324,6 +346,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "dataDirectory",
     "entrypointSha256",
     "claudeCommand",
+    "grokCommand",
     "profileBackupPath",
   ]);
   const requiredPaths = [
@@ -335,7 +358,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "hostRuntimePath",
     "dataDirectory",
   ] as const;
-  const optionalPaths = ["claudeCommand", "profileBackupPath"] as const;
+  const optionalPaths = ["claudeCommand", "grokCommand", "profileBackupPath"] as const;
   if (
     manifest.format !== MANIFEST_FORMAT ||
     Object.keys(manifest).some((key) => !allowed.has(key)) ||
@@ -440,6 +463,11 @@ export async function installRemoteHost(
   const claudeCommand = discoveredClaude
     ? await executable(discoveredClaude, "Claude Code command")
     : undefined;
+  const discoveredGrok =
+    options.grokCommand ??
+    previousManifest?.grokCommand ??
+    (await discoverGrokCommand(environment));
+  const grokCommand = discoveredGrok ? await executable(discoveredGrok, "Grok command") : undefined;
 
   let manifest: RemoteHostManifestV1 = {
     format: MANIFEST_FORMAT,
@@ -451,6 +479,7 @@ export async function installRemoteHost(
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
     ...(claudeCommand ? { claudeCommand } : {}),
+    ...(grokCommand ? { grokCommand } : {}),
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),
@@ -468,7 +497,14 @@ export async function installRemoteHost(
     }
     await mkdir(paths.dataDirectory, { recursive: true, mode: 0o700 });
     await chmod(paths.dataDirectory, 0o700);
-    await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
+    const useJsEntrypoint =
+      options.entrypoint === "js" ||
+      (options.entrypoint !== "native" && nativeShimNeedsJsFallback(shimPath, platform));
+    if (useJsEntrypoint) {
+      await writeAtomic(paths.wrapperPath, renderRemoteHostJsEntrypoint(nodePath), 0o700);
+    } else {
+      await writeAtomicExecutable(paths.wrapperPath, manifest.shimPath);
+    }
     manifest = { ...manifest, entrypointSha256: await fileSha256(paths.wrapperPath) };
     await writeAtomic(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
     return manifest;

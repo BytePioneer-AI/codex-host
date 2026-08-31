@@ -60,6 +60,25 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it("keeps remote Grok selectable so the Host setup prompt can run", () => {
+    expect(
+      rendererAgentPickerView(
+        { agent: "codex", phase: "draft" },
+        "ready",
+        false,
+        ["codex", "grok"],
+        { grok: "error" },
+        ["grok"],
+      ),
+    ).toEqual({
+      label: "Codex",
+      triggerDisabled: false,
+      nativeModelHidden: false,
+      optionDisabled: { codex: false, grok: false },
+      downloadVisible: { grok: false },
+    });
+  });
+
   it("recognizes only the native React Model menu as the Model candidate", () => {
     const element = (
       ownAttributes: readonly string[],

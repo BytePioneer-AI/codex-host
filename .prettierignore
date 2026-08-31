@@ -1,4 +1,5 @@
 **/*.md
+**/*.preview.html
 **/*.wxs
 .pi/
 reference/

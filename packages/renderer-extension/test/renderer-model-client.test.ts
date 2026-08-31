@@ -143,11 +143,14 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listThreadOwnership",
+      "preflightRemoteSshGrok",
+      "provisionRemoteSshGrok",
       "readUpdateStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "startUpdate",
+      "subscribeRemoteSshProvisionLog",
       "subscribeThreadUsage",
     ]);
 

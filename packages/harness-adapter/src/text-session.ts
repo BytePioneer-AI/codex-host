@@ -307,12 +307,6 @@ export interface HostToolExecutionItem {
   itemId: HostItemId;
   toolName: string;
   namespace?: string;
-  /**
-   * Desktop's generic dynamic-tool card only renders tools with a registered
-   * renderer. Text-only external tools can opt into the command-output card
-   * so their result remains inspectable.
-   */
-  presentation?: "dynamicToolCall" | "commandExecution";
   arguments: JsonValue;
   output?: HostToolOutput;
   durationMs?: number;

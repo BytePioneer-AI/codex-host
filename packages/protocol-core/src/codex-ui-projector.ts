@@ -88,13 +88,6 @@ function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): J
   );
 }
 
-function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
-  const text = item.output?.content
-    .flatMap((content) => (content.type === "text" ? [content.text] : []))
-    .join("");
-  return text && text.length > 0 ? text : null;
-}
-
 function collabAgentStatus(
   status: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number]["status"],
 ): string {
@@ -153,21 +146,6 @@ function projectItem(
       };
     case "toolExecution": {
       const status = itemStatus(outcome);
-      if (item.presentation === "commandExecution") {
-        return {
-          id: item.itemId,
-          type: "commandExecution",
-          command: item.toolName,
-          cwd: defaultCwd,
-          processId: null,
-          source: "agent",
-          status,
-          commandActions: [],
-          aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
-          exitCode: outcome ? (outcome.status === "succeeded" ? 0 : 1) : null,
-          durationMs: item.durationMs ?? null,
-        };
-      }
       return {
         id: item.itemId,
         type: "dynamicToolCall",

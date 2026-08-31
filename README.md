@@ -230,7 +230,7 @@ CodexHost 尽量不走这条路：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img src="docs/imgs/wechat-qrcode.jpg" alt="CodexHost 交流群二维码" width="180" />
+      <img width="230" alt="7ba6eda891ba4c8d091f2a71a8b8e81d" src="https://github.com/user-attachments/assets/e40b162e-a961-43ac-9728-af59890c4d72" />
     </td>
   </tr>
 </table>

@@ -1146,6 +1146,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {
+    const xaiModel = harnessModelRefSchema.parse({
+      id: "codex-model-v1.eGFpL2dyb2stNC42",
+    });
+    const kimiModel = harnessModelRefSchema.parse({
+      id: "codex-model-v1.a2ltaS9rM1sxbV0",
+    });
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -1166,9 +1172,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
         result: {
           data: [
             {
-              model: "gpt-5.6-luna",
-              displayName: "GPT Luna",
+              model: "xai/grok-4.6",
+              displayName: "Grok 4.6",
               isDefault: true,
+              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
+            },
+            {
+              model: "kimi/k3[1m]",
+              displayName: "Kimi K3",
               supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
             },
           ],
@@ -1180,7 +1191,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       inspection: {
         status: "ready",
         catalog: {
-          defaultModel: { id: "gpt-5.6-luna" },
+          models: [
+            { ref: xaiModel, label: "Grok 4.6" },
+            { ref: kimiModel, label: "Kimi K3" },
+          ],
+          defaultModel: xaiModel,
           thinkingOptions: [{ id: "high", label: "High" }],
         },
       },
@@ -1191,7 +1206,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       task: "review auth",
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
-      model: harnessModelRefSchema.parse({ id: "gpt-5.6-luna" }),
+      model: kimiModel,
       thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     const validationList = await readJsonLine(fixture.official.stdin);
@@ -1202,7 +1217,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
         result: {
           data: [
             {
-              model: "gpt-5.6-luna",
+              model: "xai/grok-4.6",
+              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
+            },
+            {
+              model: "kimi/k3[1m]",
               isDefault: true,
               supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
             },
@@ -1213,7 +1232,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
-      params: { model: "gpt-5.6-luna" },
+      params: { model: "kimi/k3[1m]" },
     });
     expect(threadStart.params).not.toHaveProperty("reasoningEffort");
     fixture.official.stdout.write(
@@ -1221,6 +1240,70 @@ describe("AppServerHost HarnessAdapter projection", () => {
         id: threadStart.id,
         result: {
           thread: { id: "native-configured" },
+          model: "kimi/k3[1m]",
+        },
+      })}\n`,
+    );
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { model: "kimi/k3[1m]", effort: "high" },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
+    );
+    await expect(pending).resolves.toMatchObject({
+      configuration: {
+        requested: { model: kimiModel, thinkingOptionId: "high" },
+        effective: {
+          effectiveModel: kimiModel,
+        },
+      },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("canonicalizes legacy transport-safe Codex Model refs before delegation", async () => {
+    const legacyModel = harnessModelRefSchema.parse({ id: "gpt-5.6-luna" });
+    const canonicalModel = harnessModelRefSchema.parse({
+      id: "codex-model-v1.Z3B0LTUuNi1sdW5h",
+    });
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+
+    const pending = delegationApi.start({
+      harnessId: "codex",
+      task: "review auth",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+      model: legacyModel,
+    });
+    const modelList = await readJsonLine(fixture.official.stdin);
+    expect(modelList).toMatchObject({ method: "model/list", params: {} });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: modelList.id,
+        result: { data: [{ model: "gpt-5.6-luna", isDefault: true }] },
+      })}\n`,
+    );
+    const threadStart = await readJsonLine(fixture.official.stdin);
+    expect(threadStart).toMatchObject({
+      method: "thread/start",
+      params: { model: "gpt-5.6-luna" },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: threadStart.id,
+        result: {
+          thread: { id: "native-legacy-configured" },
           model: "gpt-5.6-luna",
         },
       })}\n`,
@@ -1228,17 +1311,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
-      params: { model: "gpt-5.6-luna", effort: "high" },
+      params: { model: "gpt-5.6-luna" },
     });
     fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-legacy-turn" } } })}\n`,
     );
     await expect(pending).resolves.toMatchObject({
       configuration: {
-        requested: { model: { id: "gpt-5.6-luna" }, thinkingOptionId: "high" },
-        effective: {
-          effectiveModel: { id: "gpt-5.6-luna" },
-        },
+        requested: { model: canonicalModel },
+        effective: { effectiveModel: canonicalModel },
       },
     });
     await stopFixture(fixture);

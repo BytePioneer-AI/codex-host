@@ -25,7 +25,6 @@ import {
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
-  harnessModelRefSchema,
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
@@ -97,6 +96,11 @@ import type {
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { OfficialRequestBroker } from "./official-request-broker.js";
+import {
+  canonicalizeOfficialCodexModelRef,
+  decodeOfficialCodexModelRef,
+  encodeOfficialCodexModelRef,
+} from "./official-codex-model-ref.js";
 import {
   spawnOfficialAppServerConnection,
   type OfficialAppServerConnection,
@@ -1102,7 +1106,7 @@ export class AppServerHost {
         : [];
       return [
         {
-          ref: harnessModelRefSchema.parse({ id: candidate.model }),
+          ref: encodeOfficialCodexModelRef(candidate.model),
           label:
             typeof candidate.displayName === "string" && candidate.displayName.trim()
               ? candidate.displayName
@@ -1116,7 +1120,7 @@ export class AppServerHost {
     );
     const defaultModel =
       isRecord(defaultEntry) && typeof defaultEntry.model === "string"
-        ? harnessModelRefSchema.parse({ id: defaultEntry.model })
+        ? encodeOfficialCodexModelRef(defaultEntry.model)
         : undefined;
     return {
       harnessId: input.harnessId,
@@ -1142,12 +1146,19 @@ export class AppServerHost {
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string },
   ): Promise<DelegationStartResult> {
+    let requestedModel: HarnessModelRef | undefined;
+    try {
+      requestedModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
+    } catch {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Official Model Ref is invalid");
+    }
+    const nativeModelId = requestedModel ? decodeOfficialCodexModelRef(requestedModel) : undefined;
     const digest = createHash("sha256")
       .update(
         JSON.stringify({
           task: input.task,
           cwd: input.cwd,
-          modelId: input.model?.id ?? null,
+          modelId: requestedModel?.id ?? null,
           thinkingOptionId: input.thinkingOptionId ?? null,
         }),
       )
@@ -1185,7 +1196,7 @@ export class AppServerHost {
         },
       };
     }
-    if (input.model || input.thinkingOptionId) {
+    if (requestedModel || input.thinkingOptionId) {
       const inspected = await this.#inspectOfficialDelegationTarget({
         harnessId: "codex",
         cwd: input.cwd,
@@ -1197,9 +1208,9 @@ export class AppServerHost {
         );
       }
       if (
-        input.model &&
+        requestedModel &&
         !inspected.inspection.catalog.models.some(
-          (candidate) => candidate.ref.id === input.model?.id,
+          (candidate) => candidate.ref.id === requestedModel.id,
         )
       ) {
         throw new DelegationControlError("INVALID_ARGUMENT", "Official Model is unavailable", {
@@ -1207,7 +1218,7 @@ export class AppServerHost {
         });
       }
       if (input.thinkingOptionId) {
-        const selectedModel = input.model ?? inspected.inspection.catalog.defaultModel;
+        const selectedModel = requestedModel ?? inspected.inspection.catalog.defaultModel;
         const selectedEntry = selectedModel
           ? inspected.inspection.catalog.models.find(
               (candidate) => candidate.ref.id === selectedModel.id,
@@ -1225,7 +1236,7 @@ export class AppServerHost {
     }
     const started = await this.#officialRequestBroker.request("thread/start", {
       cwd: input.cwd,
-      ...(input.model ? { model: input.model.id } : {}),
+      ...(nativeModelId ? { model: nativeModelId } : {}),
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: false,
@@ -1241,7 +1252,7 @@ export class AppServerHost {
       const turn = await this.#officialRequestBroker.request("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],
-        ...(input.model ? { model: input.model.id } : {}),
+        ...(nativeModelId ? { model: nativeModelId } : {}),
         ...(input.thinkingOptionId ? { effort: input.thinkingOptionId } : {}),
       });
       const turnResult = isRecord(turn.result) ? turn.result : null;
@@ -1279,16 +1290,16 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
-        ...(input.model || input.thinkingOptionId
+        ...(requestedModel || input.thinkingOptionId
           ? {
               configuration: {
                 requested: {
-                  ...(input.model ? { model: input.model } : {}),
+                  ...(requestedModel ? { model: requestedModel } : {}),
                   ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
                 },
                 effective: {
                   ...(startedResult && typeof startedResult.model === "string"
-                    ? { effectiveModel: harnessModelRefSchema.parse({ id: startedResult.model }) }
+                    ? { effectiveModel: encodeOfficialCodexModelRef(startedResult.model) }
                     : {}),
                 },
               },

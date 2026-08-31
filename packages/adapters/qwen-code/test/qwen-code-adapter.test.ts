@@ -183,6 +183,46 @@ describe("QwenCodeAdapter", () => {
     expect(opened.value.capabilities.configuration.selectThinkingOption).toBe(false);
     await opened.value.close();
   });
+  it("uses yolo for unattended creates without an explicit Permission Mode", async () => {
+    const transport = new FakeTransport();
+    const { adapter } = createAdapter(transport);
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/tmp",
+      executionPolicy: "unattended-full-access",
+    });
+    expect(opened).toEqual({ ok: true, value: expect.anything() });
+    expect(transport.setModeCalls).toEqual(["yolo"]);
+    if (opened.ok) await opened.value.close();
+  });
+
+  it("passes a delegated Session environment into create and resume transports", async () => {
+    const transports = [new FakeTransport(), new FakeTransport()];
+    const createTransport = vi.fn(() => {
+      const transport = transports.shift();
+      if (!transport) throw new Error("Missing FakeTransport");
+      return transport;
+    });
+    const adapter = new QwenCodeAdapter({}, { createTransport, randomUUID: () => "item-1" });
+    const environment = { CODEXHOST_DELEGATION_THREAD_ID: "child-thread-1" };
+    const created = await adapter.open({ kind: "create", cwd: "/tmp", environment });
+    if (!created.ok) throw new Error("create failed");
+    await created.value.close();
+    const resumed = await adapter.open({
+      kind: "resume",
+      cwd: "/tmp",
+      environment,
+      nativeRef: {
+        harnessId: harnessIdSchema.parse("qwen-code"),
+        nativeSessionId: "qwen-session-1",
+        formatVersion: 1,
+      },
+    });
+    if (!resumed.ok) throw new Error("resume failed");
+    await resumed.value.close();
+    expect(createTransport).toHaveBeenNthCalledWith(1, expect.objectContaining({ environment }));
+    expect(createTransport).toHaveBeenNthCalledWith(2, expect.objectContaining({ environment }));
+  });
 
   it("streams a Turn into Host Items, Usage, and a snapshot Turn", async () => {
     const transport = new FakeTransport();

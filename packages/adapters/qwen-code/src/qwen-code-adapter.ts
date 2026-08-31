@@ -47,6 +47,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  harnessPermissionModeIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   nativeSessionRefSchema,
@@ -151,6 +152,7 @@ interface ActiveTurn {
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const qwenCodeHarnessId = harnessIdSchema.parse("qwen-code");
+const qwenCodeUnattendedPermissionModeId = harnessPermissionModeIdSchema.parse("yolo");
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 
 function invalidState(message: string): HarnessError {
@@ -958,7 +960,11 @@ export class QwenCodeAdapter implements HarnessAdapter {
     const cwd = path.resolve(input.cwd);
     let initialPermissionModeId = QWEN_CODE_DEFAULT_PERMISSION_MODE_ID;
     if (input.kind === "create") {
-      const requested = input.permissionModeId ?? QWEN_CODE_DEFAULT_PERMISSION_MODE_ID;
+      const requested =
+        input.permissionModeId ??
+        (input.executionPolicy === "unattended-full-access"
+          ? qwenCodeUnattendedPermissionModeId
+          : QWEN_CODE_DEFAULT_PERMISSION_MODE_ID);
       try {
         decodeQwenCodePermissionModeId(requested);
       } catch {
@@ -991,6 +997,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
     const transport = this.#dependencies.createTransport({
       cwd,
       onFault: (error) => session?.handleTransportFault(error),
+      ...(input.environment ? { environment: input.environment } : {}),
     });
     try {
       let opened: QwenCodeOpenResult;

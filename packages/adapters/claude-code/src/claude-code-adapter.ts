@@ -2285,17 +2285,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         : undefined;
       if (!snapshot.canSelectModel) {
         return {
-          status: "ready",
-          catalog: { models: [], thinkingOptions: [] },
-          ...(permissionModes ? { permissionModes } : {}),
-          capabilities: {
-            configuration: {
-              selectModel: false,
-              selectThinkingOption: false,
-              selectPermissionMode: snapshot.canSelectPermissionMode,
-            },
-            history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
-            subagents: { observe: true, readTranscript: true },
+          status: "unavailable",
+          error: {
+            code: "unavailable",
+            message: "Claude Code did not expose a selectable Model catalog",
+            retryable: false,
+            stage,
+            durationMs: Date.now() - startedAt,
+            ...(inspector.stderrTail ? { stderrTail: inspector.stderrTail } : {}),
           },
         };
       }

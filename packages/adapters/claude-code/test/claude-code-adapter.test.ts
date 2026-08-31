@@ -640,14 +640,12 @@ describe("Claude Code HarnessAdapter", () => {
       status: "error",
     });
     await expect(adapter.inspect({ cwd: "/failure" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     await expect(adapter.inspect({ cwd: "/unsupported" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     expect(dependencies.createInspector).toHaveBeenCalledTimes(4);
     expect(close).toHaveBeenCalledTimes(4);
@@ -4414,7 +4412,10 @@ describe("Claude Code HarnessAdapter", () => {
 
     const inspecting = adapter.inspect({ cwd: "/closing" });
     await expect(adapter.close()).resolves.toBeUndefined();
-    await expect(inspecting).resolves.toMatchObject({ status: "ready", catalog: { models: [] } });
+    await expect(inspecting).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
+    });
     expect(close).toHaveBeenCalled();
     await expect(adapter.inspect()).resolves.toMatchObject({
       status: "unavailable",

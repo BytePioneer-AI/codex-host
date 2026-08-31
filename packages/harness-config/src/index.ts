@@ -5,6 +5,7 @@ const envName = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name");
 const endpoint = z.string().url();
+const runtimeEnvironment = z.record(z.string(), z.string());
 
 export const harnessEndpointConfigSchema = z.object({
   command: z.string().min(1).optional(),
@@ -13,6 +14,8 @@ export const harnessEndpointConfigSchema = z.object({
   apiKeyEnv: envName.optional(),
   /** Direct key managed by CodexHost configuration. */
   apiKey: z.string().min(1).optional(),
+  /** Extra environment values injected into this Harness process. */
+  environment: runtimeEnvironment.optional(),
   model: z.string().min(1).optional(),
   models: z.array(z.string().min(1)).optional(),
 });
@@ -58,9 +61,11 @@ export function selectHarnessModel(
 export function resolveHarnessRuntimeEnv(
   config: HarnessEndpointConfig | undefined,
   parent: NodeJS.ProcessEnv = process.env,
+  harnessId = "gemini",
 ): NodeJS.ProcessEnv {
   if (!config) return { ...parent };
-  const environment = { ...parent };
+  const environment = { ...parent, ...config.environment };
+  if (harnessId !== "gemini") return environment;
   if (config.baseUrl) environment.GOOGLE_GEMINI_BASE_URL = config.baseUrl;
   if (config.apiKey) environment.GEMINI_API_KEY = config.apiKey;
   else if (config.apiKeyEnv && parent[config.apiKeyEnv])

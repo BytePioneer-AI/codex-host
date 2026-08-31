@@ -63,6 +63,18 @@ describe("harness configuration", () => {
     });
   });
 
+  it("preserves per-Harness environment overrides for non-Gemini adapters", () => {
+    const result = resolveHarnessRuntimeEnv(
+      { environment: { ANTHROPIC_BASE_URL: "https://proxy.example", ANTHROPIC_API_KEY: "key" } },
+      { PATH: "/bin", ANTHROPIC_BASE_URL: "https://official.example" },
+    );
+    expect(result).toMatchObject({
+      PATH: "/bin",
+      ANTHROPIC_BASE_URL: "https://proxy.example",
+      ANTHROPIC_API_KEY: "key",
+    });
+  });
+
   it("changes the session binding when endpoint or model changes", () => {
     const a = sessionConfigFingerprint("gemini", { baseUrl: "https://one", model: "pro" });
     const b = sessionConfigFingerprint("gemini", { baseUrl: "https://two", model: "pro" });

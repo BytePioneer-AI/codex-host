@@ -41,6 +41,11 @@ export function createExternalHarnessAdapters(
   environment: NodeJS.ProcessEnv,
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {
   const configuredGemini = readGeminiConfig(environment);
+  const configuredPi = readHarnessConfig(environment, "pi");
+  const configuredClaude = readHarnessConfig(environment, "claude-code");
+  const configuredDeepSeek = readHarnessConfig(environment, "deepseek-harness");
+  const configuredGrok = readHarnessConfig(environment, "grok");
+  const configuredOmp = readHarnessConfig(environment, "omp");
   const geminiCommand = environment[GEMINI_COMMAND_ENV] ?? configuredGemini?.command;
   const geminiBaseUrl = environment[GEMINI_BASE_URL_ENV] ?? configuredGemini?.baseUrl;
   const geminiApiKeyEnv = environment[GEMINI_API_KEY_ENV] ?? configuredGemini?.apiKeyEnv;
@@ -51,7 +56,7 @@ export function createExternalHarnessAdapters(
       "pi",
       new PiAdapter({
         ...(environment[PI_COMMAND_ENV] ? { command: environment[PI_COMMAND_ENV] } : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredPi),
       }),
     ],
     [
@@ -60,7 +65,7 @@ export function createExternalHarnessAdapters(
         ...(environment[CLAUDE_CODE_COMMAND_ENV]
           ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
           : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredClaude),
       }),
     ],
     [
@@ -72,14 +77,14 @@ export function createExternalHarnessAdapters(
         ...(environment[DEEPSEEK_HARNESS_ENDPOINT_ENV]
           ? { endpoint: environment[DEEPSEEK_HARNESS_ENDPOINT_ENV] }
           : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredDeepSeek),
       }),
     ],
     [
       "grok",
       new GrokAdapter({
         ...(environment[GROK_COMMAND_ENV] ? { command: environment[GROK_COMMAND_ENV] } : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredGrok),
       }),
     ],
     [
@@ -91,24 +96,35 @@ export function createExternalHarnessAdapters(
         ...(geminiApiKey ? { apiKey: geminiApiKey } : {}),
         ...(geminiModel ? { model: geminiModel } : {}),
         ...(configuredGemini?.models ? { models: configuredGemini.models } : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredGemini),
       }),
     ],
     [
       "omp",
       new OmpAdapter({
         ...(environment[OMP_COMMAND_ENV] ? { command: environment[OMP_COMMAND_ENV] } : {}),
-        environment,
+        environment: runtimeEnvironment(environment, configuredOmp),
       }),
     ],
   ]);
 }
 
+function runtimeEnvironment(
+  parent: NodeJS.ProcessEnv,
+  config: { environment?: Record<string, string> | undefined } | undefined,
+): NodeJS.ProcessEnv {
+  return config?.environment ? { ...parent, ...config.environment } : parent;
+}
+
 function readGeminiConfig(environment: NodeJS.ProcessEnv) {
+  return readHarnessConfig(environment, "gemini");
+}
+
+function readHarnessConfig(environment: NodeJS.ProcessEnv, harnessId: string) {
   const configPath = environment[HARNESS_CONFIG_ENV];
   if (!configPath) return undefined;
   try {
-    return getHarnessConfig(parseHarnessConfigJson(readFileSync(configPath, "utf8")), "gemini");
+    return getHarnessConfig(parseHarnessConfigJson(readFileSync(configPath, "utf8")), harnessId);
   } catch (error) {
     throw new Error(
       `Invalid ${HARNESS_CONFIG_ENV} configuration: ${error instanceof Error ? error.message : String(error)}`,

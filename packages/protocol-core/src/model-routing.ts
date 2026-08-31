@@ -73,7 +73,6 @@ export interface ExternalConfigurationSelection {
   permissionModeId?: HarnessPermissionModeId;
 }
 
-
 export function encodePiTransportModel(
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
@@ -428,8 +427,6 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
-    case "gemini":
-      return encodeGeminiTransportModel(selection.model, selection.permissionModeId, selection.thinkingOptionId);
   }
 }
 
@@ -450,8 +447,6 @@ export function decodeExternalTransportSelection(
       return decodeGeminiTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
-    case "gemini":
-      return decodeGeminiTransportSelection(value);
   }
 }
 

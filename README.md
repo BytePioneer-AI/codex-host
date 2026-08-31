@@ -66,6 +66,29 @@ npm install -g @codexhost/cli
 codexhost
 ```
 
+### Gemini Harness 与独立端点配置
+
+CodexHost 通过 Gemini CLI 的原生 ACP 会话启动 Gemini（需要先安装并登录 `gemini` 命令）。每个 Harness 的端点、密钥环境变量和模型可以独立配置；Host 只把配置注入 Gemini 子进程，不会在 CodexHost 中自行实现模型请求或替换 ACP 能力。
+
+设置 `CODEXHOST_HARNESS_CONFIG` 指向一个 JSON 文件即可加载配置：
+
+```json
+{
+  "version": 1,
+  "harnesses": {
+    "gemini": {
+      "baseUrl": "https://your-gateway.example/v1",
+      "apiKeyEnv": "MY_GEMINI_API_KEY",
+      "model": "gemini-2.5-pro",
+      "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+      "command": "gemini"
+    }
+  }
+}
+```
+
+`apiKeyEnv` 只保存环境变量名，密钥本身仍由 `MY_GEMINI_API_KEY` 提供。也可以用环境变量覆盖单个字段：`CODEXHOST_GEMINI_BASE_URL`、`CODEXHOST_GEMINI_API_KEY_ENV`、`CODEXHOST_GEMINI_MODEL` 和 `CODEXHOST_GEMINI_COMMAND`。Gemini 子进程最终使用官方变量 `GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY` 和 `GEMINI_MODEL`。
+
 **或下载** [安装包](https://github.com/BytePioneer-AI/codex-host/releases)（macOS、Windows）
 
 <details>

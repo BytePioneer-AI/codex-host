@@ -9,8 +9,13 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek Harness",
   grok: "Grok",
+  gemini: "Gemini",
   omp: "Oh My Pi",
 };
+
+const GEMINI_PATHS = [
+  { d: "M12 1l1.8 7.2L21 10l-7.2 1.8L12 19l-1.8-7.2L3 10l7.2-1.8L12 1z" },
+] as const;
 
 const PI_PATHS = [
   {
@@ -93,6 +98,7 @@ export function createRendererAgentIcon(
     image.style.flex = "none";
     return image;
   }
+  if (agent === "gemini") return createSvgIcon(GEMINI_PATHS, "#4285f4", size, ownerDocument);
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;
   mark.alt = "";

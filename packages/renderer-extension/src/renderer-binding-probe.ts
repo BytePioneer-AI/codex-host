@@ -78,6 +78,7 @@ const externalHarnessIds = {
   "claude-code": harnessIdSchema.parse("claude-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
+  gemini: harnessIdSchema.parse("gemini"),
   omp: harnessIdSchema.parse("omp"),
 } as const;
 
@@ -86,10 +87,11 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "claude-code",
   "deepseek-harness",
   "grok",
+  "gemini",
   "omp",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
-type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
 
 function isRetryableHarnessAvailability(
   availability: RendererAgentAvailability | undefined,
@@ -562,6 +564,7 @@ export function installRendererBindingProbe(
       "claude-code": undefined,
       "deepseek-harness": undefined,
       grok: undefined,
+      gemini: undefined,
       omp: undefined,
     },
     requestGeneration: 0,

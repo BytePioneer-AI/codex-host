@@ -10,6 +10,7 @@ import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
+  GEMINI_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
@@ -18,11 +19,13 @@ import {
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodeGrokTransportSelection,
+  decodeGeminiTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
+  encodeGeminiTransportModel,
   encodePiTransportModel,
   encodeOmpTransportModel,
   transportModelIdForHarness,
@@ -34,6 +37,7 @@ describe("external Harness transport model routing", () => {
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
+    ["gemini", GEMINI_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
@@ -230,6 +234,22 @@ describe("external Harness transport model routing", () => {
 
     const legacyCarrier = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`;
     expect(decodeGrokTransportSelection(legacyCarrier)).toEqual({ model, thinkingOptionId });
+  });
+
+  it("round-trips request-scoped Gemini Model, Permission Mode, and Thinking selection", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-2.5-pro" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodeGeminiTransportModel(model, permissionModeId, thinkingOptionId);
+
+    expect(decodeGeminiTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "gemini", model, permissionModeId, thinkingOptionId });
   });
 
   it("decodes existing Thread carriers only for their owning Harness", () => {

@@ -120,6 +120,8 @@ export interface GeminiAdapterOptions {
   baseUrl?: string;
   apiKeyEnv?: string;
   model?: string;
+  /** Optional per-instance allowlist for models exposed to Codex. */
+  models?: string[];
 }
 
 export interface GeminiAdapterDependencies {
@@ -299,6 +301,7 @@ class GeminiHarnessSession implements HarnessSession {
   readonly #randomUUID: () => string;
   readonly #snapshot: HostThreadSnapshot;
   readonly #toolOutputLimit: number;
+  readonly #allowedModels: ReadonlySet<string> | undefined;
   readonly #transport: GeminiAcpTransportLike;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -322,6 +325,7 @@ class GeminiHarnessSession implements HarnessSession {
       randomUUID: () => string;
       refreshCredits: () => Promise<unknown>;
       toolOutputLimit: number;
+      allowedModels?: ReadonlySet<string>;
     },
   ) {
     this.#cwd = cwd;
@@ -332,6 +336,7 @@ class GeminiHarnessSession implements HarnessSession {
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#randomUUID = options.randomUUID;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.#allowedModels = options.allowedModels;
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.capabilities = capabilitiesForModels(modelState);
@@ -665,6 +670,16 @@ class GeminiHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (this.#allowedModels && !this.#allowedModels.has(command.model.id)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Gemini Model is not enabled by configuration",
+          retryable: false,
+        },
+      };
+    }
     const available = this.#modelState.catalog.models.find(
       ({ ref }) => ref.id === command.model.id,
     );
@@ -704,6 +719,16 @@ class GeminiHarnessSession implements HarnessSession {
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
   ): Promise<HarnessResult<ModelSelectCompleted | ThinkingSelectCompleted>> {
+    if (this.#allowedModels && !this.#allowedModels.has(model.id)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Gemini Model is not enabled by configuration",
+          retryable: false,
+        },
+      };
+    }
     if (this.#active || this.#configuring) {
       return {
         ok: false,
@@ -777,7 +802,10 @@ class GeminiHarnessSession implements HarnessSession {
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
-      return { ok: false, error: invalidState("Gemini Turn Cancel must reference the active Turn") };
+      return {
+        ok: false,
+        error: invalidState("Gemini Turn Cancel must reference the active Turn"),
+      };
     }
     if (active.cancellationRequested) return { ok: true, value: { cancellationRequested: true } };
     active.cancellationRequested = true;
@@ -988,7 +1016,10 @@ class GeminiHarnessSession implements HarnessSession {
     });
   }
 
-  #startTool(active: ActiveTurn, event: Extract<GeminiTransportEvent, { type: "tool.call" }>): void {
+  #startTool(
+    active: ActiveTurn,
+    event: Extract<GeminiTransportEvent, { type: "tool.call" }>,
+  ): void {
     this.#completeReasoning(active, { status: "succeeded" });
     this.#completeAgent(active, { status: "succeeded" });
     let item = startGeminiToolItem({
@@ -999,7 +1030,11 @@ class GeminiHarnessSession implements HarnessSession {
       rawInput: event.rawInput,
       cwd: this.#cwd,
     });
-    const projection = projectGeminiToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
+    const projection = projectGeminiToolOutput(
+      event.content,
+      event.rawOutput,
+      this.#toolOutputLimit,
+    );
     if (hasGeminiToolProjection(projection)) item = applyGeminiToolProjection(item, projection);
     active.tools.set(event.callId, { item, ...(event.status ? { status: event.status } : {}) });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
@@ -1014,7 +1049,11 @@ class GeminiHarnessSession implements HarnessSession {
   ): void {
     const tool = active.tools.get(event.callId);
     if (!tool) return;
-    const projection = projectGeminiToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
+    const projection = projectGeminiToolOutput(
+      event.content,
+      event.rawOutput,
+      this.#toolOutputLimit,
+    );
     if (hasGeminiToolProjection(projection)) {
       const previous = tool.item.type === "commandExecution" ? (tool.item.output ?? "") : undefined;
       tool.item = applyGeminiToolProjection(tool.item, projection);
@@ -1241,6 +1280,7 @@ export class GeminiAdapter implements HarnessAdapter {
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #sessions = new Set<GeminiHarnessSession>();
   readonly #toolOutputLimit: number;
+  readonly #allowedModels: ReadonlySet<string> | undefined;
   readonly #baseUrl: string | undefined;
   readonly #apiKeyEnv: string | undefined;
   readonly #model: string | undefined;
@@ -1255,6 +1295,7 @@ export class GeminiAdapter implements HarnessAdapter {
     this.#apiKeyEnv = options.apiKeyEnv;
     this.#model = options.model;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GEMINI_TOOL_OUTPUT_LIMIT;
+    this.#allowedModels = options.models ? new Set(options.models) : undefined;
     this.#dependencies = dependencies ?? {
       randomUUID,
       createTransport: (transportOptions) =>
@@ -1533,6 +1574,12 @@ export class GeminiAdapter implements HarnessAdapter {
       }
       if (input.kind === "create") {
         const selectedModel = input.model ?? modelState.currentModel;
+        if (this.#allowedModels && !this.#allowedModels.has(selectedModel.id)) {
+          throw new GeminiTransportError(
+            "protocolError",
+            "Configured Gemini model is not enabled by configuration",
+          );
+        }
         const selectedThinking = input.thinkingOptionId ?? modelState.currentThinkingOptionId;
         const catalogModel = modelState.catalog.models.find(
           ({ ref }) => ref.id === selectedModel.id,
@@ -1585,6 +1632,7 @@ export class GeminiAdapter implements HarnessAdapter {
           randomUUID: this.#dependencies.randomUUID,
           refreshCredits: () => this.refreshCredits(),
           toolOutputLimit: this.#toolOutputLimit,
+          ...(this.#allowedModels ? { allowedModels: this.#allowedModels } : {}),
         },
       );
       session = openedSession;

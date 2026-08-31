@@ -775,13 +775,13 @@ export function modelSelectionForAgent(
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "gemini"
               ? geminiTransportModelId(model, permissionModeId, thinkingOptionId)
-            : agent === "omp"
-              ? ompTransportModelId(model, thinkingOptionId)
-              : transportModelIdForAgent(agent);
+              : agent === "omp"
+                ? ompTransportModelId(model, thinkingOptionId)
+                : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
-function geminiTransportModelId(
+export function geminiTransportModelId(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,

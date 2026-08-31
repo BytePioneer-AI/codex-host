@@ -12,6 +12,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   "claude-code": "https://code.claude.com/docs/en/quickstart",
   "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
   grok: "https://grok.com/",
+  gemini: "https://github.com/google-gemini/gemini-cli",
   omp: "https://github.com/can1357/oh-my-pi",
 };
 

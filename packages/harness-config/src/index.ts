@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-const envName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name");
+const envName = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name");
 const endpoint = z.string().url();
 
 export const harnessEndpointConfigSchema = z.object({
@@ -25,7 +27,15 @@ export function parseHarnessConfig(value: unknown): HarnessConfigFile {
   return harnessConfigFileSchema.parse(value);
 }
 
-export function getHarnessConfig(config: HarnessConfigFile, harnessId: string): HarnessEndpointConfig | undefined {
+/** Parse the JSON representation used by CODEXHOST_HARNESS_CONFIG. */
+export function parseHarnessConfigJson(value: string): HarnessConfigFile {
+  return parseHarnessConfig(JSON.parse(value) as unknown);
+}
+
+export function getHarnessConfig(
+  config: HarnessConfigFile,
+  harnessId: string,
+): HarnessEndpointConfig | undefined {
   return config.harnesses[harnessId];
 }
 
@@ -50,7 +60,8 @@ export function resolveHarnessRuntimeEnv(
   if (!config) return { ...parent };
   const environment = { ...parent };
   if (config.baseUrl) environment.GOOGLE_GEMINI_BASE_URL = config.baseUrl;
-  if (config.apiKeyEnv && parent[config.apiKeyEnv]) environment.GEMINI_API_KEY = parent[config.apiKeyEnv];
+  if (config.apiKeyEnv && parent[config.apiKeyEnv])
+    environment.GEMINI_API_KEY = parent[config.apiKeyEnv];
   if (config.model) environment.GEMINI_MODEL = config.model;
   return environment;
 }
@@ -61,7 +72,11 @@ export function sessionConfigFingerprint(
   config: HarnessEndpointConfig | undefined,
   model?: string,
 ): string {
-  const payload = JSON.stringify({ harnessId, baseUrl: config?.baseUrl ?? null, model: model ?? config?.model ?? null });
+  const payload = JSON.stringify({
+    harnessId,
+    baseUrl: config?.baseUrl ?? null,
+    model: model ?? config?.model ?? null,
+  });
   return createHash("sha256").update(payload).digest("hex");
 }
 

@@ -6,6 +6,7 @@ import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
 import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
+import { packageMetadata as harnessConfig } from "@codexhost/harness-config";
 import { packageMetadata as mappingStore } from "@codexhost/mapping-store";
 import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts";
@@ -18,8 +19,10 @@ export {
   GROK_COMMAND_ENV,
   GEMINI_COMMAND_ENV,
   GEMINI_BASE_URL_ENV,
+  GEMINI_API_KEY_ENV,
   GEMINI_API_KEY_ENV_ENV,
   GEMINI_MODEL_ENV,
+  HARNESS_CONFIG_ENV,
   OMP_COMMAND_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
@@ -120,6 +123,7 @@ export const packageMetadata = {
     deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,
+    harnessConfig.name,
     grokAdapter.name,
     geminiAdapter.name,
     mappingStore.name,

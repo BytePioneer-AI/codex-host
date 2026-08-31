@@ -4,11 +4,14 @@ import { GrokAdapter } from "@codexhost/adapter-grok";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
+export const FAKE_HARNESS_ENV = "CODEXHOST_FAKE_HARNESS";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
@@ -28,6 +31,19 @@ export async function prefetchClaudeCodeModelCatalog(
 export function createExternalHarnessAdapters(
   environment: NodeJS.ProcessEnv,
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {
+  if (environment[FAKE_HARNESS_ENV] === "1") {
+    process.stderr.write(
+      `codexhost: Fake Harness Adapter is enabled (${FAKE_HARNESS_ENV}=1); external Harnesses will not call real models\n`,
+    );
+    return new Map<ExternalHarnessId, HarnessAdapter>([
+      ["pi", new FakeHarnessAdapter(harnessIdSchema.parse("pi"))],
+      ["claude-code", new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"))],
+      ["deepseek-harness", new FakeHarnessAdapter(harnessIdSchema.parse("deepseek-harness"))],
+      ["grok", new FakeHarnessAdapter(harnessIdSchema.parse("grok"))],
+      ["omp", new FakeHarnessAdapter(harnessIdSchema.parse("omp"))],
+    ]);
+  }
+
   return new Map<ExternalHarnessId, HarnessAdapter>([
     [
       "pi",

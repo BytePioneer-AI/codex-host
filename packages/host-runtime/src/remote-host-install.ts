@@ -238,6 +238,7 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
   const base = removeManagedProfileBlock(contents);
   const environment = [
     `export CODEX_INSTALL_DIR=${shellQuote(path.dirname(manifest.wrapperPath))}`,
+    `export PATH=${shellQuote(path.dirname(manifest.wrapperPath))}:${shellQuote(path.dirname(manifest.nodePath))}:${shellQuote(path.dirname(manifest.stockCodexPath))}:"\${PATH:-/usr/local/bin:/usr/bin:/bin}"`,
     `export CODEXHOST_STOCK_CODEX_PATH=${shellQuote(manifest.stockCodexPath)}`,
     `export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}`,
     `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,

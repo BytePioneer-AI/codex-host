@@ -364,7 +364,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
   });
 
-  it("ignores hidden native radial controls when resolving the native Context control", () => {
+  it("prefers visible native radial controls when hidden duplicates coexist", () => {
     const hidden = {
       hidden: true,
       hasAttribute: vi.fn(() => false),
@@ -387,6 +387,22 @@ describe("Renderer Composer DOM behavior", () => {
     expect(nativeContextUsageControlForComposer(composer)).toBe(visible);
   });
 
+  it("captures a hidden native Context control when it is the only radial control", () => {
+    const hidden = {
+      hidden: true,
+      hasAttribute: vi.fn(() => false),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
+      getAttribute: () => "Context usage: 20%",
+    } as unknown as HTMLElement;
+    const composer = {
+      querySelectorAll: vi.fn(() => [hidden]),
+    } as unknown as Element;
+
+    expect(isNativeContextUsageControlCandidate(hidden)).toBe(false);
+    expect(nativeContextUsageControlForComposer(composer)).toBe(hidden);
+  });
+
   it("does not add a renderer Usage control beside the native Context control", () => {
     const modelRoot = {
       parentElement: { kind: "model" } as unknown as HTMLElement,
@@ -395,7 +411,7 @@ describe("Renderer Composer DOM behavior", () => {
     const contextWrapper = { parentElement: footer } as HTMLElement;
     const nativeContext = {
       parentElement: contextWrapper,
-      hidden: false,
+      hidden: true,
       hasAttribute: () => false,
       matches: (selector: string) => selector === 'span[role="img"][aria-label]',
       getAttribute: () => "Context usage: 20%",
@@ -415,7 +431,7 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
-      nativeContextUsageControl: { element: nativeContext, hidden: false, ariaHidden: null },
+      nativeContextUsageControl: { element: nativeContext, hidden: true, ariaHidden: "true" },
       credits: {
         anchor: null,
         place: placeCredits,
@@ -432,6 +448,8 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(placeUsage).not.toHaveBeenCalled();
     expect(placeCredits).not.toHaveBeenCalled();
+    expect(nativeContext.hidden).toBe(false);
+    expect(nativeContext.removeAttribute).toHaveBeenCalledWith("aria-hidden");
   });
 
   it("does not add a renderer Usage control when native Context is not ready", () => {

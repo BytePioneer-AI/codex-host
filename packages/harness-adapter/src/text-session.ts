@@ -76,6 +76,8 @@ export interface ResumeSessionInput {
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
+  /** Persisted model hint used to restore model-aware session metadata. */
+  model?: HarnessModelRef;
   knownTurnRefs?: NativeTurnRef[];
 }
 

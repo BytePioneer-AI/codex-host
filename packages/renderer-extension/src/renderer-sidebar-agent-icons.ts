@@ -136,6 +136,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "deepseek-harness") return "deepseek-harness";
   if (ownership.harnessId === "grok") return "grok";
   if (ownership.harnessId === "omp") return "omp";
+  if (ownership.harnessId === "antigravity") return "antigravity";
   return null;
 }
 

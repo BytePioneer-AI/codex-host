@@ -5,6 +5,7 @@ import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
 import {
   createExternalHarnessAdapters,
+  prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
@@ -115,6 +116,7 @@ export async function runHostRuntime(input: {
         ...(updateCoordinator ? { updateCoordinator } : {}),
       });
       void prefetchClaudeCodeModelCatalog(externalAdapters);
+      void prefetchAntigravityModelCatalog(externalAdapters);
       return host.run();
     }
 
@@ -152,6 +154,7 @@ export async function runHostRuntime(input: {
       createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
         const sessionAdapters = createExternalHarnessAdapters(environment);
         void prefetchClaudeCodeModelCatalog(sessionAdapters);
+        void prefetchAntigravityModelCatalog(sessionAdapters);
         return new AppServerHost({
           stockCodexPath,
           arguments: [],
@@ -169,6 +172,7 @@ export async function runHostRuntime(input: {
       },
     });
     void prefetchClaudeCodeModelCatalog(externalAdapters);
+    void prefetchAntigravityModelCatalog(externalAdapters);
     let hostStarted = false;
     try {
       officialEndpoint = await officialListener.listen();
@@ -216,6 +220,7 @@ export async function runHostRuntime(input: {
     createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
       const externalAdapters = createExternalHarnessAdapters(input.environment);
       void prefetchClaudeCodeModelCatalog(externalAdapters);
+      void prefetchAntigravityModelCatalog(externalAdapters);
       return new AppServerHost({
         stockCodexPath,
         arguments: [],

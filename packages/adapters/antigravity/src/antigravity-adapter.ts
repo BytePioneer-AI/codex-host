@@ -1,7 +1,11 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFile, unlink } from "node:fs/promises";
+import https from "node:https";
+import os from "node:os";
+import path from "node:path";
 import readline from "node:readline";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 
 import {
   HarnessOutputChannel,
@@ -15,6 +19,7 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
   type HostEvent,
@@ -76,6 +81,10 @@ interface AntigravityUsage {
   thinking_tokens?: unknown;
   cache_read_tokens?: unknown;
   total_tokens?: unknown;
+  context_used_tokens?: unknown;
+  context_window_tokens?: unknown;
+  estimated_tokens_used?: unknown;
+  max_context_tokens?: unknown;
 }
 
 interface AntigravityInitEvent {
@@ -128,7 +137,8 @@ export type AntigravityStreamEvent =
 
 interface ActiveTurn {
   command: TurnStartCommand;
-  process: ChildProcessByStdio<null, Readable, Readable>;
+  process: ChildProcessByStdio<Writable, Readable, Readable>;
+  logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   tools: Map<number, HostToolExecutionItem>;
@@ -136,12 +146,20 @@ interface ActiveTurn {
   stderr: string;
   cancellationRequested: boolean;
   receivedResult: boolean;
+  latestUsage: HostUsage | null;
+  contextUsagePromise: Promise<Pick<
+    HostUsage,
+    "contextUsedTokens" | "contextWindowTokens"
+  > | null> | null;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
 const DEFAULT_PRINT_TIMEOUT = "30m";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
+const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
+const CONTEXT_USAGE_RETRY_MS = 100;
+const GEMINI_CONTEXT_WINDOW_TOKENS = 1_048_576;
 
 const CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -185,6 +203,124 @@ function safeToken(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+function contextWindowMetadata(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const trajectory = isRecord(value.trajectory) ? value.trajectory : value;
+  const generatorMetadata = trajectory.generatorMetadata;
+  if (!Array.isArray(generatorMetadata)) return null;
+  const first = generatorMetadata[0];
+  if (!isRecord(first) || !isRecord(first.chatModel)) return null;
+  const chatStartMetadata = first.chatModel.chatStartMetadata;
+  if (!isRecord(chatStartMetadata) || !isRecord(chatStartMetadata.contextWindowMetadata)) {
+    return null;
+  }
+  return chatStartMetadata.contextWindowMetadata;
+}
+
+/** Parses the real context counters exposed by agy's local Language Server. */
+export function parseAntigravityContextUsage(
+  value: unknown,
+  modelId?: string,
+): Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null {
+  const metadata = contextWindowMetadata(value);
+  if (!metadata) return null;
+  const breakdown = isRecord(metadata.tokenBreakdown) ? metadata.tokenBreakdown : null;
+  const used = safeToken(
+    metadata.estimatedTokensUsed ??
+      metadata.estimated_tokens_used ??
+      breakdown?.totalTokens ??
+      breakdown?.total_tokens,
+  );
+  const window = safeToken(metadata.maxContextTokens ?? metadata.max_context_tokens);
+  if (used === undefined || window === undefined || window <= 0) return null;
+  // agy's Gemini status line uses a 1 Mi-token window while LS metadata reports 256k.
+  const contextWindowTokens =
+    /^gemini(?:[-_.]|$)/iu.test(modelId ?? "") && window === 256_000
+      ? GEMINI_CONTEXT_WINDOW_TOKENS
+      : window;
+  return { contextUsedTokens: used, contextWindowTokens };
+}
+
+function requestAntigravityContextUsage(
+  port: number,
+  conversationId: string,
+  timeoutMs: number,
+  modelId?: string,
+): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  return new Promise((resolve) => {
+    const request = https.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata",
+        method: "POST",
+        rejectUnauthorized: false,
+        timeout: timeoutMs,
+        headers: { "content-type": "application/json" },
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode !== 200) return resolve(null);
+          try {
+            resolve(parseAntigravityContextUsage(JSON.parse(body), modelId));
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => resolve(null));
+    request.end(
+      JSON.stringify({
+        cascadeId: conversationId,
+        generatorMetadataOffset: 0,
+        includeMessages: false,
+      }),
+    );
+  });
+}
+
+async function antigravityHttpsPort(logPath: string): Promise<number | null> {
+  try {
+    const log = await readFile(logPath, "utf8");
+    const match = log.match(
+      /Language server listening on random port at (\d+) for HTTPS \(gRPC\)/iu,
+    );
+    const port = match ? Number(match[1]) : Number.NaN;
+    return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+async function pollAntigravityContextUsage(
+  logPath: string,
+  conversationId: string,
+  modelId?: string,
+): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
+  const deadline = Date.now() + CONTEXT_USAGE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const port = await antigravityHttpsPort(logPath);
+    if (port !== null) {
+      const usage = await requestAntigravityContextUsage(
+        port,
+        conversationId,
+        CONTEXT_USAGE_RETRY_MS,
+        modelId,
+      );
+      if (usage) return usage;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_USAGE_RETRY_MS));
+  }
+  return null;
+}
+
 function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
   if (!value) return null;
   const inputTokens = safeToken(value.input_tokens);
@@ -192,12 +328,19 @@ function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const cachedInputTokens = safeToken(value.cache_read_tokens);
   const totalTokens = safeToken(value.total_tokens);
+  const contextUsedTokens = safeToken(value.context_used_tokens ?? value.estimated_tokens_used);
+  const contextWindowTokens = safeToken(value.context_window_tokens ?? value.max_context_tokens);
   const usage: HostUsage = {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(contextUsedTokens !== undefined &&
+    contextWindowTokens !== undefined &&
+    contextWindowTokens > 0
+      ? { contextUsedTokens, contextWindowTokens }
+      : {}),
     ...(inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0
       ? { cacheHitRatePercent: Math.min(100, (cachedInputTokens / inputTokens) * 100) }
       : {}),
@@ -432,9 +575,10 @@ class AntigravitySession implements HarnessSession {
       };
     }
 
+    const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
     const arguments_ = [
-      "-p",
-      text,
+      "--input-format",
+      "stream-json",
       "--output-format",
       "stream-json",
       "--print-timeout",
@@ -445,15 +589,16 @@ class AntigravitySession implements HarnessSession {
     if (this.#permissionMode === "dangerously-skip-permissions") {
       arguments_.push("--dangerously-skip-permissions");
     }
+    arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, this.#environment);
-    let child: ChildProcessByStdio<null, Readable, Readable>;
+    let child: ChildProcessByStdio<Writable, Readable, Readable>;
     try {
       child = spawn(invocation.command, invocation.arguments, {
         cwd: this.#cwd,
         env: this.#environment,
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
       return {
@@ -464,6 +609,7 @@ class AntigravitySession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       process: child,
+      logPath,
       agentItem: null,
       agentText: "",
       tools: new Map(),
@@ -471,6 +617,8 @@ class AntigravitySession implements HarnessSession {
       stderr: "",
       cancellationRequested: false,
       receivedResult: false,
+      latestUsage: null,
+      contextUsagePromise: null,
     };
     this.#active = active;
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -490,6 +638,7 @@ class AntigravitySession implements HarnessSession {
       });
     });
     child.once("exit", (code) => {
+      void unlink(active.logPath).catch(() => undefined);
       if (this.#active !== active || active.receivedResult) return;
       if (active.cancellationRequested) {
         this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
@@ -503,6 +652,19 @@ class AntigravitySession implements HarnessSession {
         });
       }
     });
+    try {
+      child.stdin.write(`${JSON.stringify({ event: "user", message: { content: text } })}\n`);
+    } catch (error) {
+      child.kill();
+      this.#completeTurn(active, {
+        status: "failed",
+        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
+      });
+      return {
+        ok: false,
+        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
+      };
+    }
     this.#event({ type: "turn.started", turnId: command.turnId });
     return { ok: true, value: { turnId: command.turnId } };
   }
@@ -540,30 +702,38 @@ class AntigravitySession implements HarnessSession {
         formatVersion: 1,
       });
       this.#event({ type: "session.state.changed", state: this.#state() });
+      this.#ensureContextUsage(active, event.conversation_id);
       return;
     }
     if (event.event === "step_update") {
       this.#handleStep(active, event.step_update);
       const usage = hostUsage(event.step_update.usage);
-      if (usage) {
-        this.#event({
-          type: "session.usage.changed",
-          usage,
-          observedForTurnId: active.command.turnId,
-        });
-      }
+      if (usage) this.#publishUsage(active, usage);
+      this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
     }
     if (event.event !== "result") return;
     active.receivedResult = true;
-    const usage = hostUsage(event.result.usage);
-    if (usage) {
-      this.#event({
-        type: "session.usage.changed",
-        usage,
-        observedForTurnId: active.command.turnId,
+    void this.#handleResult(active, event).catch((error: unknown) => {
+      if (this.#active !== active) return;
+      this.#completeTurn(active, {
+        status: "failed",
+        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
       });
+    });
+  }
+
+  async #handleResult(active: ActiveTurn, event: AntigravityResultEvent): Promise<void> {
+    if (this.#active !== active) return;
+    const usage = hostUsage(event.result.usage);
+    if (usage) this.#publishUsage(active, usage);
+    this.#ensureContextUsage(active, event.result.conversation_id);
+    if (active.contextUsagePromise) {
+      const contextUsage = await active.contextUsagePromise;
+      if (contextUsage) this.#publishUsage(active, contextUsage);
     }
+    active.process.stdin.end();
+    if (this.#active !== active) return;
     if (!this.#nativeRef) {
       this.#nativeRef = nativeSessionRefSchema.parse({
         harnessId: this.harnessId,
@@ -602,6 +772,24 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
       );
     }
+  }
+
+  #publishUsage(active: ActiveTurn, usage: HostUsage): void {
+    active.latestUsage = { ...(active.latestUsage ?? {}), ...usage };
+    this.#event({
+      type: "session.usage.changed",
+      usage: active.latestUsage,
+      observedForTurnId: active.command.turnId,
+    });
+  }
+
+  #ensureContextUsage(active: ActiveTurn, conversationId: string): void {
+    if (active.contextUsagePromise) return;
+    active.contextUsagePromise = pollAntigravityContextUsage(
+      active.logPath,
+      conversationId,
+      this.#model?.id,
+    );
   }
 
   #handleStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
@@ -784,6 +972,8 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #command: string | undefined;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #inspectTimeoutMs: number;
+  readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
+  readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #printTimeout: string;
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
@@ -797,10 +987,31 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
-  async inspect(input: { cwd?: string } = {}): Promise<HarnessInspection> {
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closed) {
       return { status: "unavailable", error: invalidState("Antigravity Adapter is closed") };
     }
+    const cwd = path.resolve(input.cwd ?? process.cwd());
+    const inFlight = this.#inspectionInFlight.get(cwd);
+    if (inFlight) return inFlight;
+    if (!input.refresh) {
+      const cached = this.#inspectionCache.get(cwd);
+      if (cached) return cached;
+    }
+
+    const inspection = this.#inspectCwd(cwd).then((result) => {
+      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      return result;
+    });
+    this.#inspectionInFlight.set(cwd, inspection);
+    return inspection.finally(() => {
+      if (this.#inspectionInFlight.get(cwd) === inspection) {
+        this.#inspectionInFlight.delete(cwd);
+      }
+    });
+  }
+
+  async #inspectCwd(cwd: string): Promise<HarnessInspection> {
     const executable = resolveAntigravityExecutable({
       ...(this.#command ? { command: this.#command } : {}),
       environment: this.#environment,
@@ -819,7 +1030,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       const { stdout } = await runBuffered(
         executable,
         ["models"],
-        input.cwd ?? process.cwd(),
+        cwd,
         this.#environment,
         this.#inspectTimeoutMs,
       );
@@ -893,7 +1104,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       cwd: input.cwd,
       environment: this.#environment,
       executable,
-      ...(input.kind === "create" && input.model ? { model: input.model } : {}),
+      ...(input.model ? { model: input.model } : {}),
       ...(nativeRef ? { nativeRef } : {}),
       ...(input.kind === "resume" && input.knownTurnRefs
         ? { knownTurnRefs: input.knownTurnRefs }
@@ -910,6 +1121,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#inspectionCache.clear();
     await Promise.all([...this.#sessions].map((session) => session.close()));
   }
 }

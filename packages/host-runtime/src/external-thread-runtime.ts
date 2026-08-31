@@ -487,10 +487,12 @@ export class ExternalThreadRuntime {
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
+    const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
     const opened = await adapter.open({
       kind: "resume",
       cwd: record.cwd,
       nativeRef: record.nativeSessionRef as NativeSessionRef,
+      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
     });
     if (!opened.ok) {
@@ -498,10 +500,6 @@ export class ExternalThreadRuntime {
     }
     const session = opened.value;
     try {
-      const restoredSelection = decodeExternalTransportSelection(
-        harnessId,
-        record.transportModelId,
-      );
       if (restoredSelection?.permissionModeId) {
         if (!session.capabilities.configuration.selectPermissionMode) {
           throw new ExternalThreadOpenError({

@@ -328,6 +328,10 @@ function nativeModelControlForComposer(composer: Element): HTMLElement | null {
 }
 
 export function isNativeContextUsageControlCandidate(element: Element): boolean {
+  return isNativeContextUsageControlShape(element) && nativeContextUsageElementVisible(element);
+}
+
+function isNativeContextUsageControlShape(element: Element): boolean {
   if (
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control")
@@ -338,7 +342,6 @@ export function isNativeContextUsageControlCandidate(element: Element): boolean 
   // accessible radial indicator. The DOM shape is more stable than its
   // localized aria-label or generated CSS module class names.
   return (
-    nativeContextUsageElementVisible(element) &&
     element.matches('span[role="img"][aria-label]') &&
     element.querySelectorAll("svg > circle").length === 2
   );
@@ -379,14 +382,20 @@ function nativeContextUsageElementVisible(element: Element): boolean {
 const contextUsageLabelPattern = /(context|usage|token|上下文|用量|令牌|背景信息窗口)/iu;
 
 export function nativeContextUsageControlForComposer(composer: Element): HTMLElement | null {
-  const candidates = nativeContextUsageCandidatesForComposer(composer);
-  const verified = candidates.filter(isNativeContextUsageControlCandidate);
-  if (verified.length === 0) return null;
-  const described = verified.filter((element) =>
+  const candidates = nativeContextUsageCandidatesForComposer(composer).filter(
+    isNativeContextUsageControlShape,
+  );
+  const visible = candidates.filter(nativeContextUsageElementVisible);
+  // Desktop can hide the native Context control while an external Harness is
+  // selected. Capture that real control anyway so reconciliation can unhide it.
+  const described = candidates.filter((element) =>
     contextUsageLabelPattern.test(element.getAttribute("aria-label") ?? ""),
   );
+  const visibleDescribed = described.filter(nativeContextUsageElementVisible);
+  if (visibleDescribed.length === 1) return visibleDescribed[0] ?? null;
   if (described.length === 1) return described[0] ?? null;
-  return verified.length === 1 ? (verified[0] ?? null) : null;
+  if (visible.length === 1) return visible[0] ?? null;
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
 function nativeContextUsageCandidatesForComposer(composer: Element): HTMLElement[] {
@@ -589,6 +598,12 @@ function setNativeControlHidden(
   state.element.setAttribute("aria-hidden", "true");
 }
 
+function revealNativeControl(state: NativeControlState | null | undefined): void {
+  if (!state) return;
+  state.element.hidden = false;
+  state.element.removeAttribute("aria-hidden");
+}
+
 export function reconcileComposerNativeControls(
   control: ComposerAgentControl,
   hideModel: boolean,
@@ -606,7 +621,7 @@ export function reconcileComposerNativeControls(
   // Context usage is shared by Codex and external Harnesses. External Usage
   // data is projected into the same native Codex indicator, so it must remain
   // visible when the external Model control is substituted.
-  setNativeControlHidden(control.nativeContextUsageControl, false);
+  revealNativeControl(control.nativeContextUsageControl);
   setNativeControlHidden(control.nativePermissionModeControl, hidePermissionMode);
 }
 

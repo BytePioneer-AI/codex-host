@@ -3,6 +3,7 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export {
   AntigravityAdapter,
+  parseAntigravityContextUsage,
   parseAntigravityModels,
   parseAntigravityStreamLine,
 } from "./antigravity-adapter.js";

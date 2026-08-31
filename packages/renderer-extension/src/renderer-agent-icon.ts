@@ -1,5 +1,6 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
+import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
@@ -95,12 +96,15 @@ export function createRendererAgentIcon(
     return image;
   }
   if (agent === "antigravity") {
-    return createSvgIcon(
-      [{ d: "M12 2 4 12h5l-2 10 9-12h-5l1-8z" }],
-      "#4285F4",
-      size,
-      ownerDocument,
-    );
+    const image = ownerDocument.createElement("img");
+    image.src = antigravityAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.flex = "none";
+    return image;
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

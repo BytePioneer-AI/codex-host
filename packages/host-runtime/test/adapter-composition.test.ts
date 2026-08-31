@@ -5,6 +5,7 @@ import {
   CLAUDE_CODE_COMMAND_ENV,
   GROK_COMMAND_ENV,
   createExternalHarnessAdapters,
+  prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "../src/index.js";
 
@@ -33,6 +34,21 @@ describe("Host external Harness composition", () => {
     await expect(
       prefetchClaudeCodeModelCatalog(new Map([["claude-code", { inspect }]] as const)),
     ).resolves.toBeUndefined();
+  });
+
+  it("starts Antigravity Catalog prefetch immediately without waiting for it", async () => {
+    let finish = (): void => undefined;
+    const inspection = new Promise<HarnessInspection>((resolve) => {
+      finish = () => resolve({} as HarnessInspection);
+    });
+    const inspect = vi.fn(() => inspection);
+    const adapters = new Map([["antigravity", { inspect }]] as const);
+
+    const prefetch = prefetchAntigravityModelCatalog(adapters);
+
+    expect(inspect).toHaveBeenCalledOnce();
+    finish();
+    await expect(prefetch).resolves.toBeUndefined();
   });
 
   it("registers all external Harnesses by default without resolving executables", async () => {

@@ -27,6 +27,16 @@ export async function prefetchClaudeCodeModelCatalog(
   }
 }
 
+export async function prefetchAntigravityModelCatalog(
+  adapters: ReadonlyMap<ExternalHarnessId, InspectableHarnessAdapter>,
+): Promise<void> {
+  try {
+    await adapters.get("antigravity")?.inspect();
+  } catch {
+    // Startup prefetch must not affect official Codex or another Harness.
+  }
+}
+
 export function createExternalHarnessAdapters(
   environment: NodeJS.ProcessEnv,
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {

@@ -19,6 +19,7 @@ import {
 
 const PI_HARNESS_ID = harnessIdSchema.parse("pi");
 const CLAUDE_CODE_HARNESS_ID = harnessIdSchema.parse("claude-code");
+const ANTIGRAVITY_HARNESS_ID = harnessIdSchema.parse("antigravity");
 const FUTURE_HARNESS_ID = harnessIdSchema.parse("future-agent");
 
 class FakeRow implements SidebarAgentIconRow {
@@ -438,6 +439,13 @@ describe("Renderer sidebar Agent ownership", () => {
         harnessId: PI_HARNESS_ID,
       }),
     ).toBe("pi");
+    expect(
+      rendererAgentForThreadOwnership({
+        threadId: "antigravity-thread" as HostThreadId,
+        owner: "external",
+        harnessId: ANTIGRAVITY_HARNESS_ID,
+      }),
+    ).toBe("antigravity");
     expect(
       rendererAgentForThreadOwnership({
         threadId: "future-thread" as HostThreadId,

@@ -18,6 +18,7 @@ export {
   OMP_COMMAND_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
+  prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "./adapter-composition.js";
 export { AppServerHost, classifyCreateRequestRoute } from "./app-server-host.js";

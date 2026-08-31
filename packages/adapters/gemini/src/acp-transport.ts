@@ -204,9 +204,13 @@ function classifyStartupError(error: unknown): GeminiTransportError {
     text.includes("not logged in") ||
     text.includes("sign in")
   ) {
-    return new GeminiTransportError("authenticationRequired", "Gemini CLI authentication is required", {
-      cause: error,
-    });
+    return new GeminiTransportError(
+      "authenticationRequired",
+      "Gemini CLI authentication is required",
+      {
+        cause: error,
+      },
+    );
   }
   return new GeminiTransportError("unavailable", "Gemini CLI could not start", { cause: error });
 }
@@ -389,9 +393,13 @@ export async function locateGeminiNativeSession(
     entries = await readdir(path.join(geminiHomeDir(options), "sessions"), { withFileTypes: true });
   } catch (error) {
     if (isMissingFile(error)) return null;
-    throw new GeminiTransportError("unavailable", "Gemini Native Session directory could not be read", {
-      cause: error,
-    });
+    throw new GeminiTransportError(
+      "unavailable",
+      "Gemini Native Session directory could not be read",
+      {
+        cause: error,
+      },
+    );
   }
   const matches: GeminiNativeSessionLocation[] = [];
   for (const entry of entries) {
@@ -465,7 +473,10 @@ function parseNativeHistory(contents: string, sessionId: string): GeminiTranspor
     try {
       record = JSON.parse(line);
     } catch {
-      throw new GeminiTransportError("protocolError", "Gemini Native history contains invalid JSON");
+      throw new GeminiTransportError(
+        "protocolError",
+        "Gemini Native history contains invalid JSON",
+      );
     }
     if (!isRecord(record) || !isRecord(record.params)) continue;
     const params = record.params;
@@ -545,7 +556,8 @@ export class GeminiAcpTransport {
 
   async deleteSession(sessionId: string): Promise<void> {
     await this.#ensureInitialized();
-    if (!this.#connection) throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
+    if (!this.#connection)
+      throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
     await withTimeout(
       this.#connection.request(GEMINI_SESSION_DELETE_METHOD, {
         sessionId,
@@ -652,7 +664,8 @@ export class GeminiAcpTransport {
   }
 
   async #rewindSession(params: GeminiRewindParams): Promise<void> {
-    if (!this.#connection) throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
+    if (!this.#connection)
+      throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
     try {
       const raw = await withTimeout(
         this.#connection.request(GEMINI_REWIND_EXECUTE_METHOD, params),
@@ -680,12 +693,15 @@ export class GeminiAcpTransport {
           { cause: error },
         );
       }
-      throw new GeminiTransportError("unavailable", "Gemini Native Rewind failed", { cause: error });
+      throw new GeminiTransportError("unavailable", "Gemini Native Rewind failed", {
+        cause: error,
+      });
     }
   }
 
   async #forkSession(params: GeminiForkParams): Promise<{ newSessionId: string }> {
-    if (!this.#connection) throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
+    if (!this.#connection)
+      throw new GeminiTransportError("unavailable", "Gemini ACP is unavailable");
     try {
       const raw = await withTimeout(
         this.#connection.request(GEMINI_SESSION_FORK_METHOD, params),
@@ -718,7 +734,8 @@ export class GeminiAcpTransport {
 
   async #ensureInitialized(): Promise<InitializeResponse> {
     if (this.#initialize) return this.#initialize;
-    if (this.#child || this.#closed) throw new Error("Gemini ACP Transport cannot be started twice");
+    if (this.#child || this.#closed)
+      throw new Error("Gemini ACP Transport cannot be started twice");
     const executable = resolveGeminiExecutable({
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
@@ -845,7 +862,10 @@ export class GeminiAcpTransport {
       };
       let raw: unknown;
       try {
-        raw = await connection.request<unknown, unknown>(GEMINI_COMPACT_CONVERSATION_METHOD, params);
+        raw = await connection.request<unknown, unknown>(
+          GEMINI_COMPACT_CONVERSATION_METHOD,
+          params,
+        );
       } catch (error) {
         if (!isGeminiMethodNotFound(error)) throw error;
         raw = await connection.request<unknown, unknown>(
@@ -857,7 +877,9 @@ export class GeminiAcpTransport {
       return parseGeminiCompactResult(raw, active.cancellationRequested);
     } catch (error) {
       if (error instanceof GeminiTransportError) throw error;
-      throw new GeminiTransportError("unavailable", "Gemini Native Compact failed", { cause: error });
+      throw new GeminiTransportError("unavailable", "Gemini Native Compact failed", {
+        cause: error,
+      });
     } finally {
       if (this.#activeCompact === active) this.#activeCompact = null;
     }

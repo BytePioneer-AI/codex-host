@@ -172,7 +172,9 @@ export function validateRendererObserverStatus(value) {
       !isRecord(observation) ||
       typeof observation.submissionId !== "string" ||
       typeof observation.composerId !== "string" ||
-      !["codex", "pi", "claude-code", "deepseek-harness", "grok", "gemini"].includes(observation.agent) ||
+      !["codex", "pi", "claude-code", "deepseek-harness", "grok", "gemini"].includes(
+        observation.agent,
+      ) ||
       !["click", "enter", "submit"].includes(observation.trigger) ||
       typeof observation.capturedAt !== "string"
     ) {

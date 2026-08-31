@@ -211,7 +211,14 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "omp") delete state.ompThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
-      for (const candidate of ["pi", "claude-code", "deepseek-harness", "grok", "gemini", "omp"] as const) {
+      for (const candidate of [
+        "pi",
+        "claude-code",
+        "deepseek-harness",
+        "grok",
+        "gemini",
+        "omp",
+      ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
       }

@@ -7,11 +7,7 @@ import {
 
 export type GeminiPermissionMode = "default" | "auto_edit" | "yolo";
 
-const nativePermissionModes = new Set<GeminiPermissionMode>([
-  "default",
-  "auto_edit",
-  "yolo",
-]);
+const nativePermissionModes = new Set<GeminiPermissionMode>(["default", "auto_edit", "yolo"]);
 
 export const GEMINI_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse("default");
 
@@ -83,7 +79,9 @@ export function geminiPermissionModeNotification(permissionMode: GeminiPermissio
 }
 
 /** Extract a previously selected mode when Gemini includes it in load metadata. */
-export function permissionModeFromNativeResponse(value: unknown): HarnessPermissionModeId | undefined {
+export function permissionModeFromNativeResponse(
+  value: unknown,
+): HarnessPermissionModeId | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   const metadata =
@@ -98,6 +96,8 @@ export function permissionModeFromNativeResponse(value: unknown): HarnessPermiss
   if (candidate === "default") return harnessPermissionModeIdSchema.parse("default");
   if (candidate === "auto_edit") return harnessPermissionModeIdSchema.parse("auto");
   if (candidate === "yolo") return harnessPermissionModeIdSchema.parse("always-approve");
-  const parsed = harnessPermissionModeIdSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : undefined;
+  if (candidate === "ask" || candidate === "auto" || candidate === "always-approve") {
+    return harnessPermissionModeIdSchema.parse(candidate);
+  }
+  return undefined;
 }

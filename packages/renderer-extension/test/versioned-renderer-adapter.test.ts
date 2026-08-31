@@ -9,12 +9,14 @@ import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
+  GEMINI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
+  decodeGeminiTransportModelId,
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
@@ -26,6 +28,7 @@ import {
   modelSelectionForAgent,
   deepSeekHarnessTransportModelId,
   grokTransportModelId,
+  geminiTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
@@ -521,6 +524,29 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(
       decodeGrokTransportModelId(`${GROK_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
+  });
+
+  it("round-trips Gemini carrier variants without inventing empty fields", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-2.5-pro" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+
+    expect(geminiTransportModelId()).toBe(GEMINI_TRANSPORT_MODEL_ID);
+    expect(decodeGeminiTransportModelId(GEMINI_TRANSPORT_MODEL_ID)).toEqual({});
+    expect(decodeGeminiTransportModelId(geminiTransportModelId(model))).toEqual({ model });
+    expect(decodeGeminiTransportModelId(geminiTransportModelId(model, permissionModeId))).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(
+      decodeGeminiTransportModelId(geminiTransportModelId(model, undefined, thinkingOptionId)),
+    ).toEqual({ model, thinkingOptionId });
+    expect(
+      decodeGeminiTransportModelId(
+        geminiTransportModelId(model, permissionModeId, thinkingOptionId),
+      ),
+    ).toEqual({ model, permissionModeId, thinkingOptionId });
+    expect(() => geminiTransportModelId(undefined, permissionModeId)).toThrow();
   });
 
   it("extracts only a validated conversation Thread identity", () => {

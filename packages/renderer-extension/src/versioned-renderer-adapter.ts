@@ -786,9 +786,23 @@ export function geminiTransportModelId(
   permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
-  if (!model) return GEMINI_TRANSPORT_MODEL_ID;
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Gemini transport configuration requires a Model Ref");
+    }
+    return GEMINI_TRANSPORT_MODEL_ID;
+  }
   const parsed = harnessModelRefSchema.parse(model);
-  return `${GEMINI_TRANSPORT_MODEL_PREFIX}${parsed.id}${permissionModeId || thinkingOptionId ? `@${permissionModeId ?? ""}@${thinkingOptionId ?? ""}` : ""}`;
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${GEMINI_TRANSPORT_MODEL_PREFIX}${parsed.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${GEMINI_TRANSPORT_MODEL_PREFIX}${parsed.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGeminiTransportModelId(value: unknown): {
@@ -799,18 +813,25 @@ export function decodeGeminiTransportModelId(value: unknown): {
   if (value === GEMINI_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(GEMINI_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(GEMINI_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length !== 1 && components.length !== 3) return null;
-  const model = harnessModelRefSchema.safeParse({ id: components[0] });
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) return null;
   if (components.length === 1) return { model: model.data };
-  if (!components[1] || !components[2]) return null;
-  const permissionMode = harnessPermissionModeIdSchema.safeParse(components[1]);
-  const thinkingOption = harnessThinkingOptionIdSchema.safeParse(components[2]);
-  if (!permissionMode.success || !thinkingOption.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  const thinkingOption = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinkingOption && !thinkingOption.success) return null;
   return {
     model: model.data,
-    permissionModeId: permissionMode.data,
-    thinkingOptionId: thinkingOption.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinkingOption?.success ? { thinkingOptionId: thinkingOption.data } : {}),
   };
 }
 

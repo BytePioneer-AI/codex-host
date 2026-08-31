@@ -99,6 +99,7 @@ import {
 import {
   modelStateFromInitialize,
   modelStateFromSessionResponse,
+  modelStateFromConfiguredOptions,
   stateForGeminiModel,
   type GeminiModelState,
 } from "./gemini-models.js";
@@ -217,6 +218,8 @@ function capabilitiesForModels(
     configuration: {
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
+      // Only advertise mode selection after session/new or session/load has
+      // returned the concrete native mode list. Initialize alone does not.
       selectPermissionMode: Array.isArray(availableModes) && availableModes.length > 0,
     },
     history: {
@@ -1370,18 +1373,12 @@ export class GeminiAdapter implements HarnessAdapter {
       stage = "startup";
       const initialize = await transport.inspect();
       stage = "model-catalog";
-      let modelState = modelStateFromInitialize(initialize);
-      // Gemini ACP versions may expose the catalog only on session/new.
-      // Probe one native session for inspection, then close it immediately;
-      // no synthetic catalog is created by the Host.
-      if (!modelState) {
-        stage = "model-catalog-session";
-        const opened = await transport.open({
-          kind: "create",
-          permissionModeId: GEMINI_DEFAULT_PERMISSION_MODE_ID,
-        });
-        modelState = modelStateFromSessionResponse(opened.session);
-      }
+      const modelState =
+        modelStateFromInitialize(initialize) ??
+        modelStateFromConfiguredOptions(
+          this.#model,
+          this.#allowedModels ? [...this.#allowedModels] : undefined,
+        );
       if (!modelState)
         throw new GeminiTransportError("protocolError", "Gemini returned an invalid Model catalog");
       await transport.close();

@@ -50,6 +50,7 @@ function validMetafile(extraInputs = {}) {
       "packages/adapters/claude-code/dist/index.js": {},
       "packages/adapters/deepseek-harness/dist/index.js": {},
       "packages/adapters/grok/dist/index.js": {},
+      "packages/adapters/gemini/dist/index.js": {},
       "packages/adapters/omp/dist/index.js": {},
       "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
@@ -137,6 +138,12 @@ describe("release Host Bundle", () => {
     delete withoutOmp["packages/adapters/omp/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutOmp })).toThrow(
       "missing required input: /packages/adapters/omp/",
+    );
+
+    const withoutGemini = { ...validMetafile().inputs };
+    delete withoutGemini["packages/adapters/gemini/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutGemini })).toThrow(
+      "missing required input: /packages/adapters/gemini/",
     );
   });
 

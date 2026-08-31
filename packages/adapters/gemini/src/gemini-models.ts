@@ -16,6 +16,31 @@ export interface GeminiModelState {
   contextWindowTokensByModel: ReadonlyMap<string, number>;
 }
 
+/**
+ * Build the conservative catalog available before opening an ACP session.
+ * Gemini exposes its authoritative catalog on session/new and session/load,
+ * while Host inspection must not create a persisted native session.
+ */
+export function modelStateFromConfiguredOptions(
+  configuredModel?: string,
+  configuredModels?: readonly string[],
+): GeminiModelState {
+  const ids = [...new Set((configuredModels ?? []).filter(nonBlank))];
+  const selectedId =
+    configuredModel && ids.includes(configuredModel)
+      ? configuredModel
+      : (ids[0] ?? configuredModel ?? "auto");
+  if (!ids.includes(selectedId)) ids.unshift(selectedId);
+  const models = ids.map((id) => ({ ref: harnessModelRefSchema.parse({ id }), label: id }));
+  const currentModel = models.find(({ ref }) => ref.id === selectedId)?.ref;
+  if (!currentModel) throw new Error("Gemini configured model catalog is empty");
+  return {
+    currentModel,
+    contextWindowTokensByModel: new Map(),
+    catalog: { models, defaultModel: currentModel, thinkingOptions: [] },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

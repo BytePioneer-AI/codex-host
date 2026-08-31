@@ -315,10 +315,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
   }
   if (inspection.harnessId === "gemini") {
     const transportSelection = decodeGeminiTransportModelId(inspection.transportModelId);
-    if (!transportSelection) throw new Error("Gemini Thread reported an incompatible transport Model");
+    if (!transportSelection)
+      throw new Error("Gemini Thread reported an incompatible transport Model");
     const model = inspection.effectiveModel ?? transportSelection.model;
-    const thinkingOptionId = selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
-    const permissionModeId = inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "gemini",
       ...(model ? { model } : {}),

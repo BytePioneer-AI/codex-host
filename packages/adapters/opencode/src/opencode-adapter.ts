@@ -1722,8 +1722,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     const candidates = messages.filter(
       ({ info }) => info.role === "user" && !active.preexistingUserMessageIds.has(info.id),
     );
-    if (candidates.length === 1) {
-      this.#bindUserMessage(active, candidates[0]!.info.id);
+    const [candidate] = candidates;
+    if (candidates.length === 1 && candidate) {
+      this.#bindUserMessage(active, candidate.info.id);
       return;
     }
     const parents = new Set(
@@ -1732,8 +1733,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         .map(({ info }) => (info as AssistantMessage).parentID),
     );
     const linked = candidates.filter(({ info }) => parents.has(info.id));
-    if (linked.length === 1) {
-      this.#bindUserMessage(active, linked[0]!.info.id);
+    const [linkedCandidate] = linked;
+    if (linked.length === 1 && linkedCandidate) {
+      this.#bindUserMessage(active, linkedCandidate.info.id);
       return;
     }
     if (candidates.length > 1) {

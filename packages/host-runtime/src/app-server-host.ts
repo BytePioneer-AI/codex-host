@@ -1340,6 +1340,7 @@ export class AppServerHost {
         sourceHarnessId: source?.harnessId ?? harnessIdSchema.parse("codex"),
         targetHarnessId: harnessIdSchema.parse("codex"),
         status: pendingTerminal ?? "running",
+        executionPolicy,
         ...(input.requestId ? { requestId: input.requestId } : {}),
         taskDigest: digest,
       });

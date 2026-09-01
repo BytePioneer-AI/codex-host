@@ -1530,6 +1530,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       task: "trusted automation",
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
+      requestId: "explicit-request-1",
       executionPolicy: "unattended-full-access",
     });
     const explicitThreadStart = await readJsonLine(fixture.official.stdin);
@@ -1545,6 +1546,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
       `${JSON.stringify({ id: explicitTurnStart.id, result: { turn: { id: "explicit-turn" } } })}\n`,
     );
     await expect(explicitPending).resolves.toMatchObject({
+      threadId: "explicit-child",
+      configuration: { requested: { executionPolicy: "unattended-full-access" } },
+    });
+    await expect(
+      delegationApi.start({
+        harnessId: "codex",
+        task: "trusted automation",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "explicit-request-1",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toMatchObject({
       threadId: "explicit-child",
       configuration: { requested: { executionPolicy: "unattended-full-access" } },
     });

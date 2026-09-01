@@ -4,7 +4,9 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path, { resolve } from "node:path";
 import {
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
@@ -153,11 +155,13 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     return null;
   }
 
+  lastPromptText: string | null = null;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
   ): Promise<PromptResponse> {
+    this.lastPromptText = text;
     this.#activePromptText = text;
     this.#activePromptEvents = [];
     this.#onEvent = onEvent;
@@ -405,6 +409,45 @@ describe("Grok Adapter ACP projection", () => {
       state: { effectivePermissionModeId: alwaysApprove },
     });
 
+    await adapter.close();
+  });
+
+  it("passes the requested Model into Grok Session creation", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: { id: "grok-4.6" },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: "default",
+      modelId: "grok-4.6",
+    });
+    await adapter.close();
+  });
+
+  it("tells Grok the live Model on every Turn so identity matches the picker", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-identity"),
+      input: [{ type: "text", text: "你係咩模型" }],
+    });
+    expect(transport.lastPromptText).toContain("你係咩模型");
+    expect(transport.lastPromptText).toContain("The active model for this turn is Grok 4.6.");
+    expect(transport.lastPromptText?.startsWith("<system-reminder>")).toBe(false);
+    transport.finish();
     await adapter.close();
   });
 
@@ -2213,5 +2256,253 @@ describe("Grok Adapter ACP projection", () => {
       adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
     ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
     await adapter.close();
+  });
+
+  it("projects Grok spawn_subagent as a Host Subagent delegation", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    expect(session.capabilities.subagents).toEqual({ observe: true, readTranscript: true });
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-grok-subagent");
+
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "delegate" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    transport.event({
+      type: "tool.call",
+      callId: "spawn-1",
+      title: "spawn_subagent",
+      name: "spawn_subagent",
+      rawInput: {
+        description: "Inspect implementation",
+        prompt: "Look at the repo",
+        subagent_type: "explore",
+        background: true,
+      },
+      status: "in_progress",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "subagentDelegation",
+        operation: "spawn",
+        prompt: "Look at the repo",
+        subagents: [
+          {
+            description: "Inspect implementation",
+            role: "explore",
+            model: "Grok 4.6",
+            reasoningEffort: "high",
+            background: true,
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    transport.event({
+      type: "tool.update",
+      callId: "spawn-1",
+      title: "Inspect implementation",
+      rawInput: { variant: "Task", task_id: "child-session", run_in_background: true },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ nativeSubagentId: "child-session", status: "running" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "child-session",
+      status: "running",
+    });
+
+    transport.event({
+      type: "tool.update",
+      callId: "spawn-1",
+      status: "completed",
+      content: [
+        {
+          type: "content",
+          content: {
+            type: "text",
+            text: "Subagent started in background.\nsubagent_id: child-session\n",
+          },
+        },
+      ],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ nativeSubagentId: "child-session", status: "running" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "child-session",
+      status: "running",
+    });
+
+    transport.event({
+      type: "subagent.finished",
+      nativeSubagentId: "child-session",
+      status: "completed",
+      resultSummary: "Inspection done",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ nativeSubagentId: "child-session", status: "completed" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", subagents: [{ status: "completed" }] },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "child-session",
+      status: "completed",
+      resultSummary: "Inspection done",
+    });
+
+    transport.event({
+      type: "tool.call",
+      callId: "wait-1",
+      title: "Wait for child",
+      name: "get_command_or_subagent_output",
+      rawInput: { task_ids: ["child-session"], timeout_ms: 30_000 },
+      status: "in_progress",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "get_command_or_subagent_output" },
+    });
+    transport.event({
+      type: "tool.update",
+      callId: "wait-1",
+      status: "completed",
+      rawOutput: {
+        type: "TaskOutput",
+        MultiResult: {
+          mode: "wait_all",
+          results: [{ task_id: "child-session", status: "completed", output: "Inspection done" }],
+        },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution" }, outcome: { status: "succeeded" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "child-session",
+      status: "completed",
+    });
+
+    transport.finish();
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await adapter.close();
+  });
+
+  it("reads a Grok Subagent transcript from the child Native Session", async () => {
+    const grokHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-grok-subagent-"));
+    const cwd = "/workspace";
+    const childId = "01a0child-0000-7000-8000-000000000001";
+    const sessionDir = path.join(
+      grokHome,
+      "sessions",
+      encodeURIComponent(path.resolve(cwd)),
+      childId,
+    );
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        path.join(sessionDir, "summary.json"),
+        JSON.stringify({ info: { id: childId, cwd } }),
+      );
+      await writeFile(
+        path.join(sessionDir, "updates.jsonl"),
+        [
+          {
+            method: "session/update",
+            params: {
+              sessionId: childId,
+              update: {
+                sessionUpdate: "user_message_chunk",
+                content: { type: "text", text: "Look at the repo" },
+              },
+              _meta: { eventId: "user-1" },
+            },
+          },
+          {
+            method: "session/update",
+            params: {
+              sessionId: childId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "I inspected it." },
+              },
+            },
+          },
+          {
+            method: "session/update",
+            params: {
+              sessionId: childId,
+              update: {
+                sessionUpdate: "turn_completed",
+                prompt_id: "prompt-1",
+                stop_reason: "end_turn",
+              },
+            },
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n"),
+      );
+
+      const transport = new FakeGrokTransport();
+      const adapter = new GrokAdapter(
+        { environment: { GROK_HOME: grokHome } },
+        {
+          randomUUID: () => "grok-id",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      const result = await adapter.subagents.readSnapshot({
+        parent: nativeSessionRefSchema.parse({
+          harnessId: adapter.harnessId,
+          nativeSessionId: "parent-session",
+          formatVersion: 1,
+        }),
+        nativeSubagentId: childId,
+        cwd,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.turns).toHaveLength(1);
+        expect(result.value.turns[0]?.nativeTurnRef.nativeSessionId).toBe("parent-session");
+        expect(result.value.turns[0]?.input).toEqual([{ type: "text", text: "Look at the repo" }]);
+        expect(result.value.turns[0]?.items).toContainEqual({
+          item: expect.objectContaining({ type: "agentMessage", text: "I inspected it." }),
+          outcome: { status: "succeeded" },
+        });
+      }
+      await adapter.close();
+    } finally {
+      await rm(grokHome, { recursive: true, force: true });
+    }
   });
 });

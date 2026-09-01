@@ -31,6 +31,7 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { formatCollabSpawnModel } from "./codex-collab-spawn-model.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
@@ -105,6 +106,12 @@ function collabAgentStatus(
   }
 }
 
+function collabAgentModel(
+  subagent: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number] | undefined,
+): string | null {
+  return formatCollabSpawnModel(subagent?.model, subagent?.reasoningEffort);
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -169,7 +176,8 @@ function projectItem(
         })),
         status: itemStatus(outcome),
       };
-    case "subagentDelegation":
+    case "subagentDelegation": {
+      const primary = item.subagents[0];
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -178,8 +186,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: null,
-        reasoningEffort: null,
+        model: collabAgentModel(primary),
+        reasoningEffort: primary?.reasoningEffort ?? null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,
@@ -187,6 +195,7 @@ function projectItem(
           ]),
         ),
       };
+    }
   }
 }
 

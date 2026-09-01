@@ -4,6 +4,7 @@ import type {
   HostFileChangeItem,
   HostItemSnapshot,
   HostReasoningItem,
+  HostSubagentDelegationItem,
   HostThreadSnapshot,
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
@@ -17,6 +18,17 @@ import {
 
 import type { GrokTransportEvent } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
+import {
+  grokNativeSubagentId,
+  grokSubagentBackground,
+  grokSubagentDescription,
+  grokSubagentModel,
+  grokSubagentOperation,
+  grokSubagentPrompt,
+  grokSubagentResultSummary,
+  grokSubagentRole,
+  grokSubagentWaitSettlements,
+} from "./grok-subagent.js";
 import {
   applyGrokToolProjection,
   DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
@@ -110,6 +122,109 @@ export function mapGrokReplay(
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, GrokProjectedToolItem>();
+  const subagents = new Map<string, HostSubagentDelegationItem>();
+  const subagentAliases = new Map<string, string>();
+
+  const rememberSubagentAlias = (callId: string, nativeId?: string): void => {
+    subagentAliases.set(callId, callId);
+    if (nativeId) subagentAliases.set(nativeId, callId);
+  };
+
+  const completeHistorySubagent = (
+    callId: string,
+    status: string,
+    content?: readonly unknown[] | null,
+    rawOutput?: unknown,
+    rawInput?: unknown,
+  ): void => {
+    const current = subagents.get(callId);
+    const currentAgent = current?.subagents[0];
+    if (!current || !currentAgent) return;
+    const nativeSubagentId =
+      grokNativeSubagentId(rawInput, rawOutput, content) ?? currentAgent.nativeSubagentId;
+    rememberSubagentAlias(callId, nativeSubagentId);
+    const summary = grokSubagentResultSummary(content, rawOutput);
+    const failed = status === "failed";
+    const keepRunning =
+      !failed && (currentAgent.background === true || current.operation === "send");
+    const item: HostSubagentDelegationItem = {
+      ...current,
+      subagents: [
+        {
+          ...currentAgent,
+          status: failed ? "failed" : keepRunning ? "running" : "completed",
+          ...(nativeSubagentId ? { nativeSubagentId, subagentId: nativeSubagentId } : {}),
+          ...(summary ? { resultSummary: summary } : {}),
+        },
+      ],
+    };
+    if (keepRunning) {
+      subagents.set(callId, item);
+      return;
+    }
+    subagents.delete(callId);
+    items.push({
+      item,
+      outcome: failed
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Grok Subagent delegation failed",
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" },
+    });
+  };
+
+  const settleWatchedSubagents = (
+    name: string | undefined,
+    rawInput: unknown,
+    content?: readonly unknown[] | null,
+    rawOutput?: unknown,
+  ): void => {
+    const summary = grokSubagentResultSummary(content, rawOutput);
+    for (const settlement of grokSubagentWaitSettlements({
+      ...(name ? { name, title: name } : {}),
+      rawInput,
+      content,
+      rawOutput,
+    })) {
+      const spawnId = subagentAliases.get(settlement.id);
+      const item = spawnId ? subagents.get(spawnId) : undefined;
+      if (!item?.subagents[0]) continue;
+      if (spawnId) subagents.delete(spawnId);
+      const resultSummary = settlement.resultSummary ?? summary;
+      items.push({
+        item: {
+          ...item,
+          subagents: [
+            {
+              ...item.subagents[0],
+              status: settlement.status,
+              nativeSubagentId: item.subagents[0].nativeSubagentId ?? settlement.id,
+              subagentId: item.subagents[0].nativeSubagentId ?? settlement.id,
+              ...(resultSummary ? { resultSummary } : {}),
+            },
+          ],
+        },
+        outcome:
+          settlement.status === "failed"
+            ? {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: "Grok Subagent delegation failed",
+                  retryable: false,
+                },
+              }
+            : settlement.status === "interrupted"
+              ? { status: "cancelled", reason: "Cancelled by user" }
+              : { status: "succeeded" },
+      });
+    }
+  };
 
   const completeAgent = (): void => {
     if (!agent || agent.text.length === 0) return;
@@ -126,6 +241,10 @@ export function mapGrokReplay(
       items.push({ item: tool, outcome: { status: "succeeded" } });
     }
     tools.clear();
+    for (const item of subagents.values()) {
+      items.push({ item, outcome: { status: "succeeded" } });
+    }
+    subagents.clear();
   };
   const applyToolProjection = (
     callId: string,
@@ -160,6 +279,12 @@ export function mapGrokReplay(
             },
           }
         : { status: "succeeded" };
+    settleWatchedSubagents(
+      tool.type === "toolExecution" ? tool.toolName : tool.command,
+      tool.type === "toolExecution" ? tool.arguments : undefined,
+      content,
+      rawOutput,
+    );
     items.push({ item: tool, outcome });
     if (status !== "completed") return;
     const changes = projectGrokFileChanges(content, cwd);
@@ -224,6 +349,8 @@ export function mapGrokReplay(
       agent = null;
       reasoning = null;
       tools.clear();
+      subagents.clear();
+      subagentAliases.clear();
       continue;
     }
     if (event.type === "user.text") {
@@ -300,26 +427,130 @@ export function mapGrokReplay(
     } else if (event.type === "tool.call") {
       completeReasoning();
       completeAgent();
-      tools.set(
-        event.callId,
-        startGrokToolItem({
-          itemId: stableId("tool", turnIndex, ++messageIndex),
-          name: event.name,
-          title: event.title,
-          kind: event.kind,
-          rawInput: event.rawInput,
-          cwd,
-        }),
-      );
-      applyToolProjection(event.callId, event.content, event.rawOutput);
-      if (event.status === "completed" || event.status === "failed") {
-        completeTool(event.callId, event.status, event.content, event.rawOutput);
+      const operation = grokSubagentOperation(event.name, event.title, event.rawInput);
+      if (operation) {
+        const nativeSubagentId = grokNativeSubagentId(
+          event.rawInput,
+          event.rawOutput,
+          event.content,
+        );
+        rememberSubagentAlias(event.callId, nativeSubagentId);
+        const prompt = grokSubagentPrompt(event.rawInput);
+        const role = grokSubagentRole(event.rawInput);
+        const model = grokSubagentModel(event.rawInput);
+        subagents.set(event.callId, {
+          type: "subagentDelegation",
+          itemId: stableId("subagent", turnIndex, ++messageIndex),
+          operation,
+          ...(prompt ? { prompt } : {}),
+          subagents: [
+            {
+              subagentId: nativeSubagentId ?? event.callId,
+              ...(nativeSubagentId ? { nativeSubagentId } : {}),
+              description: grokSubagentDescription(event.rawInput, event.title),
+              ...(role ? { role } : {}),
+              ...(model ? { model } : {}),
+              background: grokSubagentBackground(event.rawInput),
+              status: "running",
+            },
+          ],
+        });
+        if (event.status === "completed" || event.status === "failed") {
+          completeHistorySubagent(
+            event.callId,
+            event.status,
+            event.content,
+            event.rawOutput,
+            event.rawInput,
+          );
+        }
+      } else {
+        tools.set(
+          event.callId,
+          startGrokToolItem({
+            itemId: stableId("tool", turnIndex, ++messageIndex),
+            name: event.name,
+            title: event.title,
+            kind: event.kind,
+            rawInput: event.rawInput,
+            cwd,
+          }),
+        );
+        applyToolProjection(event.callId, event.content, event.rawOutput);
+        if (event.status === "completed" || event.status === "failed") {
+          completeTool(event.callId, event.status, event.content, event.rawOutput);
+        }
       }
     } else if (event.type === "tool.update") {
-      applyToolProjection(event.callId, event.content, event.rawOutput);
-      if (event.status === "completed" || event.status === "failed") {
-        completeTool(event.callId, event.status, event.content, event.rawOutput);
+      if (subagents.has(event.callId)) {
+        const current = subagents.get(event.callId);
+        if (current?.subagents[0]) {
+          const nativeSubagentId =
+            grokNativeSubagentId(event.rawInput, event.rawOutput, event.content) ??
+            current.subagents[0].nativeSubagentId;
+          rememberSubagentAlias(event.callId, nativeSubagentId);
+          subagents.set(event.callId, {
+            ...current,
+            subagents: [
+              {
+                ...current.subagents[0],
+                description: grokSubagentDescription(
+                  event.rawInput,
+                  event.title,
+                  current.subagents[0].description,
+                ),
+                ...(nativeSubagentId ? { nativeSubagentId, subagentId: nativeSubagentId } : {}),
+              },
+            ],
+          });
+        }
+        if (event.status === "completed" || event.status === "failed") {
+          completeHistorySubagent(
+            event.callId,
+            event.status,
+            event.content,
+            event.rawOutput,
+            event.rawInput,
+          );
+        }
+      } else {
+        applyToolProjection(event.callId, event.content, event.rawOutput);
+        if (event.status === "completed" || event.status === "failed") {
+          completeTool(event.callId, event.status, event.content, event.rawOutput);
+        }
       }
+    } else if (event.type === "subagent.spawned") {
+      for (const [callId, current] of subagents) {
+        const agent = current.subagents[0];
+        if (!agent) continue;
+        const matchesId = agent.nativeSubagentId === event.nativeSubagentId;
+        const matchesDescription =
+          !agent.nativeSubagentId &&
+          event.description !== undefined &&
+          agent.description === event.description;
+        if (!matchesId && !matchesDescription) continue;
+        rememberSubagentAlias(callId, event.nativeSubagentId);
+        subagents.set(callId, {
+          ...current,
+          subagents: [
+            {
+              ...agent,
+              nativeSubagentId: event.nativeSubagentId,
+              subagentId: event.nativeSubagentId,
+              ...(event.role ? { role: event.role } : {}),
+              ...(event.model ? { model: event.model } : {}),
+            },
+          ],
+        });
+        break;
+      }
+    } else if (event.type === "subagent.finished") {
+      settleWatchedSubagents(
+        "get_command_or_subagent_output",
+        { task_ids: [event.nativeSubagentId] },
+        event.resultSummary ? [event.resultSummary] : undefined,
+        { task_id: event.nativeSubagentId, status: event.status, output: event.resultSummary },
+      );
     }
   }
   completeTurn({ status: "unknown", reason: "Grok Native history has no terminal signal" });

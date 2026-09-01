@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -35,6 +35,7 @@ import {
   grokCompactionEventFromUpdate,
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
+import { grokSubagentEventFromUpdate } from "./grok-subagent.js";
 import {
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
@@ -120,6 +121,21 @@ export type GrokTransportEvent =
       contextWindowTokens?: number;
       errorMessage?: string;
       metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.spawned";
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.finished";
+      nativeSubagentId: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
+      metadata?: Record<string, unknown>;
     };
 
 export interface GrokPermissionRequest {
@@ -157,7 +173,7 @@ export interface GrokNativeSessionLocation {
 }
 
 export type GrokOpenInput =
-  | { kind: "create"; permissionModeId: HarnessPermissionModeId }
+  | { kind: "create"; permissionModeId: HarnessPermissionModeId; modelId?: string }
   | { kind: "resume"; sessionId: string }
   | GrokForkOpenInput
   | GrokRewindOpenInput;
@@ -181,6 +197,14 @@ interface ActiveCompact {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function acpToolName(update: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (!isRecord(update)) return undefined;
+  if (typeof update.name === "string" && update.name.length > 0) return update.name;
+  const meta = isRecord(update._meta) ? update._meta : metadata;
+  const tool = meta && isRecord(meta["x.ai/tool"]) ? meta["x.ai/tool"] : undefined;
+  return tool && typeof tool.name === "string" && tool.name.length > 0 ? tool.name : undefined;
 }
 
 function errorText(error: unknown): string {
@@ -285,6 +309,8 @@ function transportEvent(
   }
   const compaction = grokCompactionEventFromUpdate(extension);
   if (compaction) return compaction;
+  const subagent = grokSubagentEventFromUpdate(extension);
+  if (subagent) return subagent;
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -300,30 +326,34 @@ function transportEvent(
         text: update.content.text,
         ...(update.messageId ? { messageId: update.messageId } : {}),
       };
-    case "tool_call":
+    case "tool_call": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.call",
         callId: update.toolCallId,
         title: update.title,
-        ...(update.name ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content ? { content: update.content } : {}),
       };
-    case "tool_call_update":
+    }
+    case "tool_call_update": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.update",
         callId: update.toolCallId,
         ...(update.title !== undefined ? { title: update.title } : {}),
-        ...(update.name !== undefined ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind !== undefined ? { kind: update.kind } : {}),
         ...(update.status !== undefined ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content !== undefined ? { content: update.content } : {}),
       };
+    }
     case "usage_update":
       return { type: "usage", update, ...(metadata ? { metadata } : {}) };
     default:
@@ -331,6 +361,14 @@ function transportEvent(
         ? { type: "usage", update, metadata }
         : null;
   }
+}
+
+function grokIdentityLabel(modelId: string): string {
+  const version = modelId
+    .trim()
+    .replace(/^grok-/i, "")
+    .replace(/-build$/i, "");
+  return version.length > 0 ? `Grok ${version}` : "Grok";
 }
 
 function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
@@ -486,6 +524,7 @@ export class GrokAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #startupModelId: string | undefined;
   #stderrTail = "";
 
   constructor(options: GrokAcpTransportOptions) {
@@ -555,6 +594,7 @@ export class GrokAcpTransport {
     if (this.#sessionId || this.#closed)
       throw new Error("Grok ACP Transport cannot be opened twice");
     try {
+      if (input.kind === "create") this.#startupModelId = input.modelId;
       const initialize = await this.#ensureInitialized();
       const connection = this.#connection;
       if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
@@ -718,7 +758,7 @@ export class GrokAcpTransport {
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
     });
-    const invocation = grokInvocation(executable);
+    const invocation = grokInvocation(executable, process.platform, this.#startupModelId);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.#options.cwd,
       env: { ...process.env, ...this.#options.environment },
@@ -864,6 +904,56 @@ export class GrokAcpTransport {
     const selected = response._meta.model.Ok;
     if (selected !== modelId) {
       throw new GrokTransportError("protocolError", "Grok activated a different Model");
+    }
+    await this.#rewriteNativeIdentity(modelId);
+  }
+
+  async #rewriteNativeIdentity(modelId: string): Promise<void> {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return;
+    const label = grokIdentityLabel(modelId);
+    const promptPath = nativeSessionFile(this.#options, sessionId, "system_prompt.txt");
+    const contextPath = nativeSessionFile(this.#options, sessionId, "prompt_context.json");
+    const historyPath = nativeSessionFile(this.#options, sessionId, "chat_history.jsonl");
+    try {
+      const prompt = await readFile(promptPath, "utf8");
+      const nextPrompt = prompt.replace(/^You are Grok [0-9.]+/, `You are ${label}`);
+      if (nextPrompt !== prompt) await writeFile(promptPath, nextPrompt, "utf8");
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    try {
+      const raw = JSON.parse(await readFile(contextPath, "utf8")) as unknown;
+      if (isRecord(raw) && raw.system_prompt_label !== label) {
+        raw.system_prompt_label = label;
+        await writeFile(contextPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    try {
+      const contents = await readFile(historyPath, "utf8");
+      const lines = contents.split("\n");
+      let changed = false;
+      const rewritten = lines.map((line) => {
+        if (line.length === 0 || changed) return line;
+        let record: unknown;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          return line;
+        }
+        if (!isRecord(record) || record.type !== "system" || typeof record.content !== "string") {
+          return line;
+        }
+        const next = record.content.replace(/^You are Grok [0-9.]+/, `You are ${label}`);
+        if (next === record.content) return line;
+        changed = true;
+        return JSON.stringify({ ...record, content: next });
+      });
+      if (changed) await writeFile(historyPath, rewritten.join("\n"), "utf8");
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
     }
   }
 

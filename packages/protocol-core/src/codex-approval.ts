@@ -37,7 +37,10 @@ function clampedText(value: string, field: string, maxLength: number): string {
   }
   const characters = [...text];
   if (characters.length <= maxLength) return text;
-  return `${characters.slice(0, maxLength - 1).join("").trimEnd()}${ELLIPSIS}`;
+  return `${characters
+    .slice(0, maxLength - 1)
+    .join("")
+    .trimEnd()}${ELLIPSIS}`;
 }
 
 function actionsForEffect(

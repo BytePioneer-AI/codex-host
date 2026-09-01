@@ -64,6 +64,7 @@ type StreamItem<F> = { type: "frame"; envelope: RpcRequest<F> } | { type: "end" 
 type FrameSchema<F> = { parse(value: unknown): F };
 const MISSING_COMMAND_IMAGES =
   'typert gateway: commands/execute: args fields do not match the descriptor: missing "images"';
+const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
 
 function commandProtocolError(method: string, detail: string): DeepSeekHarnessTransportError {
   return new DeepSeekHarnessTransportError(
@@ -79,25 +80,34 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function parseCommandDescriptors(value: unknown): DeepSeekCommandDescriptor[] {
-  const valid =
-    Array.isArray(value) &&
-    value.every((entry) => {
-      const descriptor = record(entry);
-      if (
-        !descriptor ||
-        typeof descriptor.name !== "string" ||
-        typeof descriptor.description !== "string"
-      ) {
-        return false;
-      }
-      if (descriptor.input === undefined) return true;
-      const input = record(descriptor.input);
-      return (
-        !!input &&
-        typeof input.hint === "string" &&
-        (input.images === undefined || typeof input.images === "boolean")
-      );
-    });
+  if (!Array.isArray(value)) throw new TypeError("an invalid command catalog");
+  const names = new Set<string>();
+  const valid = value.every((entry) => {
+    const descriptor = record(entry);
+    if (
+      !descriptor ||
+      Object.keys(descriptor).some((key) => !["name", "description", "input"].includes(key)) ||
+      typeof descriptor.name !== "string" ||
+      !COMMAND_NAME.test(descriptor.name) ||
+      names.has(descriptor.name) ||
+      typeof descriptor.description !== "string" ||
+      descriptor.description.trim().length === 0 ||
+      descriptor.description.length > 512
+    ) {
+      return false;
+    }
+    names.add(descriptor.name);
+    if (descriptor.input === undefined) return true;
+    const input = record(descriptor.input);
+    return (
+      !!input &&
+      Object.keys(input).every((key) => key === "hint" || key === "images") &&
+      typeof input.hint === "string" &&
+      input.hint.trim().length > 0 &&
+      input.hint.length <= 512 &&
+      (input.images === undefined || typeof input.images === "boolean")
+    );
+  });
   if (!valid) throw new TypeError("an invalid command catalog");
   return value as DeepSeekCommandDescriptor[];
 }
@@ -264,7 +274,7 @@ export class NodeDeepSeekCommandClient implements DeepSeekCommandClient {
       result.error.code === "internal" &&
       result.error.message === MISSING_COMMAND_IMAGES
     ) {
-      // rc.6 has no images parameter; newer DSH requires an explicit empty batch.
+      // Keep the older wire first; newer DSH requires an explicit empty batch.
       return this.#call(
         "commands/execute",
         { agentId: sessionId, line, images: [] },

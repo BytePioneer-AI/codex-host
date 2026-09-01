@@ -89,6 +89,96 @@ describe("DeepSeek local Host connection", () => {
     }
   });
 
+  it("preserves validated command input metadata and native order", async () => {
+    const catalog = [
+      {
+        name: "goal",
+        description: "set or view the goal for a long-running task",
+        input: {
+          hint: "[<objective>|clear|edit <objective>|pause|resume]",
+          images: true,
+        },
+      },
+      {
+        name: "feedback",
+        description: "record feedback about this session",
+        input: { hint: "<text>", images: false },
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "server-response",
+              rpcId: body.rpcId,
+              result: { ok: true, value: catalog },
+            }),
+          ),
+        );
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekCommandClient("http://127.0.0.1:43123");
+      await expect(client.list("session-1" as never)).resolves.toEqual({
+        ok: true,
+        value: catalog,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["non-array catalog", {}],
+    ["invalid name", [{ name: "Goal", description: "goal" }]],
+    ["blank description", [{ name: "goal", description: " " }]],
+    ["unknown descriptor field", [{ name: "goal", description: "goal", future: true }]],
+    ["blank input hint", [{ name: "goal", description: "goal", input: { hint: " " } }]],
+    [
+      "unknown input field",
+      [{ name: "goal", description: "goal", input: { hint: "objective", future: true } }],
+    ],
+    [
+      "invalid images flag",
+      [{ name: "goal", description: "goal", input: { hint: "objective", images: "yes" } }],
+    ],
+    [
+      "duplicate name",
+      [
+        { name: "goal", description: "first" },
+        { name: "goal", description: "second" },
+      ],
+    ],
+  ])("rejects a %s", async (_label, catalog) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "server-response",
+              rpcId: body.rpcId,
+              result: { ok: true, value: catalog },
+            }),
+          ),
+        );
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekCommandClient("http://127.0.0.1:43123");
+      await expect(client.list("session-1" as never)).rejects.toMatchObject({
+        code: "protocolError",
+        message: expect.stringContaining("invalid command catalog"),
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("retries commands/execute with the newer empty images field only when requested", async () => {
     const payloads: Array<Record<string, unknown>> = [];
     vi.stubGlobal(
@@ -135,6 +225,39 @@ describe("DeepSeek local Host connection", () => {
         { args: { agentId: "session-1", line: "/compact" } },
         { args: { agentId: "session-1", line: "/compact", images: [] } },
       ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not retry near-miss native errors", async () => {
+    const fetch = vi.fn((_input: URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            type: "server-response",
+            rpcId: body.rpcId,
+            result: {
+              ok: false,
+              error: {
+                code: "internal",
+                message:
+                  'typert gateway: commands/execute: args fields do not match the descriptor: missing "images".',
+                details: {},
+              },
+            },
+          }),
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const client = new NodeDeepSeekCommandClient("http://127.0.0.1:43123");
+      await expect(client.execute("session-1" as never, "/compact")).resolves.toMatchObject({
+        ok: false,
+      });
+      expect(fetch).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
     }

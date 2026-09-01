@@ -753,6 +753,9 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       await this.#transport.setModel(model.id, thinkingOptionId);
+      this.#modelState.currentModel = model;
+      if (thinkingOptionId) this.#modelState.currentThinkingOptionId = thinkingOptionId;
+      else delete this.#modelState.currentThinkingOptionId;
       this.#state = stateForGrokModel(
         this.#modelState,
         { nativeRef: nativeRef(this.#transport.sessionId) },
@@ -1722,7 +1725,11 @@ export class GrokAdapter implements HarnessAdapter {
                 sessionId: parsedRef.data.nativeSessionId,
                 permissionModeId: requestedPermissionModeId,
               }
-            : { kind: "create", permissionModeId: requestedPermissionModeId },
+            : {
+                kind: "create",
+                permissionModeId: requestedPermissionModeId,
+                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
+              },
         );
       }
       if (!opened) {

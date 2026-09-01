@@ -71,6 +71,60 @@ function baselineFiles(auditDirectory) {
   return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
 }
 
+function writeReport(fixture_, report, filename) {
+  const reportPath = path.join(fixture_.root, filename);
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return reportPath;
+}
+
+async function settle(promise) {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
+}
+
+async function runConcurrentAcceptance(fixture_, firstReportPath, secondReportPath) {
+  let entered = false;
+  let enteredResolve;
+  let releaseResolve;
+  const enteredPromise = new Promise((resolve) => {
+    enteredResolve = resolve;
+  });
+  const releasePromise = new Promise((resolve) => {
+    releaseResolve = resolve;
+  });
+  const first = acceptReviewedBaseline({
+    root: fixture_.root,
+    manifestPath: fixture_.manifestPath,
+    reportPath: firstReportPath,
+    __testBarrier: async (lock) => {
+      entered = true;
+      enteredResolve(lock);
+      await releasePromise;
+    },
+  });
+  expect(entered).toBe(true);
+  await enteredPromise;
+  const second = Promise.resolve().then(() =>
+    acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: secondReportPath,
+    }),
+  );
+  const outcomes = Promise.all([settle(Promise.resolve(first)), settle(second)]);
+  releaseResolve();
+  return outcomes;
+}
+
+function expectOneLocked(outcomes) {
+  expect(outcomes[0].status).toBe("fulfilled");
+  expect(outcomes[1].status).toBe("rejected");
+  expect(outcomes[1].reason).toMatchObject({ message: expect.stringMatching(/locked/i) });
+}
+
 function writeInterruptedTransaction(
   fixture_,
   report = validateAuditReport(auditReport()),
@@ -135,11 +189,48 @@ describe("reviewed baseline acceptance", () => {
     expect(manifest.desktops).toHaveLength(2);
     expect(manifest.desktops[1]).toEqual({
       ...identity,
-      baseline: "baselines/macos-26.825.41651-7345.json",
+      baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
     });
-    expect(path.basename(result.baselinePath)).toBe("macos-26.825.41651-7345.json");
+    expect(path.basename(result.baselinePath)).toBe(
+      "macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+    );
     expect(JSON.parse(fs.readFileSync(result.baselinePath, "utf8"))).toEqual(
       validateAuditReport(auditReport()),
+    );
+  });
+
+  it("uses the ASAR digest to distinguish new baseline filenames", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const secondIdentity = { ...identity, asarIntegrity: `sha256:${"b".repeat(64)}` };
+    const secondReportPath = writeReport(fixture_, auditReport(secondIdentity), "candidate-2.json");
+
+    const first = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: fixture_.reportPath,
+    });
+    const second = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: secondReportPath,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
+    expect(path.basename(first.baselinePath)).toBe("macos-26.825.41651-7345-c089b63abb7ca4a7.json");
+    expect(path.basename(second.baselinePath)).toBe(
+      "macos-26.825.41651-7345-bbbbbbbbbbbbbbbb.json",
+    );
+    expect(manifest.desktops.slice(1)).toEqual([
+      { ...identity, baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json" },
+      {
+        ...secondIdentity,
+        baseline: "baselines/macos-26.825.41651-7345-bbbbbbbbbbbbbbbb.json",
+      },
+    ]);
+    expect(JSON.parse(fs.readFileSync(first.baselinePath, "utf8")).desktop).toEqual(identity);
+    expect(JSON.parse(fs.readFileSync(second.baselinePath, "utf8")).desktop).toEqual(
+      secondIdentity,
     );
   });
 
@@ -148,12 +239,15 @@ describe("reviewed baseline acceptance", () => {
     const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
     const baselinePath = path.join(
       fixture_.auditDirectory,
-      "baselines/macos-26.825.41651-7345.json",
+      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
     );
-    const journalPath = path.join(fixture_.auditDirectory, ".accept-baseline-transaction.json");
+    const journalPath = path.join(
+      path.dirname(fs.realpathSync(fixture_.manifestPath)),
+      ".accept-baseline-transaction.json",
+    );
     const resolvedBaselinePath = path.join(
       fs.realpathSync(fixture_.auditDirectory),
-      "baselines/macos-26.825.41651-7345.json",
+      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
     );
     const renameSync = fs.renameSync.bind(fs);
     const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
@@ -191,7 +285,7 @@ describe("reviewed baseline acceptance", () => {
     const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
     expect(manifest.desktops[1]).toEqual({
       ...identity,
-      baseline: "baselines/macos-26.825.41651-7345.json",
+      baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
     });
     expect(result).toMatchObject({ baselinePath: fs.realpathSync(baselinePath), appended: true });
     expect(fs.existsSync(journalPath)).toBe(false);
@@ -436,5 +530,202 @@ describe("reviewed baseline acceptance", () => {
     ).toThrow(/baseline.*confined|symlink/i);
     expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(before);
     expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it("preserves an existing acceptance lock and fails closed with manual recovery guidance", () => {
+    const fixture_ = fixture();
+    const lockPath = path.join(fixture_.auditDirectory, ".accept-baseline.lock");
+    const lock = `${JSON.stringify({ schemaVersion: 1, transactionId }, null, 2)}\n`;
+    fs.writeFileSync(lockPath, lock);
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/locked.*manual|locked.*exact.*file/i);
+    expect(fs.readFileSync(lockPath, "utf8")).toBe(lock);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(baselineFiles(fixture_.auditDirectory)).toEqual([]);
+  });
+
+  it("never replaces a journal that appears before journal installation", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const journalPath = path.join(
+      path.dirname(fs.realpathSync(fixture_.manifestPath)),
+      ".accept-baseline-transaction.json",
+    );
+    const foreign = "foreign journal\n";
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const linkSync = fs.linkSync.bind(fs);
+    vi.spyOn(fs, "linkSync").mockImplementation((source, destination) => {
+      if (destination === journalPath) fs.writeFileSync(journalPath, foreign, { flag: "wx" });
+      return linkSync(source, destination);
+    });
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/exist|journal/i);
+    expect(fs.readFileSync(journalPath, "utf8")).toBe(foreign);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(baselineFiles(fixture_.auditDirectory)).toEqual([]);
+    expect(fs.existsSync(path.join(fixture_.auditDirectory, ".accept-baseline.lock"))).toBe(false);
+  });
+
+  it("serializes concurrent predeclared acceptance of the same report", async () => {
+    const fixture_ = fixture();
+
+    const outcomes = await runConcurrentAcceptance(
+      fixture_,
+      fixture_.reportPath,
+      fixture_.reportPath,
+    );
+
+    expectOneLocked(outcomes);
+    expect(JSON.parse(fs.readFileSync(outcomes[0].value.baselinePath, "utf8"))).toEqual(
+      validateAuditReport(auditReport()),
+    );
+    expect(fs.existsSync(path.join(fixture_.auditDirectory, ".accept-baseline.lock"))).toBe(false);
+    expect(
+      fs.existsSync(path.join(fixture_.auditDirectory, ".accept-baseline-transaction.json")),
+    ).toBe(false);
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/baseline.*exists/i);
+  });
+
+  it("does not overwrite a predeclared baseline during concurrent different-report acceptance", async () => {
+    const fixture_ = fixture();
+    const secondReport = {
+      ...auditReport(),
+      recordedAt: "2026-09-01T00:00:01.000Z",
+    };
+    const secondReportPath = writeReport(fixture_, secondReport, "candidate-2.json");
+
+    const outcomes = await runConcurrentAcceptance(fixture_, fixture_.reportPath, secondReportPath);
+
+    expectOneLocked(outcomes);
+    const baselineBefore = fs.readFileSync(outcomes[0].value.baselinePath, "utf8");
+    expect(JSON.parse(baselineBefore)).toEqual(validateAuditReport(auditReport()));
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: secondReportPath,
+      }),
+    ).toThrow(/baseline.*exists/i);
+    expect(fs.readFileSync(outcomes[0].value.baselinePath, "utf8")).toBe(baselineBefore);
+  });
+
+  it("serializes concurrent append acceptance of the same identity and report", async () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+
+    const outcomes = await runConcurrentAcceptance(
+      fixture_,
+      fixture_.reportPath,
+      fixture_.reportPath,
+    );
+
+    expectOneLocked(outcomes);
+    const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
+    expect(manifest.desktops).toHaveLength(2);
+    expect(manifest.desktops[1]).toMatchObject(identity);
+    expect(fs.existsSync(outcomes[0].value.baselinePath)).toBe(true);
+    expect(
+      fs.existsSync(path.join(fixture_.auditDirectory, ".accept-baseline-transaction.json")),
+    ).toBe(false);
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/baseline.*exists/i);
+  });
+
+  it("retries a locked different append without losing the first manifest update", async () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const secondIdentity = {
+      ...identity,
+      version: "26.825.41652",
+      build: "7346",
+      asarIntegrity: `sha256:${"b".repeat(64)}`,
+    };
+    const secondReportPath = writeReport(fixture_, auditReport(secondIdentity), "candidate-2.json");
+
+    const outcomes = await runConcurrentAcceptance(fixture_, fixture_.reportPath, secondReportPath);
+    expectOneLocked(outcomes);
+
+    const retry = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: secondReportPath,
+    });
+    const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
+    expect(retry.appended).toBe(true);
+    expect(manifest.desktops).toHaveLength(3);
+    expect(manifest.desktops.slice(1).map(({ version }) => version)).toEqual([
+      identity.version,
+      secondIdentity.version,
+    ]);
+    expect(new Set(manifest.desktops.slice(1).map(({ baseline }) => baseline)).size).toBe(2);
+    expect(fs.existsSync(outcomes[0].value.baselinePath)).toBe(true);
+    expect(fs.existsSync(retry.baselinePath)).toBe(true);
+  });
+
+  it("preserves a replacement lock when release ownership no longer matches", async () => {
+    const fixture_ = fixture();
+    const foreign = `${JSON.stringify(
+      { schemaVersion: 1, transactionId: "22222222-2222-4222-8222-222222222222" },
+      null,
+      2,
+    )}\n`;
+    let replacementPath;
+
+    await expect(
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+        __testBarrier: async ({ lockPath }) => {
+          replacementPath = lockPath;
+          fs.rmSync(lockPath);
+          fs.writeFileSync(lockPath, foreign);
+        },
+      }),
+    ).rejects.toThrow(/lock ownership changed|foreign lock preserved/i);
+    expect(fs.readFileSync(replacementPath, "utf8")).toBe(foreign);
+  });
+
+  it("preserves a tampered lock that is no longer valid ownership metadata", async () => {
+    const fixture_ = fixture();
+    const tampered = "not-json\n";
+    let lockPath;
+
+    await expect(
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+        __testBarrier: async (lock) => {
+          lockPath = lock.lockPath;
+          fs.writeFileSync(lockPath, tampered);
+        },
+      }),
+    ).rejects.toThrow(/lock ownership changed|foreign lock preserved/i);
+    expect(fs.readFileSync(lockPath, "utf8")).toBe(tampered);
   });
 });

@@ -8,6 +8,7 @@ import { parseReviewedDesktopManifest } from "./reviewed-desktops.mjs";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultManifestPath = path.join(import.meta.dirname, "reviewed-desktops.json");
 const transactionFilename = ".accept-baseline-transaction.json";
+const lockFilename = ".accept-baseline.lock";
 const identityFields = ["platform", "version", "build", "asarIntegrity"];
 const rejectedVerdicts = new Set(["possible-impact", "confirmed-impact"]);
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -85,6 +86,81 @@ function exactKeys(value, expected) {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
+function parseLock(value) {
+  if (
+    !exactKeys(value, ["schemaVersion", "transactionId"]) ||
+    value.schemaVersion !== 1 ||
+    typeof value.transactionId !== "string" ||
+    !uuidV4.test(value.transactionId)
+  ) {
+    throw new Error("baseline acceptance lock ownership is invalid; foreign lock preserved");
+  }
+  return value;
+}
+
+function acquireAcceptanceLock(manifestDirectory) {
+  const lockPath = path.join(manifestDirectory, lockFilename);
+  const transactionId = randomUUID();
+  let descriptor;
+  try {
+    descriptor = fs.openSync(lockPath, "wx", 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error(
+        "baseline acceptance is locked; fail closed. After verifying no acceptance process is running, manually inspect and remove the exact .accept-baseline.lock file, then retry",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  const stat = fs.fstatSync(descriptor);
+  const content = `${JSON.stringify({ schemaVersion: 1, transactionId }, null, 2)}\n`;
+  try {
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    return { lockPath, transactionId, descriptor, stat, content };
+  } catch (error) {
+    fs.closeSync(descriptor);
+    const current = fs.lstatSync(lockPath);
+    if (current.dev === stat.dev && current.ino === stat.ino) fs.rmSync(lockPath);
+    throw error;
+  }
+}
+
+function releaseAcceptanceLock(lock) {
+  try {
+    const currentStat = fs.lstatSync(lock.lockPath);
+    const currentContent = fs.readFileSync(lock.lockPath, "utf8");
+    let current;
+    try {
+      current = parseLock(JSON.parse(currentContent));
+    } catch {
+      throw new Error("baseline acceptance lock ownership changed; foreign lock preserved");
+    }
+    const finalStat = fs.lstatSync(lock.lockPath);
+    if (
+      currentStat.dev !== lock.stat.dev ||
+      currentStat.ino !== lock.stat.ino ||
+      finalStat.dev !== lock.stat.dev ||
+      finalStat.ino !== lock.stat.ino ||
+      current.transactionId !== lock.transactionId ||
+      currentContent !== lock.content
+    ) {
+      throw new Error("baseline acceptance lock ownership changed; foreign lock preserved");
+    }
+    fs.rmSync(lock.lockPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error("baseline acceptance lock ownership changed; foreign lock preserved", {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    fs.closeSync(lock.descriptor);
+  }
+}
+
 function transactionTemporaryPath(target, transactionId) {
   return path.join(path.dirname(target), `.${path.basename(target)}.accept-${transactionId}.tmp`);
 }
@@ -104,6 +180,41 @@ function writeTransactionFile(target, value, transactionId) {
 
 function journalFor(transactionId, entry, report) {
   return { schemaVersion: 1, transactionId, entry, report };
+}
+
+function readJournalSnapshot(journalPath) {
+  const firstStat = fs.lstatSync(journalPath);
+  const content = fs.readFileSync(journalPath, "utf8");
+  const secondStat = fs.lstatSync(journalPath);
+  if (firstStat.dev !== secondStat.dev || firstStat.ino !== secondStat.ino) {
+    throw new Error("pending transaction journal ownership changed; foreign journal preserved");
+  }
+  return { journalPath, stat: secondStat, content };
+}
+
+function removeOwnedJournal(snapshot) {
+  try {
+    const firstStat = fs.lstatSync(snapshot.journalPath);
+    const content = fs.readFileSync(snapshot.journalPath, "utf8");
+    const secondStat = fs.lstatSync(snapshot.journalPath);
+    if (
+      firstStat.dev !== snapshot.stat.dev ||
+      firstStat.ino !== snapshot.stat.ino ||
+      secondStat.dev !== snapshot.stat.dev ||
+      secondStat.ino !== snapshot.stat.ino ||
+      content !== snapshot.content
+    ) {
+      throw new Error("pending transaction journal ownership changed; foreign journal preserved");
+    }
+    fs.rmSync(snapshot.journalPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error("pending transaction journal ownership changed; foreign journal preserved", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }
 
 function parseJournal(value, manifestDirectory, report) {
@@ -162,16 +273,9 @@ function resumePendingTransaction({
   report,
 }) {
   if (!pathEntryExists(journalPath)) return null;
-  const confinedJournal = confinedExistingFile(
-    manifestDirectory,
-    journalPath,
-    "pending transaction journal",
-  );
-  const pending = parseJournal(
-    JSON.parse(fs.readFileSync(confinedJournal, "utf8")),
-    manifestDirectory,
-    report,
-  );
+  confinedExistingFile(manifestDirectory, journalPath, "pending transaction journal");
+  const journalSnapshot = readJournalSnapshot(journalPath);
+  const pending = parseJournal(JSON.parse(journalSnapshot.content), manifestDirectory, report);
   const baselinePath = pending.entry.baseline;
   assertConfinedDestination(manifestDirectory, baselinePath);
   const existing = manifest.desktops.find((entry) => sameIdentity(entry, pending.entry));
@@ -195,7 +299,7 @@ function resumePendingTransaction({
       transactionTemporaryPath(manifestPath, pending.transactionId),
       pendingManifest,
     );
-    fs.rmSync(journalPath);
+    removeOwnedJournal(journalSnapshot);
     return null;
   }
 
@@ -232,19 +336,19 @@ function resumePendingTransaction({
       rawManifest,
     );
   }
-  fs.rmSync(journalPath);
+  removeOwnedJournal(journalSnapshot);
   return { baselinePath, manifestPath, appended: true };
 }
 
 function commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest }) {
   const entry = nextManifest.desktops.at(-1);
   const transactionId = randomUUID();
-  const journalTemporary = writeTemporaryJson(
-    journalPath,
-    journalFor(transactionId, entry, report),
-  );
+  const journalTemporary = transactionTemporaryPath(journalPath, transactionId);
+  writeTransactionFile(journalPath, journalFor(transactionId, entry, report), transactionId);
+  let journalSnapshot;
   try {
-    fs.renameSync(journalTemporary, journalPath);
+    fs.linkSync(journalTemporary, journalPath);
+    journalSnapshot = readJournalSnapshot(journalPath);
   } finally {
     fs.rmSync(journalTemporary, { force: true });
   }
@@ -253,7 +357,7 @@ function commitNewIdentity({ journalPath, baselinePath, manifestPath, report, ne
   fs.renameSync(transactionTemporaryPath(baselinePath, transactionId), baselinePath);
   writeTransactionFile(manifestPath, nextManifest, transactionId);
   fs.renameSync(transactionTemporaryPath(manifestPath, transactionId), manifestPath);
-  fs.rmSync(journalPath);
+  removeOwnedJournal(journalSnapshot);
 }
 
 export function acceptReviewedBaseline(input) {
@@ -265,57 +369,79 @@ export function acceptReviewedBaseline(input) {
     input.manifestPath ?? defaultManifestPath,
     "manifest path",
   );
-  const report = validateAuditReport(JSON.parse(fs.readFileSync(reportPath, "utf8")));
-  if (rejectedVerdicts.has(report.verdict)) {
-    throw new Error(`cannot accept ${report.verdict} audit report`);
-  }
-
   const manifestDirectory = path.dirname(manifestPath);
-  const rawManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  const manifest = parseReviewedDesktopManifest(rawManifest, manifestDirectory);
-  const journalPath = path.join(manifestDirectory, transactionFilename);
-  const resumed = resumePendingTransaction({
-    journalPath,
-    manifestDirectory,
-    manifestPath,
-    rawManifest,
-    manifest,
-    report,
-  });
-  if (resumed) return resumed;
-  const existing = manifest.desktops.find((entry) => sameIdentity(entry, report.desktop));
-  let baselinePath;
-  let nextManifest = null;
-  if (existing) {
-    baselinePath = existing.baseline;
-  } else {
-    const filename = `${safeSegment(report.desktop.platform)}-${safeSegment(report.desktop.version)}-${safeSegment(report.desktop.build)}.json`;
-    const relativeBaseline = path.join("baselines", filename);
-    baselinePath = path.resolve(manifestDirectory, relativeBaseline);
-    if (manifest.desktops.some((entry) => entry.baseline === baselinePath)) {
-      throw new Error("baseline destination is already declared");
+  const lock = acquireAcceptanceLock(manifestDirectory);
+  const acceptWhileLocked = () => {
+    const report = validateAuditReport(JSON.parse(fs.readFileSync(reportPath, "utf8")));
+    if (rejectedVerdicts.has(report.verdict)) {
+      throw new Error(`cannot accept ${report.verdict} audit report`);
     }
-    nextManifest = {
-      schemaVersion: 1,
-      desktops: [...rawManifest.desktops, { ...report.desktop, baseline: relativeBaseline }],
-    };
-    parseReviewedDesktopManifest(nextManifest, manifestDirectory);
-  }
-  assertConfinedDestination(manifestDirectory, baselinePath);
-  if (pathEntryExists(baselinePath)) throw new Error("baseline already exists");
 
-  if (nextManifest) {
-    commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest });
-    return { baselinePath, manifestPath, appended: true };
+    const rawManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const manifest = parseReviewedDesktopManifest(rawManifest, manifestDirectory);
+    const journalPath = path.join(manifestDirectory, transactionFilename);
+    const resumed = resumePendingTransaction({
+      journalPath,
+      manifestDirectory,
+      manifestPath,
+      rawManifest,
+      manifest,
+      report,
+    });
+    if (resumed) return resumed;
+    const existing = manifest.desktops.find((entry) => sameIdentity(entry, report.desktop));
+    let baselinePath;
+    let nextManifest = null;
+    if (existing) {
+      baselinePath = existing.baseline;
+    } else {
+      const digest = report.desktop.asarIntegrity.slice("sha256:".length, "sha256:".length + 16);
+      const filename = `${safeSegment(report.desktop.platform)}-${safeSegment(report.desktop.version)}-${safeSegment(report.desktop.build)}-${digest}.json`;
+      const relativeBaseline = path.join("baselines", filename);
+      baselinePath = path.resolve(manifestDirectory, relativeBaseline);
+      if (manifest.desktops.some((entry) => entry.baseline === baselinePath)) {
+        throw new Error("baseline destination is already declared");
+      }
+      nextManifest = {
+        schemaVersion: 1,
+        desktops: [...rawManifest.desktops, { ...report.desktop, baseline: relativeBaseline }],
+      };
+      parseReviewedDesktopManifest(nextManifest, manifestDirectory);
+    }
+    assertConfinedDestination(manifestDirectory, baselinePath);
+    if (pathEntryExists(baselinePath)) throw new Error("baseline already exists");
+
+    if (nextManifest) {
+      commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest });
+      return { baselinePath, manifestPath, appended: true };
+    }
+
+    const baselineTemporary = writeTemporaryJson(baselinePath, report);
+    try {
+      fs.renameSync(baselineTemporary, baselinePath);
+    } finally {
+      fs.rmSync(baselineTemporary, { force: true });
+    }
+    return { baselinePath, manifestPath, appended: false };
+  };
+
+  if (input.__testBarrier !== undefined) {
+    if (typeof input.__testBarrier !== "function") {
+      releaseAcceptanceLock(lock);
+      throw new Error("acceptance test barrier must be a function");
+    }
+    return Promise.resolve(
+      input.__testBarrier({ lockPath: lock.lockPath, transactionId: lock.transactionId }),
+    )
+      .then(acceptWhileLocked)
+      .finally(() => releaseAcceptanceLock(lock));
   }
 
-  const baselineTemporary = writeTemporaryJson(baselinePath, report);
   try {
-    fs.renameSync(baselineTemporary, baselinePath);
+    return acceptWhileLocked();
   } finally {
-    fs.rmSync(baselineTemporary, { force: true });
+    releaseAcceptanceLock(lock);
   }
-  return { baselinePath, manifestPath, appended: false };
 }
 
 function parseArguments(arguments_) {

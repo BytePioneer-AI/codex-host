@@ -6,6 +6,7 @@
 /.codexhost/
 /.codex/
 /.superpowers/
+/task-*-report.md
 /.claude/
 
 # Environment and secrets

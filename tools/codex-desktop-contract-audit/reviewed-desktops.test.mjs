@@ -5,8 +5,7 @@ const identity = {
   platform: "macos",
   version: "26.825.41651",
   build: "7345",
-  asarIntegrity:
-    "sha256:c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d",
+  asarIntegrity: "sha256:c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d",
 };
 
 const parse = (entry = {}) =>
@@ -31,23 +30,38 @@ describe("reviewed desktop manifest", () => {
   it("rejects malformed manifests", () => {
     expect(() => parse({ asarIntegrity: "sha256:ABC" })).toThrow();
     expect(() => parse({ platform: "" })).toThrow();
-    expect(() => parseReviewedDesktopManifest({ schemaVersion: 2, desktops: [] }, "/repo/audit")).toThrow();
-    expect(() => parseReviewedDesktopManifest({ schemaVersion: 1, desktops: [] }, "/repo/audit")).toThrow();
+    expect(() =>
+      parseReviewedDesktopManifest({ schemaVersion: 2, desktops: [] }, "/repo/audit"),
+    ).toThrow();
+    expect(() =>
+      parseReviewedDesktopManifest({ schemaVersion: 1, desktops: [] }, "/repo/audit"),
+    ).toThrow();
     const sparse = new Array(1);
     sparse.length = 1;
-    expect(() => parseReviewedDesktopManifest({ schemaVersion: 1, desktops: sparse }, "/repo/audit")).toThrow();
+    expect(() =>
+      parseReviewedDesktopManifest({ schemaVersion: 1, desktops: sparse }, "/repo/audit"),
+    ).toThrow();
   });
 
   it("rejects duplicate compound identities", () => {
     expect(() =>
       parseReviewedDesktopManifest(
-        { schemaVersion: 1, desktops: [{ ...identity, baseline: "a" }, { ...identity, baseline: "b" }] },
+        {
+          schemaVersion: 1,
+          desktops: [
+            { ...identity, baseline: "a" },
+            { ...identity, baseline: "b" },
+          ],
+        },
         "/repo/audit",
       ),
     ).toThrow(/duplicate/i);
   });
 
-  it.each(["../outside.json", "/tmp/outside.json"])('rejects escaping baseline "%s"', (baseline) => {
-    expect(() => parse({ baseline })).toThrow(/baseline|confined|path/i);
-  });
+  it.each(["../outside.json", "/tmp/outside.json"])(
+    'rejects escaping baseline "%s"',
+    (baseline) => {
+      expect(() => parse({ baseline })).toThrow(/baseline|confined|path/i);
+    },
+  );
 });

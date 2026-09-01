@@ -11,7 +11,6 @@ import {
 import { AppServerHost, officialEnvironment } from "./app-server-host.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
-import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import {
   DELEGATION_CLI_PATH_ENV,
@@ -112,19 +111,6 @@ async function prepareDelegationRuntime(input: {
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
-  await installDelegationSkills()
-    .then((results) => {
-      for (const result of results) {
-        if (result.status === "conflict") {
-          process.stderr.write(
-            `codexhost delegation Skill conflict: preserving user-managed file at ${result.path}\n`,
-          );
-        }
-      }
-    })
-    .catch((error) => {
-      process.stderr.write(`codexhost delegation Skill installation failed: ${String(error)}\n`);
-    });
   try {
     return await input.createHost(environment, (value) => registry.register(value), registry);
   } finally {

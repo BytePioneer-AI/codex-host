@@ -148,6 +148,14 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 跨 Agent 协作
 
+首次使用前显式安装委派 Skill；也可随时查看状态或卸载：
+
+```bash
+codexhost skill install
+codexhost skill status
+codexhost skill uninstall
+```
+
 你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
 
 > 让 `claude-code` 独立审查这次修改，并指出兼容性风险。

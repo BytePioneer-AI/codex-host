@@ -1,6 +1,11 @@
 import type { Writable } from "node:stream";
 
 import {
+  inspectDelegationSkills,
+  installDelegationSkills,
+  uninstallDelegationSkills,
+} from "./delegation-skill.js";
+import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
@@ -70,6 +75,7 @@ function rejectUnknown(parsed: ReturnType<typeof options>, allowed: readonly str
 }
 
 export const DELEGATION_HELP = `usage:
+  codexhost skill install|status|uninstall
   codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false]
   codexhost delegate start --harness <id> --task <text> [--execution-policy approval-required|unattended-full-access] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>]
   codexhost thread send <thread> --message <text>
@@ -153,6 +159,7 @@ function writeJson(output: Writable, value: unknown): void {
 export async function runDelegationCli(input: {
   arguments: string[];
   environment?: NodeJS.ProcessEnv;
+  homeDirectory?: string;
   output?: Writable;
   diagnosticOutput?: Writable;
   fetchImpl?: typeof fetch;
@@ -168,6 +175,28 @@ export async function runDelegationCli(input: {
       group === "-h"
     ) {
       output.write(DELEGATION_HELP);
+      return 0;
+    }
+    if (group === "skill") {
+      if (command !== "install" && command !== "status" && command !== "uninstall") {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Skill command");
+      }
+      if (rest.length > 0) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          `skill ${command} accepts no positional arguments or options`,
+        );
+      }
+      const lifecycleInput = input.homeDirectory
+        ? { homeDirectory: input.homeDirectory }
+        : undefined;
+      const results =
+        command === "install"
+          ? await installDelegationSkills(lifecycleInput)
+          : command === "status"
+            ? await inspectDelegationSkills(lifecycleInput)
+            : await uninstallDelegationSkills(lifecycleInput);
+      writeJson(output, { operation: command, results });
       return 0;
     }
     if (group === "harness" && command === "inspect") {

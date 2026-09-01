@@ -33,6 +33,16 @@ fn production_launcher_rejects_the_gate_probe_command() {
 }
 
 #[test]
+fn production_launcher_routes_skill_commands() {
+    let output = Command::new(launcher_path())
+        .args(["skill", "status"])
+        .output()
+        .expect("run skill status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("invalid launcher arguments"));
+}
+
+#[test]
 fn production_launcher_resolves_resources_beside_its_installed_location() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

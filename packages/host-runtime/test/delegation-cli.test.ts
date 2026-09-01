@@ -1,8 +1,12 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { DELEGATION_HELP, runDelegationCli } from "../src/delegation-cli.js";
+import { installDelegationSkills } from "../src/delegation-skill.js";
 import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
@@ -19,7 +23,85 @@ function successfulFetch(body: unknown): typeof fetch {
   ) as unknown as typeof fetch;
 }
 
+async function withTemporaryHome(run: (root: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-skill-cli-"));
+  try {
+    await run(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("delegation CLI", () => {
+  it("installs delegation Skills without Runtime configuration", async () => {
+    await withTemporaryHome(async (root) => {
+      const installOutput = new PassThrough();
+      await expect(
+        runDelegationCli({
+          arguments: ["skill", "install"],
+          environment: {},
+          output: installOutput,
+          homeDirectory: root,
+        }),
+      ).resolves.toBe(0);
+      expect(JSON.parse(outputText(installOutput))).toMatchObject({
+        operation: "install",
+        results: [{ status: "installed" }, { status: "installed" }],
+      });
+    });
+  });
+
+  it("reports delegation Skill status without Runtime configuration", async () => {
+    await withTemporaryHome(async (root) => {
+      await installDelegationSkills({ homeDirectory: root });
+      const statusOutput = new PassThrough();
+      await expect(
+        runDelegationCli({
+          arguments: ["skill", "status"],
+          environment: {},
+          output: statusOutput,
+          homeDirectory: root,
+        }),
+      ).resolves.toBe(0);
+      expect(JSON.parse(outputText(statusOutput))).toMatchObject({
+        operation: "status",
+        results: [{ status: "current" }, { status: "current" }],
+      });
+    });
+  });
+
+  it("uninstalls delegation Skills without Runtime configuration", async () => {
+    await withTemporaryHome(async (root) => {
+      await installDelegationSkills({ homeDirectory: root });
+      const uninstallOutput = new PassThrough();
+      await expect(
+        runDelegationCli({
+          arguments: ["skill", "uninstall"],
+          environment: {},
+          output: uninstallOutput,
+          homeDirectory: root,
+        }),
+      ).resolves.toBe(0);
+      expect(JSON.parse(outputText(uninstallOutput))).toMatchObject({
+        operation: "uninstall",
+        results: [{ status: "removed" }, { status: "removed" }],
+      });
+    });
+  });
+
+  it.each([
+    ["unknown command", ["skill", "upgrade"]],
+    ["extra positional argument", ["skill", "status", "extra"]],
+  ])("rejects Skill %s as INVALID_ARGUMENT", async (_name, arguments_) => {
+    const diagnosticOutput = new PassThrough();
+    await expect(
+      runDelegationCli({ arguments: arguments_, environment: {}, diagnosticOutput }),
+    ).resolves.toBe(1);
+    expect(JSON.parse(outputText(diagnosticOutput))).toMatchObject({
+      error: { code: "INVALID_ARGUMENT" },
+    });
+  });
+
   it("prints the authoritative help", async () => {
     const output = new PassThrough();
     await expect(runDelegationCli({ arguments: ["delegate", "--help"], output })).resolves.toBe(0);

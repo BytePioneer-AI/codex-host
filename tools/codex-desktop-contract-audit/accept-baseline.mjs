@@ -6,6 +6,7 @@ import { parseReviewedDesktopManifest } from "./reviewed-desktops.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const defaultManifestPath = path.join(import.meta.dirname, "reviewed-desktops.json");
+const transactionFilename = ".accept-baseline-transaction.json";
 const identityFields = ["platform", "version", "build", "asarIntegrity"];
 const rejectedVerdicts = new Set(["possible-impact", "confirmed-impact"]);
 
@@ -75,6 +76,136 @@ function writeTemporaryJson(target, value) {
   return temporary;
 }
 
+function exactKeys(value, expected) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function transactionTemporaryPath(target) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.accept.tmp`);
+}
+
+function writeTransactionFile(target, value) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(transactionTemporaryPath(target), `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+}
+
+function journalFor(entry, report) {
+  return { schemaVersion: 1, entry, report };
+}
+
+function parseJournal(value, manifestDirectory, report) {
+  if (
+    !exactKeys(value, ["schemaVersion", "entry", "report"]) ||
+    value.schemaVersion !== 1 ||
+    !exactKeys(value.entry, ["platform", "version", "build", "asarIntegrity", "baseline"])
+  ) {
+    throw new Error("pending baseline transaction journal is invalid");
+  }
+  const pendingReport = validateAuditReport(value.report);
+  if (JSON.stringify(pendingReport) !== JSON.stringify(report)) {
+    throw new Error("pending baseline transaction belongs to a different report");
+  }
+  const entry = parseReviewedDesktopManifest(
+    { schemaVersion: 1, desktops: [value.entry] },
+    manifestDirectory,
+  ).desktops[0];
+  if (!sameIdentity(entry, pendingReport.desktop)) {
+    throw new Error("pending baseline transaction identity does not match its report");
+  }
+  return { entry, rawEntry: value.entry, report: pendingReport };
+}
+
+function reportsMatch(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function resumePendingTransaction({
+  journalPath,
+  manifestDirectory,
+  manifestPath,
+  rawManifest,
+  manifest,
+  report,
+}) {
+  if (!pathEntryExists(journalPath)) return null;
+  const confinedJournal = confinedExistingFile(
+    manifestDirectory,
+    journalPath,
+    "pending transaction journal",
+  );
+  const pending = parseJournal(
+    JSON.parse(fs.readFileSync(confinedJournal, "utf8")),
+    manifestDirectory,
+    report,
+  );
+  const baselinePath = pending.entry.baseline;
+  assertConfinedDestination(manifestDirectory, baselinePath);
+  if (!pathEntryExists(baselinePath)) {
+    fs.rmSync(transactionTemporaryPath(baselinePath), { force: true });
+    fs.rmSync(transactionTemporaryPath(manifestPath), { force: true });
+    fs.rmSync(journalPath);
+    return null;
+  }
+
+  let baselineReport;
+  try {
+    const confined = confinedExistingFile(
+      manifestDirectory,
+      baselinePath,
+      "pending transaction baseline",
+    );
+    baselineReport = validateAuditReport(JSON.parse(fs.readFileSync(confined, "utf8")));
+  } catch {
+    throw new Error("pending transaction baseline does not match reviewed report");
+  }
+  if (!reportsMatch(baselineReport, pending.report)) {
+    throw new Error("pending transaction baseline does not match reviewed report");
+  }
+
+  const existing = manifest.desktops.find((entry) => sameIdentity(entry, pending.entry));
+  if (existing && existing.baseline !== baselinePath) {
+    throw new Error("pending baseline transaction conflicts with the manifest");
+  }
+  if (!existing) {
+    if (manifest.desktops.some((entry) => entry.baseline === baselinePath)) {
+      throw new Error("pending baseline transaction conflicts with the manifest");
+    }
+    const nextManifest = {
+      schemaVersion: 1,
+      desktops: [...rawManifest.desktops, pending.rawEntry],
+    };
+    parseReviewedDesktopManifest(nextManifest, manifestDirectory);
+    fs.rmSync(transactionTemporaryPath(manifestPath), { force: true });
+    writeTransactionFile(manifestPath, nextManifest);
+    fs.renameSync(transactionTemporaryPath(manifestPath), manifestPath);
+  }
+  fs.rmSync(journalPath);
+  return { baselinePath, manifestPath, appended: true };
+}
+
+function commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest }) {
+  const entry = nextManifest.desktops.at(-1);
+  const journalTemporary = writeTemporaryJson(journalPath, journalFor(entry, report));
+  try {
+    fs.renameSync(journalTemporary, journalPath);
+  } finally {
+    fs.rmSync(journalTemporary, { force: true });
+  }
+
+  writeTransactionFile(baselinePath, report);
+  fs.renameSync(transactionTemporaryPath(baselinePath), baselinePath);
+  writeTransactionFile(manifestPath, nextManifest);
+  fs.renameSync(transactionTemporaryPath(manifestPath), manifestPath);
+  fs.rmSync(journalPath);
+}
+
 export function acceptReviewedBaseline(input) {
   if (!input?.reportPath) throw new Error("--report is required");
   const root = fs.realpathSync(input.root ?? repositoryRoot);
@@ -92,6 +223,16 @@ export function acceptReviewedBaseline(input) {
   const manifestDirectory = path.dirname(manifestPath);
   const rawManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const manifest = parseReviewedDesktopManifest(rawManifest, manifestDirectory);
+  const journalPath = path.join(manifestDirectory, transactionFilename);
+  const resumed = resumePendingTransaction({
+    journalPath,
+    manifestDirectory,
+    manifestPath,
+    rawManifest,
+    manifest,
+    report,
+  });
+  if (resumed) return resumed;
   const existing = manifest.desktops.find((entry) => sameIdentity(entry, report.desktop));
   let baselinePath;
   let nextManifest = null;
@@ -113,23 +254,18 @@ export function acceptReviewedBaseline(input) {
   assertConfinedDestination(manifestDirectory, baselinePath);
   if (pathEntryExists(baselinePath)) throw new Error("baseline already exists");
 
+  if (nextManifest) {
+    commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest });
+    return { baselinePath, manifestPath, appended: true };
+  }
+
   const baselineTemporary = writeTemporaryJson(baselinePath, report);
-  const manifestTemporary = nextManifest ? writeTemporaryJson(manifestPath, nextManifest) : null;
   try {
     fs.renameSync(baselineTemporary, baselinePath);
-    if (manifestTemporary) {
-      try {
-        fs.renameSync(manifestTemporary, manifestPath);
-      } catch (error) {
-        fs.rmSync(baselinePath, { force: true });
-        throw error;
-      }
-    }
   } finally {
     fs.rmSync(baselineTemporary, { force: true });
-    if (manifestTemporary) fs.rmSync(manifestTemporary, { force: true });
   }
-  return { baselinePath, manifestPath, appended: nextManifest !== null };
+  return { baselinePath, manifestPath, appended: false };
 }
 
 function parseArguments(arguments_) {

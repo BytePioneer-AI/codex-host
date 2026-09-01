@@ -63,6 +63,8 @@ npm run accept:codex-desktop-baseline -- \
 
 The acceptance command requires a repository-confined report, validates its exact schema, rejects `possible-impact` and `confirmed-impact`, refuses an existing baseline or duplicate identity, and writes JSON by atomic rename. A predeclared identity may populate its missing baseline once; a new identity appends one manifest entry. Review the resulting manifest and baseline diff before committing it.
 
+For a new identity, acceptance records a local transaction journal before the baseline rename. If the process stops before the manifest rename, rerun the same `--report` command to resume; a different report or conflicting baseline remains untouched and fails closed for manual review.
+
 ## Transcript surface
 
 The `transcript` surface covers the contract that external Harness Reasoning depends on.

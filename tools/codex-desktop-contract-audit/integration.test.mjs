@@ -74,7 +74,7 @@ describe("reviewed Codex Desktop integration", () => {
       identity,
       manifest,
       runAudit: async (options) => {
-        if (options.mode !== "controlled" || options.baselinePath !== baseline) {
+        if (options.mode !== "controlled" || options.baselinePath !== fs.realpathSync(baseline)) {
           throw new Error("audit did not receive the reviewed baseline");
         }
         return { verdict: "no-impact", surfaces: [] };
@@ -109,6 +109,24 @@ describe("reviewed Codex Desktop integration", () => {
         },
       }),
     ).rejects.toThrow(/baseline.*missing/i);
+  });
+
+  it("rejects a reviewed baseline symlink that escapes the manifest directory", async () => {
+    const { baseline, manifest } = reviewedFixture();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-integration-outside-"));
+    temporaryDirectories.push(outside);
+    const outsideBaseline = path.join(outside, "baseline.json");
+    fs.writeFileSync(outsideBaseline, `${JSON.stringify(baselineReport())}\n`);
+    fs.rmSync(baseline);
+    fs.symlinkSync(outsideBaseline, baseline);
+
+    await expect(
+      runReviewedDesktopIntegration({
+        identity,
+        manifest,
+        runAudit: async () => ({ verdict: "no-impact", surfaces: [] }),
+      }),
+    ).rejects.toThrow(/baseline.*confined|symlink/i);
   });
 
   it("rejects a baseline for a different Desktop identity", async () => {

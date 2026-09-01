@@ -13,10 +13,27 @@ function sameIdentity(left, right) {
   return identityFields.every((field) => left?.[field] === right?.[field]);
 }
 
+function confinedBaseline(manifest, pathname) {
+  const root = fs.realpathSync(manifest.manifestDirectory);
+  const resolved = fs.realpathSync(pathname);
+  const relative = path.relative(root, resolved);
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("reviewed baseline must be confined; symlink escapes manifest directory");
+  }
+  if (!fs.statSync(resolved).isFile()) throw new Error("reviewed baseline must be a file");
+  return resolved;
+}
+
 export async function runReviewedDesktopIntegration(input) {
   const reviewed = findReviewedDesktop(input.manifest, input.identity);
   if (!fs.existsSync(reviewed.baseline)) throw new Error("reviewed baseline is missing");
-  const baseline = validateAuditReport(JSON.parse(fs.readFileSync(reviewed.baseline, "utf8")));
+  const baselinePath = confinedBaseline(input.manifest, reviewed.baseline);
+  const baseline = validateAuditReport(JSON.parse(fs.readFileSync(baselinePath, "utf8")));
   if (!sameIdentity(baseline.desktop, input.identity)) {
     throw new Error("reviewed baseline Desktop identity does not match");
   }
@@ -24,7 +41,7 @@ export async function runReviewedDesktopIntegration(input) {
   const auditResult = await input.runAudit({
     ...(input.auditOptions ?? {}),
     mode: "controlled",
-    baselinePath: reviewed.baseline,
+    baselinePath,
     desktopPlatform: input.identity.platform,
     desktopVersion: input.identity.version,
     desktopBuild: input.identity.build,

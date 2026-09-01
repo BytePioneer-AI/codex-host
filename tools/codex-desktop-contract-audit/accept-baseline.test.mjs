@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acceptReviewedBaseline } from "./accept-baseline.mjs";
 import { AUDIT_SURFACE_IDS, validateAuditReport } from "./report.mjs";
@@ -69,7 +69,29 @@ function baselineFiles(auditDirectory) {
   return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
 }
 
+function writeInterruptedTransaction(fixture_, report = validateAuditReport(auditReport())) {
+  const relativeBaseline = "baselines/macos-26.825.41651-7345.json";
+  const baselinePath = path.join(fixture_.auditDirectory, relativeBaseline);
+  fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+  fs.writeFileSync(baselinePath, `${JSON.stringify(report, null, 2)}\n`);
+  const journalPath = path.join(fixture_.auditDirectory, ".accept-baseline-transaction.json");
+  fs.writeFileSync(
+    journalPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        entry: { ...identity, baseline: relativeBaseline },
+        report,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return { baselinePath, journalPath };
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -112,6 +134,94 @@ describe("reviewed baseline acceptance", () => {
     expect(JSON.parse(fs.readFileSync(result.baselinePath, "utf8"))).toEqual(
       validateAuditReport(auditReport()),
     );
+  });
+
+  it("resumes an interrupted new-identity transaction after the baseline rename", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const baselinePath = path.join(
+      fixture_.auditDirectory,
+      "baselines/macos-26.825.41651-7345.json",
+    );
+    const journalPath = path.join(fixture_.auditDirectory, ".accept-baseline-transaction.json");
+    const resolvedBaselinePath = path.join(
+      fs.realpathSync(fixture_.auditDirectory),
+      "baselines/macos-26.825.41651-7345.json",
+    );
+    const renameSync = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      renameSync(from, to);
+      if (to === resolvedBaselinePath) {
+        throw new Error("simulated interruption after baseline rename");
+      }
+    });
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow("simulated interruption");
+    rename.mockRestore();
+    expect(fs.existsSync(journalPath)).toBe(true);
+    expect(fs.existsSync(baselinePath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8")).desktops).toHaveLength(1);
+
+    const result = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: fixture_.reportPath,
+    });
+
+    const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
+    expect(manifest.desktops[1]).toEqual({
+      ...identity,
+      baseline: "baselines/macos-26.825.41651-7345.json",
+    });
+    expect(result).toMatchObject({ baselinePath: fs.realpathSync(baselinePath), appended: true });
+    expect(fs.existsSync(journalPath)).toBe(false);
+  });
+
+  it("leaves an unrelated baseline untouched when interrupted recovery conflicts", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const { baselinePath, journalPath } = writeInterruptedTransaction(fixture_);
+    fs.writeFileSync(baselinePath, "unrelated\n");
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/pending.*baseline.*match|transaction.*conflict/i);
+    expect(fs.readFileSync(baselinePath, "utf8")).toBe("unrelated\n");
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.existsSync(journalPath)).toBe(true);
+  });
+
+  it("rejects unknown pending journal entry fields without changing outputs", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const { baselinePath, journalPath } = writeInterruptedTransaction(fixture_);
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+    journal.entry.privatePath = "/secret";
+    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const baselineBefore = fs.readFileSync(baselinePath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/journal.*invalid|unknown.*field/i);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.readFileSync(baselinePath, "utf8")).toBe(baselineBefore);
+    expect(fs.existsSync(journalPath)).toBe(true);
   });
 
   it.each(["possible-impact", "confirmed-impact"])(

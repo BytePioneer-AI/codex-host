@@ -115,6 +115,7 @@ export interface ClaudeCodeAdapterOptions {
   command?: string;
   environment?: NodeJS.ProcessEnv;
   closeTimeoutMs?: number;
+  cancelTimeoutMs?: number;
   toolOutputLimit?: number;
   continuationQuiescenceMs?: number;
 }
@@ -259,6 +260,7 @@ function parseClaudeHarnessCommand(
   return { ok: true, value: { id: "claude.compact", text: customInstructions } };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
+const DEFAULT_CANCEL_TIMEOUT_MS = 2_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 const CONTEXT_USAGE_TTL_MS = 10_000;
@@ -393,6 +395,22 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function rejectAfter(
+  milliseconds: number,
+  message: string,
+): { promise: Promise<never>; cancel(): void } {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), milliseconds);
+  });
+  return {
+    promise,
+    cancel() {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    },
+  };
+}
+
 /**
  * Cache hit rate for the latest request only, never a Session cumulative value.
  * Every addend must be present; the denominator must be positive.
@@ -469,13 +487,14 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly initialUsage = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
+  readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: ClaudeAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
   readonly #onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null;
-  readonly #openMode: "create" | "resume";
+  #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
   #requestedPermissionModeId: HarnessPermissionModeId;
@@ -507,6 +526,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
   #occupancy = new ClaudeBackgroundOccupancy();
+  #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -523,6 +543,7 @@ class ClaudeHarnessSession implements HarnessSession {
       requestedPermissionModeId: HarnessPermissionModeId;
       requestedThinkingOptionId: HarnessThinkingOptionId;
       toolOutputLimit: number;
+      cancelTimeoutMs: number;
       continuationQuiescenceMs: number;
     },
   ) {
@@ -533,6 +554,7 @@ class ClaudeHarnessSession implements HarnessSession {
       : dependencies.createTransport;
     this.#randomUUID = dependencies.randomUUID;
     this.#readSessionMessages = dependencies.readSessionMessages;
+    this.#cancelTimeoutMs = options.cancelTimeoutMs;
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
     this.#onPlanLimitObserved = onPlanLimitObserved;
@@ -749,7 +771,7 @@ class ClaudeHarnessSession implements HarnessSession {
       active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
-        () => this.#fault(faultError()),
+        () => this.#handleTurnTransportFailure(active),
       );
     } catch {
       this.#finishFailed(active, faultError());
@@ -856,7 +878,7 @@ class ClaudeHarnessSession implements HarnessSession {
     try {
       void running.then(
         (result) => this.#finishResult(active, result),
-        () => this.#fault(faultError()),
+        () => this.#handleTurnTransportFailure(active),
       );
     } catch {
       this.#finishFailed(active, faultError());
@@ -1173,16 +1195,17 @@ class ClaudeHarnessSession implements HarnessSession {
       this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
       return { ok: true, value: { cancellationRequested: true } };
     }
+    const timeout = rejectAfter(this.#cancelTimeoutMs, "Claude Code interrupt timed out");
     try {
-      await this.#transport?.abort();
-      return { ok: true, value: { cancellationRequested: true } };
+      await Promise.race([this.#transport?.abort() ?? Promise.resolve(), timeout.promise]);
     } catch {
-      this.#finishFailed(active, transportFailure("cancellationUnproven"));
-      return {
-        ok: false,
-        error: transportFailure("cancellationUnproven"),
-      };
+      this.#hardCancel(active);
+      return { ok: true, value: { cancellationRequested: true } };
+    } finally {
+      timeout.cancel();
     }
+    if (this.#active === active) this.#armCancelEscalation(active);
+    return { ok: true, value: { cancellationRequested: true } };
   }
 
   async #close(): Promise<void> {
@@ -1194,6 +1217,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#requestUsageBoundary += 1;
     this.#contextRefreshWake?.();
     this.#contextRefreshWake = null;
+    this.#clearCancelEscalation();
     this.#clearContinuationQuiescence();
     if (this.#phase !== "faulted") this.#phase = "closing";
     const configurationTask = this.#configurationTask;
@@ -1260,6 +1284,7 @@ class ClaudeHarnessSession implements HarnessSession {
       await transport.close().catch(() => undefined);
       throw error;
     }
+    this.#openMode = "resume";
     this.#transport = transport;
     return transport;
   }
@@ -2055,6 +2080,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #finish(active: ActiveTurn, outcome: TurnOutcome): void {
     if (this.#active !== active) return;
     this.#requestUsageBoundary += 1;
+    this.#clearCancelEscalation();
     this.#clearContinuationQuiescence();
     const hold =
       outcome.status === "succeeded" && !active.cancellationRequested && this.#occupancy.unsettled;
@@ -2101,8 +2127,45 @@ class ClaudeHarnessSession implements HarnessSession {
     active.resolveCompletion();
   }
 
+  #handleTurnTransportFailure(active: ActiveTurn): void {
+    if (this.#active !== active) return;
+    if (active.cancellationRequested) {
+      this.#hardCancel(active);
+      return;
+    }
+    this.#fault(faultError());
+  }
+
+  #armCancelEscalation(active: ActiveTurn): void {
+    this.#clearCancelEscalation();
+    const timer = setTimeout(() => {
+      this.#cancelEscalation = null;
+      if (this.#active !== active || this.#phase !== "open") return;
+      this.#hardCancel(active);
+    }, this.#cancelTimeoutMs);
+    timer.unref();
+    this.#cancelEscalation = timer;
+  }
+
+  #clearCancelEscalation(): void {
+    if (!this.#cancelEscalation) return;
+    clearTimeout(this.#cancelEscalation);
+    this.#cancelEscalation = null;
+  }
+
+  #hardCancel(active: ActiveTurn): void {
+    if (this.#active !== active) return;
+    this.#clearCancelEscalation();
+    const transport = this.#transport;
+    this.#transport = null;
+    this.#openMode = "resume";
+    this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
+    void transport?.close().catch(() => undefined);
+  }
+
   #fault(error: HarnessError): void {
     if (this.#phase === "closed" || this.#phase === "closing" || this.#phase === "faulted") return;
+    this.#clearCancelEscalation();
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
     this.#contextUsageCooldownUntilMs = 0;
@@ -2175,6 +2238,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
   readonly #toolOutputLimit: number;
@@ -2188,6 +2252,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
+      throw new RangeError("Claude Code cancel timeout must be a positive safe integer");
+    }
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
     if (!Number.isSafeInteger(this.#toolOutputLimit) || this.#toolOutputLimit <= 0) {
       throw new RangeError("Claude Code Tool output limit must be a positive safe integer");
@@ -2221,6 +2289,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           ...(options.command ? { command: options.command } : {}),
           environment: input.environment ?? options.environment ?? process.env,
           closeTimeoutMs: this.#closeTimeoutMs,
+          abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
       forkSession: ({ checkpointId, cwd, sourceSessionId }) =>
@@ -2528,6 +2597,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         requestedPermissionModeId,
         requestedThinkingOptionId,
         toolOutputLimit: this.#toolOutputLimit,
+        cancelTimeoutMs: this.#cancelTimeoutMs,
         continuationQuiescenceMs: this.#continuationQuiescenceMs,
       },
     );

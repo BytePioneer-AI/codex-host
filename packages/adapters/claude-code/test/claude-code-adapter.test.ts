@@ -258,7 +258,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     }),
   };
   const adapter = new ClaudeCodeAdapter(
-    { closeTimeoutMs: 50, continuationQuiescenceMs: 50, ...options },
+    { closeTimeoutMs: 50, continuationQuiescenceMs: 50, cancelTimeoutMs: 5_000, ...options },
     dependencies,
   );
   return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
@@ -4287,6 +4287,85 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     await nextEvent(iterator);
     expect(transports).toHaveLength(1);
+    await session.close();
+  });
+
+  it("kills a hung interrupt and continues on a resumed Transport", async () => {
+    const { adapter, dependencies, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("hung"));
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[0]?.abort.mockImplementation(async () => new Promise(() => undefined));
+
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("hung") }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled", reason: "Cancelled by user" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalled();
+
+    await expect(session.execute(textTurn("after-kill"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ openMode: "resume" }),
+    );
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
+  it("escalates an acked interrupt that never ends the Turn", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("acked"));
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("acked") }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(transports[0]?.abort).toHaveBeenCalledOnce();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled", reason: "Cancelled by user" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalled();
+
+    await expect(session.execute(textTurn("after-escalate"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
     await session.close();
   });
 

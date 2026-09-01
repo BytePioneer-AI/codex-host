@@ -10,6 +10,7 @@ import {
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_ID,
+  QWEN_CODE_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
@@ -30,6 +31,7 @@ import {
   deepSeekHarnessTransportModelId,
   grokTransportModelId,
   openCodeTransportModelId,
+  qwenCodeTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
@@ -506,6 +508,14 @@ describe("current Codex Renderer Agent adapter", () => {
       modelSelectionForAgent(null, null, "deepseek-harness", model, undefined, permissionModeId)
         ?.model,
     ).toBe(carrier);
+  });
+
+  it("encodes Qwen Code Model and Permission Mode in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "qwen-max" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
+    const carrier = qwenCodeTransportModelId(model, permissionModeId);
+    expect(carrier).toBe(`${QWEN_CODE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}`);
+    expect(modelSelectionForAgent(null, null, "qwen-code", model, undefined, permissionModeId)?.model).toBe(carrier);
   });
 
   it("encodes Grok Model, Permission Mode, and Thinking in the transport carrier", () => {

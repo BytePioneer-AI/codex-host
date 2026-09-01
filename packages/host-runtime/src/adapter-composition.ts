@@ -1,6 +1,7 @@
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
+import { QwenCodeAdapter } from "@codexhost/adapter-qwen-code";
 import { OpenCodeAdapter } from "@codexhost/adapter-opencode";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
@@ -12,6 +13,7 @@ export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
+export const QWEN_CODE_COMMAND_ENV = "CODEXHOST_QWEN_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
@@ -65,6 +67,15 @@ export function createExternalHarnessAdapters(
           : {}),
         ...(environment[DEEPSEEK_HARNESS_ENDPOINT_ENV]
           ? { endpoint: environment[DEEPSEEK_HARNESS_ENDPOINT_ENV] }
+          : {}),
+        environment,
+      }),
+    ],
+    [
+      "qwen-code",
+      new QwenCodeAdapter({
+        ...(environment[QWEN_CODE_COMMAND_ENV]
+          ? { command: environment[QWEN_CODE_COMMAND_ENV] }
           : {}),
         environment,
       }),

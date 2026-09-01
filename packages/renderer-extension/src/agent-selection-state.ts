@@ -8,6 +8,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "codex",
   "pi",
   "claude-code",
+  "qwen-code",
   "deepseek-harness",
   "opencode",
   "grok",
@@ -29,6 +30,7 @@ export interface DraftComposerState {
   claudeModel?: HarnessModelRef;
   claudeThinkingOptionId?: HarnessThinkingOptionId;
   deepSeekHarnessModel?: HarnessModelRef;
+  qwenCodeModel?: HarnessModelRef;
   openCodeModel?: HarnessModelRef;
   openCodeThinkingOptionId?: HarnessThinkingOptionId;
   grokModel?: HarnessModelRef;
@@ -195,6 +197,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "pi" && model) state.piModel = model;
     if (agent === "claude-code" && model) state.claudeModel = model;
     if (agent === "deepseek-harness" && model) state.deepSeekHarnessModel = model;
+    if (agent === "qwen-code" && model) state.qwenCodeModel = model;
     if (agent === "opencode" && model) state.openCodeModel = model;
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
@@ -216,6 +219,7 @@ export class DraftAgentController<Composer extends object> {
         "pi",
         "claude-code",
         "deepseek-harness",
+        "qwen-code",
         "opencode",
         "grok",
         "omp",
@@ -238,6 +242,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "pi") return state.piModel;
     if (agent === "claude-code") return state.claudeModel;
     if (agent === "deepseek-harness") return state.deepSeekHarnessModel;
+    if (agent === "qwen-code") return state.qwenCodeModel;
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
     return state.ompModel;

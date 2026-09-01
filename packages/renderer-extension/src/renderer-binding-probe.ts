@@ -2324,10 +2324,7 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailabilityForHost("local");
       void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {
-        if (
-          mounted.modelView.status === "waitingForAdapter" &&
-          mounted.composer.isConnected
-        ) {
+        if (mounted.modelView.status === "waitingForAdapter" && mounted.composer.isConnected) {
           applyComposerAgent(mounted.composer);
           void loadExternalCatalog(mounted);
         }

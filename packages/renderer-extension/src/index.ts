@@ -49,13 +49,6 @@ export {
   TRANSCRIPT_TEXT_BODY_SELECTOR,
   inspectRendererTranscriptContract,
 } from "./renderer-transcript-dom.js";
-export {
-  absoluteLocalVideoPath,
-  codexAppFsMediaUrl,
-  installRendererLocalMediaPlayback,
-  isLocalVideoPath,
-  upgradeRenderedLocalMedia,
-} from "./renderer-local-media.js";
 export type { RendererTranscriptContractInspection } from "./renderer-transcript-dom.js";
 export {
   inspectRendererComposerContract,

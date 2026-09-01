@@ -72,6 +72,7 @@ import {
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import { routeRendererHarnessCommandSelection } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import type {
   RendererConnectionDiagnostics,
@@ -776,6 +777,20 @@ export function installRendererBindingProbe(
     } finally {
       mounted.control.harnessCommands.setExecuting(null);
     }
+  };
+
+  const selectCommand = (mounted: MountedComposer, command: HarnessCommandDescriptor): void => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") return;
+    const editor = mounted.composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    if (
+      routeRendererHarnessCommandSelection(editor, command, () => {
+        void executeCommand(mounted, command);
+      })
+    ) {
+      return;
+    }
+    console.error("codexhost Harness command could not claim the current Composer editor");
   };
 
   const applyThreadUsageUpdate = (update: ThreadUsageInspection): void => {
@@ -2038,7 +2053,7 @@ export function installRendererBindingProbe(
       },
       (command) => {
         const mounted = mountedByComposer.get(composer);
-        if (mounted) void executeCommand(mounted, command);
+        if (mounted) selectCommand(mounted, command);
       },
     );
     const mounted: MountedComposer = {

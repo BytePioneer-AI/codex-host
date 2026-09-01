@@ -243,6 +243,7 @@ export async function runDesktopController(
           "pi",
           "claude-code",
           "deepseek-harness",
+          "opencode",
           "grok",
           "omp",
           "antigravity",

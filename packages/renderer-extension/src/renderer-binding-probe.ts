@@ -46,6 +46,7 @@ import {
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodeOmpTransportModelId,
+  decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
   findComposerModelTarget,
   threadIdFromComposerModelTarget,
@@ -78,6 +79,7 @@ const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
   "claude-code": harnessIdSchema.parse("claude-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
+  opencode: harnessIdSchema.parse("opencode"),
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
@@ -87,6 +89,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "pi",
   "claude-code",
   "deepseek-harness",
+  "opencode",
   "grok",
   "omp",
   "antigravity",
@@ -379,6 +382,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "opencode") {
+    const transportSelection = decodeOpenCodeTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("OpenCode Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "opencode",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -591,6 +611,7 @@ export function installRendererBindingProbe(
       pi: undefined,
       "claude-code": undefined,
       "deepseek-harness": undefined,
+      opencode: undefined,
       grok: undefined,
       omp: undefined,
       antigravity: undefined,

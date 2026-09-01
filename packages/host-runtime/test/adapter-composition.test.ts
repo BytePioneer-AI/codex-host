@@ -4,6 +4,7 @@ import type { HarnessInspection } from "@codexhost/harness-adapter";
 import {
   CLAUDE_CODE_COMMAND_ENV,
   GROK_COMMAND_ENV,
+  OPENCODE_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
@@ -58,6 +59,7 @@ describe("Host external Harness composition", () => {
       "pi",
       "claude-code",
       "deepseek-harness",
+      "opencode",
       "grok",
       "omp",
       "antigravity",
@@ -66,6 +68,7 @@ describe("Host external Harness composition", () => {
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     expect(adapters.get("omp")?.harnessId).toBe("omp");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
+    expect(adapters.get("opencode")?.harnessId).toBe("opencode");
     expect(adapters.get("antigravity")?.harnessId).toBe("antigravity");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
@@ -90,6 +93,19 @@ describe("Host external Harness composition", () => {
     });
 
     await expect(adapters.get("claude-code")?.inspect()).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled" },
+    });
+    await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
+  });
+
+  it("preserves an explicit user-installed OpenCode command", async () => {
+    const adapters = createExternalHarnessAdapters({
+      PATH: "",
+      [OPENCODE_COMMAND_ENV]: "/synthetic/opencode",
+    });
+
+    await expect(adapters.get("opencode")?.inspect()).resolves.toMatchObject({
       status: "notInstalled",
       error: { code: "notInstalled" },
     });

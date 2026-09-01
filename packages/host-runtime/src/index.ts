@@ -1,6 +1,7 @@
 import { packageMetadata as claudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { packageMetadata as deepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { packageMetadata as grokAdapter } from "@codexhost/adapter-grok";
+import { packageMetadata as openCodeAdapter } from "@codexhost/adapter-opencode";
 import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
 import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
@@ -16,6 +17,7 @@ export {
   DEEPSEEK_HARNESS_ENDPOINT_ENV,
   GROK_COMMAND_ENV,
   OMP_COMMAND_ENV,
+  OPENCODE_COMMAND_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchAntigravityModelCatalog,
@@ -120,6 +122,7 @@ export const packageMetadata = {
     mappingStore.name,
     piAdapter.name,
     ompAdapter.name,
+    openCodeAdapter.name,
     sharedContracts.name,
     updateManager.name,
   ],

@@ -27,6 +27,12 @@ const runtimeLicenses = [
     source: "LICENSE",
     output: "MCP-SDK-LICENSE.txt",
   },
+  {
+    packageName: "@opencode-ai/sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+    output: "OpenCode-SDK-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
@@ -141,7 +147,11 @@ function packageManifest(value, packageName) {
   return value;
 }
 
-async function writeThirdPartyNotices(root, payloadRoot) {
+export function resolveRuntimeLicenseSource(root, dependency) {
+  return path.resolve(root, dependency.source);
+}
+
+export async function writeThirdPartyNotices(root, payloadRoot) {
   const licensesDirectory = path.join(payloadRoot, "licenses");
   await mkdir(licensesDirectory, { recursive: true });
   const notices = [
@@ -163,7 +173,9 @@ async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      path.join(dependencyRoot, dependency.source),
+      dependency.packageName === "@opencode-ai/sdk"
+        ? resolveRuntimeLicenseSource(root, dependency)
+        : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
       `${dependency.packageName} license`,
     );
@@ -207,6 +219,7 @@ export function expectedPayloadPaths(target) {
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
+    "licenses/OpenCode-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/ws-LICENSE.txt",

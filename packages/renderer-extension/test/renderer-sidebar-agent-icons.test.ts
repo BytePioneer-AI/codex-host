@@ -19,6 +19,7 @@ import {
 
 const PI_HARNESS_ID = harnessIdSchema.parse("pi");
 const CLAUDE_CODE_HARNESS_ID = harnessIdSchema.parse("claude-code");
+const OPENCODE_HARNESS_ID = harnessIdSchema.parse("opencode");
 const ANTIGRAVITY_HARNESS_ID = harnessIdSchema.parse("antigravity");
 const FUTURE_HARNESS_ID = harnessIdSchema.parse("future-agent");
 
@@ -439,6 +440,13 @@ describe("Renderer sidebar Agent ownership", () => {
         harnessId: PI_HARNESS_ID,
       }),
     ).toBe("pi");
+    expect(
+      rendererAgentForThreadOwnership({
+        threadId: "opencode-thread" as HostThreadId,
+        owner: "external",
+        harnessId: OPENCODE_HARNESS_ID,
+      }),
+    ).toBe("opencode");
     expect(
       rendererAgentForThreadOwnership({
         threadId: "antigravity-thread" as HostThreadId,

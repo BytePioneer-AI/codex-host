@@ -12,6 +12,7 @@ import {
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
+  OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeAntigravityTransportSelection,
@@ -20,12 +21,14 @@ import {
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodeGrokTransportSelection,
+  decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
   encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
+  encodeOpenCodeTransportModel,
   encodePiTransportModel,
   encodeOmpTransportModel,
   transportModelIdForHarness,
@@ -36,6 +39,7 @@ describe("external Harness transport model routing", () => {
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
+    ["opencode", OPENCODE_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
     ["antigravity", ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID],
@@ -301,6 +305,34 @@ describe("external Harness transport model routing", () => {
     expect(decodeGrokTransportSelection(legacyCarrier)).toEqual({ model, thinkingOptionId });
   });
 
+  it("round-trips request-scoped OpenCode configuration", () => {
+    const model = harnessModelRefSchema.parse({
+      id: "opencode-model-v1.WyJvcGVuYWkiLCJnZW1pbmkiXQ",
+    });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("ask");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("ocv.aGlnaA");
+    const transportModelId = encodeOpenCodeTransportModel(
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    );
+
+    expect(transportModelId).toBe(
+      `${OPENCODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(decodeOpenCodeTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "opencode", model, permissionModeId, thinkingOptionId });
+    expect(() => encodeOpenCodeTransportModel(undefined, permissionModeId)).toThrow(
+      "requires a Model Ref",
+    );
+  });
+
   it("decodes existing Thread carriers only for their owning Harness", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const selectedPi = encodePiTransportModel(model);
@@ -321,6 +353,10 @@ describe("external Harness transport model routing", () => {
     expect(decodeExternalTransportModel("pi", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID)).toBeNull();
     expect(decodeExternalTransportModel("grok", GROK_NATIVE_TRANSPORT_MODEL_ID)).toBeUndefined();
     expect(decodeExternalTransportModel("grok", selectedPi)).toBeNull();
+    expect(
+      decodeExternalTransportModel("opencode", OPENCODE_NATIVE_TRANSPORT_MODEL_ID),
+    ).toBeUndefined();
+    expect(decodeExternalTransportModel("opencode", selectedPi)).toBeNull();
   });
 
   it("rejects malformed selected Claude carriers instead of forwarding them as official Models", () => {

@@ -274,6 +274,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_PI_COMMAND",
     "CODEXHOST_ENABLE_CLAUDE_CODE",
     "CODEXHOST_CLAUDE_COMMAND",
+    "CODEXHOST_OPENCODE_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
     "CODEXHOST_LAUNCHER_PID",
     "CODEXHOST_LAUNCHER_EXECUTABLE",
@@ -316,6 +317,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "DeepSeek Harness";
     case "grok":
       return "Grok";
+    case "opencode":
+      return "OpenCode";
     case "omp":
       return "Oh My Pi";
     case "antigravity":

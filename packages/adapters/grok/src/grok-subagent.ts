@@ -272,6 +272,8 @@ function taskOutputResults(rawOutput: unknown): Array<Record<string, unknown>> {
   if (nested && Array.isArray(nested.results)) {
     return nested.results.filter(isRecord);
   }
+  const single = firstRecord(rawOutput.Result, rawOutput.result);
+  if (single) return [single];
   if (typeof rawOutput.status === "string") return [rawOutput];
   return [];
 }

@@ -173,7 +173,14 @@ export class GrokSubagentLifecycle {
       !input.failed &&
       !input.cancellationRequested &&
       (background || active?.item.operation === "send");
-    return this.complete(turnId, callId, { ...input, keepRunning });
+    if (keepRunning) {
+      return this.update(turnId, callId, {
+        status: "running",
+        ...(input.nativeSubagentId ? { nativeSubagentId: input.nativeSubagentId } : {}),
+        ...(input.resultSummary ? { resultSummary: input.resultSummary } : {}),
+      });
+    }
+    return this.complete(turnId, callId, { ...input, keepRunning: false });
   }
 
   completeByNativeId(

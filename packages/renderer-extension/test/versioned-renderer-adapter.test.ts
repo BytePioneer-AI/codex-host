@@ -137,6 +137,32 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([manager]);
   });
 
+  it("routes through a ready policy whose request target uses the split manager shape", () => {
+    const requestClient = {
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
+      prewarmThreadStart: () => undefined,
+    };
+    const manager = {
+      hostId: "local",
+      getHostId: () => "local",
+      requestClient,
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: "local",
+      select: () => true,
+      clear: () => Promise.resolve(),
+      requestTarget: () => manager,
+    };
+
+    expect(resolveRendererRequestRoute(policy, [], null)).toEqual({
+      policy,
+      targets: [manager],
+    });
+  });
+
   it("keeps local and remote request targets independently addressable", () => {
     const local = {
       hostId: "local",

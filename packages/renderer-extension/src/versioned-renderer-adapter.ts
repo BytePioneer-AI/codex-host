@@ -722,7 +722,7 @@ function prewarmTargetHostId(target: PrewarmTarget): string | null {
 
 function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
   if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  return isCurrentRequestBridge(value.requestClient ?? value);
+  return isCurrentRequestBridge(value.requestClient ?? value) || isSplitRequestManager(value);
 }
 
 function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {

@@ -1382,7 +1382,8 @@ export class GrokAdapter implements HarnessAdapter {
           value: mapGrokReplay(
             history,
             this.harnessId,
-            input.nativeSubagentId,
+            // Host Subagent records keep the parent Native Session identity.
+            input.parent.nativeSessionId,
             cwd,
             [],
             this.#toolOutputLimit,

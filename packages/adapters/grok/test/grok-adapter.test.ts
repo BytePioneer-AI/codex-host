@@ -2424,6 +2424,7 @@ describe("Grok Adapter ACP projection", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.turns).toHaveLength(1);
+        expect(result.value.turns[0]?.nativeTurnRef.nativeSessionId).toBe("parent-session");
         expect(result.value.turns[0]?.input).toEqual([{ type: "text", text: "Look at the repo" }]);
         expect(result.value.turns[0]?.items).toContainEqual({
           item: expect.objectContaining({ type: "agentMessage", text: "I inspected it." }),

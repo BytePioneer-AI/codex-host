@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,6 +10,7 @@ const defaultManifestPath = path.join(import.meta.dirname, "reviewed-desktops.js
 const transactionFilename = ".accept-baseline-transaction.json";
 const identityFields = ["platform", "version", "build", "asarIntegrity"];
 const rejectedVerdicts = new Set(["possible-impact", "confirmed-impact"]);
+const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function isConfined(root, pathname) {
   const relative = path.relative(root, pathname);
@@ -83,27 +85,33 @@ function exactKeys(value, expected) {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
-function transactionTemporaryPath(target) {
-  return path.join(path.dirname(target), `.${path.basename(target)}.accept.tmp`);
+function transactionTemporaryPath(target, transactionId) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.accept-${transactionId}.tmp`);
 }
 
-function writeTransactionFile(target, value) {
+function writeTransactionFile(target, value, transactionId) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(transactionTemporaryPath(target), `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
+  fs.writeFileSync(
+    transactionTemporaryPath(target, transactionId),
+    `${JSON.stringify(value, null, 2)}\n`,
+    {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    },
+  );
 }
 
-function journalFor(entry, report) {
-  return { schemaVersion: 1, entry, report };
+function journalFor(transactionId, entry, report) {
+  return { schemaVersion: 1, transactionId, entry, report };
 }
 
 function parseJournal(value, manifestDirectory, report) {
   if (
-    !exactKeys(value, ["schemaVersion", "entry", "report"]) ||
+    !exactKeys(value, ["schemaVersion", "transactionId", "entry", "report"]) ||
     value.schemaVersion !== 1 ||
+    typeof value.transactionId !== "string" ||
+    !uuidV4.test(value.transactionId) ||
     !exactKeys(value.entry, ["platform", "version", "build", "asarIntegrity", "baseline"])
   ) {
     throw new Error("pending baseline transaction journal is invalid");
@@ -119,11 +127,30 @@ function parseJournal(value, manifestDirectory, report) {
   if (!sameIdentity(entry, pendingReport.desktop)) {
     throw new Error("pending baseline transaction identity does not match its report");
   }
-  return { entry, rawEntry: value.entry, report: pendingReport };
+  return {
+    transactionId: value.transactionId,
+    entry,
+    rawEntry: value.entry,
+    report: pendingReport,
+  };
 }
 
 function reportsMatch(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function removeOwnedTransactionFile(pathname, expected) {
+  if (!pathEntryExists(pathname)) return;
+  let actual;
+  try {
+    actual = JSON.parse(fs.readFileSync(pathname, "utf8"));
+  } catch {
+    throw new Error("pending transaction temporary file conflicts with its journal");
+  }
+  if (!reportsMatch(actual, expected)) {
+    throw new Error("pending transaction temporary file conflicts with its journal");
+  }
+  fs.rmSync(pathname);
 }
 
 function resumePendingTransaction({
@@ -147,9 +174,27 @@ function resumePendingTransaction({
   );
   const baselinePath = pending.entry.baseline;
   assertConfinedDestination(manifestDirectory, baselinePath);
+  const existing = manifest.desktops.find((entry) => sameIdentity(entry, pending.entry));
+  if (
+    (existing && existing.baseline !== baselinePath) ||
+    manifest.desktops.some(
+      (entry) => entry.baseline === baselinePath && !sameIdentity(entry, pending.entry),
+    )
+  ) {
+    throw new Error("pending baseline transaction conflicts with the manifest");
+  }
   if (!pathEntryExists(baselinePath)) {
-    fs.rmSync(transactionTemporaryPath(baselinePath), { force: true });
-    fs.rmSync(transactionTemporaryPath(manifestPath), { force: true });
+    const pendingManifest = existing
+      ? rawManifest
+      : { schemaVersion: 1, desktops: [...rawManifest.desktops, pending.rawEntry] };
+    removeOwnedTransactionFile(
+      transactionTemporaryPath(baselinePath, pending.transactionId),
+      pending.report,
+    );
+    removeOwnedTransactionFile(
+      transactionTemporaryPath(manifestPath, pending.transactionId),
+      pendingManifest,
+    );
     fs.rmSync(journalPath);
     return null;
   }
@@ -169,22 +214,23 @@ function resumePendingTransaction({
     throw new Error("pending transaction baseline does not match reviewed report");
   }
 
-  const existing = manifest.desktops.find((entry) => sameIdentity(entry, pending.entry));
-  if (existing && existing.baseline !== baselinePath) {
-    throw new Error("pending baseline transaction conflicts with the manifest");
-  }
   if (!existing) {
-    if (manifest.desktops.some((entry) => entry.baseline === baselinePath)) {
-      throw new Error("pending baseline transaction conflicts with the manifest");
-    }
     const nextManifest = {
       schemaVersion: 1,
       desktops: [...rawManifest.desktops, pending.rawEntry],
     };
     parseReviewedDesktopManifest(nextManifest, manifestDirectory);
-    fs.rmSync(transactionTemporaryPath(manifestPath), { force: true });
-    writeTransactionFile(manifestPath, nextManifest);
-    fs.renameSync(transactionTemporaryPath(manifestPath), manifestPath);
+    removeOwnedTransactionFile(
+      transactionTemporaryPath(manifestPath, pending.transactionId),
+      nextManifest,
+    );
+    writeTransactionFile(manifestPath, nextManifest, pending.transactionId);
+    fs.renameSync(transactionTemporaryPath(manifestPath, pending.transactionId), manifestPath);
+  } else {
+    removeOwnedTransactionFile(
+      transactionTemporaryPath(manifestPath, pending.transactionId),
+      rawManifest,
+    );
   }
   fs.rmSync(journalPath);
   return { baselinePath, manifestPath, appended: true };
@@ -192,17 +238,21 @@ function resumePendingTransaction({
 
 function commitNewIdentity({ journalPath, baselinePath, manifestPath, report, nextManifest }) {
   const entry = nextManifest.desktops.at(-1);
-  const journalTemporary = writeTemporaryJson(journalPath, journalFor(entry, report));
+  const transactionId = randomUUID();
+  const journalTemporary = writeTemporaryJson(
+    journalPath,
+    journalFor(transactionId, entry, report),
+  );
   try {
     fs.renameSync(journalTemporary, journalPath);
   } finally {
     fs.rmSync(journalTemporary, { force: true });
   }
 
-  writeTransactionFile(baselinePath, report);
-  fs.renameSync(transactionTemporaryPath(baselinePath), baselinePath);
-  writeTransactionFile(manifestPath, nextManifest);
-  fs.renameSync(transactionTemporaryPath(manifestPath), manifestPath);
+  writeTransactionFile(baselinePath, report, transactionId);
+  fs.renameSync(transactionTemporaryPath(baselinePath, transactionId), baselinePath);
+  writeTransactionFile(manifestPath, nextManifest, transactionId);
+  fs.renameSync(transactionTemporaryPath(manifestPath, transactionId), manifestPath);
   fs.rmSync(journalPath);
 }
 

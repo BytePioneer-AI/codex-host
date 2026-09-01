@@ -15,6 +15,8 @@ const identity = {
 };
 
 const temporaryDirectories = [];
+const transactionId = "11111111-1111-4111-8111-111111111111";
+const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function surface(id, verdict = "no-impact") {
   return {
@@ -69,7 +71,11 @@ function baselineFiles(auditDirectory) {
   return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
 }
 
-function writeInterruptedTransaction(fixture_, report = validateAuditReport(auditReport())) {
+function writeInterruptedTransaction(
+  fixture_,
+  report = validateAuditReport(auditReport()),
+  pendingTransactionId = transactionId,
+) {
   const relativeBaseline = "baselines/macos-26.825.41651-7345.json";
   const baselinePath = path.join(fixture_.auditDirectory, relativeBaseline);
   fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
@@ -80,6 +86,7 @@ function writeInterruptedTransaction(fixture_, report = validateAuditReport(audi
     `${JSON.stringify(
       {
         schemaVersion: 1,
+        transactionId: pendingTransactionId,
         entry: { ...identity, baseline: relativeBaseline },
         report,
       },
@@ -87,7 +94,7 @@ function writeInterruptedTransaction(fixture_, report = validateAuditReport(audi
       2,
     )}\n`,
   );
-  return { baselinePath, journalPath };
+  return { baselinePath, journalPath, transactionId: pendingTransactionId };
 }
 
 afterEach(() => {
@@ -167,6 +174,13 @@ describe("reviewed baseline acceptance", () => {
     expect(fs.existsSync(journalPath)).toBe(true);
     expect(fs.existsSync(baselinePath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8")).desktops).toHaveLength(1);
+    const pendingTransactionId = JSON.parse(fs.readFileSync(journalPath, "utf8")).transactionId;
+    expect(pendingTransactionId).toMatch(uuidV4);
+    const foreignTemporary = path.join(
+      path.dirname(fixture_.manifestPath),
+      `.${path.basename(fixture_.manifestPath)}.accept.tmp`,
+    );
+    fs.writeFileSync(foreignTemporary, "foreign\n");
 
     const result = acceptReviewedBaseline({
       root: fixture_.root,
@@ -181,6 +195,7 @@ describe("reviewed baseline acceptance", () => {
     });
     expect(result).toMatchObject({ baselinePath: fs.realpathSync(baselinePath), appended: true });
     expect(fs.existsSync(journalPath)).toBe(false);
+    expect(fs.readFileSync(foreignTemporary, "utf8")).toBe("foreign\n");
   });
 
   it("leaves an unrelated baseline untouched when interrupted recovery conflicts", () => {
@@ -222,6 +237,97 @@ describe("reviewed baseline acceptance", () => {
     expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
     expect(fs.readFileSync(baselinePath, "utf8")).toBe(baselineBefore);
     expect(fs.existsSync(journalPath)).toBe(true);
+  });
+
+  it("rejects a pending journal with a non-UUID transaction id", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const { baselinePath, journalPath } = writeInterruptedTransaction(
+      fixture_,
+      validateAuditReport(auditReport()),
+      "not-a-uuid",
+    );
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const baselineBefore = fs.readFileSync(baselinePath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/journal.*invalid|transaction.*id/i);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.readFileSync(baselinePath, "utf8")).toBe(baselineBefore);
+    expect(fs.existsSync(journalPath)).toBe(true);
+  });
+
+  it("retains a missing-baseline journal when the manifest identity has another baseline", () => {
+    const fixture_ = fixture({ manifestIdentity: identity, baseline: "baselines/conflict.json" });
+    const { baselinePath, journalPath } = writeInterruptedTransaction(fixture_);
+    fs.rmSync(baselinePath);
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const journalBefore = fs.readFileSync(journalPath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/pending.*transaction.*conflict/i);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.readFileSync(journalPath, "utf8")).toBe(journalBefore);
+    expect(fs.existsSync(baselinePath)).toBe(false);
+    expect(fs.existsSync(path.join(fixture_.auditDirectory, "baselines/conflict.json"))).toBe(
+      false,
+    );
+  });
+
+  it("retains a missing-baseline journal when another identity owns its baseline path", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const relativeBaseline = "baselines/macos-26.825.41651-7345.json";
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: relativeBaseline });
+    const { baselinePath, journalPath } = writeInterruptedTransaction(fixture_);
+    fs.rmSync(baselinePath);
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const journalBefore = fs.readFileSync(journalPath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/pending.*transaction.*conflict/i);
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.readFileSync(journalPath, "utf8")).toBe(journalBefore);
+    expect(fs.existsSync(baselinePath)).toBe(false);
+  });
+
+  it("preserves a same-transaction temp whose content is not owned by the journal", () => {
+    const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
+    const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
+    const pending = writeInterruptedTransaction(fixture_);
+    fs.rmSync(pending.baselinePath);
+    const foreignTemporary = path.join(
+      fixture_.auditDirectory,
+      `.${path.basename(fixture_.manifestPath)}.accept-${pending.transactionId}.tmp`,
+    );
+    fs.writeFileSync(foreignTemporary, "foreign\n");
+    const manifestBefore = fs.readFileSync(fixture_.manifestPath, "utf8");
+    const journalBefore = fs.readFileSync(pending.journalPath, "utf8");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+      }),
+    ).toThrow(/temporary.*conflict|transaction.*temp/i);
+    expect(fs.readFileSync(foreignTemporary, "utf8")).toBe("foreign\n");
+    expect(fs.readFileSync(fixture_.manifestPath, "utf8")).toBe(manifestBefore);
+    expect(fs.readFileSync(pending.journalPath, "utf8")).toBe(journalBefore);
   });
 
   it.each(["possible-impact", "confirmed-impact"])(

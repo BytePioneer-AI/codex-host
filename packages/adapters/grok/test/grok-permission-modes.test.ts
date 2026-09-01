@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
   GROK_PERMISSION_MODE_CATALOG,
   decodeGrokPermissionModeId,
-  grokPermissionModeNotification,
   grokPermissionModeSessionMeta,
 } from "../src/index.js";
 
@@ -12,11 +11,6 @@ describe("Grok Permission Modes", () => {
   it("matches the native Grok Build Permission Mode picker", () => {
     expect(GROK_PERMISSION_MODE_CATALOG).toEqual({
       modes: [
-        {
-          id: "default",
-          label: "Default",
-          description: "Use Grok Build's default interactive approval policy.",
-        },
         {
           id: "ask",
           label: "Ask",
@@ -34,12 +28,11 @@ describe("Grok Permission Modes", () => {
           dangerous: true,
         },
       ],
-      defaultModeId: "default",
+      defaultModeId: "ask",
     });
   });
 
   it.each([
-    ["default", { yoloMode: false, autoMode: false }],
     ["ask", { yoloMode: false, autoMode: false }],
     ["auto", { yoloMode: false, autoMode: true }],
     ["always-approve", { yoloMode: true, autoMode: false }],
@@ -48,13 +41,5 @@ describe("Grok Permission Modes", () => {
     expect(grokPermissionModeSessionMeta(decodeGrokPermissionModeId(permissionModeId))).toEqual(
       expected,
     );
-  });
-
-  it("maps Auto to the native runtime notification", () => {
-    expect(grokPermissionModeNotification("auto")).toEqual({
-      yolo_mode: false,
-      auto_mode: true,
-      permission_mode: "auto",
-    });
   });
 });

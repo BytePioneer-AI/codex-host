@@ -741,6 +741,7 @@ describe("OpenCode HarnessAdapter", () => {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     });

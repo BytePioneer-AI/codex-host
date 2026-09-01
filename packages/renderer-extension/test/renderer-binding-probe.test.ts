@@ -15,6 +15,7 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
+  permissionModeSelectionLocked,
   lateConversationTargetResolution,
   harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
@@ -1048,6 +1049,19 @@ describe("Renderer Composer DOM behavior", () => {
     expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
       "absent from the current Catalog",
     );
+  });
+
+  it("locks Permission Mode selection only for an existing atCreate Session", () => {
+    expect(permissionModeSelectionLocked({ phase: "draft", permissionModeScope: "atCreate" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "live" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked" })).toBe(false);
+    expect(
+      permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "atCreate" }),
+    ).toBe(true);
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

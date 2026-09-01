@@ -146,7 +146,6 @@ export interface GrokAcpTransportLike {
     onEvent: (event: GrokTransportEvent) => void,
   ): Promise<GrokCompactResult>;
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
-  setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
 }
@@ -202,6 +201,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: true,
+      permissionModeScope: "atCreate",
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
   };
@@ -760,30 +760,14 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#active || this.#configuring) {
-      return {
-        ok: false,
-        error: {
-          code: "sessionBusy",
-          message: "Grok Session cannot configure during another operation",
-          retryable: true,
-        },
-      };
-    }
-    this.#configuring = true;
-    try {
-      await this.#transport.setPermissionMode(command.permissionModeId);
-      this.#state = {
-        ...this.#state,
-        effectivePermissionModeId: command.permissionModeId,
-      };
-      this.#event({ type: "session.state.changed", state: this.#state });
-      return { ok: true, value: { completed: true } };
-    } catch (error) {
-      return { ok: false, error: normalizeError(error, "nativeFailure") };
-    } finally {
-      this.#configuring = false;
-    }
+    return {
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "Grok Permission Mode is fixed at Session creation",
+        retryable: false,
+      },
+    };
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
@@ -1570,7 +1554,6 @@ export class GrokAdapter implements HarnessAdapter {
             delete modelState.currentThinkingOptionId;
           }
         }
-        await transport.setPermissionMode(initialPermissionModeId);
       }
       if (input.kind === "create") {
         const selectedModel = input.model ?? modelState.currentModel;
@@ -1598,11 +1581,6 @@ export class GrokAdapter implements HarnessAdapter {
           if (selectedThinking) modelState.currentThinkingOptionId = selectedThinking;
           else delete modelState.currentThinkingOptionId;
         }
-        // Grok's session/new metadata seeds the launch state, but the native
-        // permission notification is the authoritative live-session path. Send
-        // it after model setup so Default, Ask, Auto, and Always approve all
-        // reach the resident Session before its first prompt.
-        await transport.setPermissionMode(initialPermissionModeId);
       }
       const history = await transport.getHistory();
       const initialUsage =

@@ -46,6 +46,7 @@ function readyInspection() {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: false,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
     },

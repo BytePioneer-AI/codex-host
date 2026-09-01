@@ -343,17 +343,18 @@ describe("ExternalThreadRuntime register", () => {
     await adapter.close();
   });
 
-  it("reapplies a persisted Grok Permission Mode before reading restored history", async () => {
+  it("opens a Grok Thread whose mapping stores a stale Permission Mode", async () => {
     const grokHarnessId = harnessIdSchema.parse("grok");
     const permissionModes = harnessPermissionModeCatalogSchema.parse({
       modes: [
         { id: "default", label: "Default" },
         { id: "auto", label: "Auto" },
+        { id: "always-approve", label: "Always approve", dangerous: true },
       ],
       defaultModeId: "default",
     });
     const defaultMode = harnessPermissionModeIdSchema.parse("default");
-    const autoMode = harnessPermissionModeIdSchema.parse("auto");
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
     const adapter = new FakeHarnessAdapter(
       grokHarnessId,
       undefined,
@@ -361,6 +362,8 @@ describe("ExternalThreadRuntime register", () => {
       true,
       null,
       permissionModes,
+      false,
+      "atCreate",
     );
     const model = adapter.catalog.defaultModel;
     if (!model) throw new Error("Fake Grok catalog has no default Model");
@@ -379,10 +382,9 @@ describe("ExternalThreadRuntime register", () => {
       harnessId: grokHarnessId,
       nativeSessionRef: created.value.initialState.nativeRef,
       title: "Grok Thread",
-      transportModelId: encodeGrokTransportModel(model, autoMode),
+      transportModelId: encodeGrokTransportModel(model, alwaysApprove),
     } as StoredThreadRecordV1;
     const execute = vi.spyOn(session, "execute");
-    const readSnapshot = vi.spyOn(session, "readSnapshot");
     const repository = {
       find: async () => stored,
       alignSnapshot: async () => ({ record: stored, turns: [] }),
@@ -405,17 +407,12 @@ describe("ExternalThreadRuntime register", () => {
 
     expect(resolved.kind).toBe("external");
     if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
-    expect(execute).toHaveBeenCalledWith({
-      type: "permissionMode.select",
-      permissionModeId: autoMode,
-    });
-    const executeOrder = execute.mock.invocationCallOrder[0];
-    const readOrder = readSnapshot.mock.invocationCallOrder[0];
-    if (executeOrder === undefined || readOrder === undefined) {
-      throw new Error("Restore did not select Permission Mode before reading history");
-    }
-    expect(executeOrder).toBeLessThan(readOrder);
-    expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(autoMode);
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+    expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(defaultMode);
+    expect(resolved.thread.record.transportModelId).toBe(
+      encodeGrokTransportModel(model, alwaysApprove),
+    );
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({
         environment: expect.objectContaining({

@@ -199,7 +199,7 @@ Shared Contracts SHALL provide separate strict Runtime Schemas for draft Harness
 
 ### Requirement: Shared Permission Mode contracts are browser-safe and strict
 
-Shared Contracts SHALL export bounded opaque Permission Mode IDs, normalized mode entries, a catalog with one valid default ID, structural selection capability, optional effective Session state, optional create input, and strict fixed Thread-selection params. A ready inspection SHALL include a catalog exactly when `configuration.selectPermissionMode=true`.
+Shared Contracts SHALL export bounded opaque Permission Mode IDs, normalized mode entries, a catalog with one valid default ID, structural selection capability, Permission Mode change scope (`live` or `atCreate`, defaulting to `live`), optional effective Session state, optional create input, and strict fixed Thread-selection params. A ready inspection SHALL include a catalog exactly when `configuration.selectPermissionMode=true`.
 
 #### Scenario: Capable Harness inspection is validated
 

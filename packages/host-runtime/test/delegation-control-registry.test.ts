@@ -15,6 +15,7 @@ function registration(threadId: string): DelegationControlRegistration {
             selectModel: false,
             selectThinkingOption: false,
             selectPermissionMode: false,
+            permissionModeScope: "live" as const,
           },
           history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         },

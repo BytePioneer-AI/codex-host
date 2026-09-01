@@ -16,6 +16,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   encodeClaudeTransportModel,
+  encodeGrokTransportModel,
   encodePiTransportModel,
   type ExternalHarnessId,
   type JsonObject,
@@ -2554,6 +2555,56 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: -32078, message: "Policy rejected bypass" },
     });
     expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
+    await stopFixture(fixture);
+  });
+
+  it("rejects live Grok Permission Mode changes without rewriting mapping", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "always-approve", label: "Always approve", dangerous: true },
+      ],
+      defaultModeId: "default",
+    });
+    const grok = new FakeHarnessAdapter(
+      harnessIdSchema.parse("grok"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+      false,
+      "atCreate",
+    );
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["grok", grok]]),
+    });
+    const model = grok.catalog.defaultModel;
+    if (!model) throw new Error("Fake Grok catalog has no default Model");
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const transportModelId = encodeGrokTransportModel(model, defaultMode);
+    const threadId = await startExternalThread(fixture, transportModelId, 50);
+    const session = grok.sessions[0];
+    if (!session) throw new Error("Fake Grok Session was not opened");
+    const execute = vi.spyOn(session, "execute");
+
+    writeRequest(fixture.desktopInput, {
+      id: 51,
+      method: "codexhost/thread/permission-mode/select",
+      params: { threadId, permissionModeId: alwaysApprove },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 51)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: "Permission Mode is fixed at Session creation" },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.state.effectivePermissionModeId).toBe(defaultMode);
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ transportModelId });
+
     await stopFixture(fixture);
   });
 

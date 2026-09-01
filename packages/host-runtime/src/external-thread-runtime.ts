@@ -20,13 +20,14 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
-import type {
-  HarnessId,
-  HarnessPermissionModeId,
-  HarnessThinkingOptionId,
-  HostInteractionId,
-  HostTurnId,
-  NativeSessionRef,
+import {
+  permissionModeFixedAtCreate,
+  type HarnessId,
+  type HarnessPermissionModeId,
+  type HarnessThinkingOptionId,
+  type HostInteractionId,
+  type HostTurnId,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -133,6 +134,7 @@ class ReadonlySnapshotSession implements HarnessSession {
       selectModel: false,
       selectThinkingOption: false,
       selectPermissionMode: false,
+      permissionModeScope: "live" as const,
     },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
     subagents: { observe: false, readTranscript: false },
@@ -477,7 +479,11 @@ export class ExternalThreadRuntime {
         harnessId,
         record.transportModelId,
       );
-      if (restoredSelection?.permissionModeId && harnessId !== "opencode") {
+      if (
+        restoredSelection?.permissionModeId &&
+        harnessId !== "opencode" &&
+        !permissionModeFixedAtCreate(session.capabilities.configuration)
+      ) {
         if (!session.capabilities.configuration.selectPermissionMode) {
           throw new ExternalThreadOpenError({
             code: -32076,

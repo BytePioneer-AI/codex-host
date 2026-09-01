@@ -40,6 +40,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -1139,6 +1140,7 @@ export class AppServerHost {
             selectModel: models.length > 0,
             selectThinkingOption: thinkingById.size > 0,
             selectPermissionMode: false,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },
@@ -2197,6 +2199,12 @@ export class AppServerHost {
     if (!thread.session.capabilities.configuration.selectPermissionMode) {
       await this.#writer.json(
         rpcError(request, -32078, "External Harness does not support Permission Mode selection"),
+      );
+      return;
+    }
+    if (permissionModeFixedAtCreate(thread.session.capabilities.configuration)) {
+      await this.#writer.json(
+        rpcError(request, -32078, "Permission Mode is fixed at Session creation"),
       );
       return;
     }

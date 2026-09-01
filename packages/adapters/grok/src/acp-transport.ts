@@ -46,11 +46,7 @@ import {
   parseGrokRewindResponse,
   type GrokRewindParams,
 } from "./grok-rewind.js";
-import {
-  decodeGrokPermissionModeId,
-  grokPermissionModeNotification,
-  grokPermissionModeSessionMeta,
-} from "./permission-modes.js";
+import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -871,25 +867,6 @@ export class GrokAcpTransport {
     if (selected !== modelId) {
       throw new GrokTransportError("protocolError", "Grok activated a different Model");
     }
-  }
-
-  async setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void> {
-    const connection = this.#connection;
-    if (!connection || !this.#sessionId || this.#closed || this.#closing) {
-      throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
-    }
-    if (this.#activePrompt || this.#activeCompact) {
-      throw new GrokTransportError(
-        "unavailable",
-        "Grok ACP Session already has an active operation",
-      );
-    }
-    const permissionMode = decodeGrokPermissionModeId(permissionModeId);
-    await withTimeout(
-      connection.notify("x.ai/yolo_mode_changed", grokPermissionModeNotification(permissionMode)),
-      this.#options.commandTimeoutMs,
-      "Grok Permission Mode configuration",
-    );
   }
 
   cancel(): Promise<void> {

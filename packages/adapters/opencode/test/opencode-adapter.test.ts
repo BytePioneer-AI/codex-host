@@ -510,6 +510,52 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it("forces native ask permissions for approval-required delegation", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const connectionOptions: OpenCodeServerOptions[] = [];
+    const adapter = new OpenCodeAdapter(
+      {},
+      {
+        createConnection: (options) => {
+          connectionOptions.push(options);
+          return {
+            stderrTail: "",
+            client: async () => ({}) as never,
+            close: async () => undefined,
+          };
+        },
+        createTransport: () => transport,
+        randomUUID: () => "uuid-1",
+      },
+    );
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd,
+        executionPolicy: "approval-required",
+        permissionModeId: "allow" as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "approval-required",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(connectionOptions).toHaveLength(1);
+    expect(connectionOptions[0]?.environment).toMatchObject({
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: "ask" }),
+    });
+    expect(transport.createSessionCalls.at(-1)?.permission).toEqual([
+      { permission: "*", pattern: "*", action: "ask" },
+    ]);
+    expect(opened.value.initialState.effectivePermissionModeId).toBe("ask");
+    await opened.value.close();
+    await adapter.close();
+  });
+
   it("persists unattended execution policy through resume, fork, and rollback", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [

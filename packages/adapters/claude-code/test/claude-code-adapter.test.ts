@@ -3078,6 +3078,22 @@ describe("Claude Code HarnessAdapter", () => {
     await opened.value.close();
   });
 
+  it("uses default Permission Mode for approval-required delegation sessions", async () => {
+    const { adapter, dependencies } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "approval-required",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await opened.value.execute(textTurn("approval-required"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "default" }),
+    );
+    await opened.value.close();
+  });
+
   it("defers cold Permission Mode selection and dynamically switches a started Query", async () => {
     const { adapter, dependencies, transports } = fixture();
     const plan = harnessPermissionModeIdSchema.parse("plan");

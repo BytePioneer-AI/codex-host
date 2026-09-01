@@ -375,6 +375,29 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("uses ask for approval-required sessions", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const ask = harnessPermissionModeIdSchema.parse("ask");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      executionPolicy: "approval-required",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(transport.openCalls).toContainEqual({ kind: "create", permissionModeId: ask });
+    expect(opened.value.initialState.effectivePermissionModeId).toBe(ask);
+    await adapter.close();
+  });
+
   it("seeds the native Grok Permission Mode at Session creation", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(

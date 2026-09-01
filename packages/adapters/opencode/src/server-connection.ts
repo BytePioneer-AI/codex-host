@@ -140,7 +140,13 @@ export function managedOpenCodeEnvironment(
   for (const key of undefinedKeys) {
     Reflect.deleteProperty(merged, key);
   }
-  if (executionPolicy === "unattended-full-access") {
+  const permission =
+    executionPolicy === "unattended-full-access"
+      ? "allow"
+      : executionPolicy === "approval-required"
+        ? "ask"
+        : undefined;
+  if (permission) {
     const existing = merged.OPENCODE_CONFIG_CONTENT;
     let config: Record<string, unknown> = {};
     if (existing !== undefined) {
@@ -151,15 +157,12 @@ export function managedOpenCodeEnvironment(
       } catch (error) {
         throw new OpenCodeTransportError(
           "unavailable",
-          "OpenCode unattended execution requires valid JSON OPENCODE_CONFIG_CONTENT",
+          "OpenCode managed execution requires valid JSON OPENCODE_CONFIG_CONTENT",
           { cause: error },
         );
       }
     }
-    // This environment belongs to one managed Server only. Never use the
-    // shared process-wide `always` reply; `allow` is the native config action
-    // applied before this dedicated Server accepts any Session.
-    merged.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config, permission: "allow" });
+    merged.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config, permission });
   }
   return merged;
 }

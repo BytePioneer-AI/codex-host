@@ -1891,7 +1891,9 @@ export class OpenCodeAdapter implements HarnessAdapter {
           input.permissionModeId ??
           (executionPolicy === "unattended-full-access"
             ? harnessPermissionModeIdSchema.parse("allow")
-            : OPENCODE_DEFAULT_PERMISSION_MODE_ID);
+            : executionPolicy === "approval-required"
+              ? harnessPermissionModeIdSchema.parse("ask")
+              : OPENCODE_DEFAULT_PERMISSION_MODE_ID);
         try {
           requestedPermissionMode = decodeOpenCodePermissionModeId(requestedPermissionModeId);
         } catch {
@@ -1908,6 +1910,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
           return {
             ok: false,
             error: unsupported("OpenCode unattended execution requires the allow Permission Mode"),
+          };
+        }
+        if (executionPolicy === "approval-required" && requestedPermissionMode !== "ask") {
+          return {
+            ok: false,
+            error: unsupported(
+              "OpenCode approval-required execution requires the ask Permission Mode",
+            ),
           };
         }
       }

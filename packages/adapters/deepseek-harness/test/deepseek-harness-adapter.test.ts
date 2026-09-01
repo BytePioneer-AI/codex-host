@@ -1426,6 +1426,113 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(true);
   });
 
+  it("requires a native Permission Mode catalog for approval-required Sessions", async () => {
+    const { adapter, connection } = fixture();
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "approval-required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    expect(connection.calls.create).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("selects and confirms the native safe default for approval-required Sessions", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      executionPolicy: "approval-required",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+      "session-native-1",
+      "/permission team-safe",
+    );
+    expect(opened.value.initialState.effectivePermissionModeId).toBe("team-safe");
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("rejects an explicit Permission Mode combined with approval-required delegation", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "approval-required",
+        permissionModeId: harnessPermissionModeIdSchema.parse("trusted-run"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest", retryable: false },
+    });
+    expect(connection.calls.create).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("rejects danger-full-access as the approval-required default", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes(
+      [{ value: "danger-full-access", name: "Danger full access" }, ...PERMISSION_OPTIONS],
+      "danger-full-access",
+    );
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "approval-required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    expect(connection.calls.create).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("fails approval-required creation when projection does not confirm the safe default", async () => {
+    const { adapter, connection } = fixture();
+    connection.enablePermissionModes();
+    connection.calls.commandExecute.mockImplementationOnce((sessionId: string) => {
+      connection.setPermissionMode(sessionId, "trusted-run");
+      return Promise.resolve(
+        commandSuccess({
+          commandId: "command-1",
+          result: { kind: "success" as const, text: "preset team-safe" },
+        }),
+      );
+    });
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "approval-required",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "DeepSeek Harness did not activate the requested Permission Mode",
+        retryable: false,
+      },
+    });
+    await adapter.close();
+  });
+
   it("uses danger-full-access only for unattended delegated Sessions", async () => {
     const { adapter, connection } = fixture();
 

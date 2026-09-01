@@ -404,7 +404,23 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("does not translate execution policy into Pi permission options", async () => {
+  it("rejects approval-required creates because Pi has no approval bridge", async () => {
+    const { adapter, dependencies } = fixture();
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        executionPolicy: "approval-required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("still opens explicitly unattended creates without inventing Pi permission options", async () => {
     const { adapter, dependencies } = fixture();
     const opened = await adapter.open({
       kind: "create",

@@ -1982,6 +1982,7 @@ export class OmpAdapter implements HarnessAdapter {
       }
       transport = this.#createTransport({
         cwd: input.cwd,
+        permissionMode: "always-ask",
         ...(input.kind === "resume"
           ? { sessionFile: sourceSessionFile }
           : { forkSessionFile: sourceSessionFile }),
@@ -2066,7 +2067,7 @@ export class OmpAdapter implements HarnessAdapter {
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
-        permissionMode: "yolo",
+        permissionMode: "always-ask",
         permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
       });
       return { ok: true, value: session };

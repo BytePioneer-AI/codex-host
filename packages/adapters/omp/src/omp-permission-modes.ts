@@ -9,7 +9,7 @@ export type OmpPermissionMode = "always-ask" | "write" | "yolo";
 
 const nativePermissionModes = new Set<OmpPermissionMode>(["always-ask", "write", "yolo"]);
 
-export const OMP_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse("yolo");
+export const OMP_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse("always-ask");
 
 export const OMP_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
   harnessPermissionModeCatalogSchema.parse({

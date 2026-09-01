@@ -1825,8 +1825,29 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       await this.#connection.connect();
       const permissionModes = await readDeepSeekPermissionModeCatalog(this.#connection.client);
+      const approvalRequired =
+        input.kind === "create" && input.executionPolicy === "approval-required";
+      const approvalPermissionModeId = approvalRequired
+        ? permissionModes?.defaultModeId
+        : undefined;
+      if (approvalRequired && !approvalPermissionModeId) {
+        return {
+          ok: false,
+          error: unsupported(
+            "DeepSeek Harness does not expose Permission Modes required for approval-required execution",
+          ),
+        };
+      }
+      if (approvalPermissionModeId === DELEGATION_PERMISSION_PRESET) {
+        return {
+          ok: false,
+          error: unsupported(
+            "DeepSeek Harness approval-required execution cannot use danger-full-access",
+          ),
+        };
+      }
       const requestedPermissionModeId =
-        input.kind === "create" ? input.permissionModeId : undefined;
+        input.kind === "create" ? (input.permissionModeId ?? approvalPermissionModeId) : undefined;
       if (
         requestedPermissionModeId &&
         (!permissionModes ||
@@ -1843,8 +1864,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       }
       if (
         input.kind === "create" &&
-        requestedPermissionModeId &&
-        input.executionPolicy === "unattended-full-access"
+        input.permissionModeId &&
+        input.executionPolicy !== undefined &&
+        input.executionPolicy !== "default"
       ) {
         return {
           ok: false,

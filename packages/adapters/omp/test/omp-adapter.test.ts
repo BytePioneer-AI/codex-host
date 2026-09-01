@@ -186,6 +186,27 @@ class RestartableOmpTransport extends FakeOmpTransport {
 }
 
 describe("OMP Adapter startup", () => {
+  it("starts resumed Sessions with the native always-ask default", async () => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef });
+
+    expect(opened.ok).toBe(true);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "always-ask" }),
+    );
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
   it("repairs an unavailable persisted Thinking level after model fallback", async () => {
     const transport = new FakeOmpTransport();
     const availableThinkingLevels = ["minimal", "low", "medium", "high"].map((level) =>
@@ -259,7 +280,7 @@ function historyTurn(input: {
 }
 
 describe("OMP Adapter Session environment", () => {
-  it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
+  it("uses OMP's native always-ask default for ordinary creates", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);
     const adapter = new OmpAdapter({}, { createTransport });
@@ -275,7 +296,7 @@ describe("OMP Adapter Session environment", () => {
       input: [{ type: "text", text: "task" }],
     });
     expect(createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ permissionMode: "yolo" }),
+      expect.objectContaining({ permissionMode: "always-ask" }),
     );
     await adapter.close();
   });
@@ -328,7 +349,7 @@ describe("OMP Adapter Session environment", () => {
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
       permissionModes: {
-        defaultModeId: "yolo",
+        defaultModeId: "always-ask",
         modes: expect.arrayContaining([
           expect.objectContaining({ id: "always-ask" }),
           expect.objectContaining({ id: "write" }),

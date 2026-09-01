@@ -53,12 +53,13 @@ OpenCodeAdapter
 - Renderer 的 Agent picker、Model/Thinking 草稿状态、Thread ownership 恢复和 OpenCode 图标；
 - Text/Reasoning streaming、Tool lifecycle、Question、Approval once/deny、Cancel、Usage、完整 Diff、Native command、Compact、Model 与 variant；
 - transcript Snapshot、精确 Checkpoint Fork、SSE 重连后的 status/messages/pending interaction 对账；
-- Revert/unrevert、失败补偿和 `rollbackLastTurn` capability；已用 loopback 假模型驱动最新版 OpenCode 的真实 `edit` Tool，验证 Git-backed Diff、精确 Fork 和工作树恢复。
+- Revert/unrevert、失败补偿和 `rollbackLastTurn` capability；已用 loopback 假模型驱动 OpenCode `1.18.4` 的真实 `edit` Tool，验证 Git-backed Diff、精确 Fork 和工作树恢复。
 
 当前明确不对外声明：
 
 - OpenCode `executionPolicy=default` 保留原生 Question 和 Approval once/deny；
-- `executionPolicy=unattended-full-access` 仅在每个受管 Server 的进程环境中注入 OpenCode 原生 `permission: "allow"`，不暴露 selectable Permission Mode、`allowAlways` 或共享 always 规则；
+- 提供 `default`、`ask`、`allow` 三种 Permission Mode；`ask`/`allow` 使用 Session 原生 PermissionRuleset 并跨 Resume 保留，`allow` 标记为危险模式；
+- `executionPolicy=unattended-full-access` 要求 `allow` Permission Mode，并继续在每个受管 Server 的进程环境中注入 OpenCode 原生 `permission: "allow"`；不使用共享 `always` 规则；
 - `build`/`plan` 是 Agent，不会冒充 Permission Mode；
 - cross-cwd Fork、Subagent identity/transcript；
 - V2 durable replay、queue/steer、幂等 admission 和 staged revert；
@@ -254,7 +255,7 @@ Remote SSH 场景中，Server 应由远端 Host Runtime 在 workspace 所在机�
 
 ### Turn、事件流与完成边界
 
-Adapter 应在提交 prompt **之前**建立 SSE 订阅，并为每个 Host Turn 预生成 OpenCode user message ID。推荐调用 `promptAsync()` 做 admission，再按 Session 和 message/part ID 消费事件。OpenCode 自己的 ACP 实现也是先注册 idle waiter，再发请求，且源码明确说明 idle 排在该 Turn 的事件之后；证据见 [`acp/event.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/acp/event.ts#L54-L74) 和 [`session/status.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/status.ts#L39-L48)。
+Adapter 应在提交 prompt **之前**建立 SSE 订阅，但不能为 Host Turn 自行生成并注入 OpenCode user message ID。`messageID` 虽是 SDK 可选参数，却属于 OpenCode Native identity：OpenCode `1.18.4` 的 Agent Loop 用可排序 ID 判断最新 User/Assistant Message，注入随机 UUID 会破坏其顺序不变量，导致 Assistant 已 `finish=stop` 后仍继续循环。当前实现调用 `promptAsync()` 时省略 `messageID`，再从 Native User Message 事件或完成后的 transcript 绑定真实 ID；只有 `parentID` 指向该 User Message 的 Assistant Part 才允许投影。OpenCode 自己的 ACP 实现也是先注册 idle waiter，再发请求，且源码明确说明 idle 排在该 Turn 的事件之后；证据见 [`acp/event.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/acp/event.ts#L54-L74) 和 [`session/status.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/status.ts#L39-L48)。
 
 不能把 HTTP `204`、一次 text delta 或短暂没有新事件当作 Turn 完成。建议终止条件同时满足：
 
@@ -264,7 +265,7 @@ Adapter 应在提交 prompt **之前**建立 SSE 订阅，并为每个 Host Turn
 
 `MessageAbortedError` 在 Host 已请求 cancel 时映射为 cancelled；其他原生 error 映射为 failed；无 error 且达到 idle barrier 才映射为 succeeded。SSE 断线时不能猜结果，应暂停增量完成、重连后读取 status + messages + pending interactions 对账，再决定是否补发终态。
 
-历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。一个 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；Native Turn/Item identity 必须直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。
+历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。一个 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；Native Turn/Item identity 必须直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。Model/Thinking 选择写入 namespaced Session metadata，原生更新成功后才发布 effective state；这样即使尚未产生下一条 User Message，Resume 也能恢复当前选择，同时保留其他原生 metadata。
 
 ### Adapter 内部责任边界
 
@@ -292,7 +293,7 @@ OpenCode 的 `build`、`plan` 和自定义 Agent 是 Harness Agent；Model 是 `
 
 - Model：从 provider/model catalog 生成 `HarnessModelRef`，V1 每次 prompt 带上选中的 Model；
 - Thinking：只有目标 Model 明确暴露 variant 且通过实测时，才映射为 `HarnessThinkingOption`；
-- Permission Mode：第一版声明 `selectPermissionMode: false`，原生 Approval 仍可正常工作；不要把 `build/plan` 冒充 Permission Mode；
+- Permission Mode：映射为 `default`、`ask`、`allow` 三个 codexhost 模式，使用 Session 原生 PermissionRuleset；不要把 `build/plan` 冒充 Permission Mode；
 - Agent：初版沿用 OpenCode 默认 Agent；若产品需要切换 `build/plan` 或自定义 Agent，应给 Harness 合约增加独立 Agent capability，或先作为明确命名的 OpenCode command 暴露。
 
 V2 的 `switchAgent` / `switchModel` 适合未来原生 Agent picker，但在 V2 parity Gate 通过前不能替代 V1 prompt 上的稳定 Model/Agent 参数。
@@ -312,7 +313,7 @@ OpenCode `Session.fork({ messageID })` 会复制 **目标 message 之前**的消
 
 `forkAcrossCwd` 第一版应声明 `false`。OpenCode request 可以带另一个 directory，但复制的旧 assistant message 仍保存原 path，而且 transcript Fork 不复制文件系统；只有跨 cwd 的历史、工具路径和文件安全 Gate 全部通过后才能开启。
 
-`rollbackLastTurn` 在最后一个 user message 边界调用 `session.revert()`：它会设置持久 revert boundary、在 Git-backed workspace 用 Snapshot 恢复真实文件，并在下次 prompt/compact 时 cleanup 被放弃的消息。Adapter 的 Snapshot 会立即按 `session.revert` boundary 隐藏被回滚 Turn，以满足 host-runtime 对“恰好少一个 Turn”的校验。当前 real Gate 已覆盖文件恢复、Server 重启后的持久 boundary 和下一次 prompt cleanup；hermetic Gate 覆盖 attach 失败后的 `unrevert` 补偿。非 Git workspace 仍能获得契约要求的 transcript rollback，但没有可恢复的原生 Git Snapshot。
+`rollbackLastTurn` 在最后一个 User Message 边界调用 `session.revert()`：它在原 Native Session 上设置持久 revert boundary，并在 Git-backed workspace 通过 Snapshot 恢复该 Turn 的文件修改。Adapter 的 Snapshot 会立即隐藏被回滚 Turn；下一次 prompt/compact 时 OpenCode cleanup 会删除被放弃的 Message/Part。若 Session attach 或后续校验失败，Adapter 调用 `unrevert()` 恢复来源 Session 和工作树。
 
 ### Diff、Usage 与 Subagent
 
@@ -519,7 +520,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 | Session create/list/load/resume | 支持 | 现行 SDK + SQLite 持久化 |
 | Text/reasoning/tool streaming | 支持 | `/event` SSE + idle barrier + transcript reconciliation |
 | Permission/Approval | 部分支持 | 原生 once/reject；Session/Always scope 按前述策略收敛 |
-| Permission Mode picker | 首版不支持 | OpenCode Agent/Permission rule 不是 named Permission Mode |
+| Permission Mode picker | 支持 | codexhost 命名的 `default` / `ask` / `allow`，映射 Session 原生 PermissionRuleset |
 | Question | 支持其原生子集 | choice/multiple/custom；不宣称 secret/multiline，ACP 路径不支持 |
 | Cancel | 支持 | `session.abort()` |
 | Usage/cost/context | 支持 | message token/cost + Provider Model context limit |
@@ -527,8 +528,9 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 | Fork | 支持但标明语义 | exact transcript checkpoint fork；不是文件系统 Fork |
 | Fork across cwd | 首版不支持 | 新旧 message path 和文件系统不随 transcript 一起 Fork |
 | Compact | 支持 | `session.summarize()` |
-| Revert/unrevert | 支持 | 真实 Edit Tool + Git-backed Snapshot/Diff/恢复 Gate |
+| Revert/unrevert | 支持 | 原 Session 原生回滚 + Git-backed Snapshot/Diff/恢复 Gate |
 | Model selection | 支持 | provider/model API；凭据留在 OpenCode |
+| Permission Mode | 支持 | `default` / `ask` / `allow`；Session 原生 PermissionRuleset |
 | Thinking/effort | 按 Model 探测 | 只映射已验证的 variant |
 | Agent selection | 需新增 Host capability | 不能用 Permission Mode 代替 Agent |
 | Subagent observe/transcript | 第二阶段 | child Session + task metadata；逐项 Gate |
@@ -551,7 +553,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 5. Tool 生命周期、proposed edit、真实 diff 和 tool error。
 6. Prompt admission、busy→idle 完成边界、cancel、并发输入，以及 V2 queue/steer（启用时）。
 7. Session load/resume、跨 OpenCode 进程恢复、最后/中间 Checkpoint Fork、Fork 后目录语义和派生历史校验。
-8. Revert/unrevert 对工作树的实际影响和失败恢复。
+8. Revert/unrevert 对原 Session、工作树的实际影响和失败补偿。
 9. Model/provider/variant 切换、未登录 provider、OAuth 中断、凭据脱敏；Agent 不得误投影为 Permission Mode。
 10. 前台/后台 Task、child Session 状态、取消/失败、父 Turn 完成与 Subagent transcript。
 11. 单 Server 多 Session、跨 cwd 并发、Interaction 路由与 Permission 隔离。

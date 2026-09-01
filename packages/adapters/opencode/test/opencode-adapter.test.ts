@@ -4,6 +4,7 @@ import type {
   Event,
   Part,
   PermissionRequest,
+  PermissionRuleset,
   Provider,
   QuestionAnswer,
   QuestionRequest,
@@ -130,9 +131,16 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
   readonly sessions = new Map<string, Session>([["session-1", nativeSession()]]);
   readonly messages = new Map<string, OpenCodeMessageWithParts[]>([["session-1", []]]);
   readonly diffs = new Map<string, SnapshotFileDiff[]>();
-  readonly promptCalls: OpenCodePromptInput[] = [];
-  readonly commandCalls: OpenCodeCommandInput[] = [];
+  readonly promptCalls: Array<OpenCodePromptInput & { messageID: string }> = [];
+  readonly commandCalls: Array<OpenCodeCommandInput & { messageID: string }> = [];
   readonly summarizeCalls: string[] = [];
+  readonly metadataUpdates: Array<{ sessionID: string; metadata: Record<string, unknown> }> = [];
+  readonly permissionUpdates: Array<{ sessionID: string; permission: PermissionRuleset }> = [];
+  readonly createSessionCalls: Array<{
+    model?: OpenCodeNativeModelRef;
+    variant?: string;
+    permission?: PermissionRuleset;
+  }> = [];
   readonly forkCalls: Array<{ sessionID: string; messageID?: string }> = [];
   readonly revertCalls: Array<{ sessionID: string; messageID: string }> = [];
   readonly unrevertCalls: string[] = [];
@@ -161,7 +169,14 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
     return this.commandsValue;
   }
 
-  async createSession(input: { model?: OpenCodeNativeModelRef; variant?: string } = {}) {
+  async createSession(
+    input: {
+      model?: OpenCodeNativeModelRef;
+      variant?: string;
+      permission?: PermissionRuleset;
+    } = {},
+  ) {
+    this.createSessionCalls.push(input);
     const session = nativeSession();
     if (input.model) {
       session.model = {
@@ -170,6 +185,7 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
         ...(input.variant ? { variant: input.variant } : {}),
       };
     }
+    if (input.permission) session.permission = input.permission;
     this.sessions.set(session.id, session);
     this.messages.set(session.id, []);
     return session;
@@ -183,6 +199,22 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
   async getSession(sessionID: string) {
     const session = this.sessions.get(sessionID);
     if (!session) throw new Error("session not found");
+    return session;
+  }
+
+  async updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>) {
+    this.metadataUpdates.push({ sessionID, metadata });
+    if (this.metadataError) throw this.metadataError;
+    const session = await this.getSession(sessionID);
+    session.metadata = metadata;
+    return session;
+  }
+
+  async updateSessionPermission(sessionID: string, permission: PermissionRuleset) {
+    this.permissionUpdates.push({ sessionID, permission });
+    if (this.permissionError) throw this.permissionError;
+    const session = await this.getSession(sessionID);
+    session.permission = permission;
     return session;
   }
 
@@ -227,13 +259,17 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
 
   promptError: Error | undefined;
   promptAdmissionHook: (() => void) | undefined;
+  metadataError: Error | undefined;
+  permissionError: Error | undefined;
+  nativeMessageOrdinal = 0;
 
   async promptAsync(input: OpenCodePromptInput) {
-    this.promptCalls.push(input);
+    const messageID = `msg_native_${++this.nativeMessageOrdinal}`;
+    this.promptCalls.push({ ...input, messageID });
     this.promptAdmissionHook?.();
     if (this.promptError) throw this.promptError;
     const info: UserMessage = {
-      id: input.messageID,
+      id: messageID,
       sessionID: input.sessionID,
       role: "user",
       time: { created: 1 },
@@ -241,19 +277,27 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
       model: input.model ?? { providerID: "provider-1", modelID: "model-1" },
     };
     const part: TextPart = {
-      id: `part-${input.messageID}`,
+      id: `part-${messageID}`,
       sessionID: input.sessionID,
-      messageID: input.messageID,
+      messageID,
       type: "text",
       text: input.text,
     };
     this.messages.get(input.sessionID)?.push({ info, parts: [part] });
+    this.listener?.onEvent({
+      id: `event-${messageID}`,
+      type: "message.updated",
+      properties: { sessionID: input.sessionID, info },
+    });
   }
 
-  async executeCommand(input: OpenCodeCommandInput) {
-    this.commandCalls.push(input);
+  async executeCommand(
+    input: OpenCodeCommandInput,
+  ): Promise<OpenCodeMessageWithParts & { info: AssistantMessage }> {
+    const messageID = `msg_native_${++this.nativeMessageOrdinal}`;
+    this.commandCalls.push({ ...input, messageID });
     const info: UserMessage = {
-      id: input.messageID,
+      id: messageID,
       sessionID: input.sessionID,
       role: "user",
       time: { created: 1 },
@@ -264,14 +308,25 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
       info,
       parts: [
         {
-          id: `part-${input.messageID}`,
+          id: `part-${messageID}`,
           sessionID: input.sessionID,
-          messageID: input.messageID,
+          messageID,
           type: "text",
           text: input.arguments,
         },
       ],
     });
+    this.listener?.onEvent({
+      id: `event-${messageID}`,
+      type: "message.updated",
+      properties: { sessionID: input.sessionID, info },
+    });
+    return assistantMessage(
+      `assistant-result-${messageID}`,
+      messageID,
+    ) as OpenCodeMessageWithParts & {
+      info: AssistantMessage;
+    };
   }
 
   async summarize(sessionID: string) {
@@ -372,6 +427,7 @@ function appendTerminal(
 ) {
   const prompt = transport.promptCalls.at(-1);
   if (!prompt) throw new Error("No OpenCode prompt was admitted");
+  if (!prompt.messageID) throw new Error("OpenCode prompt has no native Message ID");
   const terminal = assistantMessage("assistant-live", prompt.messageID, parts, error);
   terminal.info.sessionID = prompt.sessionID;
   for (const part of parts) {
@@ -656,7 +712,7 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
-  it("opens the SDK Session with native configuration and fail-closed capabilities", async () => {
+  it("opens the SDK Session with native configuration and selectable permissions", async () => {
     const transport = new FakeOpenCodeTransport();
     const adapter = new OpenCodeAdapter(
       {},
@@ -678,21 +734,122 @@ describe("OpenCode HarnessAdapter", () => {
     expect(opened.value.initialState).toMatchObject({
       effectiveModel: model,
       effectiveThinkingOptionId: thinkingOptionId,
+      effectivePermissionModeId: "default",
     });
     expect(opened.value.capabilities).toEqual({
       configuration: {
         selectModel: true,
         selectThinkingOption: true,
-        selectPermissionMode: false,
+        selectPermissionMode: true,
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     });
     await expect(
       opened.value.execute({
         type: "permissionMode.select",
-        permissionModeId: "always" as never,
+        permissionModeId: "invalid" as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("creates, selects, and restores native Permission Modes", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const adapter = adapterFor(transport);
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: "ask" as never,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    expect(transport.createSessionCalls.at(-1)?.permission).toEqual([
+      { permission: "*", pattern: "*", action: "ask" },
+    ]);
+    expect(created.value.initialState.effectivePermissionModeId).toBe("ask");
+    const iterator = created.value.outputs[Symbol.asyncIterator]();
+
+    await expect(
+      created.value.execute({ type: "permissionMode.select", permissionModeId: "allow" as never }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transport.permissionUpdates.at(-1)).toEqual({
+      sessionID: "session-1",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "allow" },
+    });
+    await expect(
+      created.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: "default" as never,
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transport.permissionUpdates.at(-1)).toEqual({
+      sessionID: "session-1",
+      permission: [],
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "default" },
+    });
+    await created.value.execute({
+      type: "permissionMode.select",
+      permissionModeId: "allow" as never,
+    });
+    await nextEvent(iterator);
+    const nativeRef = created.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("OpenCode Session did not expose a Native Ref");
+    await created.value.close();
+
+    const resumed = await adapter.open({ kind: "resume", nativeRef, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.effectivePermissionModeId).toBe("allow");
+    await resumed.value.close();
+    await adapter.close();
+  });
+
+  it("does not publish a Permission Mode when native persistence fails", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    transport.permissionError = new Error("permission rejected");
+
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: "ask" as never }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    const pending = iterator.next();
+    const settled = await Promise.race([
+      pending.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+    ]);
+    expect(settled).toBe(false);
+    await session.close();
+    await adapter.close();
+  });
+
+  it("requires Allow permission for unattended create", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const adapter = adapterFor(transport);
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd,
+        executionPolicy: "unattended-full-access",
+        permissionModeId: "ask" as never,
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState.effectivePermissionModeId).toBe("allow");
+    expect(transport.createSessionCalls.at(-1)?.permission).toEqual([
+      { permission: "*", pattern: "*", action: "allow" },
+    ]);
     await opened.value.close();
     await adapter.close();
   });
@@ -707,6 +864,12 @@ describe("OpenCode HarnessAdapter", () => {
       ok: true,
       value: { completed: true },
     });
+    expect(transport.metadataUpdates.at(-1)).toMatchObject({
+      sessionID: "session-1",
+      metadata: {
+        "codexhost.selection.v1": { providerID: "provider-1", modelID: "model-1" },
+      },
+    });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
       state: { effectiveModel: model },
@@ -714,6 +877,15 @@ describe("OpenCode HarnessAdapter", () => {
     await expect(session.execute({ type: "thinking.select", thinkingOptionId })).resolves.toEqual({
       ok: true,
       value: { completed: true },
+    });
+    expect(transport.metadataUpdates.at(-1)).toMatchObject({
+      metadata: {
+        "codexhost.selection.v1": {
+          providerID: "provider-1",
+          modelID: "model-1",
+          variant: "high",
+        },
+      },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
@@ -730,6 +902,59 @@ describe("OpenCode HarnessAdapter", () => {
     await completeAfterBusy(transport);
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
     await session.close();
+    await adapter.close();
+  });
+
+  it("does not publish a Model selection when metadata persistence fails", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    transport.metadataError = new Error("metadata rejected");
+
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure" },
+    });
+    const pending = iterator.next();
+    const settled = await Promise.race([
+      pending.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+    ]);
+    expect(settled).toBe(false);
+    await session.close();
+    await adapter.close();
+  });
+
+  it("restores persisted Model and Thinking after reopening the Session", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const { adapter, session } = await openFixture(transport);
+    const sessionInfo = transport.sessions.get("session-1");
+    if (!sessionInfo) throw new Error("Missing synthetic Session");
+    sessionInfo.metadata = { other: "preserved" };
+    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    const thinkingOptionId = encodeOpenCodeVariant("high");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("OpenCode Session did not expose a Native Ref");
+
+    await session.execute({ type: "model.select", model });
+    await session.execute({ type: "thinking.select", thinkingOptionId });
+    expect(transport.sessions.get("session-1")?.metadata).toMatchObject({
+      other: "preserved",
+      "codexhost.selection.v1": {
+        providerID: "provider-1",
+        modelID: "model-1",
+        variant: "high",
+      },
+    });
+    await session.close();
+
+    const resumed = await adapter.open({ kind: "resume", nativeRef, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: thinkingOptionId,
+    });
+    await resumed.value.close();
     await adapter.close();
   });
 
@@ -795,7 +1020,7 @@ describe("OpenCode HarnessAdapter", () => {
     ]);
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     const command = transport.commandCalls.at(-1);
-    if (!command) throw new Error("OpenCode native command was not called");
+    if (!command?.messageID) throw new Error("OpenCode native command has no Message ID");
     transport.messages
       .get(command.sessionID)
       ?.push(assistantMessage("assistant-command", command.messageID));
@@ -848,11 +1073,17 @@ describe("OpenCode HarnessAdapter", () => {
     });
     const originalPrompt = transport.promptAsync.bind(transport);
     transport.promptAsync = async (input) => {
-      transport.promptCalls.push(input);
+      const messageID = `msg_native_${++transport.nativeMessageOrdinal}`;
+      transport.promptCalls.push({ ...input, messageID });
       transport.promptAdmissionHook?.();
       await admission;
-      const info = userMessage(input.messageID, input.text);
-      transport.messages.get(input.sessionID)?.push(info);
+      const message = userMessage(messageID, input.text);
+      transport.messages.get(input.sessionID)?.push(message);
+      transport.listener?.onEvent({
+        id: `event-${messageID}`,
+        type: "message.updated",
+        properties: { sessionID: input.sessionID, info: message.info },
+      });
     };
     const executePromise = session.execute(turn("buffered"));
     await flush();
@@ -907,9 +1138,10 @@ describe("OpenCode HarnessAdapter", () => {
       resolveAdmission = resolve;
     });
     transport.promptAsync = async (input) => {
-      transport.promptCalls.push(input);
-      transport.messages.get(input.sessionID)?.push(userMessage(input.messageID, input.text));
-      const terminal = assistantMessage("assistant-early", input.messageID);
+      const messageID = `msg_native_${++transport.nativeMessageOrdinal}`;
+      transport.promptCalls.push({ ...input, messageID });
+      transport.messages.get(input.sessionID)?.push(userMessage(messageID, input.text));
+      const terminal = assistantMessage("assistant-early", messageID);
       terminal.info.sessionID = input.sessionID;
       transport.messages.get(input.sessionID)?.push(terminal);
       transport.status = { type: "busy" };
@@ -954,7 +1186,8 @@ describe("OpenCode HarnessAdapter", () => {
       resolveAdmission = resolve;
     });
     transport.promptAsync = async (input) => {
-      transport.promptCalls.push(input);
+      const messageID = `msg_native_${++transport.nativeMessageOrdinal}`;
+      transport.promptCalls.push({ ...input, messageID });
       await admission;
     };
 
@@ -1026,6 +1259,17 @@ describe("OpenCode HarnessAdapter", () => {
     const iterator = session.outputs[Symbol.asyncIterator]();
     await session.execute(turn("turn-reasoning"));
     await nextEvent(iterator);
+    const promptID = transport.promptCalls.at(-1)?.messageID;
+    if (!promptID) throw new Error("OpenCode prompt has no Message ID");
+    transport.emit({
+      id: "assistant-reasoning",
+      type: "message.updated",
+      properties: {
+        sessionID: "session-1",
+        info: assistantMessage("assistant-live", promptID).info,
+      },
+    });
+    await flush();
     transport.emit({
       id: "delta-early",
       type: "message.part.delta",
@@ -1089,6 +1333,17 @@ describe("OpenCode HarnessAdapter", () => {
     const iterator = session.outputs[Symbol.asyncIterator]();
     await session.execute(turn("turn-interactions"));
     await nextEvent(iterator);
+    const promptID = transport.promptCalls.at(-1)?.messageID;
+    if (!promptID) throw new Error("OpenCode prompt has no Message ID");
+    transport.emit({
+      id: "assistant-interactions",
+      type: "message.updated",
+      properties: {
+        sessionID: "session-1",
+        info: assistantMessage("assistant-live", promptID).info,
+      },
+    });
+    await flush();
     const tool: Part = {
       id: "tool-part",
       sessionID: "session-1",
@@ -1206,7 +1461,6 @@ describe("OpenCode HarnessAdapter", () => {
       snapshot: { outcome: { status: "succeeded" } },
     });
 
-    const promptID = transport.promptCalls.at(-1)?.messageID as string;
     transport.diffs.set(promptID, [
       { file: "src/a.ts", patch: "@@ -1 +1 @@", additions: 1, deletions: 1, status: "modified" },
       { file: "src/incomplete.ts", additions: 1, deletions: 0, status: "added" },
@@ -1297,18 +1551,23 @@ describe("OpenCode HarnessAdapter", () => {
       sourceRef,
       cwd,
     });
+    expect(rollbackTransport.forkCalls).toEqual([]);
     expect(rollbackTransport.revertCalls).toEqual([
       { sessionID: "session-1", messageID: "user-2" },
     ]);
+    expect(rollbackFixture.session.initialState.nativeRef?.nativeSessionId).toBe("session-1");
     await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: { turns: [{ input: [{ text: "one" }] }] },
+    });
+    expect(rollbackTransport.sessions.get("session-1")?.revert).toMatchObject({
+      messageID: "user-2",
     });
     await rollbackFixture.session.close();
     await rollbackFixture.adapter.close();
   });
 
-  it("restores a reverted worktree when Session attachment fails", async () => {
+  it("restores a reverted source Session when attachment fails", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [
       userMessage("user-1", "one"),
@@ -1328,8 +1587,10 @@ describe("OpenCode HarnessAdapter", () => {
         ok: false,
       },
     );
+    expect(transport.forkCalls).toEqual([]);
     expect(transport.revertCalls).toEqual([{ sessionID: "session-1", messageID: "user-1" }]);
     expect(transport.unrevertCalls).toEqual(["session-1"]);
+    expect(transport.sessions.get("session-1")?.revert).toBeUndefined();
     expect(transport.sessions.get("session-1")).not.toHaveProperty("revert");
     await adapter.close();
   });

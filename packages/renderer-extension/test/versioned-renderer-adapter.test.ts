@@ -528,18 +528,24 @@ describe("current Codex Renderer Agent adapter", () => {
     ).toEqual({ model, thinkingOptionId });
   });
 
-  it("encodes OpenCode Model and Thinking without a Permission Mode", () => {
+  it("encodes OpenCode Model, Permission Mode, and Thinking", () => {
     const model = harnessModelRefSchema.parse({
       id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
     });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("ask");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("ocv.aGlnaA");
-    const carrier = openCodeTransportModelId(model, thinkingOptionId);
+    const carrier = openCodeTransportModelId(model, permissionModeId, thinkingOptionId);
 
     expect(isOpenCodeTransportModelId(carrier)).toBe(true);
-    expect(decodeOpenCodeTransportModelId(carrier)).toEqual({ model, thinkingOptionId });
-    expect(modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId)?.model).toBe(
-      carrier,
-    );
+    expect(decodeOpenCodeTransportModelId(carrier)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId, permissionModeId)
+        ?.model,
+    ).toBe(carrier);
   });
 
   it("extracts only a validated conversation Thread identity", () => {

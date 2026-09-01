@@ -175,37 +175,53 @@ export function ompTransportModelId(
 
 export function openCodeTransportModelId(
   model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OpenCode transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OpenCode transport configuration requires a Model Ref");
+    }
     return OPENCODE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
-  return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+  if (parsedThinking) {
+    return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeOpenCodeTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 } | null {
   if (value === OPENCODE_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(OPENCODE_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(OPENCODE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return null;
-  const [modelId, thinkingOptionId] = components;
-  if (components.length === 2 && !thinkingOptionId) return null;
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
   const thinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
     : null;
   if (thinking && !thinking.success) return null;
   return {
     model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
     ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
@@ -813,7 +829,7 @@ export function modelSelectionForAgent(
         : agent === "deepseek-harness"
           ? deepSeekHarnessTransportModelId(model, permissionModeId)
           : agent === "opencode"
-            ? openCodeTransportModelId(model, thinkingOptionId)
+            ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "grok"
               ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
               : agent === "omp"

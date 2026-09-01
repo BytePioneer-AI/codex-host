@@ -62,11 +62,13 @@ import {
 import {
   harnessCommandCatalogSchema,
   harnessIdSchema,
+  harnessPermissionModeIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   jsonValueSchema,
   nativeCheckpointRefSchema,
   type HarnessCommandCatalog,
+  type HarnessPermissionModeId,
   type HarnessId,
   type HostInteractionId,
   type HostItemId,
@@ -95,6 +97,14 @@ import {
   type OpenCodeNativeModelRef,
   type OpenCodeProviderCatalog,
 } from "./model-catalog.js";
+import {
+  decodeOpenCodePermissionModeId,
+  OPENCODE_DEFAULT_PERMISSION_MODE_ID,
+  OPENCODE_PERMISSION_MODE_CATALOG,
+  permissionModeFromSession,
+  requestedPermissionRules,
+  type OpenCodePermissionMode,
+} from "./permission-modes.js";
 import {
   OpenCodeTransportError,
   type OpenCodeTransport,
@@ -153,6 +163,8 @@ interface ActiveTurn {
   kind: ActiveKind;
   turnId: TurnStartCommand["turnId"];
   userMessageID: string | null;
+  preexistingUserMessageIds: Set<string>;
+  assistantMessageIds: Set<string>;
   cancellationRequested: boolean;
   admissionCompleted: boolean;
   admissionFailure: HarnessError | null;
@@ -191,6 +203,7 @@ const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
 const DIFF_RECONCILIATION_DELAYS_MS = [25, 50, 100, 200, 400, 800] as const;
 const COMPACT_COMMAND_ID = "opencode.compact";
 const NATIVE_COMMAND_PREFIX = "opencode.command.";
+const SELECTION_METADATA_KEY = "codexhost.selection.v1";
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -237,10 +250,47 @@ function sameCwd(left: string, right: string): boolean {
   return canonical(left) === canonical(right);
 }
 
+function storedSelection(
+  session: Session,
+): (OpenCodeNativeModelRef & { variant?: string }) | undefined {
+  const value = session.metadata?.[SELECTION_METADATA_KEY];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const providerID = Reflect.get(value, "providerID");
+  const modelID = Reflect.get(value, "modelID");
+  const variant = Reflect.get(value, "variant");
+  if (
+    typeof providerID !== "string" ||
+    !providerID ||
+    typeof modelID !== "string" ||
+    !modelID ||
+    (variant !== undefined && (typeof variant !== "string" || !variant))
+  ) {
+    return undefined;
+  }
+  return { providerID, modelID, ...(typeof variant === "string" ? { variant } : {}) };
+}
+
+function selectionMetadata(
+  session: Session,
+  model: OpenCodeNativeModelRef,
+  variant: string | undefined,
+): Record<string, unknown> {
+  return {
+    ...session.metadata,
+    [SELECTION_METADATA_KEY]: {
+      providerID: model.providerID,
+      modelID: model.modelID,
+      ...(variant ? { variant } : {}),
+    },
+  };
+}
+
 function nativeModelFromSession(
   session: Session,
   messages: readonly OpenCodeMessageWithParts[],
 ): OpenCodeNativeModelRef | undefined {
+  const stored = storedSelection(session);
+  if (stored) return { providerID: stored.providerID, modelID: stored.modelID };
   if (session.model) {
     return { providerID: session.model.providerID, modelID: session.model.id };
   }
@@ -255,6 +305,8 @@ function nativeVariantFromSession(
   session: Session,
   messages: readonly OpenCodeMessageWithParts[],
 ): string | undefined {
+  const stored = storedSelection(session);
+  if (stored) return stored.variant;
   if (session.model?.variant) return session.model.variant;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const info = messages[index]?.info;
@@ -349,6 +401,7 @@ function sessionState(
   model?: OpenCodeNativeModelRef,
   variant?: string,
   executionPolicy: OpenCodeExecutionPolicy = "default",
+  permissionModeId: HarnessPermissionModeId = OPENCODE_DEFAULT_PERMISSION_MODE_ID,
 ): HarnessSessionState {
   const effectiveModel = model ? encodeOpenCodeModelRef(model) : undefined;
   const modelEntry = effectiveModel
@@ -367,6 +420,7 @@ function sessionState(
     ...(availableThinkingOptions?.length
       ? { availableThinkingOptions, effectiveThinkingOptionId }
       : {}),
+    effectivePermissionModeId: permissionModeId,
   };
 }
 
@@ -439,10 +493,13 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   readonly #connection: OpenCodeServerConnectionLike;
   readonly #executionPolicy: OpenCodeExecutionPolicy;
   readonly #uuid: () => string;
+  readonly #knownUserMessageIds = new Set<string>();
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
+  #configuring = false;
   #connectedCount = 0;
   #model: OpenCodeNativeModelRef | undefined;
+  #permissionMode: OpenCodePermissionMode;
   #phase: SessionPhase = "open";
   #session: Session;
   #snapshot: HostThreadSnapshot;
@@ -460,6 +517,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     closeTimeoutMs: number;
     randomUUID(): string;
     executionPolicy: OpenCodeExecutionPolicy;
+    permissionMode: OpenCodePermissionMode;
     onClosed(): void;
   }) {
     this.#transport = input.transport;
@@ -475,12 +533,17 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.#onClosed = input.onClosed;
     this.#connection = input.connection;
     this.#executionPolicy = input.executionPolicy;
+    this.#permissionMode = input.permissionMode;
+    for (const { info } of input.projection.messages) {
+      if (info.role === "user") this.#knownUserMessageIds.add(info.id);
+    }
     this.#state = sessionState(
       this.#session,
       this.#modelCatalog,
       this.#model,
       this.#variant,
       this.#executionPolicy,
+      harnessPermissionModeIdSchema.parse(this.#permissionMode),
     );
     this.initialState = this.#state;
     this.#usage = input.projection.usage;
@@ -490,7 +553,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       configuration: {
         selectModel: this.#modelCatalog.models.length > 0,
         selectThinkingOption: thinkingSelectable,
-        selectPermissionMode: false,
+        selectPermissionMode: true,
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     };
@@ -522,12 +585,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("OpenCode Session is not open") };
     }
-    if (this.#active) {
+    if (this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "OpenCode Session cannot read history while a Turn is active",
+          message: "OpenCode Session cannot read history while another operation is active",
           retryable: true,
         },
       };
@@ -573,18 +636,13 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
-    if (command.type === "permissionMode.select") {
-      return {
-        ok: false,
-        error: unsupported("OpenCode does not expose a selectable Permission Mode"),
-      };
-    }
-    if (this.#active) {
+    if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
+    if (this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "OpenCode Session already has an active Turn",
+          message: "OpenCode Session already has an active operation",
           retryable: true,
         },
       };
@@ -600,7 +658,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    const active = this.#createActive("prompt", command.turnId, this.#newMessageId());
+    const active = this.#createActive("prompt", command.turnId, null);
     this.#active = active;
     active.admissionBuffer.push({
       output: { kind: "event", event: { type: "turn.started", turnId: command.turnId } },
@@ -609,7 +667,6 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     try {
       const prompt = this.#transport.promptAsync({
         sessionID: this.#session.id,
-        messageID: active.userMessageID as string,
         text,
         ...(this.#model ? { model: this.#model } : {}),
         ...(this.#variant ? { variant: this.#variant } : {}),
@@ -656,7 +713,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("OpenCode Session is not open") };
     }
-    if (this.#active) {
+    if (this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
@@ -678,28 +735,30 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         };
       }
       const active = this.#createActive("compact", command.turnId, null);
-      active.admissionCompleted = true;
       this.#active = active;
-      this.#event({ type: "turn.started", turnId: command.turnId });
+      active.admissionBuffer.push({
+        output: { kind: "event", event: { type: "turn.started", turnId: command.turnId } },
+        sequence: active.admissionSequence++,
+      });
       const item: HostContextCompactionItem = {
         type: "contextCompaction",
         itemId: hostItemIdSchema.parse(`opencode-compact:${this.#uuid()}`),
       };
       active.items.set(item.itemId, { item, completed: false });
       this.#event({ type: "item.started", turnId: command.turnId, item });
-      void this.#transport
-        .summarize(this.#session.id, this.#model)
-        .then(() => {
-          active.nativeCompleted = true;
-          this.#completeTurn(active, { status: "succeeded" });
-          void this.#refreshProjection(command.turnId);
-        })
-        .catch((error) =>
-          this.#completeTurn(active, {
-            status: "failed",
-            error: normalizeError(error, "nativeFailure"),
-          }),
-        );
+      try {
+        await this.#transport.summarize(this.#session.id, this.#model);
+      } catch (error) {
+        const normalized = normalizeError(error, "nativeFailure");
+        this.#failAdmission(active, normalized);
+        return { ok: false, error: normalized };
+      }
+      if (active.admissionFailure) return { ok: false, error: active.admissionFailure };
+      active.admissionCompleted = true;
+      active.nativeCompleted = true;
+      this.#flushAdmission(active);
+      this.#completeTurn(active, { status: "succeeded" });
+      void this.#refreshProjection(command.turnId);
       return { ok: true, value: { turnId: command.turnId } };
     }
     const commands = await this.#transport.commands().catch(() => []);
@@ -734,21 +793,20 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    const active = this.#createActive("command", command.turnId, this.#newMessageId());
+    const active = this.#createActive("command", command.turnId, null);
     active.admissionCompleted = true;
     this.#active = active;
     this.#event({ type: "turn.started", turnId: command.turnId });
     void this.#transport
       .executeCommand({
         sessionID: this.#session.id,
-        messageID: active.userMessageID as string,
         command: native.name,
         arguments: typeof text === "string" ? text : "",
         ...(this.#model ? { model: this.#model } : {}),
         ...(this.#variant ? { variant: this.#variant } : {}),
       })
-      .then(() => {
-        active.admissionCompleted = true;
+      .then((result) => {
+        this.#bindUserMessage(active, result.info.parentID);
         active.nativeCompleted = true;
         void this.#reconcileAndFinish(active);
       })
@@ -838,12 +896,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#active) {
+    if (this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "OpenCode Model cannot change during a Turn",
+          message: "OpenCode Model cannot change during another operation",
           retryable: true,
         },
       };
@@ -865,10 +923,21 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    this.#model = native;
-    this.#variant = undefined;
-    this.#publishState();
-    return { ok: true, value: { completed: true } };
+    this.#configuring = true;
+    try {
+      this.#session = await this.#transport.updateSessionMetadata(
+        this.#session.id,
+        selectionMetadata(this.#session, native, undefined),
+      );
+      this.#model = native;
+      this.#variant = undefined;
+      this.#publishState();
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   async #selectThinking(
@@ -877,12 +946,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (!this.capabilities.configuration.selectThinkingOption) {
       return { ok: false, error: unsupported("OpenCode Model variants are unavailable") };
     }
-    if (this.#active) {
+    if (this.#active || this.#configuring) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "OpenCode Thinking cannot change during a Turn",
+          message: "OpenCode Thinking cannot change during another operation",
           retryable: true,
         },
       };
@@ -901,13 +970,76 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
+    let variant: string | undefined;
     try {
-      this.#variant = decodeOpenCodeVariant(command.thinkingOptionId);
+      variant = decodeOpenCodeVariant(command.thinkingOptionId);
     } catch (error) {
       return { ok: false, error: normalizeError(error, "invalidRequest") };
     }
-    this.#publishState();
-    return { ok: true, value: { completed: true } };
+    if (!this.#model) {
+      return { ok: false, error: invalidState("OpenCode Thinking selection requires a Model") };
+    }
+    this.#configuring = true;
+    try {
+      this.#session = await this.#transport.updateSessionMetadata(
+        this.#session.id,
+        selectionMetadata(this.#session, this.#model, variant),
+      );
+      this.#variant = variant;
+      this.#publishState();
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    if (this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "OpenCode Permission Mode cannot change during another operation",
+          retryable: true,
+        },
+      };
+    }
+    let permissionMode: OpenCodePermissionMode;
+    try {
+      permissionMode = decodeOpenCodePermissionModeId(command.permissionModeId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "OpenCode Permission Mode is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const permission = requestedPermissionRules(this.#session.permission, permissionMode);
+    this.#configuring = true;
+    try {
+      this.#session = await this.#transport.updateSessionPermission(this.#session.id, permission);
+      const effective = permissionModeFromSession(this.#session.permission);
+      if (effective !== permissionMode) {
+        throw new OpenCodeTransportError(
+          "protocolError",
+          "OpenCode did not confirm the requested Permission Mode",
+        );
+      }
+      this.#permissionMode = effective;
+      this.#publishState();
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   #handleEvent(event: Event): void {
@@ -930,26 +1062,44 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       return;
     }
     if (event.type === "message.updated" && event.properties.sessionID === this.#session.id) {
-      if (!active || event.properties.info.role !== "assistant") return;
-      if (
-        event.properties.info.parentID === active.userMessageID ||
-        active.terminalAssistant?.id === event.properties.info.id
-      ) {
-        active.terminalAssistant = event.properties.info;
-        if (event.properties.info.time.completed !== undefined || event.properties.info.error) {
-          void this.#reconcileAndFinish(active);
-        }
+      const info = event.properties.info;
+      if (info.role === "user") {
+        // Do not bind solely from a User event: another native client could
+        // write to the same Session while this Turn is active. The Assistant
+        // parent relation, Command result, or idle transcript reconciliation
+        // provides the ownership proof.
+        this.#knownUserMessageIds.add(info.id);
+        return;
+      }
+      if (!active || !this.#bindUserMessage(active, info.parentID)) return;
+      active.assistantMessageIds.add(info.id);
+      active.terminalAssistant = info;
+      if (info.time.completed !== undefined || info.finish || info.error) {
+        void this.#reconcileAndFinish(active);
       }
       return;
     }
     if (event.type === "message.part.updated") {
       const part = event.properties.part;
-      if (active && part.sessionID === this.#session.id) this.#projectPart(active, part);
+      // A Session stream can contain user input and unrelated native Messages.
+      // Only Parts whose Assistant Message has been linked to this Turn's
+      // native User Message may become Host output.
+      if (
+        active &&
+        part.sessionID === this.#session.id &&
+        active.assistantMessageIds.has(part.messageID)
+      ) {
+        this.#projectPart(active, part);
+      }
       return;
     }
     if (event.type === "message.part.delta") {
       const properties = event.properties;
-      if (active && properties.sessionID === this.#session.id) {
+      if (
+        active &&
+        properties.sessionID === this.#session.id &&
+        active.assistantMessageIds.has(properties.messageID)
+      ) {
         this.#appendPartDelta(active, properties.partID, properties.field, properties.delta);
       }
       return;
@@ -1001,7 +1151,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
 
   #projectPart(active: ActiveTurn, part: Part): void {
     if (part.type === "text" || part.type === "reasoning") {
-      if (part.type === "text" && part.ignored) return;
+      if ((part.type === "text" && part.ignored) || !part.text) return;
       const existing = active.items.get(part.id);
       if (!existing) {
         const item: HostAgentMessageItem | HostReasoningItem =
@@ -1238,6 +1388,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#transport.getMessages(this.#session.id),
       ]);
       if (this.#active !== active || status.type !== "idle") return;
+      this.#resolveUserMessage(active, messages);
       const lifecycleObserved =
         active.sawBusy ||
         active.reconciledAfterReconnect ||
@@ -1399,6 +1550,8 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       kind,
       turnId,
       userMessageID,
+      preexistingUserMessageIds: new Set(this.#knownUserMessageIds),
+      assistantMessageIds: new Set(),
       admissionBuffer: [],
       admissionSequence: 0,
       cancellationRequested: false,
@@ -1427,6 +1580,16 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     for (const { output } of active.admissionBuffer.splice(0)) this.#channel.emit(output);
   }
 
+  #failAdmission(active: ActiveTurn, error: HarnessError): void {
+    if (this.#active !== active || active.admissionCompleted || active.finished) return;
+    active.admissionBuffer.length = 0;
+    active.admissionFailure = error;
+    active.finished = true;
+    this.#active = null;
+    active.resolveAdmissionFailure(error);
+    active.resolveCompletion();
+  }
+
   async #refreshProjection(observedForTurnId?: ActiveTurn["turnId"]): Promise<void> {
     try {
       const projection = await readProjection(
@@ -1448,14 +1611,19 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     const previousState = this.#state;
     this.#session = projection.session;
     this.#snapshot = projection.snapshot;
+    for (const { info } of projection.messages) {
+      if (info.role === "user") this.#knownUserMessageIds.add(info.id);
+    }
     this.#model = projection.model ?? this.#model;
     this.#variant = projection.variant;
+    this.#permissionMode = permissionModeFromSession(this.#session.permission);
     this.#state = sessionState(
       this.#session,
       this.#modelCatalog,
       this.#model,
       this.#variant,
       this.#executionPolicy,
+      harnessPermissionModeIdSchema.parse(this.#permissionMode),
     );
     if (JSON.stringify(this.#state) !== JSON.stringify(previousState)) {
       this.#event({ type: "session.state.changed", state: this.#state });
@@ -1477,6 +1645,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       this.#model,
       this.#variant,
       this.#executionPolicy,
+      harnessPermissionModeIdSchema.parse(this.#permissionMode),
     );
     this.#event({ type: "session.state.changed", state: this.#state });
   }
@@ -1540,8 +1709,39 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.#output({ kind: "event", event });
   }
 
-  #newMessageId(): string {
-    return `msg_${this.#uuid().replaceAll("-", "")}`;
+  #bindUserMessage(active: ActiveTurn, messageID: string): boolean {
+    if (active.userMessageID) return active.userMessageID === messageID;
+    if (active.preexistingUserMessageIds.has(messageID)) return false;
+    active.userMessageID = messageID;
+    this.#knownUserMessageIds.add(messageID);
+    return true;
+  }
+
+  #resolveUserMessage(active: ActiveTurn, messages: OpenCodeMessageWithParts[]): void {
+    if (active.userMessageID) return;
+    const candidates = messages.filter(
+      ({ info }) => info.role === "user" && !active.preexistingUserMessageIds.has(info.id),
+    );
+    if (candidates.length === 1) {
+      this.#bindUserMessage(active, candidates[0]!.info.id);
+      return;
+    }
+    const parents = new Set(
+      messages
+        .filter(({ info }) => info.role === "assistant")
+        .map(({ info }) => (info as AssistantMessage).parentID),
+    );
+    const linked = candidates.filter(({ info }) => parents.has(info.id));
+    if (linked.length === 1) {
+      this.#bindUserMessage(active, linked[0]!.info.id);
+      return;
+    }
+    if (candidates.length > 1) {
+      throw new OpenCodeTransportError(
+        "protocolError",
+        "OpenCode admitted multiple native User Messages for one Host Turn",
+      );
+    }
   }
 }
 
@@ -1618,10 +1818,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
           configuration: {
             selectModel: catalog.models.length > 0,
             selectThinkingOption: catalog.thinkingOptions.length > 1,
-            selectPermissionMode: false,
+            selectPermissionMode: true,
           },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         },
+        permissionModes: OPENCODE_PERMISSION_MODE_CATALOG,
       };
     } catch (error) {
       const normalized = normalizeError(error, "unavailable");
@@ -1654,12 +1855,6 @@ export class OpenCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "create" && input.permissionModeId) {
-      return {
-        ok: false,
-        error: unsupported("OpenCode does not expose a selectable Permission Mode"),
-      };
-    }
     if (input.kind === "create" && input.thinkingOptionId && !input.model) {
       return {
         ok: false,
@@ -1683,6 +1878,32 @@ export class OpenCodeAdapter implements HarnessAdapter {
         input.kind === "create"
           ? (input.executionPolicy ?? "default")
           : (sourceRef?.executionPolicy ?? "default");
+      let requestedPermissionMode: OpenCodePermissionMode | undefined;
+      if (input.kind === "create") {
+        const requestedPermissionModeId =
+          input.permissionModeId ??
+          (executionPolicy === "unattended-full-access"
+            ? harnessPermissionModeIdSchema.parse("allow")
+            : OPENCODE_DEFAULT_PERMISSION_MODE_ID);
+        try {
+          requestedPermissionMode = decodeOpenCodePermissionModeId(requestedPermissionModeId);
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "OpenCode create Permission Mode is invalid",
+              retryable: false,
+            },
+          };
+        }
+        if (executionPolicy === "unattended-full-access" && requestedPermissionMode !== "allow") {
+          return {
+            ok: false,
+            error: unsupported("OpenCode unattended execution requires the allow Permission Mode"),
+          };
+        }
+      }
       const sessionEnvironment = input.environment ?? this.#options.environment ?? process.env;
       const serverOptions: OpenCodeServerOptions = {
         ...this.#options,
@@ -1704,9 +1925,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
             "Requested OpenCode Model is absent from the connected Provider catalog",
           );
         }
+        const permission =
+          requestedPermissionMode && requestedPermissionMode !== "default"
+            ? requestedPermissionRules(undefined, requestedPermissionMode)
+            : undefined;
         session = await transport.createSession({
           ...(model ? { model } : {}),
           ...(variant ? { variant } : {}),
+          ...(permission ? { permission } : {}),
         });
         createdForCleanup = session;
       } else {
@@ -1766,6 +1992,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
           }
           session = await transport.forkSession(source.id, boundary.messageID);
           createdForCleanup = session;
+          if (session.id === source.id) {
+            throw new OpenCodeTransportError(
+              "protocolError",
+              "OpenCode Fork did not create a distinct Native Session",
+            );
+          }
           const derivedMessages = await transport.getMessages(session.id);
           const derived = projectOpenCodeHistory({
             session,
@@ -1821,6 +2053,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
         closeTimeoutMs: this.#closeTimeoutMs,
         randomUUID: this.#uuid,
         executionPolicy,
+        permissionMode: permissionModeFromSession(projection.session.permission),
         onClosed: () => this.#sessions.delete(harnessSession),
       });
       await harnessSession.start();
@@ -1829,11 +2062,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
       revertedForCleanup = undefined;
       return { ok: true, value: harnessSession };
     } catch (error) {
-      if (createdForCleanup && transport) {
-        await transport.deleteSession(createdForCleanup.id).catch(() => undefined);
-      }
       if (revertedForCleanup && transport) {
         await transport.unrevertSession(revertedForCleanup).catch(() => undefined);
+      }
+      if (createdForCleanup && transport) {
+        await transport.deleteSession(createdForCleanup.id).catch(() => undefined);
       }
       await transport?.close().catch(() => undefined);
       await connection?.close().catch(() => undefined);

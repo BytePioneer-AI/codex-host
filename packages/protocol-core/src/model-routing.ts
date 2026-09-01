@@ -128,17 +128,26 @@ export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null 
 
 export function encodeOpenCodeTransportModel(
   model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
   thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OpenCode transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OpenCode transport configuration requires a Model Ref");
+    }
     return OPENCODE_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
-  return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+  if (parsedThinking) {
+    return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeOpenCodeTransportSelection(
@@ -149,15 +158,24 @@ export function decodeOpenCodeTransportSelection(
     return null;
   }
   const components = value.slice(OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) {
+  if (components.length < 1 || components.length > 3) {
     throw new Error("OpenCode transport configuration has an invalid component count");
   }
-  const [modelId, thinkingOptionId] = components;
-  if (components.length === 2 && !thinkingOptionId) {
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("OpenCode transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
     throw new Error("OpenCode transport configuration has an empty Thinking option");
   }
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("OpenCode transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("OpenCode transport configuration contains an invalid Permission Mode");
+  }
   const thinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
     : null;
@@ -166,6 +184,7 @@ export function decodeOpenCodeTransportSelection(
   }
   return {
     model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
     ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
@@ -395,7 +414,11 @@ export function encodeExternalTransportSelection(
     case "deepseek-harness":
       return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
     case "opencode":
-      return encodeOpenCodeTransportModel(selection.model, selection.thinkingOptionId);
+      return encodeOpenCodeTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
     case "grok":
       return encodeGrokTransportModel(
         selection.model,

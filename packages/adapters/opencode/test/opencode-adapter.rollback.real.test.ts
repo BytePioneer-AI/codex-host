@@ -352,6 +352,9 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         cwd: workspace,
       });
       if (!rolledBack.ok) throw new Error(rolledBack.error.message);
+      expect(rolledBack.value.initialState.nativeRef?.nativeSessionId).toBe(
+        sourceRef.nativeSessionId,
+      );
       expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
       await expect(rolledBack.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
@@ -384,6 +387,9 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         cwd: workspace,
       });
       if (!rolledBackAgain.ok) throw new Error(rolledBackAgain.error.message);
+      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).toBe(
+        sourceRef.nativeSessionId,
+      );
       expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
       await expect(rolledBackAgain.value.readSnapshot()).resolves.toMatchObject({
         ok: true,

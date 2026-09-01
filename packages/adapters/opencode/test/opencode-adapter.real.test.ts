@@ -36,7 +36,7 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
       expect(inspection).toMatchObject({
         status: "ready",
         capabilities: {
-          configuration: { selectPermissionMode: false },
+          configuration: { selectPermissionMode: true },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         },
       });
@@ -46,6 +46,9 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         executionPolicy: "unattended-full-access",
       });
       if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState).toMatchObject({
+        effectivePermissionModeId: "allow",
+      });
       expect(opened.value.initialState.nativeRef).toMatchObject({
         harnessId: "opencode",
         locator: {
@@ -57,6 +60,27 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         ok: true,
         value: { turns: [] },
       });
+      const model = inspection.catalog.defaultModel ?? inspection.catalog.models[0]?.ref;
+      if (model) {
+        await expect(opened.value.execute({ type: "model.select", model })).resolves.toEqual({
+          ok: true,
+          value: { completed: true },
+        });
+        await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { state: { effectiveModel: model }, turns: [] },
+        });
+      }
+      await expect(
+        opened.value.execute({
+          type: "permissionMode.select",
+          permissionModeId: "ask" as never,
+        }),
+      ).resolves.toEqual({ ok: true, value: { completed: true } });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: "ask" }, turns: [] },
+      });
       if (!opened.value.commands) throw new Error("OpenCode Session did not expose commands");
       await expect(opened.value.commands.list()).resolves.toMatchObject({ ok: true });
       const nativeRef = opened.value.initialState.nativeRef;
@@ -66,7 +90,13 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
       if (!resumed.ok) throw new Error(resumed.error.message);
       await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
-        value: { turns: [] },
+        value: {
+          state: {
+            ...(model ? { effectiveModel: model } : {}),
+            effectivePermissionModeId: "ask",
+          },
+          turns: [],
+        },
       });
       await resumed.value.close();
     } finally {

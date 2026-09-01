@@ -1,5 +1,10 @@
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
-import type { QuestionAnswer, SessionStatus } from "@opencode-ai/sdk/v2";
+import type {
+  AssistantMessage,
+  PermissionRuleset,
+  QuestionAnswer,
+  SessionStatus,
+} from "@opencode-ai/sdk/v2";
 
 import type { OpenCodeMessageWithParts } from "./history.js";
 import type { OpenCodeNativeModelRef } from "./model-catalog.js";
@@ -126,7 +131,13 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
     );
   }
 
-  async createSession(input: { model?: OpenCodeNativeModelRef; variant?: string } = {}) {
+  async createSession(
+    input: {
+      model?: OpenCodeNativeModelRef;
+      variant?: string;
+      permission?: PermissionRuleset;
+    } = {},
+  ) {
     const client = await this.#getClient();
     return responseData(
       await withTimeout(
@@ -140,6 +151,7 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
                 },
               }
             : {}),
+          ...(input.permission ? { permission: input.permission } : {}),
         }),
         this.#commandTimeoutMs,
         "OpenCode Session create",
@@ -169,6 +181,30 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
         "OpenCode Session read",
       ),
       "Session read",
+    );
+  }
+
+  async updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>) {
+    const client = await this.#getClient();
+    return responseData(
+      await withTimeout(
+        client.session.update({ sessionID, metadata }),
+        this.#commandTimeoutMs,
+        "OpenCode Session metadata update",
+      ),
+      "Session metadata update",
+    );
+  }
+
+  async updateSessionPermission(sessionID: string, permission: PermissionRuleset) {
+    const client = await this.#getClient();
+    return responseData(
+      await withTimeout(
+        client.session.update({ sessionID, permission }),
+        this.#commandTimeoutMs,
+        "OpenCode Session permission update",
+      ),
+      "Session permission update",
     );
   }
 
@@ -247,7 +283,6 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
       await withTimeout(
         client.session.promptAsync({
           sessionID: input.sessionID,
-          messageID: input.messageID,
           ...(input.model ? { model: input.model } : {}),
           ...(input.variant ? { variant: input.variant } : {}),
           parts: [{ type: "text", text: input.text }],
@@ -259,13 +294,14 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
     );
   }
 
-  async executeCommand(input: OpenCodeCommandInput): Promise<void> {
+  async executeCommand(
+    input: OpenCodeCommandInput,
+  ): Promise<OpenCodeMessageWithParts & { info: AssistantMessage }> {
     const client = await this.#getClient();
-    responseData(
+    return responseData(
       await withTimeout(
         client.session.command({
           sessionID: input.sessionID,
-          messageID: input.messageID,
           command: input.command,
           arguments: input.arguments,
           ...(input.model ? { model: `${input.model.providerID}/${input.model.modelID}` } : {}),

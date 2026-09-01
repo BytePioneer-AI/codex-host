@@ -884,12 +884,13 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "opencode",
         transportModelId:
-          "codexhost/opencode-native@opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd@ocv.aGlnaA",
+          "codexhost/opencode-native@opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd@ask@ocv.aGlnaA",
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         effectiveModel: harnessModelRefSchema.parse({
           id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
         }),
         effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("ocv.aGlnaA"),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("allow"),
         availableThinkingOptions: [
           { id: harnessThinkingOptionIdSchema.parse("ocv.aGlnaA"), label: "high" },
         ],
@@ -899,6 +900,7 @@ describe("Renderer Composer DOM behavior", () => {
       agent: "opencode",
       model: { id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd" },
       thinkingOptionId: "ocv.aGlnaA",
+      permissionModeId: "allow",
     });
     expect(
       restoredThreadOwnership({

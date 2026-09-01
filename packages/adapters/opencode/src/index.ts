@@ -2,6 +2,10 @@ import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { OpenCodeAdapter } from "./opencode-adapter.js";
+export {
+  OPENCODE_DEFAULT_PERMISSION_MODE_ID,
+  OPENCODE_PERMISSION_MODE_CATALOG,
+} from "./permission-modes.js";
 export type { OpenCodeAdapterDependencies, OpenCodeAdapterOptions } from "./opencode-adapter.js";
 export { managedOpenCodeEnvironment } from "./sdk-transport.js";
 export type { OpenCodeServerDependencies, OpenCodeServerOptions } from "./sdk-transport.js";

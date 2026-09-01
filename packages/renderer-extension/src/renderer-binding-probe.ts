@@ -364,10 +364,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const model = inspection.effectiveModel ?? transportSelection.model;
     const thinkingOptionId =
       selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "opencode",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
   throw new Error("Thread owner is not a Renderer Agent");

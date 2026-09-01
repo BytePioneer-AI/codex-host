@@ -170,10 +170,50 @@ describe("OpenCode SDK transport", () => {
       close: async () => undefined,
     };
     const transport = new SdkOpenCodeTransport(connection, "/synthetic", { commandTimeoutMs: 100 });
-    const input = { sessionID: "session-1", messageID: "message-1", text: "hello" };
+    const input = { sessionID: "session-1", text: "hello" };
 
     await expect(transport.promptAsync(input)).resolves.toBeUndefined();
+    expect(promptAsync).toHaveBeenNthCalledWith(
+      1,
+      expect.not.objectContaining({ messageID: expect.anything() }),
+    );
     await expect(transport.promptAsync(input)).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("updates Session metadata through the SDK", async () => {
+    const update = vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: undefined });
+    const connection = {
+      stderrTail: "",
+      client: async () => clientWith({ session: { update } }),
+      close: async () => undefined,
+    };
+    const transport = new SdkOpenCodeTransport(connection, "/synthetic", { commandTimeoutMs: 100 });
+
+    await expect(
+      transport.updateSessionMetadata("session-1", { "codexhost.selection.v1": { modelID: "m" } }),
+    ).resolves.toMatchObject({ id: "session-1" });
+    expect(update).toHaveBeenCalledWith({
+      sessionID: "session-1",
+      metadata: { "codexhost.selection.v1": { modelID: "m" } },
+    });
+  });
+
+  it("creates and updates Session permissions through the SDK", async () => {
+    const create = vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: undefined });
+    const update = vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: undefined });
+    const connection = {
+      stderrTail: "",
+      client: async () => clientWith({ session: { create, update } }),
+      close: async () => undefined,
+    };
+    const transport = new SdkOpenCodeTransport(connection, "/synthetic", { commandTimeoutMs: 100 });
+    const ask = [{ permission: "*", pattern: "*", action: "ask" }] as const;
+    const allow = [{ permission: "*", pattern: "*", action: "allow" }] as const;
+
+    await transport.createSession({ permission: [...ask] });
+    await transport.updateSessionPermission("session-1", [...allow]);
+    expect(create).toHaveBeenCalledWith({ permission: ask });
+    expect(update).toHaveBeenCalledWith({ sessionID: "session-1", permission: allow });
   });
 
   it("fails closed when a data-bearing SDK response omits data", async () => {

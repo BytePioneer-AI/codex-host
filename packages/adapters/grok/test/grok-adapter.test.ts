@@ -2304,13 +2304,6 @@ describe("Grok Adapter ACP projection", () => {
       },
     });
     expect(await nextEvent(iterator)).toMatchObject({
-      type: "item.completed",
-      snapshot: {
-        item: { type: "subagentDelegation", subagents: [{ status: "running" }] },
-        outcome: { status: "succeeded" },
-      },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({
       type: "subagent.state.changed",
       nativeSubagentId: "child-session",
       status: "running",
@@ -2321,6 +2314,20 @@ describe("Grok Adapter ACP projection", () => {
       nativeSubagentId: "child-session",
       status: "completed",
       resultSummary: "Inspection done",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: {
+        type: "subagents.replace",
+        subagents: [{ nativeSubagentId: "child-session", status: "completed" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", subagents: [{ status: "completed" }] },
+        outcome: { status: "succeeded" },
+      },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "subagent.state.changed",

@@ -109,6 +109,20 @@ describe("Grok Subagent ACP mapping", () => {
         ],
       }),
     ).toEqual([{ id: "child-1", status: "completed" }]);
+    expect(
+      grokSubagentWaitSettlements({
+        name: "get_command_or_subagent_output",
+        rawInput: { task_ids: ["child-3"], timeout_ms: 30_000 },
+        rawOutput: {
+          type: "TaskOutput",
+          Result: {
+            task_id: "child-3",
+            status: "completed",
+            output: "empty mirror",
+          },
+        },
+      }),
+    ).toEqual([{ id: "child-3", status: "completed", resultSummary: "empty mirror" }]);
   });
 
   it("reads Grok subagent_spawned and subagent_finished session updates", () => {

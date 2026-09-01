@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/shared-contracts/tsconfig.json" },
     { "path": "./packages/harness-adapter/tsconfig.json" },
+    { "path": "./packages/harness-broker/tsconfig.json" },
     { "path": "./packages/harness-discovery/tsconfig.json" },
     { "path": "./packages/mapping-store/tsconfig.json" },
     { "path": "./packages/protocol-core/tsconfig.json" },
@@ -11,6 +12,7 @@
     { "path": "./packages/adapters/pi/tsconfig.json" },
     { "path": "./packages/adapters/claude-code/tsconfig.json" },
     { "path": "./packages/adapters/deepseek-harness/tsconfig.json" },
+    { "path": "./packages/adapters/opencode/tsconfig.json" },
     { "path": "./packages/adapters/grok/tsconfig.json" },
     { "path": "./packages/adapters/omp/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },

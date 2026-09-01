@@ -7,6 +7,7 @@ import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Check from "lucide/dist/esm/icons/check.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
+import Lock from "lucide/dist/esm/icons/lock.mjs";
 import Shield from "lucide/dist/esm/icons/shield.mjs";
 import ShieldAlert from "lucide/dist/esm/icons/shield-alert.mjs";
 
@@ -31,6 +32,8 @@ export interface RendererPermissionModeControlView {
   catalog?: HarnessPermissionModeCatalog;
   selected?: HarnessPermissionModeId;
   error?: string;
+  selectionLocked?: boolean;
+  selectionLockedReason?: string;
 }
 
 interface PermissionModeOptionControl {
@@ -43,6 +46,8 @@ export interface RendererPermissionModePickerControl {
   root: HTMLElement;
   trigger: HTMLButtonElement;
   label: HTMLElement;
+  chevron: HTMLElement;
+  lockMark: HTMLElement;
   menu: HTMLElement;
   options: Map<string, PermissionModeOptionControl>;
   locale: RendererSettingsLocale;
@@ -169,7 +174,12 @@ export function mountRendererPermissionModePicker(
   chevron.className = "inline-flex shrink-0 items-center";
   chevron.style.color = "var(--color-text-tertiary, #8f8f8f)";
   chevron.append(icon(ChevronDown, 14));
-  trigger.append(shield, label, chevron);
+  const lockMark = document.createElement("span");
+  lockMark.className = "inline-flex shrink-0 items-center";
+  lockMark.style.color = "var(--color-text-tertiary, #8f8f8f)";
+  lockMark.hidden = true;
+  lockMark.append(icon(Lock, 14));
+  trigger.append(shield, label, chevron, lockMark);
 
   const menu = document.createElement("div");
   menu.id = `${composerId}-permission-mode-menu`;
@@ -280,6 +290,8 @@ export function mountRendererPermissionModePicker(
     root,
     trigger,
     label,
+    chevron,
+    lockMark,
     menu,
     options,
     locale,
@@ -373,16 +385,28 @@ export function renderRendererPermissionModePicker(
   }
   const label = rendererPermissionModeLabel(view, locale);
   if (control.label.textContent !== label) control.label.textContent = label;
-  control.trigger.title = view.error ? `${label}: ${view.error}` : label;
+  const locked = view.selectionLocked === true;
+  control.trigger.title = locked
+    ? (view.selectionLockedReason ?? label)
+    : view.error
+      ? `${label}: ${view.error}`
+      : label;
   control.trigger.setAttribute("aria-label", `${messages.permissionMode}: ${label}`);
   control.trigger.disabled =
-    view.status === "loading" || view.status === "selecting" || view.catalog === undefined;
+    locked ||
+    view.status === "loading" ||
+    view.status === "selecting" ||
+    view.catalog === undefined;
+  control.trigger.style.cursor = control.trigger.disabled ? "not-allowed" : "pointer";
+  control.trigger.style.opacity = locked ? "0.72" : "1";
+  control.chevron.hidden = locked;
+  control.lockMark.hidden = !locked;
   control.trigger.setAttribute("aria-busy", String(view.status === "selecting"));
   if (control.trigger.disabled) control.close();
 
   for (const [id, option] of control.options) {
     const selected = id === view.selected;
-    option.button.disabled = view.status !== "ready" && view.status !== "error";
+    option.button.disabled = locked || (view.status !== "ready" && view.status !== "error");
     option.button.setAttribute("aria-checked", String(selected));
     option.check.style.visibility = selected ? "visible" : "hidden";
   }

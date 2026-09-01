@@ -20,13 +20,14 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
-import type {
-  HarnessId,
-  HarnessPermissionModeId,
-  HarnessThinkingOptionId,
-  HostInteractionId,
-  HostTurnId,
-  NativeSessionRef,
+import {
+  permissionModeFixedAtCreate,
+  type HarnessId,
+  type HarnessPermissionModeId,
+  type HarnessThinkingOptionId,
+  type HostInteractionId,
+  type HostTurnId,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -133,6 +134,7 @@ class ReadonlySnapshotSession implements HarnessSession {
       selectModel: false,
       selectThinkingOption: false,
       selectPermissionMode: false,
+      permissionModeScope: "live" as const,
     },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
     subagents: { observe: false, readTranscript: false },
@@ -477,7 +479,11 @@ export class ExternalThreadRuntime {
         harnessId,
         record.transportModelId,
       );
-      if (restoredSelection?.permissionModeId) {
+      if (
+        restoredSelection?.permissionModeId &&
+        harnessId !== "opencode" &&
+        !permissionModeFixedAtCreate(session.capabilities.configuration)
+      ) {
         if (!session.capabilities.configuration.selectPermissionMode) {
           throw new ExternalThreadOpenError({
             code: -32076,
@@ -510,13 +516,15 @@ export class ExternalThreadRuntime {
         ? restoredState.effectivePermissionModeId
         : restoredSelection?.permissionModeId;
       let transportModelId = aligned.record.transportModelId;
-      // OMP can silently replace an unavailable Model during resume; persist the live selection
-      // so the next restore does not reapply the obsolete transport token.
-      if (harnessId === "omp" && restoredState?.effectiveModel) {
+      // OMP can silently replace an unavailable Model during resume, while OpenCode's
+      // additive Permission API cannot reliably restore a stale mode. Persist live state so the
+      // next restore does not reapply an obsolete transport token.
+      if ((harnessId === "omp" || harnessId === "opencode") && effectiveModel) {
         const liveSelection: ExternalConfigurationSelection = {
-          model: restoredState.effectiveModel,
-          ...(restoredState.effectiveThinkingOptionId
-            ? { thinkingOptionId: restoredState.effectiveThinkingOptionId }
+          model: effectiveModel,
+          ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
+          ...(harnessId === "opencode" && effectivePermissionModeId
+            ? { permissionModeId: effectivePermissionModeId }
             : {}),
         };
         transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);

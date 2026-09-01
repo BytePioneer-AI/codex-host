@@ -225,6 +225,7 @@ describe("Codex UI projector", () => {
             status: "completed",
             aggregatedOutput: null,
             exitCode: 0,
+            durationMs: 25,
           },
         },
       },
@@ -239,6 +240,201 @@ describe("Codex UI projector", () => {
       durationMs: 1_500,
       items: [{ type: "agentMessage", text: "done" }],
     });
+  });
+
+  it("fills completed Command, Tool, and Reasoning duration from Item start time", () => {
+    const value = projector();
+    const commandId = itemId("timed-command");
+    const toolId = itemId("timed-tool");
+    const reasoningId = itemId("timed-reasoning");
+    const providedId = itemId("provided-duration");
+    value.project({ type: "turn.started", turnId });
+
+    expect(
+      value.project(
+        {
+          type: "item.started",
+          turnId,
+          item: { type: "commandExecution", itemId: commandId, command: "sleep 1" },
+        },
+        2_000,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          startedAtMs: 2_000,
+          item: { type: "commandExecution", durationMs: null, status: "inProgress" },
+        },
+      },
+    ]);
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "commandExecution",
+              itemId: commandId,
+              command: "sleep 1",
+              output: "ok",
+              exitCode: 0,
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        4_500,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 2_000,
+          completedAtMs: 4_500,
+          item: { type: "commandExecution", durationMs: 2_500, exitCode: 0 },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: providedId,
+          command: "printf done",
+        },
+      },
+      5_000,
+    );
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "commandExecution",
+              itemId: providedId,
+              command: "printf done",
+              exitCode: 0,
+              durationMs: 25,
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        8_000,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 5_000,
+          completedAtMs: 8_000,
+          item: { type: "commandExecution", durationMs: 25 },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: toolId,
+          toolName: "Read",
+          arguments: { path: "a.ts" },
+        },
+      },
+      9_000,
+    );
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "toolExecution",
+              itemId: toolId,
+              toolName: "Read",
+              arguments: { path: "a.ts" },
+              output: { content: [{ type: "text", text: "contents" }] },
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        10_250,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 9_000,
+          completedAtMs: 10_250,
+          item: {
+            type: "commandExecution",
+            command: "read a.ts",
+            durationMs: 1_250,
+          },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "" },
+      },
+      11_000,
+    );
+    value.project(
+      {
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "thinking" },
+      },
+      11_500,
+    );
+    const reasoningCompleted = value.project(
+      {
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "reasoning", itemId: reasoningId, text: "thinking" },
+          outcome: { status: "succeeded" },
+        },
+      },
+      13_000,
+    );
+    expect(reasoningCompleted.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 11_500,
+          completedAtMs: 13_000,
+          item: { id: `${reasoningId}-summary`, type: "reasoning" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 11_500,
+          completedAtMs: 13_000,
+          item: {
+            id: reasoningId,
+            type: "commandExecution",
+            command: "thinking",
+            durationMs: 1_500,
+          },
+        },
+      },
+    ]);
   });
 
   it("projects Subagent delegation through native collaboration Items", () => {

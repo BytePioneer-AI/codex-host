@@ -6,6 +6,7 @@ import {
   harnessInspectionSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
+  permissionModeFixedAtCreate,
   threadPermissionModeSelectParamsSchema,
 } from "@codexhost/shared-contracts";
 
@@ -32,6 +33,7 @@ function readyInspection(selectPermissionMode: boolean) {
         selectModel: false,
         selectThinkingOption: false,
         selectPermissionMode,
+        permissionModeScope: "live" as const,
       },
       history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
     },
@@ -51,6 +53,40 @@ describe("Harness Permission Mode runtime contracts", () => {
         permissionModeId: "bypassPermissions",
       }),
     ).toEqual({ threadId: "thread-1", permissionModeId: "bypassPermissions" });
+  });
+
+  it("defaults Permission Mode scope to live and treats atCreate as fixed", () => {
+    const parsed = harnessInspectionSchema.parse({
+      ...readyInspection(true),
+      capabilities: {
+        configuration: {
+          selectModel: false,
+          selectThinkingOption: false,
+          selectPermissionMode: true,
+        },
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
+    });
+    if (parsed.status !== "ready") throw new Error("Inspection is not ready");
+    expect(parsed.capabilities.configuration.permissionModeScope).toBe("live");
+    expect(permissionModeFixedAtCreate(parsed.capabilities.configuration)).toBe(false);
+    expect(permissionModeFixedAtCreate({ permissionModeScope: "atCreate" })).toBe(true);
+    expect(
+      harnessInspectionSchema.parse({
+        ...readyInspection(true),
+        capabilities: {
+          configuration: {
+            selectModel: false,
+            selectThinkingOption: false,
+            selectPermissionMode: true,
+            permissionModeScope: "atCreate",
+          },
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        },
+      }),
+    ).toMatchObject({
+      capabilities: { configuration: { permissionModeScope: "atCreate" } },
+    });
   });
 
   it("requires catalog and structural capability to agree", () => {

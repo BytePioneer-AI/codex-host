@@ -10,10 +10,11 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type {
-  HostTurnId,
-  NativeCheckpointRef,
-  NativeSessionRef,
+import {
+  permissionModeFixedAtCreate,
+  type HostTurnId,
+  type NativeCheckpointRef,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -83,7 +84,10 @@ async function restoreCurrentConfiguration(
     });
     if (!selected.ok) return mapExternalThreadHarnessError(selected.error, "fork");
   }
-  if (configuration.effectivePermissionModeId) {
+  if (
+    configuration.effectivePermissionModeId &&
+    !permissionModeFixedAtCreate(session.capabilities.configuration)
+  ) {
     if (!session.capabilities.configuration.selectPermissionMode) {
       return {
         code: -32076,

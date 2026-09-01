@@ -39,6 +39,36 @@ codexhost remote install \
 - 记录已安装原生入口的摘要，因此旧版本包内 runtime 被清理后，后续卸载仍可校验该入口；
 - 保持原有 `codex` 命令和 OpenCodex 配置不变。
 
+在 macOS 上，`remote install` 还会为当前用户安装名为
+`ai.bytepioneer.codexhost.native-harness-broker` 的 LaunchAgent。该 Agent 只允许在已登录的
+Aqua 会话中加载，并以绝对路径执行打包的 Node.js 和
+`host-runtime.mjs --codexhost-harness-broker`。SSH Background Host 只通过用户私有的 Unix
+socket 与本机 broker 通信；仍由 Aqua 会话中的 Claude Code 原生进程读取自己的登录态。
+codexhost 不要求输入 Keychain 密码、不运行 `security unlock-keychain`、不读取 OAuth 材料，
+也不通过 SSH 传输凭据。
+
+LaunchAgent 使用 `RunAtLoad` 和有界的 launchd 节流，但不使用 `KeepAlive`：持续启动失败会
+保持停止，不会形成重试风暴。descriptor 与 socket 位于
+`~/.codexhost/harness-broker`，并限制为当前用户访问。plist 只保存 codexhost 已解析并规范化
+的 HTTP/HTTPS/SOCKS 代理变量，以及 `NO_PROXY` 和 `NODE_USE_ENV_PROXY`；不会复制 Claude、
+Anthropic、OAuth 或任意 SSH 环境变量。含内嵌账号密码的代理 URL 会被拒绝，不会落盘。
+
+可用以下命令单独诊断 broker 生命周期：
+
+```bash
+codexhost broker install
+codexhost broker status
+codexhost broker stop
+codexhost broker uninstall
+```
+
+npm 包装器会自动传入当前 Node 和打包 Host Runtime 的绝对路径。再次执行 `remote install`
+时，即使 plist 未变化，也会受控重启该 LaunchAgent，避免 broker 继续使用内存中的旧版
+JavaScript；正在执行的 Claude Harness 请求会在重启期间失败关闭，broker 恢复 ready 后需要
+重新连接远程工作区。持久化 Thread 映射与原生历史会保留，但不会跨 broker generation 复用
+内存 Session。若当前用户没有 Aqua 控制台会话，或 launchd 拒绝 `gui/$UID`，安装会直接失败，
+不会降级为由 Background SSH 进程启动 Claude。
+
 远程 Host 启动 Harness 时会重新解析开发机上的代理环境：已有的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 等变量优先；macOS 再补充静态系统代理配置；Linux 保留其环境变量和 TUN 网络路径。codexhost 不识别具体代理软件，也不会猜测代理端口；没有可解析的代理时会按直连处理。
 
 如果早期候选版安装的是 Shell wrapper，再次运行 `remote install` 会原地迁移该入口。随后运行 `remote start` 即可启动无头 Host，不要求当前 Shell 重新加载 profile。如果目标 socket 被当前用户、安装清单中记录的官方 Codex 默认 listener 占用，该命令会精确终止这棵 listener 进程树后再启动 codexhost；未知 socket owner 绝不会被自动终止。
@@ -65,5 +95,9 @@ codexhost remote uninstall
 ```
 
 `start` 可重复执行并启动已安装的无头 Remote Host；`stop` 只停止经过校验的 codexhost listener，不影响其他 Codex 进程。`status` 除了报告运行状态和协议身份，也会报告原生入口、启动配置、runtime 或数据目录缺失/被修改；托管启动配置块只剩一侧标记或存在其他格式损坏时，会返回 degraded，而 install 与 uninstall 仍会拒绝自动改写；遇到会阻塞 bootstrap 的旧 Shell 入口时，也会明确提示重新安装迁移。`uninstall` 会先核对 manifest 中记录的入口摘要，再只移除托管入口、manifest 和启动配置块，并保留 profile 备份及 `~/.codexhost/remote/data`，便于恢复 Thread 映射。卸载后同样需要重新连接远程工作区。
+
+在 macOS 上，`remote status` 还会确认 Aqua broker LaunchAgent 正在运行、plist 仍指向当前安装的
+runtime，并且存在非空且仅当前用户可读的 descriptor。`remote uninstall` 会卸载并移除这个受管
+LaunchAgent，但不会修改 Claude Code 配置、登录态、Keychain 数据或原生 Session 历史。
 
 远程 Host 不拥有本机 codexhost Launcher 或自动更新控制器。请在两台机器上使用相同的包管理器更新到同一 codexhost 版本，然后重新连接。

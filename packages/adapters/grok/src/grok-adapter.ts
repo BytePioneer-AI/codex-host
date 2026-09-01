@@ -69,6 +69,7 @@ import {
 import {
   GrokAcpTransport,
   GrokTransportError,
+  grokNativeSessionDirectory,
   type GrokAcpTransportOptions,
   type GrokNativeSessionLocation,
   type GrokOpenInput,
@@ -76,6 +77,7 @@ import {
   type GrokPermissionRequest,
   type GrokTransportEvent,
 } from "./acp-transport.js";
+import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import type { GrokCompactResult } from "./grok-manual-compaction.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
@@ -144,7 +146,6 @@ export interface GrokAcpTransportLike {
     onEvent: (event: GrokTransportEvent) => void,
   ): Promise<GrokCompactResult>;
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
-  setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
 }
@@ -164,6 +165,8 @@ interface ActiveTurn {
   command: TurnStartCommand;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
+  rawAgentText: string;
+  projectedAgentText: string;
   reasoning: HostReasoningItem | null;
   reasoningMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
@@ -198,6 +201,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: true,
+      permissionModeScope: "atCreate",
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
   };
@@ -290,6 +294,8 @@ class GrokHarnessSession implements HarnessSession {
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #closeTimeoutMs: number;
   readonly #cwd: string;
+  readonly #mediaRoots: readonly string[];
+  readonly #sessionDirectory: string;
   readonly #modelState: GrokModelState;
   readonly #onClosed: () => void;
   readonly #refreshCredits: () => Promise<unknown>;
@@ -318,10 +324,13 @@ class GrokHarnessSession implements HarnessSession {
       knownTurnRefs?: NativeTurnRef[];
       randomUUID: () => string;
       refreshCredits: () => Promise<unknown>;
+      sessionDirectory: string;
       toolOutputLimit: number;
     },
   ) {
     this.#cwd = cwd;
+    this.#sessionDirectory = options.sessionDirectory;
+    this.#mediaRoots = grokMediaResolveRoots(cwd, options.sessionDirectory);
     this.#transport = transport;
     this.#modelState = modelState;
     this.#onClosed = onClosed;
@@ -352,6 +361,7 @@ class GrokHarnessSession implements HarnessSession {
         cwd,
         options.knownTurnRefs,
         this.#toolOutputLimit,
+        options.sessionDirectory,
       ),
       state: this.#state,
     };
@@ -460,6 +470,8 @@ class GrokHarnessSession implements HarnessSession {
       command,
       agent: null,
       agentMessageId: null,
+      rawAgentText: "",
+      projectedAgentText: "",
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -553,6 +565,8 @@ class GrokHarnessSession implements HarnessSession {
       command: { type: "turn.start", turnId: command.turnId, input: [] },
       agent: null,
       agentMessageId: null,
+      rawAgentText: "",
+      projectedAgentText: "",
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -656,6 +670,7 @@ class GrokHarnessSession implements HarnessSession {
       this.#cwd,
       knownTurnRefs,
       this.#toolOutputLimit,
+      this.#sessionDirectory,
     );
     this.#snapshot.turns = refreshed.turns;
     return history;
@@ -745,30 +760,14 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#active || this.#configuring) {
-      return {
-        ok: false,
-        error: {
-          code: "sessionBusy",
-          message: "Grok Session cannot configure during another operation",
-          retryable: true,
-        },
-      };
-    }
-    this.#configuring = true;
-    try {
-      await this.#transport.setPermissionMode(command.permissionModeId);
-      this.#state = {
-        ...this.#state,
-        effectivePermissionModeId: command.permissionModeId,
-      };
-      this.#event({ type: "session.state.changed", state: this.#state });
-      return { ok: true, value: { completed: true } };
-    } catch (error) {
-      return { ok: false, error: normalizeError(error, "nativeFailure") };
-    } finally {
-      this.#configuring = false;
-    }
+    return {
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "Grok Permission Mode is fixed at Session creation",
+        retryable: false,
+      },
+    };
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
@@ -951,14 +950,25 @@ class GrokHarnessSession implements HarnessSession {
         itemId: hostItemIdSchema.parse(this.#randomUUID()),
         text: "",
       };
+      active.rawAgentText = "";
+      active.projectedAgentText = "";
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agent });
     }
-    active.agent = { ...active.agent, text: active.agent.text + text };
+    active.rawAgentText += text;
+    const projected = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots, {
+      holdIncomplete: true,
+    });
+    const delta = projected.startsWith(active.projectedAgentText)
+      ? projected.slice(active.projectedAgentText.length)
+      : text;
+    if (delta.length === 0) return;
+    active.projectedAgentText += delta;
+    active.agent = { ...active.agent, text: active.projectedAgentText };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
       itemId: active.agent.itemId,
-      update: { type: "text.append", text },
+      update: { type: "text.append", text: delta },
     });
   }
 
@@ -1083,9 +1093,26 @@ class GrokHarnessSession implements HarnessSession {
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
     const item = active.agent;
+    if (item && active.rawAgentText.length > 0) {
+      const flushed = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots);
+      const delta = flushed.startsWith(item.text) ? flushed.slice(item.text.length) : "";
+      if (delta.length > 0) {
+        active.projectedAgentText = flushed;
+        active.agent = { ...item, text: flushed };
+        this.#event({
+          type: "item.updated",
+          turnId: active.command.turnId,
+          itemId: item.itemId,
+          update: { type: "text.append", text: delta },
+        });
+      }
+    }
+    const completed = active.agent ?? item;
     active.agent = null;
     active.agentMessageId = null;
-    if (item) this.#completeItem(active, item, outcome);
+    active.rawAgentText = "";
+    active.projectedAgentText = "";
+    if (completed) this.#completeItem(active, completed, outcome);
   }
 
   #completeReasoning(active: ActiveTurn, outcome: HostItemOutcome): void {
@@ -1527,7 +1554,6 @@ export class GrokAdapter implements HarnessAdapter {
             delete modelState.currentThinkingOptionId;
           }
         }
-        await transport.setPermissionMode(initialPermissionModeId);
       }
       if (input.kind === "create") {
         const selectedModel = input.model ?? modelState.currentModel;
@@ -1555,17 +1581,17 @@ export class GrokAdapter implements HarnessAdapter {
           if (selectedThinking) modelState.currentThinkingOptionId = selectedThinking;
           else delete modelState.currentThinkingOptionId;
         }
-        // Grok's session/new metadata seeds the launch state, but the native
-        // permission notification is the authoritative live-session path. Send
-        // it after model setup so Default, Ask, Auto, and Always approve all
-        // reach the resident Session before its first prompt.
-        await transport.setPermissionMode(initialPermissionModeId);
       }
       const history = await transport.getHistory();
       const initialUsage =
         input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn"
           ? combineUsage(sessionUsageFromHistory(history), usageFromSignals(opened.signals))
           : null;
+      const environment = input.environment ?? this.#environment;
+      const sessionDirectory = grokNativeSessionDirectory(
+        environment ? { cwd, environment } : { cwd },
+        opened.sessionId,
+      );
       const openedSession = new GrokHarnessSession(
         cwd,
         transport,
@@ -1582,6 +1608,7 @@ export class GrokAdapter implements HarnessAdapter {
             : {}),
           randomUUID: this.#dependencies.randomUUID,
           refreshCredits: () => this.refreshCredits(),
+          sessionDirectory,
           toolOutputLimit: this.#toolOutputLimit,
         },
       );

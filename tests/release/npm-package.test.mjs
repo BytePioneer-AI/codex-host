@@ -26,6 +26,8 @@ import {
   npmPackageOs,
   npmPackCommand,
   npmPlatformPackageName,
+  resolveRuntimeLicenseSource,
+  writeThirdPartyNotices,
   npmReleaseBuildCommands,
   npmTarballFileName,
   parseNpmReleaseArguments,
@@ -249,6 +251,64 @@ async function runLauncherLifecycle(platform) {
   }
 }
 
+async function runGeneratedWrapperLifecycle(platform, userArguments, exitCodes) {
+  const root = await temporaryDirectory();
+  try {
+    const { launcherPath, npmCliPath } = await createLauncherLifecycleFixture(root, platform);
+    const preloadPath = path.join(root, "remote-broker-preload.mjs");
+    const callsPath = path.join(root, "spawn-calls.jsonl");
+    await writeFile(
+      preloadPath,
+      `import childProcess from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
+
+Object.defineProperty(process, "platform", { configurable: true, value: process.env.CODEXHOST_TEST_PLATFORM });
+Object.defineProperty(process, "arch", { configurable: true, value: "x64" });
+const exitCodes = JSON.parse(process.env.CODEXHOST_TEST_EXIT_CODES);
+let call = 0;
+childProcess.spawn = (command, args, options) => {
+  appendFileSync(process.env.CODEXHOST_TEST_CALLS, JSON.stringify({
+    command,
+    args,
+    stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
+  }) + "\\n");
+  const child = new EventEmitter();
+  const exitCode = exitCodes[call++] ?? 1;
+  setTimeout(() => child.emit("exit", exitCode, null), 5);
+  return child;
+};
+syncBuiltinESMExports();
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(preloadPath).href, launcherPath, ...userArguments],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEXHOST_TEST_PLATFORM: platform,
+          CODEXHOST_TEST_CALLS: callsPath,
+          CODEXHOST_TEST_EXIT_CODES: JSON.stringify(exitCodes),
+          npm_execpath: npmCliPath,
+        },
+        timeout: 2_000,
+        windowsHide: true,
+      },
+    );
+    const calls = (await readFile(callsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return { result, calls };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("npm package release", () => {
   it("maps the current host to a release target id", () => {
     expect(hostReleaseTargetId("darwin", "arm64")).toBe("macos-arm64");
@@ -317,6 +377,30 @@ describe("npm package release", () => {
     });
   });
 
+  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+    const root = process.cwd();
+    const output = await temporaryDirectory();
+    try {
+      await writeThirdPartyNotices(root, output);
+      const notice = await readFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "utf8");
+      const license = await readFile(
+        path.join(output, "licenses/OpenCode-SDK-LICENSE.txt"),
+        "utf8",
+      );
+      expect(
+        resolveRuntimeLicenseSource(root, {
+          packageName: "@opencode-ai/sdk",
+          source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+        }),
+      ).toBe(path.join(root, "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt"));
+      expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
+      expect(license).toContain("Copyright (c) 2025 opencode");
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
   it("publishes a scoped platform package with platform constraints", () => {
     const target = releaseTarget("macos-arm64");
     const manifest = createNpmPackageManifest({ version: "0.1.0", target });
@@ -364,6 +448,13 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
     expect(source).toContain('if (launchArguments?.[0] === "launch")');
     expect(source).toContain('userArguments[0] === "remote"');
+    expect(source).toContain('userArguments[0] === "broker"');
+    expect(source).toContain("brokerArguments = userArguments.slice(1)");
+    expect(source).toContain('"--node", process.execPath, "--host-runtime", hostRuntime');
+    expect(source).toContain('remoteArguments[0] === "install"');
+    expect(source).toContain('remoteArguments[0] === "uninstall"');
+    expect(source).toContain('runNativeBroker("install"');
+    expect(source).toContain('runNativeBroker("uninstall"');
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
     expect(source).toContain('"--codexhost-delegation-cli"');
@@ -374,6 +465,78 @@ describe("npm package release", () => {
     expect(source).toContain('const readyMarker = "ready\\n"');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it("installs the Aqua broker after a successful macOS remote install", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "install"],
+      [0, 0],
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args).toEqual([
+      "broker",
+      "install",
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      expect.stringMatching(/host-runtime\.mjs$/u),
+    ]);
+  });
+
+  it("reports a macOS broker status failure after remote status succeeds", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "status"],
+      [0, 9],
+    );
+
+    expect(result.status).toBe(9);
+    expect(calls[1].args.slice(0, 2)).toEqual(["broker", "status"]);
+    expect(calls[1].stdoutFd).toBe(2);
+  });
+
+  it("does not manage an Aqua broker for Linux remote installs", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "linux",
+      ["remote", "install"],
+      [0],
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not install the Aqua broker when remote installation fails", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "install"],
+      [7],
+    );
+
+    expect(result.status).toBe(7);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("injects the npm Node and Host Runtime into direct broker status", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["broker", "status"],
+      [0],
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual([
+      "broker",
+      "status",
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      expect.stringMatching(/host-runtime\.mjs$/u),
+    ]);
   });
 
   it("keeps Windows launcher supervision alive after the ready handshake", async () => {
@@ -469,6 +632,7 @@ describe("npm package release", () => {
         root: "/repo/source",
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
+      expect(paths).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");

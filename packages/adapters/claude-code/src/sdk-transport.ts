@@ -36,6 +36,8 @@ import type {
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
 const APPROVAL_TITLE_MAX_LENGTH = 120;
 const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
+const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
+const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
 
 class PushableInput<T> implements AsyncIterable<T> {
   #closed = false;
@@ -97,6 +99,7 @@ export interface ClaudeSdkTransportOptions {
   thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
   closeTimeoutMs: number;
+  abortTimeoutMs?: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
@@ -113,6 +116,22 @@ export interface ClaudeSdkModelInspectorOptions {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function rejectAfter(
+  milliseconds: number,
+  message: string,
+): { promise: Promise<never>; cancel(): void } {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), milliseconds);
+  });
+  return {
+    promise,
+    cancel() {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    },
+  };
 }
 
 export function allowsDangerouslySkipPermissions(
@@ -319,6 +338,7 @@ function allowed(
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly #children: ChildProcessWithoutNullStreams[] = [];
+  readonly #abortTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #command: string | undefined;
   readonly #cwd: string;
@@ -353,6 +373,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   constructor(options: ClaudeSdkTransportOptions) {
     this.sessionId = options.sessionId;
     this.#cwd = options.cwd;
+    this.#abortTimeoutMs = options.abortTimeoutMs ?? DEFAULT_ABORT_TIMEOUT_MS;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
@@ -586,7 +607,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!active || !activeQuery) throw new Error("Claude SDK transport has no active Turn");
     active.accumulator.requestCancel();
-    await activeQuery.interrupt();
+    const timeout = rejectAfter(this.#abortTimeoutMs, INTERRUPT_TIMEOUT_MESSAGE);
+    try {
+      await Promise.race([activeQuery.interrupt(), timeout.promise]);
+    } catch (error) {
+      await this.close();
+      throw error instanceof Error ? error : new Error(INTERRUPT_TIMEOUT_MESSAGE);
+    } finally {
+      timeout.cancel();
+    }
   }
 
   close(): Promise<void> {

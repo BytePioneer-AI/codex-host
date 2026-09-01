@@ -31,7 +31,6 @@ import {
   type HostSubagentDelegationItem,
   type HostSubagentState,
   type HostSubagentStatus,
-  type HostToolExecutionItem,
   type HostToolOutput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -99,6 +98,7 @@ import {
   type OmpPermissionMode,
 } from "./omp-permission-modes.js";
 import { OmpSubagentLifecycle } from "./omp-subagent-lifecycle.js";
+import { projectOmpToolItem } from "./omp-tool-presentation.js";
 
 export interface OmpAdapterOptions {
   command?: string;
@@ -141,8 +141,9 @@ export interface OmpAdapterDependencies {
 }
 
 interface ActiveTool {
-  item: HostCommandExecutionItem | HostToolExecutionItem;
+  item: HostCommandExecutionItem;
   nativeName: string;
+  arguments: JsonValue;
   startedAtMs: number;
 }
 
@@ -400,43 +401,6 @@ function displayPath(nativePath: string, cwd: string): { path: string; absolute:
   return { path: normalized, absolute: !inside };
 }
 
-function normalizeToolName(name: string): string {
-  const lower = name.toLowerCase();
-  switch (lower) {
-    case "bash":
-    case "exec":
-    case "terminal":
-    case "run":
-      return "bash";
-    case "read":
-    case "read_file":
-    case "fileread":
-      return "Read";
-    case "edit":
-    case "edit_file":
-    case "fileedit":
-      return "Edit";
-    case "write":
-    case "write_file":
-    case "filewrite":
-      return "Write";
-    case "grep":
-    case "grep_search":
-      return "Grep";
-    case "find":
-    case "glob":
-    case "find_files":
-      return "Glob";
-    case "todo":
-      return "Todo";
-    case "web_search":
-    case "websearch":
-      return "WebSearch";
-    default:
-      return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
-  }
-}
-
 function fileMutatingKind(toolName: string): "edit" | "write" | null {
   const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
   if (
@@ -643,6 +607,7 @@ class OmpHarnessSession implements HarnessSession {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
@@ -1726,31 +1691,16 @@ class OmpHarnessSession implements HarnessSession {
 
   #startTool(active: ActiveTurn, event: Extract<OmpTurnEvent, { type: "tool.started" }>): void {
     if (active.tools.has(event.callId)) throw new Error("Omp Tool started more than once");
-    const normalizedName = normalizeToolName(event.toolName);
-    const command =
-      normalizedName === "bash"
-        ? (stringField(event.arguments, "command") ??
-          stringField(event.arguments, "cmd") ??
-          stringField(event.arguments, "script") ??
-          stringField(event.arguments, "commandLine") ??
-          stringField(event.arguments, "command_line"))
-        : undefined;
-    const item: HostCommandExecutionItem | HostToolExecutionItem = command
-      ? {
-          type: "commandExecution",
-          itemId: this.#newItemId(),
-          command,
-          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
-        }
-      : {
-          type: "toolExecution",
-          itemId: this.#newItemId(),
-          toolName: event.toolName,
-          arguments: event.arguments,
-        };
+    const item = projectOmpToolItem({
+      itemId: this.#newItemId(),
+      toolName: event.toolName,
+      arguments: event.arguments,
+      cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+    });
     active.tools.set(event.callId, {
       item,
       nativeName: event.toolName,
+      arguments: event.arguments,
       startedAtMs: Date.now(),
     });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
@@ -1761,34 +1711,24 @@ class OmpHarnessSession implements HarnessSession {
     if (!tool) throw new Error("Omp Tool update references an unknown Tool Call");
     const output = boundedOutput(event.output, this.#toolOutputLimit);
     if (!output) return;
-    if (tool.item.type === "commandExecution") {
-      const previous = tool.item.output ?? "";
-      const next = outputText(output);
-      tool.item = {
-        ...tool.item,
-        output: next,
-        outputTruncated: output.truncated === true,
-      };
-      if (next.startsWith(previous)) {
-        const delta = next.slice(previous.length);
-        if (delta.length > 0) {
-          this.#event({
-            type: "item.updated",
-            turnId: active.command.turnId,
-            itemId: tool.item.itemId,
-            update: { type: "output.append", text: delta },
-          });
-        }
+    const previous = tool.item.output ?? "";
+    const next = outputText(output);
+    tool.item = {
+      ...tool.item,
+      output: next,
+      outputTruncated: output.truncated === true,
+    };
+    if (next.startsWith(previous)) {
+      const delta = next.slice(previous.length);
+      if (delta.length > 0) {
+        this.#event({
+          type: "item.updated",
+          turnId: active.command.turnId,
+          itemId: tool.item.itemId,
+          update: { type: "output.append", text: delta },
+        });
       }
-      return;
     }
-    tool.item = { ...tool.item, output };
-    this.#event({
-      type: "item.updated",
-      turnId: active.command.turnId,
-      itemId: tool.item.itemId,
-      update: { type: "output.replace", output },
-    });
   }
 
   #completeTool(
@@ -1802,22 +1742,18 @@ class OmpHarnessSession implements HarnessSession {
     active.tools.delete(event.callId);
     const durationMs = Math.max(0, Date.now() - tool.startedAtMs);
     const output = boundedOutput(event.result, this.#toolOutputLimit);
-    if (tool.item.type === "commandExecution") {
-      const exitCode = numberField(event.result, "exitCode");
-      tool.item = {
-        ...tool.item,
-        ...(output
-          ? {
-              output: outputText(output),
-              outputTruncated: output.truncated === true,
-            }
-          : {}),
-        ...(exitCode !== undefined ? { exitCode } : {}),
-        durationMs,
-      };
-    } else {
-      tool.item = { ...tool.item, ...(output ? { output } : {}), durationMs };
-    }
+    const exitCode = numberField(event.result, "exitCode");
+    tool.item = {
+      ...tool.item,
+      ...(output
+        ? {
+            output: outputText(output),
+            outputTruncated: output.truncated === true,
+          }
+        : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      durationMs,
+    };
     const outcome: HostItemOutcome = active.cancellationRequested
       ? { status: "cancelled", reason: "Cancelled by user" }
       : event.isError
@@ -1828,7 +1764,7 @@ class OmpHarnessSession implements HarnessSession {
     if (!event.isError) {
       try {
         const kind = fileMutatingKind(event.toolName);
-        const args = tool.item.type === "toolExecution" ? tool.item.arguments : {};
+        const args = tool.arguments;
         if (kind && synthesizeFileChange(kind, args, this.#cwd)) {
           return;
         }
@@ -2087,6 +2023,7 @@ export class OmpAdapter implements HarnessAdapter {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: true,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },

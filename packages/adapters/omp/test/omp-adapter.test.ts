@@ -880,7 +880,7 @@ describe("OMP Adapter Subagents", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
-      item: { type: "toolExecution", toolName: "edit" },
+      item: { type: "commandExecution", command: expect.stringContaining("edit") },
     });
 
     transport.event({
@@ -901,7 +901,7 @@ describe("OMP Adapter Subagents", () => {
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
       snapshot: {
-        item: { type: "toolExecution", toolName: "edit" },
+        item: { type: "commandExecution", command: expect.stringContaining("edit") },
         outcome: { status: "succeeded" },
       },
     });

@@ -39,6 +39,39 @@ The command:
 - records the installed native entrypoint digest so a later uninstall can still verify it after an older package runtime has been removed;
 - leaves the existing `codex` command and OpenCodex configuration untouched.
 
+On macOS, `remote install` also installs
+`ai.bytepioneer.codexhost.native-harness-broker` as a current-user LaunchAgent. The agent is
+restricted to the logged-in Aqua session and runs the packaged Node.js executable with the exact
+packaged `host-runtime.mjs --codexhost-harness-broker` arguments. A Background SSH Host talks to
+this local broker over its owner-only Unix socket; Claude Code remains the process that reads its
+native login from the Aqua session. codexhost never asks for a Keychain password, runs
+`security unlock-keychain`, reads OAuth material, or sends credentials over SSH.
+
+The LaunchAgent has `RunAtLoad` and bounded launchd throttling, but no `KeepAlive`: a persistent
+startup fault stays stopped instead of becoming a retry storm. Its descriptor and socket live in
+`~/.codexhost/harness-broker` with owner-only permissions. The property list persists only the
+normalized HTTP/HTTPS/SOCKS proxy variables already resolved by codexhost, plus `NO_PROXY` and
+`NODE_USE_ENV_PROXY`; Claude, Anthropic, OAuth, and arbitrary SSH environment variables are never
+copied. Proxy URLs containing embedded credentials are rejected rather than written to disk.
+
+The broker lifecycle is available directly for diagnosis:
+
+```bash
+codexhost broker install
+codexhost broker status
+codexhost broker stop
+codexhost broker uninstall
+```
+
+The npm wrapper supplies its current Node and packaged Host Runtime paths automatically. Re-running
+`remote install` deliberately restarts the exact LaunchAgent after updating the runtime, even when
+the property list did not change, so a broker cannot keep old JavaScript in memory. Active Claude
+Harness requests fail closed during that controlled restart; reconnect the remote workspace after
+the broker reports ready. Persistent Thread mappings and native history are preserved, but an
+in-memory broker Session is not reused across generations. If no Aqua console session exists for
+the current user, or launchd refuses `gui/$UID`,
+installation fails without falling back to a Background Claude process.
+
 The managed listener preserves Codex's native multi-client topology. One long-lived stock `app-server --listen unix://PATH` process owns a private sibling socket for the lifetime of the remote Host listener. Each Desktop SSH proxy connection still gets an isolated codexhost Host session, but that session opens its own WebSocket connection to the same stock app-server listener. Consequently, the stock app-server—not codexhost—owns the loaded Thread, per-connection subscriptions, and native writer/observer coordination. A second Desktop can resume and observe a Thread already loaded by the first connection instead of starting a competing app-server process that fails with `thread ... already has an active writer`. Closing one Desktop connection closes only its Host session; it does not stop the shared stock listener or the other subscribers.
 
 This composition follows the official [Codex app-server transport](https://learn.chatgpt.com/docs/app-server): Unix listeners use WebSockets over the Unix socket, each transport connection initializes independently, and `thread/start`/`thread/resume` manage that connection's Thread subscription. The internal sibling socket is created inside the same private control directory and is never exposed over the network.
@@ -69,5 +102,10 @@ codexhost remote uninstall
 ```
 
 `start` is idempotent and starts the installed headless Remote Host. `stop` stops only a verified codexhost listener and leaves unrelated Codex processes running. `status` reports runtime state and protocol identity in addition to a missing or modified native entrypoint, startup block, runtime, or data directory. A partially edited or otherwise malformed managed startup block is reported as degraded; install and uninstall still refuse to rewrite it automatically. Status also identifies the legacy blocking shell entrypoint and asks for a reinstall migration. `uninstall` verifies the recorded entrypoint digest before removing only the managed entrypoint, manifest, and startup block. It preserves profile backups and `~/.codexhost/remote/data` so Thread mappings remain recoverable. Reconnect the remote workspace after uninstalling.
+
+On macOS, `remote status` also verifies that the Aqua broker LaunchAgent is running, that its
+property list still matches the installed runtime, and that a non-empty owner-only descriptor is
+present. `remote uninstall` unloads and removes that managed LaunchAgent without touching Claude
+Code configuration, login state, Keychain data, or native Session history.
 
 Remote Host processes do not own the local codexhost Launcher or self-update controller. Update codexhost with the same package manager on both machines, then reconnect.

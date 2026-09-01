@@ -15,7 +15,9 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
+  permissionModeSelectionLocked,
   lateConversationTargetResolution,
+  harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
   refreshConnectionHosts,
   restoredThreadOwnership,
@@ -91,6 +93,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "ready",
           "claude-code": "ready",
           "deepseek-harness": "notInstalled",
+          opencode: "ready",
           grok: "ready",
           omp: "ready",
         },
@@ -102,6 +105,7 @@ describe("Renderer Composer DOM behavior", () => {
             message: "DeepSeek Harness is not installed",
             retryable: false,
           },
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
@@ -114,6 +118,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "ready",
           "claude-code": "ready",
           "deepseek-harness": "error",
+          opencode: "ready",
           grok: "ready",
           omp: "ready",
         },
@@ -125,6 +130,7 @@ describe("Renderer Composer DOM behavior", () => {
             message: "Remote request manager is temporarily unavailable",
             retryable: true,
           },
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
@@ -137,6 +143,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "ready",
           "claude-code": "ready",
           "deepseek-harness": "unavailable",
+          opencode: "ready",
           grok: "ready",
           omp: "ready",
         },
@@ -148,6 +155,7 @@ describe("Renderer Composer DOM behavior", () => {
             message: "DeepSeek Harness is temporarily unavailable",
             retryable: true,
           },
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
@@ -162,6 +170,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "checking",
           "claude-code": "checking",
           "deepseek-harness": "checking",
+          opencode: "checking",
           grok: "checking",
           omp: "checking",
         },
@@ -169,11 +178,12 @@ describe("Renderer Composer DOM behavior", () => {
           pi: undefined,
           "claude-code": undefined,
           "deepseek-harness": undefined,
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -181,6 +191,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "ready",
           "claude-code": "ready",
           "deepseek-harness": "notInstalled",
+          opencode: "ready",
           grok: "ready",
           omp: "ready",
         },
@@ -192,6 +203,7 @@ describe("Renderer Composer DOM behavior", () => {
             message: "DeepSeek Harness is not installed",
             retryable: false,
           },
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
@@ -204,6 +216,7 @@ describe("Renderer Composer DOM behavior", () => {
           pi: "ready",
           "claude-code": "ready",
           "deepseek-harness": "unavailable",
+          opencode: "ready",
           grok: "ready",
           omp: "ready",
         },
@@ -215,11 +228,21 @@ describe("Renderer Composer DOM behavior", () => {
             message: "DeepSeek Harness is temporarily unavailable",
             retryable: true,
           },
+          opencode: undefined,
           grok: undefined,
           omp: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
+  });
+
+  it("keeps a failed Harness availability visible while inspect retries", () => {
+    expect(harnessAvailabilityDuringInspect(undefined)).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("checking")).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("error")).toBe("error");
+    expect(harnessAvailabilityDuringInspect("unavailable")).toBe("unavailable");
+    expect(harnessAvailabilityDuringInspect("notInstalled")).toBe("notInstalled");
+    expect(harnessAvailabilityDuringInspect("ready")).toBe("ready");
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {
@@ -870,6 +893,29 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "opencode",
+        transportModelId:
+          "codexhost/opencode-native@opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd@ask@ocv.aGlnaA",
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        effectiveModel: harnessModelRefSchema.parse({
+          id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
+        }),
+        effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("ocv.aGlnaA"),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("allow"),
+        availableThinkingOptions: [
+          { id: harnessThinkingOptionIdSchema.parse("ocv.aGlnaA"), label: "high" },
+        ],
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "opencode",
+      model: { id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd" },
+      thinkingOptionId: "ocv.aGlnaA",
+      permissionModeId: "allow",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "grok",
         transportModelId: "codexhost/grok-native@grok-4.6@auto@high",
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
@@ -1003,6 +1049,19 @@ describe("Renderer Composer DOM behavior", () => {
     expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
       "absent from the current Catalog",
     );
+  });
+
+  it("locks Permission Mode selection only for an existing atCreate Session", () => {
+    expect(permissionModeSelectionLocked({ phase: "draft", permissionModeScope: "atCreate" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "live" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked" })).toBe(false);
+    expect(
+      permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "atCreate" }),
+    ).toBe(true);
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

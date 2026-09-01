@@ -46,13 +46,16 @@ function validMetafile(extraInputs = {}) {
       "packages/host-runtime/src/remote-app-server.ts": {},
       "packages/host-runtime/src/remote-control-app-server.ts": {},
       "packages/host-runtime/src/remote-socket-lock.ts": {},
+      "packages/harness-broker/dist/index.js": {},
       "packages/adapters/pi/dist/index.js": {},
       "packages/adapters/claude-code/dist/index.js": {},
       "packages/adapters/deepseek-harness/dist/index.js": {},
+      "packages/adapters/opencode/dist/index.js": {},
       "packages/adapters/grok/dist/index.js": {},
       "packages/adapters/omp/dist/index.js": {},
       "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
+      "node_modules/@opencode-ai/sdk/dist/v2/client.js": {},
       "node_modules/@deepseek-ai/cosmokit/lib/index.js": {},
       "node_modules/@deepseek-ai/dsh-host-apiproxy/lib/esm/fetch/client.js": {},
       "node_modules/@deepseek-ai/schemastery/lib/index.mjs": {},
@@ -73,6 +76,7 @@ describe("release Host Bundle", () => {
         "@deepseek-ai/cosmokit",
         "@deepseek-ai/dsh-host-apiproxy",
         "@deepseek-ai/schemastery",
+        "@opencode-ai/sdk",
         "diff",
         "ws",
         "zod",
@@ -115,6 +119,12 @@ describe("release Host Bundle", () => {
       "missing required input: /packages/adapters/pi/",
     );
 
+    const withoutHarnessBroker = { ...validMetafile().inputs };
+    delete withoutHarnessBroker["packages/harness-broker/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutHarnessBroker })).toThrow(
+      "missing required input: /packages/harness-broker/",
+    );
+
     const withoutClaude = { ...validMetafile().inputs };
     delete withoutClaude["packages/adapters/claude-code/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutClaude })).toThrow(
@@ -131,6 +141,12 @@ describe("release Host Bundle", () => {
     delete withoutGrok["packages/adapters/grok/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutGrok })).toThrow(
       "missing required input: /packages/adapters/grok/",
+    );
+
+    const withoutOpenCode = { ...validMetafile().inputs };
+    delete withoutOpenCode["packages/adapters/opencode/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutOpenCode })).toThrow(
+      "missing required input: /packages/adapters/opencode/",
     );
 
     const withoutOmp = { ...validMetafile().inputs };
@@ -151,12 +167,15 @@ describe("release Host Bundle", () => {
       expect(audit.runtimePackages).toContain("@agentclientprotocol/sdk");
       expect(audit.runtimePackages).toContain("@anthropic-ai/claude-agent-sdk");
       expect(audit.runtimePackages).toContain("@deepseek-ai/dsh-host-apiproxy");
+      expect(audit.runtimePackages).toContain("@opencode-ai/sdk");
       expect(audit.runtimePackages).toContain("ws");
       const source = await readFile(outputPath, "utf8");
       expect(source).toContain("CODEXHOST_STOCK_CODEX_PATH");
       expect(source).not.toContain("--codexhost-compatibility-update");
       expect(source).toContain("Claude Code is not installed");
       expect(source).toContain("CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT");
+      expect(source).toContain("CODEXHOST_OPENCODE_COMMAND");
+      expect(source).toContain("--codexhost-harness-broker");
       expect(source).not.toContain("claude-agent-sdk-darwin-arm64");
       expect(source).not.toContain("dsh-jsonrpc-agent");
       expect(source).not.toContain("runtime/cordis.yml");

@@ -63,6 +63,12 @@ const runtimeLicenses = [
     source: "LICENSE",
     output: "MCP-SDK-LICENSE.txt",
   },
+  {
+    packageName: "@opencode-ai/sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+    output: "OpenCode-SDK-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
@@ -195,6 +201,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
+    "licenses/OpenCode-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
@@ -423,6 +430,7 @@ if (updateEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1") {
 
 let launchArguments;
 let remoteArguments = null;
+let brokerArguments = null;
 let delegationArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
@@ -433,6 +441,9 @@ if (userArguments.length === 0) {
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
   remoteArguments = userArguments.slice(1);
+} else if (userArguments[0] === "broker") {
+  launchArguments = null;
+  brokerArguments = userArguments.slice(1);
 } else if (
   userArguments[0] === "harness" ||
   userArguments[0] === "delegate" ||
@@ -449,6 +460,7 @@ if (userArguments.length === 0) {
       "  codexhost inspect",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
+      "  codexhost broker install|status|stop|uninstall",
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
@@ -512,7 +524,50 @@ if (delegationArguments !== null) {
     }
     process.exit(code ?? 1);
   });
+} else if (brokerArguments !== null) {
+  const child = spawn(
+    launcher,
+    [
+      "broker",
+      ...brokerArguments,
+      "--node", process.execPath, "--host-runtime", hostRuntime,
+    ],
+    {
+      env: updateEnvironment,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
 } else if (remoteArguments !== null) {
+  const runNativeBroker = (command) => {
+    const broker = spawn(
+      launcher,
+      ["broker", command, "--node", process.execPath, "--host-runtime", hostRuntime],
+      {
+        env: updateEnvironment,
+        // remote status is a stable JSON stdout surface. Keep the broker's
+        // human-readable status beside it on stderr instead of corrupting JSON.
+        stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
+        windowsHide: true,
+      },
+    );
+    broker.on("error", (error) => fail(error.message));
+    broker.on("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      process.exit(code ?? 1);
+    });
+  };
   const child = spawn(
     process.execPath,
     [
@@ -537,6 +592,20 @@ if (delegationArguments !== null) {
     if (signal) {
       process.kill(process.pid, signal);
       return;
+    }
+    if (code === 0 && process.platform === "darwin") {
+      if (remoteArguments[0] === "install") {
+        runNativeBroker("install");
+        return;
+      }
+      if (remoteArguments[0] === "status") {
+        runNativeBroker("status");
+        return;
+      }
+      if (remoteArguments[0] === "uninstall") {
+        runNativeBroker("uninstall");
+        return;
+      }
     }
     process.exit(code ?? 1);
   });
@@ -637,6 +706,7 @@ codexhost remote start
 codexhost remote stop
 codexhost remote status
 codexhost remote uninstall
+codexhost broker status
 \`\`\`
 
 The \`codexhost\` command launches the packaged Rust launcher with:
@@ -654,12 +724,17 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 ## Notes
 
 - This npm package does **not** embed a private Node.js runtime.
+- On macOS, \`remote install\` manages the current-user Aqua Harness broker; it never asks for a Keychain password or copies Claude credentials.
 - Installer packages (DMG/EXE) remain the zero-dependency desktop distribution path.
 - Prefer \`npm install -g ${NPM_PACKAGE_NAME}\` over installing the monorepo root.
 `;
 }
 
-async function writeThirdPartyNotices(root, packageRoot) {
+export function resolveRuntimeLicenseSource(root, dependency) {
+  return path.resolve(root, dependency.source);
+}
+
+export async function writeThirdPartyNotices(root, packageRoot) {
   const licensesDirectory = path.join(packageRoot, "licenses");
   await mkdir(licensesDirectory, { recursive: true });
   const notices = ["codexhost npm package third-party notices", ""];
@@ -675,7 +750,9 @@ async function writeThirdPartyNotices(root, packageRoot) {
       );
     }
     await copyReleaseFile(
-      path.join(dependencyRoot, dependency.source),
+      dependency.packageName === "@opencode-ai/sdk"
+        ? resolveRuntimeLicenseSource(root, dependency)
+        : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
       `${dependency.packageName} license`,
     );

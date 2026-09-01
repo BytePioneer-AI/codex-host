@@ -21,7 +21,10 @@ function stringField(value: unknown, keys: readonly string[]): string | undefine
 }
 
 function taskStatus(value: unknown): ClaudeTask["status"] | "deleted" | undefined {
-  return value === "pending" || value === "in_progress" || value === "completed" || value === "deleted"
+  return value === "pending" ||
+    value === "in_progress" ||
+    value === "completed" ||
+    value === "deleted"
     ? value
     : undefined;
 }

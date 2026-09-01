@@ -51,4 +51,3 @@ Provide the user with the necessary tracking information, including:
 - `turnId`;
 - `deepLink`;
 - current or final status.
-

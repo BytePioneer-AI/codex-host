@@ -96,9 +96,10 @@ describe("delegation Skill installation", () => {
 
   it("updates copies whose digest matches a previous managed version", async () => {
     const root = await home();
-    const previous = (
-      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
-    ).replace(/\n$/, "");
+    const previous = await readFile(
+      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
+      "utf8",
+    );
     const destinations = paths(root);
     for (const destination of destinations) {
       await import("node:fs/promises").then(({ mkdir }) =>
@@ -145,9 +146,10 @@ describe("delegation Skill installation", () => {
     ]);
     await installDelegationSkills({ homeDirectory: root });
     const destinations = paths(root);
-    const legacy = (
-      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
-    ).replace(/\n$/, "");
+    const legacy = await readFile(
+      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
+      "utf8",
+    );
     await writeFile(destinations[0] ?? "", legacy, "utf8");
     await writeFile(destinations[1] ?? "", "user content\n", "utf8");
     const before = await Promise.all(
@@ -349,9 +351,10 @@ describe("delegation Skill installation", () => {
   it("recovers an interrupted legacy update before retrying installation", async () => {
     const root = await home();
     const destination = required(paths(await realpath(root))[0]);
-    const previous = (
-      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
-    ).replace(/\n$/u, "");
+    const previous = await readFile(
+      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
+      "utf8",
+    );
     await mkdir(path.dirname(destination), { recursive: true });
     await writeFile(destination, previous, "utf8");
     let failed = false;

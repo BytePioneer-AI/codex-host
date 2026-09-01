@@ -11,6 +11,7 @@ const testState = vi.hoisted(() => ({
   renderedModelViews: [] as Array<{ status: string; error?: string }>,
   getConnectionDiagnostics: null as null | (() => { refresh(): Promise<void> } | null),
   documentListeners: new Map<string, EventListener>(),
+  modelTarget: ["conversation", "thread-a"] as readonly unknown[],
 }));
 
 vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
@@ -64,7 +65,7 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
   const original = await importOriginal<typeof VersionedRendererAdapter>();
   return {
     ...original,
-    findComposerModelTarget: () => ["conversation", "thread-a"],
+    findComposerModelTarget: () => testState.modelTarget,
     waitForRendererDraftPrewarmPolicy: async () => ({ clear: async () => undefined }),
   };
 });
@@ -143,6 +144,7 @@ function installFakeBrowser(): void {
   testState.renderedModelViews = [];
   testState.getConnectionDiagnostics = null;
   testState.documentListeners.clear();
+  testState.modelTarget = ["conversation", "thread-a"];
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -266,6 +268,109 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         error: "Existing Thread Model is absent from the current Catalog",
       }),
     );
+  });
+
+  it("discards a stale catalog when the selected client changes for the same Host", async () => {
+    installFakeBrowser();
+    let resolveCatalog!: (value: ReturnType<typeof readyInspection>) => void;
+    const pendingCatalog = new Promise<ReturnType<typeof readyInspection>>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    let claudeInspections = 0;
+    const originalHost = {
+      inspectHarness: vi.fn(({ harnessId }: { harnessId: string }) => {
+        if (harnessId !== "claude-code") return Promise.resolve(readyInspection());
+        claudeInspections += 1;
+        return claudeInspections === 1 ? Promise.resolve(readyInspection()) : pendingCatalog;
+      }),
+      inspectThread: vi.fn(async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({
+        threadId: "thread-a",
+        usage: null,
+        accountCredits: null,
+      })),
+    };
+    const replacementHost = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+    };
+    let selectedHost: typeof originalHost | typeof replacementHost = originalHost;
+    const modelControl = {
+      currentHostId: () => "host-a",
+      clientForHost: vi.fn(() => selectedHost),
+      inspectHarness: originalHost.inspectHarness,
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    await vi.waitFor(() => expect(claudeInspections).toBe(2));
+    selectedHost = replacementHost;
+    resolveCatalog(readyInspection("claude-model-v1.c3RhbGU"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
+    expect(testState.renderedModelViews).not.toContainEqual(
+      expect.objectContaining({
+        error: "Existing Thread Model is absent from the current Catalog",
+      }),
+    );
+  });
+
+  it("loads an external catalog for a draft mounted before the Adapter", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let claudeInspections = 0;
+    const hostA = {
+      inspectHarness: vi.fn(async () => {
+        claudeInspections += 1;
+        return readyInspection();
+      }),
+    };
+    const modelControl = {
+      currentHostId: () => "host-a",
+      clientForHost: vi.fn(() => hostA),
+      inspectHarness: hostA.inspectHarness,
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    await vi.waitFor(() => expect(claudeInspections).toBeGreaterThanOrEqual(2));
+    expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
   });
 
   it("keeps a same-Host empty Claude catalog terminal across availability refreshes", async () => {

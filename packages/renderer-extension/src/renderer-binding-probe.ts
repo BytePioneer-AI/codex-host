@@ -857,10 +857,7 @@ export function installRendererBindingProbe(
     }
     const requestModelControl = modelControl;
     const requestHostId = activeModelHostId();
-    const client =
-      requestModelControl && requestHostId
-        ? (requestModelControl.clientForHost?.(requestHostId) ?? requestModelControl)
-        : null;
+    const client = modelClientForHostFrom(requestModelControl, requestHostId);
     const generation = controller.beginOwnershipRequest(mounted.composer);
     const usageGeneration = mounted.usageRequestGeneration;
     mounted.ownershipStatus = "loading";
@@ -1026,9 +1023,7 @@ export function installRendererBindingProbe(
       if (!requestModelControl || !requestHostId) {
         throw new Error("External configuration control is unavailable");
       }
-      const client =
-        requestModelControl.clientForHost?.(requestHostId) ??
-        (requestModelControl.currentHostId?.() === requestHostId ? requestModelControl : null);
+      const client = modelClientForHostFrom(requestModelControl, requestHostId);
       if (!client) {
         throw new Error(`Renderer Model request manager is unavailable for Host ${requestHostId}`);
       }
@@ -1040,6 +1035,7 @@ export function installRendererBindingProbe(
         controller.get(mounted.composer).agent !== agent ||
         mounted.hostId !== requestHostId ||
         modelControl !== requestModelControl ||
+        modelClientForHostFrom(requestModelControl, requestHostId) !== client ||
         activeModelHostId() !== requestHostId
       ) {
         return;
@@ -1710,12 +1706,19 @@ export function installRendererBindingProbe(
     }, delay);
   }
 
-  function modelClientForHost(hostId: string): RendererModelClient | null {
-    if (!modelControl) return null;
-    const selected = modelControl.clientForHost?.(hostId);
+  function modelClientForHostFrom(
+    control: RendererModelClient | null,
+    hostId: string | null,
+  ): RendererModelClient | null {
+    if (!control || !hostId) return null;
+    const selected = control.clientForHost?.(hostId);
     if (selected) return selected;
-    const currentHostId = modelControl.currentHostId?.() ?? "local";
-    return currentHostId === hostId ? modelControl : null;
+    const currentHostId = control.currentHostId?.() ?? "local";
+    return currentHostId === hostId ? control : null;
+  }
+
+  function modelClientForHost(hostId: string): RendererModelClient | null {
+    return modelClientForHostFrom(modelControl, hostId);
   }
 
   function refreshHarnessAvailabilityForHost(
@@ -2389,6 +2392,9 @@ export function installRendererBindingProbe(
         const mounted = connected[0];
         if (mounted) {
           const state = controller.get(mounted.composer);
+          if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
+            mounted.hostId = activeModelHostId();
+          }
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&
             mounted.ownershipStatus !== "ready"

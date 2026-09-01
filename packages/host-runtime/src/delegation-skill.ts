@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,7 +9,6 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
-  "e2f8814ef21859f51af4afd3b0f8dc0f62b450acd671f8ed6f3522efe5aa2080",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -133,6 +132,11 @@ async function validateDestinationPath(
   }
 }
 
+async function canonicalHome(home: string): Promise<string> {
+  const resolved = path.resolve(home);
+  return realpath(resolved);
+}
+
 export type DelegationSkillState = "missing" | "current" | "managed-legacy" | "conflict";
 
 export interface DelegationSkillLifecycleInput {
@@ -222,7 +226,7 @@ export interface DelegationSkillInstallResult {
 export async function installDelegationSkills(
   input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillInstallResult[]> {
-  const home = input.homeDirectory ?? os.homedir();
+  const home = await canonicalHome(input.homeDirectory ?? os.homedir());
   const destinationPaths = destinations(home);
   const knownDigests = knownManagedDigests();
   const results: DelegationSkillInstallResult[] = [];
@@ -290,7 +294,7 @@ export async function installDelegationSkills(
 export async function inspectDelegationSkills(
   input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillStatusResult[]> {
-  const home = input.homeDirectory ?? os.homedir();
+  const home = await canonicalHome(input.homeDirectory ?? os.homedir());
   const knownDigests = knownManagedDigests();
   return Promise.all(
     destinations(home).map((destination) =>
@@ -302,7 +306,7 @@ export async function inspectDelegationSkills(
 export async function uninstallDelegationSkills(
   input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillUninstallResult[]> {
-  const home = input.homeDirectory ?? os.homedir();
+  const home = await canonicalHome(input.homeDirectory ?? os.homedir());
   const knownDigests = knownManagedDigests();
   const results: DelegationSkillUninstallResult[] = [];
   for (const destination of destinations(home)) {
@@ -316,7 +320,7 @@ export async function uninstallDelegationSkills(
       await rename(destination, quarantine);
       const verified = await classifyDelegationSkill(home, quarantine, knownDigests);
       if (verified.status === "current" || verified.status === "managed-legacy") {
-        await rm(quarantine);
+        // Keep the transaction-owned quarantine: removing by pathname would reopen TOCTOU.
         results.push({ ...classified, status: "removed" });
       } else {
         await rename(quarantine, destination);

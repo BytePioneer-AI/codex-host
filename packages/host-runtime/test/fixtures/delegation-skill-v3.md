@@ -14,7 +14,7 @@ description: >
 
 Before acting, run:
 
-\`codexhost delegate --help\`
+`codexhost delegate --help`
 
 Treat its output as the sole authoritative source for:
 
@@ -46,9 +46,9 @@ visible result returned by that Thread.
 Provide the user with the necessary tracking information, including:
 
 - target agent;
-- \`delegationId\`;
-- \`threadId\`;
-- \`turnId\`;
-- \`deepLink\`;
+- `delegationId`;
+- `threadId`;
+- `turnId`;
+- `deepLink`;
 - current or final status.
 

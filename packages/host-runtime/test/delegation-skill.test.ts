@@ -46,10 +46,9 @@ describe("delegation Skill installation", () => {
 
   it("updates copies whose digest matches a previous managed version", async () => {
     const root = await home();
-    const previous = await readFile(
-      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
-      "utf8",
-    );
+    const previous = (
+      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
+    ).replace(/\n$/, "");
     const destinations = paths(root);
     for (const destination of destinations) {
       await import("node:fs/promises").then(({ mkdir }) =>
@@ -96,10 +95,9 @@ describe("delegation Skill installation", () => {
     ]);
     await installDelegationSkills({ homeDirectory: root });
     const destinations = paths(root);
-    const legacy = await readFile(
-      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
-      "utf8",
-    );
+    const legacy = (
+      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
+    ).replace(/\n$/, "");
     await writeFile(destinations[0] ?? "", legacy, "utf8");
     await writeFile(destinations[1] ?? "", "user content\n", "utf8");
     const before = await Promise.all(
@@ -115,7 +113,7 @@ describe("delegation Skill installation", () => {
       {
         status: "managed-legacy",
         version: 3,
-        digest: "e2f8814ef21859f51af4afd3b0f8dc0f62b450acd671f8ed6f3522efe5aa2080",
+        digest: "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
       },
       { status: "conflict" },
     ]);

@@ -46,6 +46,7 @@ function validMetafile(extraInputs = {}) {
       "packages/host-runtime/src/remote-app-server.ts": {},
       "packages/host-runtime/src/remote-control-app-server.ts": {},
       "packages/host-runtime/src/remote-socket-lock.ts": {},
+      "packages/harness-broker/dist/index.js": {},
       "packages/adapters/pi/dist/index.js": {},
       "packages/adapters/claude-code/dist/index.js": {},
       "packages/adapters/deepseek-harness/dist/index.js": {},
@@ -118,6 +119,12 @@ describe("release Host Bundle", () => {
       "missing required input: /packages/adapters/pi/",
     );
 
+    const withoutHarnessBroker = { ...validMetafile().inputs };
+    delete withoutHarnessBroker["packages/harness-broker/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutHarnessBroker })).toThrow(
+      "missing required input: /packages/harness-broker/",
+    );
+
     const withoutClaude = { ...validMetafile().inputs };
     delete withoutClaude["packages/adapters/claude-code/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutClaude })).toThrow(
@@ -168,6 +175,7 @@ describe("release Host Bundle", () => {
       expect(source).toContain("Claude Code is not installed");
       expect(source).toContain("CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT");
       expect(source).toContain("CODEXHOST_OPENCODE_COMMAND");
+      expect(source).toContain("--codexhost-harness-broker");
       expect(source).not.toContain("claude-agent-sdk-darwin-arm64");
       expect(source).not.toContain("dsh-jsonrpc-agent");
       expect(source).not.toContain("runtime/cordis.yml");

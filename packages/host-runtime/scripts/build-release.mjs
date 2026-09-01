@@ -52,6 +52,7 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/host-runtime/src/remote-app-server.ts/",
     "/packages/host-runtime/src/remote-control-app-server.ts/",
     "/packages/host-runtime/src/remote-socket-lock.ts/",
+    "/packages/harness-broker/",
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
     "/packages/adapters/deepseek-harness/",

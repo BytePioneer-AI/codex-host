@@ -44,6 +44,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
+  const resolvePrewarmedThreadManager = (manager) => {
+    const direct = manager?.prewarmedThreadManager;
+    if (typeof direct?.discardAllPrewarmedThreads === 'function') return direct;
+    const cached = manager?.__codexhostResolvedPrewarmedThreadManagerV1;
+    if (typeof cached?.discardAllPrewarmedThreads === 'function') return cached;
+    const seen = new Set();
+    const stack = [[manager, 0]];
+    let found = null;
+    while (stack.length > 0 && found == null) {
+      const entry = stack.pop();
+      const candidate = entry[0];
+      const depth = entry[1];
+      if (candidate == null || typeof candidate !== 'object' || seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (typeof candidate.discardAllPrewarmedThreads === 'function') {
+        found = candidate;
+        break;
+      }
+      if (depth >= 3) continue;
+      for (const key of Object.keys(candidate).slice(0, 50)) {
+        try { stack.push([candidate[key], depth + 1]); } catch {}
+      }
+    }
+    if (found == null) found = { discardAllPrewarmedThreads() {} };
+    try {
+      Object.defineProperty(manager, '__codexhostResolvedPrewarmedThreadManagerV1', {
+        configurable: true,
+        value: found,
+      });
+    } catch {}
+    return found;
+  };
   const editors = [...document.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   )];
@@ -78,8 +110,6 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
         value.requestClient != null &&
         typeof value.requestClient.prewarmThreadStart === 'function' &&
         typeof value.requestClient.sendRequest === 'function' &&
-        typeof value.requestClient.enqueueRequest === 'function' &&
-        typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function' &&
         typeof value.sendRequest === 'function'
       ) {
         managers.add(value);
@@ -89,15 +119,14 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   const candidates = [...managers].map((manager) => {
     const requestClient =
       typeof manager.requestClient?.sendRequest === 'function' &&
-      typeof manager.requestClient?.prewarmThreadStart === 'function' &&
-      typeof manager.requestClient?.enqueueRequest === 'function'
+      typeof manager.requestClient?.prewarmThreadStart === 'function'
         ? manager.requestClient
         : manager;
     return {
       manager,
       requestClient,
       hostId: manager?.getHostId?.() ?? requestClient?.hostId ?? null,
-      prewarmedThreadManager: manager?.prewarmedThreadManager ?? null,
+      prewarmedThreadManager: resolvePrewarmedThreadManager(manager),
     };
   });
   const selected = (${selectRendererRequestManager.toString()})(candidates, [...activeHostIds]);

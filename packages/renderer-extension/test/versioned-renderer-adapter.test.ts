@@ -112,6 +112,31 @@ describe("current Codex Renderer Agent adapter", () => {
     );
   });
 
+  it("discovers the split request manager shape without enqueueRequest", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const requestClient = {
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
+      prewarmThreadStart: () => undefined,
+    };
+    const manager = {
+      hostId: "local",
+      getHostId: () => "local",
+      requestClient,
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+    };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: { memoizedState: { memoizedState: manager, next: null }, return: null },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+  });
+
   it("keeps local and remote request targets independently addressable", () => {
     const local = {
       hostId: "local",

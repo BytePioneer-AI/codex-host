@@ -14,7 +14,7 @@ import {
   type RendererWebContents,
 } from "../src/renderer-draft-prewarm-runtime.js";
 
-function requestManagerFixture(): RendererHostRequestManager {
+function requestManagerFixture(): Required<RendererHostRequestManager> {
   return {
     onNotification: vi.fn(),
     onRequest: vi.fn(),
@@ -74,7 +74,7 @@ function remoteRequestBridgeFixture(): {
 }
 
 function emitBridgeOutput(
-  manager: RendererHostRequestManager,
+  manager: Required<RendererHostRequestManager>,
   processHandle: string,
   value: Record<string, unknown> | string,
 ): void {
@@ -275,10 +275,9 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate).toHaveBeenCalledOnce();
     const expression = evaluate.mock.calls[0]?.[0] ?? "";
     expect(expression).toContain("webContents.fromId(17)");
-    expect(expression).toContain("typeof value.requestClient.enqueueRequest === 'function'");
-    expect(expression).toContain(
-      "typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function'",
-    );
+    expect(expression).not.toContain("typeof value.requestClient.enqueueRequest === 'function'");
+    expect(expression).toContain("resolvePrewarmedThreadManager");
+    expect(expression).toContain("discardAllPrewarmedThreads");
     expect(expression).toContain("executionTargetHostId");
     expect(expression).toContain("permissionsHostId");
   });
@@ -941,5 +940,53 @@ describe("Renderer draft prewarm policy", () => {
     await expect(installRendererDraftPrewarmPolicy(inspector, 17)).rejects.toThrow(
       "Renderer draft prewarm policy returned an invalid status",
     );
+  });
+
+  it("installs on a local split request manager without queue or dispatch surfaces", () => {
+    const sendRequest = vi.fn();
+    const prewarmThreadStart = vi.fn();
+    const bridge: RendererHostRequestBridge = { sendRequest, prewarmThreadStart };
+    const manager: RendererHostRequestManager = {};
+    const target: DraftPrewarmPolicyTarget = {};
+    const prewarmedThreadManager = { discardAllPrewarmedThreads: vi.fn() };
+
+    expect(
+      installDraftPrewarmPolicyBridge(manager, bridge, "local", target, prewarmedThreadManager),
+    ).toEqual({ state: "ready", reason: "owned-request-bridge" });
+
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      state: string;
+      hostId: string;
+      select(model: string | null): boolean;
+      clear(): Promise<void>;
+    };
+    expect(policy.state).toBe("ready");
+    expect(policy.hostId).toBe("local");
+
+    policy.select("codexhost/claude-code-native");
+    void bridge.sendRequest("thread/start", { model: "gpt-5" });
+    expect(sendRequest).toHaveBeenCalledWith("thread/start", {
+      model: "codexhost/claude-code-native",
+    });
+
+    void policy.clear();
+    expect(prewarmedThreadManager.discardAllPrewarmedThreads).toHaveBeenCalledOnce();
+    expect(manager.onNotification).toBeUndefined();
+    expect(manager.dispatchAppServerResponse).toBeUndefined();
+  });
+
+  it("reconciles the same local split request manager without reinstalling", () => {
+    const bridge: RendererHostRequestBridge = {
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+    };
+    const manager: RendererHostRequestManager = {};
+    const target: DraftPrewarmPolicyTarget = {};
+    const prewarmedThreadManager = { discardAllPrewarmedThreads: vi.fn() };
+
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, prewarmedThreadManager);
+    const first = target.__codexhostDraftPrewarmPolicyV1;
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, prewarmedThreadManager);
+    expect(target.__codexhostDraftPrewarmPolicyV1).toBe(first);
   });
 });

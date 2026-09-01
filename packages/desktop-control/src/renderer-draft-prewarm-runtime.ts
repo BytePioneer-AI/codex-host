@@ -21,20 +21,20 @@ export interface DraftPrewarmPolicyTarget {
 export interface RendererHostRequestBridge {
   sendRequest(method: string, parameters: unknown, options?: unknown): unknown;
   prewarmThreadStart(parameters: unknown, options?: unknown): unknown;
-  enqueueRequest(
+  enqueueRequest?(
     method: string,
     parameters: unknown,
     options?: unknown,
     dispatch?: (request: Record<string, unknown>) => void,
   ): unknown;
-  onResult(id: unknown, result: unknown, metrics?: unknown): void;
-  onError(id: unknown, error: unknown, metrics?: unknown): void;
+  onResult?(id: unknown, result: unknown, metrics?: unknown): void;
+  onError?(id: unknown, error: unknown, metrics?: unknown): void;
 }
 
 export interface RendererHostRequestManager {
-  onNotification(method: string, parameters: unknown): void;
-  onRequest(request: Record<string, unknown>): void;
-  dispatchAppServerResponse(method: string, response: Record<string, unknown>): unknown;
+  onNotification?(method: string, parameters: unknown): void;
+  onRequest?(request: Record<string, unknown>): void;
+  dispatchAppServerResponse?(method: string, response: Record<string, unknown>): unknown;
 }
 
 export interface RendererPrewarmedThreadManager {
@@ -139,7 +139,7 @@ export function installDraftPrewarmPolicyBridge(
     bridgeReadyReject?.(error);
     bridgeReadyReject = null;
     bridgeReadyResolve = null;
-    for (const requestId of bridgeRequests.keys()) bridge.onError(requestId, error);
+    for (const requestId of bridgeRequests.keys()) bridge.onError?.(requestId, error);
     bridgeRequests.clear();
     if (isRemoteControlHost && terminate) {
       void Promise.resolve(
@@ -231,14 +231,14 @@ export function installDraftPrewarmPolicyBridge(
       if (value.method === "thread/started" && isRecord(value.params)) {
         rememberExternalThread(value.params.thread);
       }
-      originalOnNotification.call(manager, value.method, value.params);
+      originalOnNotification?.call(manager, value.method, value.params);
       return;
     }
     if (typeof value.method === "string" && value.id !== undefined) {
       const outerRequestId = `${bridgeServerRequestIdPrefix}${bridgeProcessHandle}/${nextBridgeServerRequestOrdinal}`;
       nextBridgeServerRequestOrdinal += 1;
       bridgeServerRequests.set(outerRequestId, value.id);
-      manager.onRequest({ ...value, id: outerRequestId });
+      manager.onRequest?.({ ...value, id: outerRequestId });
       return;
     }
     if (value.id === undefined) {
@@ -248,11 +248,11 @@ export function installDraftPrewarmPolicyBridge(
     const request = bridgeRequests.get(value.id);
     bridgeRequests.delete(value.id);
     if ("error" in value) {
-      bridge.onError(value.id, value.error, value.metrics);
+      bridge.onError?.(value.id, value.error, value.metrics);
       return;
     }
     observeBridgeResult(request, value.result);
-    bridge.onResult(value.id, value.result, value.metrics);
+    bridge.onResult?.(value.id, value.result, value.metrics);
   };
   const consumeBridgeOutput = (stream: "stdout" | "stderr", base64: string): void => {
     const binary = atob(base64);
@@ -378,11 +378,19 @@ export function installDraftPrewarmPolicyBridge(
     writeTail = next.catch(() => undefined);
     return next;
   };
-  const enqueueBridgeRequest = (method: string, parameters: unknown, options?: unknown): unknown =>
-    bridge.enqueueRequest(method, parameters, options, (request) => {
+  const enqueueBridgeRequest = (
+    method: string,
+    parameters: unknown,
+    options?: unknown,
+  ): unknown => {
+    if (typeof bridge.enqueueRequest !== "function") {
+      throw transportError("request manager does not support queued requests");
+    }
+    return bridge.enqueueRequest(method, parameters, options, (request) => {
       bridgeRequests.set(request.id, { method, parameters });
       void writeBridgeFrame(request).catch((error) => failBridge(error));
     });
+  };
   const initializeBridgeProtocol = (): Promise<unknown> => {
     const initialization = enqueueBridgeRequest("initialize", {
       clientInfo: {
@@ -553,7 +561,7 @@ export function installDraftPrewarmPolicyBridge(
   if (observesWindowNotifications) target.addEventListener?.("message", routedWindowMessage);
   const routedOnNotification = (method: string, parameters: unknown): void => {
     if (!handleOuterNotification(method, parameters)) {
-      originalOnNotification.call(manager, method, parameters);
+      originalOnNotification?.call(manager, method, parameters);
     }
   };
   const routedDispatchAppServerResponse = (
@@ -571,10 +579,14 @@ export function installDraftPrewarmPolicyBridge(
       }
       if (response.id.startsWith(bridgeServerRequestIdPrefix)) return undefined;
     }
-    return originalDispatchAppServerResponse.call(manager, method, response);
+    return originalDispatchAppServerResponse?.call(manager, method, response);
   };
-  if (!observesWindowNotifications) manager.onNotification = routedOnNotification;
-  manager.dispatchAppServerResponse = routedDispatchAppServerResponse;
+  if (!observesWindowNotifications && typeof originalOnNotification === "function") {
+    manager.onNotification = routedOnNotification;
+  }
+  if (typeof originalDispatchAppServerResponse === "function") {
+    manager.dispatchAppServerResponse = routedDispatchAppServerResponse;
+  }
 
   const policy = Object.freeze({
     state: "ready" as const,
@@ -614,10 +626,13 @@ export function installDraftPrewarmPolicyBridge(
       }
       if (observesWindowNotifications) {
         target.removeEventListener?.("message", routedWindowMessage);
-      } else if (manager.onNotification === routedOnNotification) {
+      } else if (manager.onNotification === routedOnNotification && originalOnNotification) {
         manager.onNotification = originalOnNotification;
       }
-      if (manager.dispatchAppServerResponse === routedDispatchAppServerResponse) {
+      if (
+        manager.dispatchAppServerResponse === routedDispatchAppServerResponse &&
+        originalDispatchAppServerResponse
+      ) {
         manager.dispatchAppServerResponse = originalDispatchAppServerResponse;
       }
       if (bridgeReadyTimeout !== null) globalThis.clearTimeout(bridgeReadyTimeout);
@@ -630,7 +645,7 @@ export function installDraftPrewarmPolicyBridge(
       bridgeState = "disposed";
       const disposedError = transportError("was disposed");
       bridgeReadyReject?.(disposedError);
-      for (const requestId of bridgeRequests.keys()) bridge.onError(requestId, disposedError);
+      for (const requestId of bridgeRequests.keys()) bridge.onError?.(requestId, disposedError);
       bridgeRequests.clear();
       bridgeServerRequests.clear();
       knownExternalThreadIds.clear();

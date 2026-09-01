@@ -129,6 +129,10 @@ export function grokSubagentBackground(rawInput: unknown): boolean {
   return true;
 }
 
+export function grokSubagentModel(rawInput: unknown): string | undefined {
+  return bounded(stringField(rawInput, "model"), DESCRIPTION_LIMIT);
+}
+
 export function grokNativeSubagentId(...candidates: unknown[]): string | undefined {
   const fromKey = (key: string): string | undefined => {
     for (const candidate of candidates) {

@@ -19,6 +19,8 @@ export interface GrokSubagentStartInput {
   description: string;
   prompt?: string;
   role?: string;
+  model?: string;
+  reasoningEffort?: string;
   background: boolean;
   nativeSubagentId?: string;
 }
@@ -70,6 +72,8 @@ export class GrokSubagentLifecycle {
       ...(input.nativeSubagentId ? { nativeSubagentId: input.nativeSubagentId } : {}),
       description: input.description,
       ...(input.role ? { role: input.role } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
       background: input.background,
       status: "running",
     };
@@ -92,6 +96,8 @@ export class GrokSubagentLifecycle {
     patch: {
       description?: string;
       role?: string;
+      model?: string;
+      reasoningEffort?: string;
       nativeSubagentId?: string;
       resultSummary?: string;
       status?: HostSubagentStatus;
@@ -108,6 +114,8 @@ export class GrokSubagentLifecycle {
       ...(nativeSubagentId ? { nativeSubagentId, subagentId: nativeSubagentId } : {}),
       ...(patch.description ? { description: patch.description } : {}),
       ...(patch.role ? { role: patch.role } : {}),
+      ...(patch.model ? { model: patch.model } : {}),
+      ...(patch.reasoningEffort ? { reasoningEffort: patch.reasoningEffort } : {}),
       ...(patch.resultSummary ? { resultSummary: patch.resultSummary } : {}),
       ...(patch.status ? { status: patch.status } : {}),
     };

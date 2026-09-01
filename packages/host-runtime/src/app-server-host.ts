@@ -398,6 +398,17 @@ function turnProjectionGate(): TurnProjectionGate {
   return { promise, resolve };
 }
 
+function subagentThreadTitle(subagent: HostSubagentState): string {
+  const effort = subagent.reasoningEffort?.trim();
+  const details = [
+    subagent.model?.trim(),
+    effort ? effort.charAt(0).toUpperCase() + effort.slice(1) : undefined,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return details.length > 0
+    ? `${subagent.description} · ${details.join(" · ")}`
+    : subagent.description;
+}
+
 class OrderedWriter {
   #tail = Promise.resolve();
 
@@ -3212,7 +3223,7 @@ export class AppServerHost {
     const recordInput = createExternalThreadRecordInput({
       harnessId: parent.record.harnessId,
       cwd: parent.cwd,
-      title: subagent.description,
+      title: subagentThreadTitle(subagent),
       transportModelId: parent.transportModelId,
       ephemeral: false,
       historyMode: "paginated",

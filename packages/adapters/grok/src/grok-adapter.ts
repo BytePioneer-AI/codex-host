@@ -84,6 +84,7 @@ import {
   grokNativeSubagentId,
   grokSubagentBackground,
   grokSubagentDescription,
+  grokSubagentModel,
   grokSubagentOperation,
   grokSubagentPrompt,
   grokSubagentResultSummary,
@@ -1010,6 +1011,12 @@ class GrokHarnessSession implements HarnessSession {
     });
   }
 
+  #subagentModelLabel(modelId?: string): string | undefined {
+    const id = modelId ?? this.#state.effectiveModel?.id;
+    if (!id) return undefined;
+    return this.#modelState.catalog.models.find((model) => model.ref.id === id)?.label ?? id;
+  }
+
   #startTool(active: ActiveTurn, event: Extract<GrokTransportEvent, { type: "tool.call" }>): void {
     this.#completeReasoning(active, { status: "succeeded" });
     this.#completeAgent(active, { status: "succeeded" });
@@ -1018,12 +1025,16 @@ class GrokHarnessSession implements HarnessSession {
       const prompt = grokSubagentPrompt(event.rawInput);
       const role = grokSubagentRole(event.rawInput);
       const nativeSubagentId = grokNativeSubagentId(event.rawInput);
+      const model = this.#subagentModelLabel(grokSubagentModel(event.rawInput));
+      const reasoningEffort = this.#state.effectiveThinkingOptionId;
       active.subagents.start(active.command.turnId, {
         callId: event.callId,
         operation,
         description: grokSubagentDescription(event.rawInput, event.title),
         ...(prompt ? { prompt } : {}),
         ...(role ? { role } : {}),
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         background: grokSubagentBackground(event.rawInput),
         ...(nativeSubagentId ? { nativeSubagentId } : {}),
       });

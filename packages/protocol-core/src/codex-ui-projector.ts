@@ -169,7 +169,8 @@ function projectItem(
         })),
         status: itemStatus(outcome),
       };
-    case "subagentDelegation":
+    case "subagentDelegation": {
+      const primary = item.subagents[0];
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -178,8 +179,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: null,
-        reasoningEffort: null,
+        model: primary?.model ?? null,
+        reasoningEffort: primary?.reasoningEffort ?? null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,
@@ -187,6 +188,7 @@ function projectItem(
           ]),
         ),
       };
+    }
   }
 }
 

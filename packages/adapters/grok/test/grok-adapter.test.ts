@@ -2254,6 +2254,8 @@ describe("Grok Adapter ACP projection", () => {
           {
             description: "Inspect implementation",
             role: "explore",
+            model: "Grok 4.6",
+            reasoningEffort: "high",
             background: true,
             status: "running",
           },

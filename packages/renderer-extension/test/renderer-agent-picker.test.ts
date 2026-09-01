@@ -101,6 +101,18 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it("does not treat a first-load check as a connection error", () => {
+    expect(
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex", "pi"], {
+        pi: "checking",
+      }),
+    ).toMatchObject({
+      optionDisabled: { codex: false, pi: true },
+      downloadVisible: { pi: false },
+      errorVisible: { pi: false },
+    });
+  });
+
   it("recognizes only the native React Model menu as the Model candidate", () => {
     const element = (
       ownAttributes: readonly string[],

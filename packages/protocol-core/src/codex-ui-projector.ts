@@ -66,6 +66,27 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
+  startedAtMs?: number;
+  durationMs?: number;
+}
+
+function resolvedItemDurationMs(
+  item: HostItem,
+  startedAtMs: number,
+  completedAtMs: number,
+): number {
+  if (
+    (item.type === "commandExecution" || item.type === "toolExecution") &&
+    item.durationMs !== undefined
+  ) {
+    return item.durationMs;
+  }
+  return Math.max(0, completedAtMs - startedAtMs);
+}
+
+function withResolvedDuration(item: HostItem, durationMs: number): HostItem {
+  if (item.type !== "commandExecution" && item.type !== "toolExecution") return item;
+  return { ...item, durationMs };
 }
 
 type ProjectedInteraction =
@@ -208,6 +229,7 @@ function projectReasoningTranscriptItem(
   item: Extract<HostItem, { type: "reasoning" }>,
   outcome: HostItemOutcome | null,
   defaultCwd: string,
+  durationMs: number | null = null,
 ): JsonObject {
   return {
     id: item.itemId,
@@ -220,7 +242,7 @@ function projectReasoningTranscriptItem(
     commandActions: [],
     aggregatedOutput: item.text.length > 0 ? item.text : null,
     exitCode: outcome ? 0 : null,
-    durationMs: null,
+    durationMs,
   };
 }
 
@@ -370,7 +392,7 @@ export class CodexTurnProjector {
       case "turn.started":
         return this.#startTurn();
       case "item.started":
-        return this.#startItem(event);
+        return this.#startItem(event, emittedAtMs);
       case "item.updated":
         return this.#updateItem(event, emittedAtMs);
       case "item.completed":
@@ -441,7 +463,8 @@ export class CodexTurnProjector {
         arguments: {},
       };
       messages.push(
-        ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }).messages,
+        ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }, emittedAtMs)
+          .messages,
       );
     }
     this.#interactions.set(interaction.interactionId, {
@@ -469,7 +492,7 @@ export class CodexTurnProjector {
     };
   }
 
-  #startItem(event: ItemStartedEvent): CodexTurnProjection {
+  #startItem(event: ItemStartedEvent, startedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
     if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
     const projected: ProjectedItem = {
@@ -490,12 +513,12 @@ export class CodexTurnProjector {
       return { messages: [] };
     }
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
-    const messages = [this.#startWireItem(projected, startedItem)];
+    const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
       messages.push(
-        this.#startReasoningTranscript(event.item, this.#startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, this.#startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, this.#startedAtMs),
+        this.#startReasoningTranscript(event.item, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
+        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
       );
     }
     if (event.item.type === "fileChange") {
@@ -513,7 +536,9 @@ export class CodexTurnProjector {
     if (event.update.type === "text.append") {
       if (event.update.text.length === 0) return { messages };
       if (next.type === "agentMessage") {
-        if (!projected.wireStarted) messages.push(this.#startWireItem(projected, previous));
+        if (!projected.wireStarted) {
+          messages.push(this.#startWireItem(projected, previous, emittedAtMs));
+        }
         messages.push({
           method: "item/agentMessage/delta",
           emittedAtMs,
@@ -527,7 +552,7 @@ export class CodexTurnProjector {
       } else if (next.type === "reasoning") {
         if (!projected.wireStarted) {
           messages.push(
-            this.#startWireItem(projected, { ...next, text: "" }),
+            this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
             this.#startReasoningTranscript({ ...next, text: "" }, emittedAtMs),
           );
         }
@@ -557,7 +582,7 @@ export class CodexTurnProjector {
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          startedAtMs: this.#startedAtMs,
+          startedAtMs: projected.startedAtMs ?? emittedAtMs,
           item: projectItem(next, null, this.#cwd, true, this.#threadId),
         },
       });
@@ -590,12 +615,18 @@ export class CodexTurnProjector {
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
     if (!projected.wireStarted) return { messages: [] };
+    const startedAtMs = projected.startedAtMs;
+    if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
+    const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
+    projected.item = withResolvedDuration(projected.item, durationMs);
+    projected.durationMs = durationMs;
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",
       emittedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
+        startedAtMs,
         completedAtMs: emittedAtMs,
         item,
       },
@@ -612,8 +643,11 @@ export class CodexTurnProjector {
       ),
     ];
     if (projected.item.type === "reasoning") {
+      const reasoning = projected.item;
       messages.push(
-        completedItem(projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd)),
+        completedItem(
+          projectReasoningTranscriptItem(reasoning, projected.outcome, this.#cwd, durationMs),
+        ),
       );
     }
     return { messages };
@@ -662,9 +696,15 @@ export class CodexTurnProjector {
           if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
+            const reasoning = projected.item;
             return [
-              projectItem(projected.item, projected.outcome, this.#cwd),
-              projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd),
+              projectItem(reasoning, projected.outcome, this.#cwd),
+              projectReasoningTranscriptItem(
+                reasoning,
+                projected.outcome,
+                this.#cwd,
+                projected.durationMs ?? null,
+              ),
             ];
           }
           return projected.item.type === "agentMessage"
@@ -716,17 +756,18 @@ export class CodexTurnProjector {
         ];
   }
 
-  #startWireItem(projected: ProjectedItem, item: HostItem): JsonObject {
+  #startWireItem(projected: ProjectedItem, item: HostItem, startedAtMs: number): JsonObject {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
+    projected.startedAtMs = startedAtMs;
     this.#wireItemOrder.push(item.itemId);
     return {
       method: "item/started",
-      emittedAtMs: this.#startedAtMs,
+      emittedAtMs: startedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
-        startedAtMs: this.#startedAtMs,
+        startedAtMs,
         item: projectItem(item, null, this.#cwd, true, this.#threadId),
       },
     };
@@ -734,15 +775,15 @@ export class CodexTurnProjector {
 
   #startReasoningTranscript(
     item: Extract<HostItem, { type: "reasoning" }>,
-    emittedAtMs: number,
+    startedAtMs: number,
   ): JsonObject {
     return {
       method: "item/started",
-      emittedAtMs,
+      emittedAtMs: startedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
-        startedAtMs: this.#startedAtMs,
+        startedAtMs,
         item: projectReasoningTranscriptItem({ ...item, text: "" }, null, this.#cwd),
       },
     };

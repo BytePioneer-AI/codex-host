@@ -21,6 +21,7 @@ describe("production Renderer release chain", () => {
     ]);
 
     expect(agentState).toContain('"deepseek-harness",');
+    expect(agentState).toContain('"opencode",');
     expect(agentState).toContain('"grok",');
     expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
@@ -40,6 +41,7 @@ describe("production Renderer release chain", () => {
       adapter: { state: "ready", reason: "ready", modelUpdates: 0 },
     });
 
+    expect(RENDERER_PROBE_AGENTS).toContain("opencode");
     expect(RENDERER_PROBE_AGENTS).toContain("grok");
     expect(status.selections).toEqual([
       { composerId: "composer-grok", agent: "grok", phase: "draft" },

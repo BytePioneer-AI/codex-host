@@ -11,6 +11,7 @@ import {
 import {
   encodeGrokTransportModel,
   encodeOmpTransportModel,
+  encodeOpenCodeTransportModel,
   type ExternalHarnessId,
 } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
@@ -254,6 +255,90 @@ describe("ExternalThreadRuntime register", () => {
     );
     expect(setTransportModelId).toHaveBeenCalledOnce();
     expect(diagnose).toHaveBeenCalledWith(expect.any(Error));
+
+    await adapter.close();
+  });
+
+  it("uses live OpenCode Permission Mode when the persisted selection is stale", async () => {
+    const openCodeHarnessId = harnessIdSchema.parse("opencode");
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "ask", label: "Ask" },
+      ],
+      defaultModeId: "default",
+    });
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const askMode = harnessPermissionModeIdSchema.parse("ask");
+    const adapter = new FakeHarnessAdapter(
+      openCodeHarnessId,
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const model = adapter.catalog.defaultModel;
+    if (!model) throw new Error("Fake OpenCode catalog has no default Model");
+    const created = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model,
+      permissionModeId: askMode,
+    });
+    if (
+      !created.ok ||
+      !created.value.initialState.nativeRef ||
+      !(created.value instanceof FakeHarnessSession)
+    ) {
+      throw new Error("Fake OpenCode Session did not open");
+    }
+    created.value.rejectNextPermissionModeSelection({
+      code: "nativeFailure",
+      message: "OpenCode did not confirm the requested Permission Mode",
+      retryable: false,
+    });
+    const execute = vi.spyOn(created.value, "execute");
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: openCodeHarnessId,
+      nativeSessionRef: created.value.initialState.nativeRef,
+      title: "OpenCode Thread",
+      transportModelId: encodeOpenCodeTransportModel(model, defaultMode),
+    } as StoredThreadRecordV1;
+    const setTransportModelId = vi.fn(
+      async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => ({
+        ...stored,
+        transportModelId,
+      }),
+    );
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async () => ({ record: stored, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["opencode", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") throw new Error("OpenCode Thread did not restore");
+    const liveThinking = created.value.initialState.effectiveThinkingOptionId;
+    expect(execute).not.toHaveBeenCalled();
+    expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(askMode);
+    expect(resolved.thread.transportModelId).toBe(
+      encodeOpenCodeTransportModel(model, askMode, liveThinking),
+    );
+    expect(setTransportModelId).toHaveBeenCalledWith(
+      hostThreadId,
+      encodeOpenCodeTransportModel(model, askMode, liveThinking),
+    );
 
     await adapter.close();
   });

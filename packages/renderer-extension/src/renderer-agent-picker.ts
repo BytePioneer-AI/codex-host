@@ -48,6 +48,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
   "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
+  opencode: "https://opencode.ai/docs/",
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
 };
@@ -90,7 +91,7 @@ export interface RendererAgentPickerView {
   nativeModelHidden: boolean;
   optionDisabled: Partial<Record<RendererAgent, boolean>>;
   downloadVisible: Partial<Record<ExternalRendererAgent, boolean>>;
-  /** True once a not-installed/checking Agent has moved to `RendererAgentAvailability: "error"`. */
+  /** True while availability is `error`. In-flight retries must keep that status, not flash back to `checking`. */
   errorVisible: Partial<Record<ExternalRendererAgent, boolean>>;
 }
 

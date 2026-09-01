@@ -126,6 +126,13 @@ export function passiveHarnessAvailabilityAgents(
   );
 }
 
+/** Last known availability stays visible while inspect or retry is in flight. */
+export function harnessAvailabilityDuringInspect(
+  current: RendererAgentAvailability | undefined,
+): RendererAgentAvailability {
+  return current ?? "checking";
+}
+
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
   errors: HarnessAvailabilityErrors;
@@ -1704,7 +1711,7 @@ export function installRendererBindingProbe(
     }
     const nextAvailability = { ...state.availability };
     for (const agent of agentsToInspect) {
-      if (nextAvailability[agent] !== "ready") nextAvailability[agent] = "checking";
+      nextAvailability[agent] = harnessAvailabilityDuringInspect(nextAvailability[agent]);
     }
     state.availability = nextAvailability;
     if (hostId === activeAvailabilityHostId) {

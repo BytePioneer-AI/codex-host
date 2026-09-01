@@ -16,6 +16,7 @@ import {
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
   lateConversationTargetResolution,
+  harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
   refreshConnectionHosts,
   restoredThreadOwnership,
@@ -232,6 +233,15 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toEqual(["deepseek-harness"]);
+  });
+
+  it("keeps a failed Harness availability visible while inspect retries", () => {
+    expect(harnessAvailabilityDuringInspect(undefined)).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("checking")).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("error")).toBe("error");
+    expect(harnessAvailabilityDuringInspect("unavailable")).toBe("unavailable");
+    expect(harnessAvailabilityDuringInspect("notInstalled")).toBe("notInstalled");
+    expect(harnessAvailabilityDuringInspect("ready")).toBe("ready");
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {

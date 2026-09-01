@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
+  "e2f8814ef21859f51af4afd3b0f8dc0f62b450acd671f8ed6f3522efe5aa2080",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -83,11 +84,59 @@ function destinations(home: string): string[] {
   ];
 }
 
+async function validateDestinationPath(
+  home: string,
+  destination: string,
+  createParents: boolean,
+): Promise<void> {
+  const homeStat = await lstat(home);
+  if (
+    !homeStat.isDirectory() ||
+    (homeStat.mode & 0o022) !== 0 ||
+    (typeof process.getuid === "function" && homeStat.uid !== process.getuid())
+  ) {
+    throw new Error(`Unsafe Skill home: ${home}`);
+  }
+  const relative = path.relative(home, destination);
+  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+    throw new Error("Skill destination is outside home");
+  let current = home;
+  const parts = relative.split(path.sep);
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    current = path.join(current, parts[index]!);
+    try {
+      const entry = await lstat(current);
+      if (
+        !entry.isDirectory() ||
+        (entry.mode & 0o022) !== 0 ||
+        (typeof process.getuid === "function" && entry.uid !== process.getuid())
+      ) {
+        throw new Error(`Unsafe Skill directory: ${current}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!createParents) return;
+      await mkdir(current, { mode: 0o700 });
+    }
+  }
+  const entry = await lstat(destination).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (
+    entry &&
+    (!entry.isFile() ||
+      (entry.mode & 0o022) !== 0 ||
+      (typeof process.getuid === "function" && entry.uid !== process.getuid()))
+  ) {
+    throw new Error(`Unsafe Skill entry: ${destination}`);
+  }
+}
+
 export type DelegationSkillState = "missing" | "current" | "managed-legacy" | "conflict";
 
 export interface DelegationSkillLifecycleInput {
   homeDirectory?: string;
-  previousManagedDigests?: readonly string[];
 }
 
 export interface DelegationSkillStatusResult {
@@ -104,18 +153,16 @@ export interface DelegationSkillUninstallResult {
   digest: string | null;
 }
 
-function knownManagedDigests(input: DelegationSkillLifecycleInput): Set<string> {
-  return new Set([
-    CURRENT_DIGEST,
-    ...PREVIOUS_MANAGED_DIGESTS,
-    ...(input.previousManagedDigests ?? []),
-  ]);
+function knownManagedDigests(): Set<string> {
+  return new Set([CURRENT_DIGEST, ...PREVIOUS_MANAGED_DIGESTS]);
 }
 
 async function classifyDelegationSkill(
+  home: string,
   destination: string,
   knownDigests: ReadonlySet<string>,
 ): Promise<DelegationSkillStatusResult> {
+  await validateDestinationPath(home, destination, false);
   const current = await readOptional(destination);
   if (current === null) {
     return { path: destination, status: "missing", version: null, digest: null };
@@ -177,10 +224,10 @@ export async function installDelegationSkills(
 ): Promise<DelegationSkillInstallResult[]> {
   const home = input.homeDirectory ?? os.homedir();
   const destinationPaths = destinations(home);
-  const knownDigests = knownManagedDigests(input);
+  const knownDigests = knownManagedDigests();
   const results: DelegationSkillInstallResult[] = [];
   for (const destination of destinationPaths) {
-    const classified = await classifyDelegationSkill(destination, knownDigests);
+    const classified = await classifyDelegationSkill(home, destination, knownDigests);
     if (classified.status === "current") {
       results.push({
         path: destination,
@@ -200,6 +247,7 @@ export async function installDelegationSkills(
       continue;
     }
     if (classified.status === "managed-legacy") {
+      await validateDestinationPath(home, destination, true);
       await atomicWrite(destination, CODEXHOST_DELEGATION_SKILL);
       results.push({
         path: destination,
@@ -209,6 +257,7 @@ export async function installDelegationSkills(
       });
       continue;
     }
+    await validateDestinationPath(home, destination, true);
     await atomicWrite(destination, CODEXHOST_DELEGATION_SKILL);
     results.push({
       path: destination,
@@ -242,26 +291,37 @@ export async function inspectDelegationSkills(
   input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillStatusResult[]> {
   const home = input.homeDirectory ?? os.homedir();
-  const knownDigests = knownManagedDigests(input);
-  return Promise.all(destinations(home).map((destination) =>
-    classifyDelegationSkill(destination, knownDigests)));
+  const knownDigests = knownManagedDigests();
+  return Promise.all(
+    destinations(home).map((destination) =>
+      classifyDelegationSkill(home, destination, knownDigests),
+    ),
+  );
 }
 
 export async function uninstallDelegationSkills(
   input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillUninstallResult[]> {
   const home = input.homeDirectory ?? os.homedir();
-  const knownDigests = knownManagedDigests(input);
+  const knownDigests = knownManagedDigests();
   const results: DelegationSkillUninstallResult[] = [];
   for (const destination of destinations(home)) {
-    const classified = await classifyDelegationSkill(destination, knownDigests);
+    const classified = await classifyDelegationSkill(home, destination, knownDigests);
     if (classified.status !== "current" && classified.status !== "managed-legacy") {
       results.push(classified);
       continue;
     }
+    const quarantine = path.join(path.dirname(destination), `.SKILL.md.${randomUUID()}.quarantine`);
     try {
-      await rm(destination);
-      results.push({ ...classified, status: "removed" });
+      await rename(destination, quarantine);
+      const verified = await classifyDelegationSkill(home, quarantine, knownDigests);
+      if (verified.status === "current" || verified.status === "managed-legacy") {
+        await rm(quarantine);
+        results.push({ ...classified, status: "removed" });
+      } else {
+        await rename(quarantine, destination);
+        results.push(classified);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         results.push({ path: destination, status: "missing", version: null, digest: null });

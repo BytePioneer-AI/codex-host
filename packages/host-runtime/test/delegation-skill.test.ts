@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -46,7 +46,10 @@ describe("delegation Skill installation", () => {
 
   it("updates copies whose digest matches a previous managed version", async () => {
     const root = await home();
-    const previous = "---\nname: codexhost-delegation\nversion: 0\n---\nold\n";
+    const previous = await readFile(
+      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
+      "utf8",
+    );
     const destinations = paths(root);
     for (const destination of destinations) {
       await import("node:fs/promises").then(({ mkdir }) =>
@@ -54,10 +57,8 @@ describe("delegation Skill installation", () => {
       );
       await writeFile(destination, previous, "utf8");
     }
-    const { createHash } = await import("node:crypto");
     const results = await installDelegationSkills({
       homeDirectory: root,
-      previousManagedDigests: [createHash("sha256").update(previous).digest("hex")],
     });
     expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
@@ -95,27 +96,35 @@ describe("delegation Skill installation", () => {
     ]);
     await installDelegationSkills({ homeDirectory: root });
     const destinations = paths(root);
-    const legacy = "---\nname: codexhost-delegation\nversion: 3\n---\nlegacy\n";
-    const { createHash } = await import("node:crypto");
-    const legacyDigest = createHash("sha256").update(legacy).digest("hex");
+    const legacy = await readFile(
+      new URL("./fixtures/delegation-skill-v3.md", import.meta.url),
+      "utf8",
+    );
     await writeFile(destinations[0] ?? "", legacy, "utf8");
     await writeFile(destinations[1] ?? "", "user content\n", "utf8");
-    const before = await Promise.all(destinations.map(async (file) => ({
-      content: await readFile(file, "utf8"),
-      mtimeMs: (await stat(file)).mtimeMs,
-    })));
+    const before = await Promise.all(
+      destinations.map(async (file) => ({
+        content: await readFile(file, "utf8"),
+        mtimeMs: (await stat(file)).mtimeMs,
+      })),
+    );
     const statuses = await inspectDelegationSkills({
       homeDirectory: root,
-      previousManagedDigests: [legacyDigest],
     });
     expect(statuses).toMatchObject([
-      { status: "managed-legacy", version: 3, digest: legacyDigest },
+      {
+        status: "managed-legacy",
+        version: 3,
+        digest: "e2f8814ef21859f51af4afd3b0f8dc0f62b450acd671f8ed6f3522efe5aa2080",
+      },
       { status: "conflict" },
     ]);
-    const after = await Promise.all(destinations.map(async (file) => ({
-      content: await readFile(file, "utf8"),
-      mtimeMs: (await stat(file)).mtimeMs,
-    })));
+    const after = await Promise.all(
+      destinations.map(async (file) => ({
+        content: await readFile(file, "utf8"),
+        mtimeMs: (await stat(file)).mtimeMs,
+      })),
+    );
     expect(after).toEqual(before);
   });
 
@@ -128,5 +137,25 @@ describe("delegation Skill installation", () => {
     expect(results.map(({ status }) => status)).toEqual(["conflict", "removed"]);
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe("user content\n");
     await expect(stat(destinations[1] ?? "")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects symlinked ancestors and Skill entries", async () => {
+    const root = await home();
+    const outside = await home();
+    await symlink(outside, path.join(root, ".agents"));
+    await expect(inspectDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+      "Unsafe Skill directory",
+    );
+
+    const safeRoot = await home();
+    const [entry] = paths(safeRoot);
+    if (!entry) throw new Error("Missing Skill destination");
+    await import("node:fs/promises").then(({ mkdir }) =>
+      mkdir(path.dirname(entry), { recursive: true }),
+    );
+    await symlink(path.join(outside, "foreign.md"), entry);
+    await expect(uninstallDelegationSkills({ homeDirectory: safeRoot })).rejects.toThrow(
+      "Unsafe Skill entry",
+    );
   });
 });

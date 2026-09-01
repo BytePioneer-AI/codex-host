@@ -15,3 +15,10 @@ npm run build:typescript
 npx vitest run packages/host-runtime/test/delegation-skill.test.ts --config tests/vitest.config.js
 7 tests passed
 ```
+
+## Task 12A follow-up
+
+- Removed caller-supplied legacy digests; the implementation trusts only built-in historical codexhost digests, covered by a committed v3 fixture.
+- Validated Skill home ancestry and entries with `lstat`, rejecting symlinks, non-directories/files, foreign ownership, and writable managed directories.
+- Uninstall quarantines the exact entry, reclassifies it, and deletes only a verified managed quarantine.
+- Added symlink ancestor/entry regressions and reran lifecycle/runtime focused tests plus formatting.

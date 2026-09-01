@@ -16,6 +16,7 @@ use codexhost_platform::{
 };
 
 mod local_runtime_lease;
+mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod remote_lifecycle;
 

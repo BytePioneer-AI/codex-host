@@ -12,7 +12,7 @@ const INSTALL_RENDERER_OBSERVER_SOURCE = `(() => {
     if (
       !isRecord(detail) ||
       typeof detail.composerId !== 'string' ||
-      !['codex', 'pi', 'claude-code', 'deepseek-harness'].includes(detail.agent) ||
+      !['codex', 'pi', 'claude-code', 'deepseek-harness', 'opencode', 'grok', 'omp'].includes(detail.agent) ||
       !['click', 'enter', 'submit'].includes(detail.trigger)
     ) return;
     const capturedAt = Date.now();
@@ -62,7 +62,7 @@ const INSTALL_RENDERER_OBSERVER_SOURCE = `(() => {
       target == null ||
       target.disabled ||
       target.getAttribute('aria-pressed') === 'true' ||
-      !['codex', 'pi', 'claude-code', 'deepseek-harness'].includes(agent) ||
+      !['codex', 'pi', 'claude-code', 'deepseek-harness', 'opencode', 'grok', 'omp'].includes(agent) ||
       typeof composerId !== 'string'
     ) return;
     switchCounters.attempts += 1;
@@ -172,7 +172,9 @@ export function validateRendererObserverStatus(value) {
       !isRecord(observation) ||
       typeof observation.submissionId !== "string" ||
       typeof observation.composerId !== "string" ||
-      !["codex", "pi", "claude-code", "deepseek-harness"].includes(observation.agent) ||
+      !["codex", "pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"].includes(
+        observation.agent,
+      ) ||
       !["click", "enter", "submit"].includes(observation.trigger) ||
       typeof observation.capturedAt !== "string"
     ) {

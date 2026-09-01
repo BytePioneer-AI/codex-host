@@ -26,6 +26,8 @@ import {
   npmPackageOs,
   npmPackCommand,
   npmPlatformPackageName,
+  resolveRuntimeLicenseSource,
+  writeThirdPartyNotices,
   npmReleaseBuildCommands,
   npmTarballFileName,
   parseNpmReleaseArguments,
@@ -317,6 +319,30 @@ describe("npm package release", () => {
     });
   });
 
+  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+    const root = process.cwd();
+    const output = await temporaryDirectory();
+    try {
+      await writeThirdPartyNotices(root, output);
+      const notice = await readFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "utf8");
+      const license = await readFile(
+        path.join(output, "licenses/OpenCode-SDK-LICENSE.txt"),
+        "utf8",
+      );
+      expect(
+        resolveRuntimeLicenseSource(root, {
+          packageName: "@opencode-ai/sdk",
+          source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
+        }),
+      ).toBe(path.join(root, "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt"));
+      expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
+      expect(license).toContain("Copyright (c) 2025 opencode");
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
   it("publishes a scoped platform package with platform constraints", () => {
     const target = releaseTarget("macos-arm64");
     const manifest = createNpmPackageManifest({ version: "0.1.0", target });
@@ -469,6 +495,7 @@ describe("npm package release", () => {
         root: "/repo/source",
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
+      expect(paths).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");

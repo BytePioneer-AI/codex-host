@@ -17,6 +17,7 @@ const allowedRuntimePackages = new Set([
   "@deepseek-ai/cosmokit",
   "@deepseek-ai/dsh-host-apiproxy",
   "@deepseek-ai/schemastery",
+  "@opencode-ai/sdk",
   "diff",
   "ws",
   "zod",
@@ -54,6 +55,7 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/adapters/pi/",
     "/packages/adapters/claude-code/",
     "/packages/adapters/deepseek-harness/",
+    "/packages/adapters/opencode/",
     "/packages/adapters/grok/",
     "/packages/adapters/omp/",
     "/node_modules/@agentclientprotocol/sdk/",
@@ -61,6 +63,7 @@ export function auditHostBundleMetafile(metafile) {
     "/node_modules/@deepseek-ai/cosmokit/",
     "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
     "/node_modules/@deepseek-ai/schemastery/",
+    "/node_modules/@opencode-ai/sdk/",
     "/node_modules/ws/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {

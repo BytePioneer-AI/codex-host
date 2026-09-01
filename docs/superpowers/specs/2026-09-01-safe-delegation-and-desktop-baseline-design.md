@@ -47,6 +47,7 @@ Adapters map `approval-required` to an explicit native setting rather than an ad
 
 | Harness | Approval-required mapping |
 | --- | --- |
+| Official Codex | `approvalPolicy: on-request`, `sandbox: workspace-write` |
 | Claude Code | `default` |
 | Grok | `ask` |
 | OpenCode | `ask` |
@@ -70,6 +71,7 @@ Focused tests cover:
 
 - delegation defaults to `approval-required`;
 - explicit unattended policy reaches the adapter;
+- official Codex delegation maps approval-required to `on-request`/`workspace-write` and reserves `never`/`danger-full-access` for explicit unattended use;
 - policy participates in CLI payloads and deduplication identity;
 - each capable adapter maps approval-required to the explicit native mode;
 - Pi rejects approval-required and still accepts explicitly unattended delegation;

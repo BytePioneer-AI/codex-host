@@ -20,7 +20,7 @@ const createSchema = z
   .object({
     kind: z.literal("create"),
     cwd: cwdSchema,
-    executionPolicy: z.enum(["default", "unattended-full-access"]).optional(),
+    executionPolicy: z.enum(["default", "approval-required", "unattended-full-access"]).optional(),
     model: harnessModelRefSchema.optional(),
     thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     permissionModeId: harnessPermissionModeIdSchema.optional(),

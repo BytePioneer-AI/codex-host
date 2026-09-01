@@ -3,6 +3,8 @@ import { nativeCheckpointRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  openCodeNativeSessionRef,
+  parseOpenCodeSessionRef,
   projectOpenCodeHistory,
   reliableOpenCodeFileChanges,
   resolveOpenCodeForkBoundary,
@@ -77,6 +79,15 @@ const messages = [
 ];
 
 describe("OpenCode history projection", () => {
+  it("round-trips a native session locator with the approval-required policy", () => {
+    const ref = openCodeNativeSessionRef(session(), "approval-required");
+
+    expect(parseOpenCodeSessionRef(ref)).toMatchObject({
+      directory: "/synthetic",
+      executionPolicy: "approval-required",
+    });
+  });
+
   it("hides transcript entries at and after the persisted revert boundary", () => {
     const snapshot = projectOpenCodeHistory({
       session: session({ messageID: "user-2" }),

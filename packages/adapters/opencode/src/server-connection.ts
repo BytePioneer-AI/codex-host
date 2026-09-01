@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2/client";
 
-import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
+import { sanitizeDiagnosticTail, type HarnessExecutionPolicy } from "@codexhost/harness-adapter";
 
 import {
   OpenCodeExecutableError,
@@ -131,7 +131,7 @@ export interface OpenCodeServerConnectionLike {
 
 export function managedOpenCodeEnvironment(
   environment: Record<string, string | undefined> | undefined,
-  executionPolicy: "default" | "unattended-full-access" = "default",
+  executionPolicy: HarnessExecutionPolicy = "default",
 ): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...(environment ?? process.env) };
   const undefinedKeys = Object.entries(merged)

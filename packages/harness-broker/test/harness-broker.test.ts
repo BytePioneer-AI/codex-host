@@ -25,6 +25,7 @@ import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
   startHarnessBrokerServer,
 } from "../src/index.js";
+import { brokerOpenInputSchema } from "../src/validation.js";
 
 const roots: string[] = [];
 
@@ -41,6 +42,16 @@ afterEach(async () => {
 });
 
 describe("macOS Aqua Harness broker", () => {
+  it("accepts the approval-required create policy", () => {
+    expect(
+      brokerOpenInputSchema.parse({
+        kind: "create",
+        cwd: "/workspace",
+        executionPolicy: "approval-required",
+      }),
+    ).toMatchObject({ executionPolicy: "approval-required" });
+  });
+
   it.skipIf(process.platform === "win32")(
     "refuses to replace a non-socket entry at the broker socket path",
     async () => {

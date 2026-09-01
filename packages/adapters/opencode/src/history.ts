@@ -54,7 +54,11 @@ export interface OpenCodeHistoryInput {
 
 const openCodeHarnessId: HarnessId = harnessIdSchema.parse("opencode");
 
-export const openCodeExecutionPolicySchema = z.enum(["default", "unattended-full-access"]);
+export const openCodeExecutionPolicySchema = z.enum([
+  "default",
+  "approval-required",
+  "unattended-full-access",
+]);
 export type OpenCodeExecutionPolicy = HarnessExecutionPolicy;
 
 const openCodeSessionLocatorSchema = z.strictObject({

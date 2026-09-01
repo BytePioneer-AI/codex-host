@@ -11,7 +11,7 @@ describe("harness-adapter package", () => {
   });
 
   it("exports the create-time execution policy contract", () => {
-    const policy: HarnessExecutionPolicy = "unattended-full-access";
-    expect(policy).toBe("unattended-full-access");
+    const policy: HarnessExecutionPolicy = "approval-required";
+    expect(policy).toBe("approval-required");
   });
 });

@@ -64,7 +64,10 @@ export interface InspectHarnessInput {
   refresh?: boolean;
 }
 
-export type HarnessExecutionPolicy = "default" | "unattended-full-access";
+export type HarnessExecutionPolicy =
+  | "default"
+  | "approval-required"
+  | "unattended-full-access";
 
 export interface CreateSessionInput {
   kind: "create";

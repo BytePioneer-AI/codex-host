@@ -7,14 +7,16 @@ import type {
   HostToolExecutionItem,
   HostToolOutput,
 } from "@codexhost/harness-adapter";
-import type { HostItemId, HostTurnId } from "@codexhost/shared-contracts";
+import type { HostItemId, HostTurnId, JsonValue } from "@codexhost/shared-contracts";
 
 import { projectClaudeFileChange } from "./file-change.js";
+import { isClaudeTaskTool, type ClaudeTaskTracker } from "./task-tracker.js";
 import type { ClaudeTurnEvent } from "./transport.js";
 
 interface ActiveTool {
   item: HostCommandExecutionItem | HostToolExecutionItem;
   nativeName: string;
+  nativeArguments: JsonValue;
   startedAtMs: number;
   elapsedMs: number;
 }
@@ -22,6 +24,7 @@ interface ActiveTool {
 export interface ClaudeToolLifecycleOptions {
   cwd: string;
   outputLimit: number;
+  taskTracker: ClaudeTaskTracker;
   newItemId(): HostItemId;
   emit(event: HostEvent): void;
 }
@@ -68,6 +71,7 @@ export class ClaudeToolLifecycle {
   readonly #emit: (event: HostEvent) => void;
   readonly #newItemId: () => HostItemId;
   readonly #outputLimit: number;
+  readonly #taskTracker: ClaudeTaskTracker;
   readonly #tools = new Map<string, ActiveTool>();
 
   constructor(options: ClaudeToolLifecycleOptions) {
@@ -75,6 +79,7 @@ export class ClaudeToolLifecycle {
     this.#emit = options.emit;
     this.#newItemId = options.newItemId;
     this.#outputLimit = options.outputLimit;
+    this.#taskTracker = options.taskTracker;
   }
 
   get size(): number {
@@ -94,12 +99,13 @@ export class ClaudeToolLifecycle {
       : {
           type: "toolExecution",
           itemId: this.#newItemId(),
-          toolName: event.toolName,
-          arguments: event.arguments,
+          toolName: isClaudeTaskTool(event.toolName) ? "Todo" : event.toolName,
+          arguments: isClaudeTaskTool(event.toolName) ? {} : event.arguments,
         };
     this.#tools.set(event.callId, {
       item,
       nativeName: event.toolName,
+      nativeArguments: event.arguments,
       startedAtMs: Date.now(),
       elapsedMs: 0,
     });
@@ -143,6 +149,18 @@ export class ClaudeToolLifecycle {
       : event.isError
         ? { status: "failed", error: toolFailure(event.toolName) }
         : { status: "succeeded" };
+    if (
+      outcome.status === "succeeded" &&
+      tool.item.type === "toolExecution" &&
+      isClaudeTaskTool(event.toolName)
+    ) {
+      const todos = this.#taskTracker.apply(
+        event.toolName,
+        tool.nativeArguments,
+        event.structuredResult,
+      );
+      if (todos) tool.item = { ...tool.item, toolName: "Todo", arguments: todos };
+    }
     this.#completeItem(turnId, tool.item, outcome);
 
     if (outcome.status === "succeeded" && event.fileChange) {

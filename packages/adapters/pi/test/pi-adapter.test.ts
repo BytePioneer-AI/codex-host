@@ -1808,6 +1808,47 @@ describe("Pi HarnessAdapter Session", () => {
       snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
     });
 
+    transport?.event({
+      type: "tool.started",
+      callId: "edit-numbered-1",
+      toolName: "edit",
+      arguments: {
+        i: "Adding tiny test marker",
+        input: "[docs/archive/README.md#6F1B]\nPUT >3:\n+",
+      },
+    });
+    await nextEvent(iterator);
+    transport?.event({
+      type: "tool.completed",
+      callId: "edit-numbered-1",
+      toolName: "edit",
+      result: {
+        content: [{ type: "text", text: "edited" }],
+        details: {
+          diff: " 1|# Archive\n 2|\n 3|Current documents.\n+4|\n+5|test-marker",
+          path: "docs/archive/README.md",
+          oldText: "# Archive\n\nCurrent documents.\n",
+          newText: "# Archive\n\nCurrent documents.\n\ntest-marker\n",
+        },
+      },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "toolExecution", toolName: "edit" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "fileChange",
+        changes: [{ path: "docs/archive/README.md", kind: "update" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
+    });
+
     transport?.delta("finished");
     await nextEvent(iterator);
     transport?.succeed("finished");

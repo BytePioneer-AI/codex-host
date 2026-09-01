@@ -684,6 +684,33 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 
+  it("preserves structured Task results for task ID correlation", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+
+    turn.consume(
+      toolUse("TaskCreate", "task-create-1", {
+        subject: "Run tests",
+        description: "Run focused tests",
+      }),
+    );
+    expect(
+      turn.consume(
+        toolResult("task-create-1", {
+          nativeResult: { task: { id: "1", subject: "Run tests" } },
+        }),
+      ).events,
+    ).toEqual([
+      {
+        type: "tool.completed",
+        callId: "task-create-1",
+        toolName: "TaskCreate",
+        outputText: "complete",
+        structuredResult: { task: { id: "1", subject: "Run tests" } },
+        isError: false,
+      },
+    ]);
+  });
+
   it("accepts optional correlated Tool Progress without manufacturing output", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

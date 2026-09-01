@@ -52,6 +52,38 @@ describe("macOS Aqua Harness broker", () => {
     ).toMatchObject({ executionPolicy: "approval-required" });
   });
 
+  it.each(["resume", "fork", "rollbackLastTurn"] as const)(
+    "accepts execution policy on %s recovery",
+    (kind) => {
+      const nativeRef = {
+        harnessId: "claude-code",
+        nativeSessionId: "native-1",
+        formatVersion: 1,
+      };
+      const input =
+        kind === "resume"
+          ? { kind, cwd: "/workspace", nativeRef, executionPolicy: "approval-required" }
+          : kind === "fork"
+            ? {
+                kind,
+                cwd: "/workspace",
+                sourceRef: nativeRef,
+                checkpoint: { ...nativeRef, checkpointId: "checkpoint-1" },
+                executionPolicy: "unattended-full-access",
+              }
+            : {
+                kind,
+                cwd: "/workspace",
+                sourceRef: nativeRef,
+                executionPolicy: "approval-required",
+              };
+
+      expect(brokerOpenInputSchema.parse(input)).toMatchObject({
+        executionPolicy: input.executionPolicy,
+      });
+    },
+  );
+
   it.skipIf(process.platform === "win32")(
     "refuses to replace a non-socket entry at the broker socket path",
     async () => {
@@ -472,7 +504,11 @@ describe("macOS Aqua Harness broker", () => {
     };
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
-    const opened = await adapter.open({ kind: "create", cwd: root });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: root,
+      executionPolicy: "unattended-full-access",
+    });
     if (!opened.ok) throw new Error(opened.error.message);
     const output = opened.value.outputs[Symbol.asyncIterator]();
     const firstNativeSession = sessions[0];
@@ -496,6 +532,12 @@ describe("macOS Aqua Harness broker", () => {
     staleGate.resolve();
     await expect(secondTurn).resolves.toMatchObject({ ok: true });
     expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: "resume",
+        executionPolicy: "unattended-full-access",
+      }),
+    );
     const replacement = sessions[1];
     if (!replacement) throw new Error("replacement native Session is unavailable");
     replacement.succeedTurn();

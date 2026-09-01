@@ -48,6 +48,39 @@ function record(): StoredThreadRecordV1 {
 }
 
 describe("ExternalThreadRuntime register", () => {
+  it.each(["approval-required", "unattended-full-access", "default"] as const)(
+    "passes the persisted %s policy to a resumed Session",
+    async (executionPolicy) => {
+      const adapter = new FakeHarnessAdapter(harnessId);
+      const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+      if (!created.ok || !created.value.initialState.nativeRef) {
+        throw new Error("Fake Session did not open");
+      }
+      const stored = { ...record(), nativeSessionRef: created.value.initialState.nativeRef };
+      const open = vi.spyOn(adapter, "open");
+      const repository = {
+        find: async () => stored,
+        executionPolicyForThread: async () => executionPolicy,
+        alignSnapshot: async () => ({ record: stored, turns: [] }),
+        sessionTreeId: async () => hostThreadId,
+      } as unknown as ExternalThreadRepository;
+      const runtime = new ExternalThreadRuntime({
+        adapters: new Map([["pi", adapter]]),
+        repository,
+        consumeOutputs: async () => undefined,
+        diagnose: () => undefined,
+      });
+
+      const resolved = await runtime.resolve(hostThreadId);
+
+      expect(resolved.kind).toBe("external");
+      expect(open).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "resume", executionPolicy }),
+      );
+      await adapter.close();
+    },
+  );
+
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;
@@ -116,6 +149,7 @@ describe("ExternalThreadRuntime register", () => {
     );
     const repository = {
       find: async () => stored,
+      executionPolicyForThread: async () => "default",
       alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
       sessionTreeId: async () => hostThreadId,
       setTransportModelId,
@@ -171,6 +205,7 @@ describe("ExternalThreadRuntime register", () => {
     } as StoredThreadRecordV1;
     const repository = {
       find: async () => stored,
+      executionPolicyForThread: async () => "default",
       alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
       sessionTreeId: async () => hostThreadId,
       setTransportModelId: async (_threadId: string, transportModelId: string) => ({
@@ -230,6 +265,7 @@ describe("ExternalThreadRuntime register", () => {
     } as StoredThreadRecordV1;
     const repository = {
       find: async () => stored,
+      executionPolicyForThread: async () => "default",
       alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
       sessionTreeId: async () => hostThreadId,
       setTransportModelId,
@@ -314,6 +350,7 @@ describe("ExternalThreadRuntime register", () => {
     );
     const repository = {
       find: async () => stored,
+      executionPolicyForThread: async () => "default",
       alignSnapshot: async () => ({ record: stored, turns: [] }),
       sessionTreeId: async () => hostThreadId,
       setTransportModelId,
@@ -387,6 +424,7 @@ describe("ExternalThreadRuntime register", () => {
     const execute = vi.spyOn(session, "execute");
     const repository = {
       find: async () => stored,
+      executionPolicyForThread: async () => "default",
       alignSnapshot: async () => ({ record: stored, turns: [] }),
       sessionTreeId: async () => hostThreadId,
     } as unknown as ExternalThreadRepository;

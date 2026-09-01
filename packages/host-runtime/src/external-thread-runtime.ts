@@ -463,12 +463,14 @@ export class ExternalThreadRuntime {
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
+    const executionPolicy = await this.#repository.executionPolicyForThread(record);
     const opened = await adapter.open({
       kind: "resume",
       cwd: record.cwd,
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      executionPolicy,
     });
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
@@ -481,6 +483,7 @@ export class ExternalThreadRuntime {
       );
       if (
         restoredSelection?.permissionModeId &&
+        executionPolicy === "default" &&
         harnessId !== "opencode" &&
         !permissionModeFixedAtCreate(session.capabilities.configuration)
       ) {

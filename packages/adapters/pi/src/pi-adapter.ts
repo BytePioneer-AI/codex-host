@@ -1645,17 +1645,17 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
+    if (input.executionPolicy === "approval-required") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Pi does not expose approval controls required for delegated execution",
+          retryable: false,
+        },
+      };
+    }
     if (input.kind === "create") {
-      if (input.executionPolicy === "approval-required") {
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "Pi does not expose approval controls required for delegated execution",
-            retryable: false,
-          },
-        };
-      }
       if (input.permissionModeId) {
         return {
           ok: false,

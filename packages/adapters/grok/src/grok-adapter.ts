@@ -1372,6 +1372,20 @@ export class GrokAdapter implements HarnessAdapter {
         ok: false,
         error: { code: "invalidRequest", message: "Grok Adapter requires cwd", retryable: false },
       };
+    if (
+      input.kind !== "create" &&
+      input.executionPolicy !== undefined &&
+      input.executionPolicy !== "default"
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Grok cannot confirm a delegated Permission Mode while recovering a Session",
+          retryable: false,
+        },
+      };
+    }
     const requestedPermissionModeId =
       input.kind === "create"
         ? (input.permissionModeId ??

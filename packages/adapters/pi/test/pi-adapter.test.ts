@@ -587,6 +587,50 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
+  it("fails closed before transport when approval-required recovery is requested", async () => {
+    const { adapter, dependencies } = fixture();
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "pi-session-1",
+      locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+      formatVersion: 1,
+    });
+
+    await expect(
+      adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef,
+        executionPolicy: "approval-required",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("keeps unattended recovery reachable", async () => {
+    const { adapter } = fixture();
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "pi-session-1",
+      locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+      formatVersion: 1,
+    });
+
+    await expect(
+      adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef,
+        executionPolicy: "unattended-full-access",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await adapter.close();
+  });
+
   it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {
     const { adapter, dependencies, transports } = fixture();
     const inputHistory = sourceHistory(2);

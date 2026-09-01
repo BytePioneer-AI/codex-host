@@ -102,6 +102,15 @@ export async function executeExternalThreadFork(input: {
       error: { code: -32079, message: "External Native Session is unavailable" },
     };
   }
+  let executionPolicy;
+  try {
+    executionPolicy = await repository.executionPolicyForThread(source.record);
+  } catch {
+    return {
+      ok: false,
+      error: { code: -32081, message: "External Fork policy could not be resolved" },
+    };
+  }
 
   let provisional;
   try {
@@ -136,6 +145,7 @@ export async function executeExternalThreadFork(input: {
       },
       sourceRef: nativeSessionRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
+      executionPolicy,
     });
   } catch {
     await repository.removeProvisional(provisional.hostThreadId).catch(() => undefined);

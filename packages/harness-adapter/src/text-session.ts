@@ -64,10 +64,7 @@ export interface InspectHarnessInput {
   refresh?: boolean;
 }
 
-export type HarnessExecutionPolicy =
-  | "default"
-  | "approval-required"
-  | "unattended-full-access";
+export type HarnessExecutionPolicy = "default" | "approval-required" | "unattended-full-access";
 
 export interface CreateSessionInput {
   kind: "create";
@@ -84,6 +81,7 @@ export interface ResumeSessionInput {
   nativeRef: NativeSessionRef;
   cwd: string;
   environment?: Record<string, string | undefined>;
+  executionPolicy?: HarnessExecutionPolicy;
   knownTurnRefs?: NativeTurnRef[];
 }
 
@@ -94,6 +92,7 @@ export interface ForkSessionInput {
   /** Execution cwd for the derived Native Session. */
   cwd: string;
   environment?: Record<string, string | undefined>;
+  executionPolicy?: HarnessExecutionPolicy;
 }
 
 export interface RollbackLastTurnSessionInput {
@@ -101,6 +100,7 @@ export interface RollbackLastTurnSessionInput {
   sourceRef: NativeSessionRef;
   cwd: string;
   environment?: Record<string, string | undefined>;
+  executionPolicy?: HarnessExecutionPolicy;
 }
 
 export type OpenSessionInput =

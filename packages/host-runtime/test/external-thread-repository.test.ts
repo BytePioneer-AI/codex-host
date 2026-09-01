@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
-import { MappingStore, type StoredTurnMappingV1 } from "@codexhost/mapping-store";
+import {
+  MappingStore,
+  type StoredThreadRecordV1,
+  type StoredTurnMappingV1,
+} from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
@@ -67,6 +71,64 @@ afterEach(async () => {
 });
 
 describe("ExternalThreadRepository", () => {
+  it("resolves persisted and legacy Delegation policies, and defaults ordinary Threads safely", async () => {
+    const delegated = hostThreadIdSchema.parse("thread-delegated");
+    const legacy = hostThreadIdSchema.parse("thread-legacy");
+    const ordinary = hostThreadIdSchema.parse("thread-ordinary");
+    const derived = hostThreadIdSchema.parse("thread-derived");
+    const orphan = hostThreadIdSchema.parse("thread-orphan");
+    const records = new Map([
+      [delegated, { hostThreadId: delegated }],
+      [legacy, { hostThreadId: legacy }],
+      [ordinary, { hostThreadId: ordinary }],
+      [
+        derived,
+        {
+          hostThreadId: derived,
+          forkSource: {
+            hostThreadId: delegated,
+            hostTurnId: hostTurnIdSchema.parse("source-turn"),
+          },
+        },
+      ],
+      [
+        orphan,
+        {
+          hostThreadId: orphan,
+          forkSource: {
+            hostThreadId: hostThreadIdSchema.parse("missing-source"),
+            hostTurnId: hostTurnIdSchema.parse("missing-turn"),
+          },
+        },
+      ],
+    ]);
+    const repository = new ExternalThreadRepository({
+      getThread: async (threadId) => records.get(threadId) as StoredThreadRecordV1,
+      getDelegationByChild: async (threadId) =>
+        threadId === delegated
+          ? ({ executionPolicy: "unattended-full-access" } as never)
+          : threadId === legacy
+            ? ({} as never)
+            : null,
+    } as never);
+
+    await expect(
+      repository.executionPolicyForThread(records.get(delegated) as StoredThreadRecordV1),
+    ).resolves.toBe("unattended-full-access");
+    await expect(
+      repository.executionPolicyForThread(records.get(legacy) as StoredThreadRecordV1),
+    ).resolves.toBe("approval-required");
+    await expect(
+      repository.executionPolicyForThread(records.get(ordinary) as StoredThreadRecordV1),
+    ).resolves.toBe("default");
+    await expect(
+      repository.executionPolicyForThread(records.get(derived) as StoredThreadRecordV1),
+    ).resolves.toBe("unattended-full-access");
+    await expect(
+      repository.executionPolicyForThread(records.get(orphan) as StoredThreadRecordV1),
+    ).rejects.toThrow("policy lineage is incomplete");
+  });
+
   it("commits a last-Turn replacement with retained Host Turn identity", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });

@@ -3136,6 +3136,32 @@ describe("Claude Code HarnessAdapter", () => {
     await opened.value.close();
   });
 
+  it.each([
+    ["approval-required", "default"],
+    ["unattended-full-access", "bypassPermissions"],
+  ] as const)("restores %s recovery with native %s", async (executionPolicy, permissionMode) => {
+    const { adapter, dependencies } = fixture();
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: `resume-${executionPolicy}`,
+      formatVersion: 1,
+    });
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef,
+      executionPolicy,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await opened.value.execute(textTurn("continued"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode }),
+    );
+    await opened.value.close();
+    await adapter.close();
+  });
+
   it("defers cold Permission Mode selection and dynamically switches a started Query", async () => {
     const { adapter, dependencies, transports } = fixture();
     const plan = harnessPermissionModeIdSchema.parse("plan");

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type { HarnessExecutionPolicy, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   MappingStore,
   type CommitReadyThreadInput,
@@ -401,6 +401,23 @@ export class ExternalThreadRepository {
       current = source;
     }
     return current.hostThreadId;
+  }
+
+  async executionPolicyForThread(record: StoredThreadRecordV1): Promise<HarnessExecutionPolicy> {
+    let current = record;
+    const visited = new Set<string>();
+    for (;;) {
+      if (visited.has(current.hostThreadId)) {
+        throw new Error("External Thread Fork tree contains a cycle");
+      }
+      visited.add(current.hostThreadId);
+      const delegation = await this.store.getDelegationByChild(current.hostThreadId);
+      if (delegation) return delegation.executionPolicy ?? "approval-required";
+      if (!current.forkSource) return "default";
+      const source = await this.find(current.forkSource.hostThreadId);
+      if (!source) throw new Error("External Thread execution policy lineage is incomplete");
+      current = source;
+    }
   }
 
   async alignSnapshot(

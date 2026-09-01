@@ -207,6 +207,36 @@ describe("OMP Adapter startup", () => {
     await adapter.close();
   });
 
+  it.each([
+    ["approval-required", "always-ask"],
+    ["unattended-full-access", "yolo"],
+  ] as const)("restores %s recovery with native %s", async (executionPolicy, permissionMode) => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef,
+      executionPolicy,
+    });
+
+    expect(opened.ok).toBe(true);
+    expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({ permissionMode }));
+    if (opened.ok) {
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionMode);
+      await opened.value.close();
+    }
+    await adapter.close();
+  });
+
   it("repairs an unavailable persisted Thinking level after model fallback", async () => {
     const transport = new FakeOmpTransport();
     const availableThinkingLevels = ["minimal", "low", "medium", "high"].map((level) =>

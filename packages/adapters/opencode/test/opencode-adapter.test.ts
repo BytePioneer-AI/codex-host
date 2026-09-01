@@ -633,6 +633,53 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it.each([
+    ["approval-required", "ask"],
+    ["unattended-full-access", "allow"],
+  ] as const)(
+    "applies explicit %s policy when resuming a legacy Native Ref",
+    async (executionPolicy, permissionMode) => {
+      const transport = new FakeOpenCodeTransport();
+      const connectionOptions: OpenCodeServerOptions[] = [];
+      const adapter = new OpenCodeAdapter(
+        {},
+        {
+          createConnection: (options) => {
+            connectionOptions.push(options);
+            return {
+              stderrTail: "",
+              client: async () => ({}) as never,
+              close: async () => undefined,
+            };
+          },
+          createTransport: () => transport,
+          randomUUID: () => "uuid-1",
+        },
+      );
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "opencode",
+        nativeSessionId: "session-1",
+        locator: { directory: cwd },
+        formatVersion: 1,
+      });
+
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef,
+        executionPolicy,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+
+      expect(connectionOptions[0]?.environment?.OPENCODE_CONFIG_CONTENT).toBe(
+        JSON.stringify({ permission: permissionMode }),
+      );
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionMode);
+      await opened.value.close();
+      await adapter.close();
+    },
+  );
+
   it("keeps default policy for old and default Native Session Refs", async () => {
     const transport = new FakeOpenCodeTransport();
     const connectionOptions: OpenCodeServerOptions[] = [];

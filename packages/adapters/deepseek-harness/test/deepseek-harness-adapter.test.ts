@@ -1463,6 +1463,35 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
+  it.each([
+    ["approval-required", "team-safe"],
+    ["unattended-full-access", "danger-full-access"],
+  ] as const)(
+    "applies and confirms %s policy when resuming",
+    async (executionPolicy, permissionMode) => {
+      const { adapter, connection } = fixture();
+      if (executionPolicy === "approval-required") connection.enablePermissionModes();
+
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: "/workspace",
+        nativeRef: sessionRef(SESSION_ID),
+        executionPolicy,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+
+      expect(connection.calls.commandExecute).toHaveBeenCalledWith(
+        SESSION_ID,
+        `/permission ${permissionMode}`,
+      );
+      if (executionPolicy === "approval-required") {
+        expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionMode);
+      }
+      await opened.value.close();
+      await adapter.close();
+    },
+  );
+
   it("rejects an explicit Permission Mode combined with approval-required delegation", async () => {
     const { adapter, connection } = fixture();
     connection.enablePermissionModes();

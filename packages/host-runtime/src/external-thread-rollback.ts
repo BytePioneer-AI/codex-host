@@ -1,5 +1,6 @@
 import type {
   HarnessAdapter,
+  HarnessExecutionPolicy,
   HarnessSession,
   HarnessSessionState,
 } from "@codexhost/harness-adapter";
@@ -63,6 +64,7 @@ function sameCurrentConfiguration(
 async function restoreCurrentConfiguration(
   session: HarnessSession,
   configuration: HarnessSessionState,
+  executionPolicy: HarnessExecutionPolicy,
 ): Promise<ExternalThreadRpcError | null> {
   if (configuration.effectiveModel) {
     if (!session.capabilities.configuration.selectModel) {
@@ -86,6 +88,7 @@ async function restoreCurrentConfiguration(
   }
   if (
     configuration.effectivePermissionModeId &&
+    executionPolicy === "default" &&
     !permissionModeFixedAtCreate(session.capabilities.configuration)
   ) {
     if (!session.capabilities.configuration.selectPermissionMode) {
@@ -127,7 +130,9 @@ async function executeCurrentLastTurnRollback(input: {
   }
 
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
+  let executionPolicy: HarnessExecutionPolicy;
   try {
+    executionPolicy = await repository.executionPolicyForThread(current.record);
     opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: current.cwd,
@@ -136,6 +141,7 @@ async function executeCurrentLastTurnRollback(input: {
         [DELEGATION_THREAD_ID_ENV]: current.id,
       },
       sourceRef: currentNativeRef as NativeSessionRef,
+      executionPolicy,
     });
   } catch {
     return { ok: false, error: { code: -32076, message: "External Thread rollback failed" } };
@@ -154,7 +160,11 @@ async function executeCurrentLastTurnRollback(input: {
     };
   }
   const configuration = currentConfiguration(current);
-  const configurationError = await restoreCurrentConfiguration(session, configuration);
+  const configurationError = await restoreCurrentConfiguration(
+    session,
+    configuration,
+    executionPolicy,
+  );
   if (configurationError) {
     await session.close().catch(() => undefined);
     return { ok: false, error: configurationError };
@@ -319,7 +329,9 @@ export async function executeExternalThreadRollback(input: {
   }
 
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
+  let executionPolicy: HarnessExecutionPolicy;
   try {
+    executionPolicy = await repository.executionPolicyForThread(derived.record);
     opened = await adapter.open({
       kind: "fork",
       cwd: derived.cwd,
@@ -329,6 +341,7 @@ export async function executeExternalThreadRollback(input: {
       },
       sourceRef: sourceNativeRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
+      executionPolicy,
     });
   } catch {
     return { ok: false, error: { code: -32076, message: "External Thread fork failed" } };

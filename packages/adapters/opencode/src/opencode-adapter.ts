@@ -1881,19 +1881,22 @@ export class OpenCodeAdapter implements HarnessAdapter {
         input.kind === "create"
           ? undefined
           : parseOpenCodeSessionRef(input.kind === "resume" ? input.nativeRef : input.sourceRef);
-      const executionPolicy =
-        input.kind === "create"
-          ? (input.executionPolicy ?? "default")
-          : (sourceRef?.executionPolicy ?? "default");
+      const executionPolicy = input.executionPolicy ?? sourceRef?.executionPolicy ?? "default";
       let requestedPermissionMode: OpenCodePermissionMode | undefined;
-      if (input.kind === "create") {
-        const requestedPermissionModeId =
-          input.permissionModeId ??
-          (executionPolicy === "unattended-full-access"
+      const requestedPermissionModeId =
+        input.kind === "create"
+          ? (input.permissionModeId ??
+            (executionPolicy === "unattended-full-access"
+              ? harnessPermissionModeIdSchema.parse("allow")
+              : executionPolicy === "approval-required"
+                ? harnessPermissionModeIdSchema.parse("ask")
+                : OPENCODE_DEFAULT_PERMISSION_MODE_ID))
+          : executionPolicy === "unattended-full-access"
             ? harnessPermissionModeIdSchema.parse("allow")
             : executionPolicy === "approval-required"
               ? harnessPermissionModeIdSchema.parse("ask")
-              : OPENCODE_DEFAULT_PERMISSION_MODE_ID);
+              : undefined;
+      if (requestedPermissionModeId) {
         try {
           requestedPermissionMode = decodeOpenCodePermissionModeId(requestedPermissionModeId);
         } catch {
@@ -1906,20 +1909,20 @@ export class OpenCodeAdapter implements HarnessAdapter {
             },
           };
         }
-        if (executionPolicy === "unattended-full-access" && requestedPermissionMode !== "allow") {
-          return {
-            ok: false,
-            error: unsupported("OpenCode unattended execution requires the allow Permission Mode"),
-          };
-        }
-        if (executionPolicy === "approval-required" && requestedPermissionMode !== "ask") {
-          return {
-            ok: false,
-            error: unsupported(
-              "OpenCode approval-required execution requires the ask Permission Mode",
-            ),
-          };
-        }
+      }
+      if (executionPolicy === "unattended-full-access" && requestedPermissionMode !== "allow") {
+        return {
+          ok: false,
+          error: unsupported("OpenCode unattended execution requires the allow Permission Mode"),
+        };
+      }
+      if (executionPolicy === "approval-required" && requestedPermissionMode !== "ask") {
+        return {
+          ok: false,
+          error: unsupported(
+            "OpenCode approval-required execution requires the ask Permission Mode",
+          ),
+        };
       }
       const sessionEnvironment = input.environment ?? this.#options.environment ?? process.env;
       const serverOptions: OpenCodeServerOptions = {
@@ -2054,12 +2057,24 @@ export class OpenCodeAdapter implements HarnessAdapter {
           }
         }
       }
+      if (input.kind !== "create" && requestedPermissionMode) {
+        session = await transport.updateSessionPermission(
+          session.id,
+          requestedPermissionRules(session.permission, requestedPermissionMode),
+        );
+      }
       const projection = await readProjection(
         transport,
         session.id,
         providers,
         this.#toolOutputLimit,
       );
+      if (
+        requestedPermissionMode &&
+        permissionModeFromSession(projection.session.permission) !== requestedPermissionMode
+      ) {
+        throw new Error("OpenCode did not activate the requested Permission Mode");
+      }
       const harnessSession = new OpenCodeHarnessSession({
         transport,
         connection,

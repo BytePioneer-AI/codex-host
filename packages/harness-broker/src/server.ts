@@ -6,6 +6,7 @@ import path from "node:path";
 import type {
   HarnessAdapter,
   HarnessError,
+  HarnessExecutionPolicy,
   HarnessOutput,
   HarnessSession,
   OpenSessionInput,
@@ -38,6 +39,7 @@ interface ServerSession {
   generation: number;
   owner: string;
   cwd: string;
+  executionPolicy: HarnessExecutionPolicy;
   nativeId?: string;
   nativeRef?: HarnessSession["initialState"]["nativeRef"];
   writerKey?: string;
@@ -550,6 +552,7 @@ export async function startHarnessBrokerServer(input: {
           generation: 1,
           owner: state.id,
           cwd: openInput.cwd,
+          executionPolicy: openInput.executionPolicy ?? "default",
           ...(nativeId ? { nativeId } : {}),
           ...(opened.value.initialState.nativeRef
             ? { nativeRef: opened.value.initialState.nativeRef }
@@ -705,7 +708,12 @@ export async function startHarnessBrokerServer(input: {
         record.forwarderEpoch += 1;
         await oldSession.close().catch(() => undefined);
         await oldOutputTask.catch(() => undefined);
-        const reopened = await input.adapter.open({ kind: "resume", cwd: record.cwd, nativeRef });
+        const reopened = await input.adapter.open({
+          kind: "resume",
+          cwd: record.cwd,
+          nativeRef,
+          executionPolicy: record.executionPolicy,
+        });
         if (!reopened.ok) return reopened;
         const reopenedRef = reopened.value.initialState.nativeRef;
         if (
@@ -750,6 +758,7 @@ export async function startHarnessBrokerServer(input: {
         }
         if (
           record.selection.permissionModeId &&
+          record.executionPolicy === "default" &&
           reopened.value.capabilities.configuration.selectPermissionMode
         ) {
           const selected = await reopened.value.execute({

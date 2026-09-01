@@ -1968,6 +1968,9 @@ export class OmpAdapter implements HarnessAdapter {
     ) as NativeSessionRef;
     let session: OmpHarnessSession | undefined;
     let transport: OmpTurnTransport | undefined;
+    const permissionMode: OmpPermissionMode =
+      input.executionPolicy === "unattended-full-access" ? "yolo" : "always-ask";
+    const permissionModeId = encodeOmpPermissionModeId(permissionMode);
     try {
       if (sourceRef.harnessId !== this.harnessId) {
         return {
@@ -1995,7 +1998,7 @@ export class OmpAdapter implements HarnessAdapter {
       }
       transport = this.#createTransport({
         cwd: input.cwd,
-        permissionMode: "always-ask",
+        permissionMode,
         ...(input.kind === "resume"
           ? { sessionFile: sourceSessionFile }
           : { forkSessionFile: sourceSessionFile }),
@@ -2080,8 +2083,8 @@ export class OmpAdapter implements HarnessAdapter {
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
-        permissionMode: "always-ask",
-        permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
+        permissionMode,
+        permissionModeId,
       });
       return { ok: true, value: session };
     } catch (error) {

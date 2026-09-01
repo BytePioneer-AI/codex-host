@@ -15,12 +15,15 @@ import {
 import type { HarnessError, HarnessOutput, HarnessSessionState } from "@codexhost/harness-adapter";
 
 const cwdSchema = z.string().min(1).max(16_384);
+const executionPolicySchema = z
+  .enum(["default", "approval-required", "unattended-full-access"])
+  .optional();
 
 const createSchema = z
   .object({
     kind: z.literal("create"),
     cwd: cwdSchema,
-    executionPolicy: z.enum(["default", "approval-required", "unattended-full-access"]).optional(),
+    executionPolicy: executionPolicySchema,
     model: harnessModelRefSchema.optional(),
     thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     permissionModeId: harnessPermissionModeIdSchema.optional(),
@@ -32,6 +35,7 @@ const resumeSchema = z
     nativeRef: nativeSessionRefSchema,
     cwd: cwdSchema,
     knownTurnRefs: z.array(nativeTurnRefSchema).max(100_000).optional(),
+    executionPolicy: executionPolicySchema,
   })
   .strict();
 const forkSchema = z
@@ -40,6 +44,7 @@ const forkSchema = z
     sourceRef: nativeSessionRefSchema,
     checkpoint: nativeCheckpointRefSchema,
     cwd: cwdSchema,
+    executionPolicy: executionPolicySchema,
   })
   .strict();
 const rollbackSchema = z
@@ -47,6 +52,7 @@ const rollbackSchema = z
     kind: z.literal("rollbackLastTurn"),
     sourceRef: nativeSessionRefSchema,
     cwd: cwdSchema,
+    executionPolicy: executionPolicySchema,
   })
   .strict();
 

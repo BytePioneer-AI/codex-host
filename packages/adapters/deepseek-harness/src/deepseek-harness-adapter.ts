@@ -1825,8 +1825,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       await this.#connection.connect();
       const permissionModes = await readDeepSeekPermissionModeCatalog(this.#connection.client);
-      const approvalRequired =
-        input.kind === "create" && input.executionPolicy === "approval-required";
+      const approvalRequired = input.executionPolicy === "approval-required";
       const approvalPermissionModeId = approvalRequired
         ? permissionModes?.defaultModeId
         : undefined;
@@ -1847,7 +1846,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         };
       }
       const requestedPermissionModeId =
-        input.kind === "create" ? (input.permissionModeId ?? approvalPermissionModeId) : undefined;
+        input.kind === "create"
+          ? (input.permissionModeId ?? approvalPermissionModeId)
+          : approvalPermissionModeId;
       if (
         requestedPermissionModeId &&
         (!permissionModes ||
@@ -2070,7 +2071,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             requestedPermissionModeId,
           );
         }
-        if (input.kind === "create" && input.executionPolicy === "unattended-full-access") {
+        if (input.executionPolicy === "unattended-full-access") {
           await applyDelegationPermission(this.#connection.client, sessionId as SessionId);
         }
         const [history, modelState] = await Promise.all([

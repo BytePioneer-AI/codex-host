@@ -398,6 +398,39 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["approval-required", "unattended-full-access"] as const)(
+    "fails closed before transport for %s recovery without native mode evidence",
+    async (executionPolicy) => {
+      const createTransport = vi.fn(() => new FakeGrokTransport());
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport,
+          fetchCredits: async () => null,
+        },
+      );
+
+      await expect(
+        adapter.open({
+          kind: "resume",
+          cwd: "/synthetic",
+          nativeRef: {
+            harnessId: adapter.harnessId,
+            nativeSessionId: "grok-session",
+            formatVersion: 1,
+          },
+          executionPolicy,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      expect(createTransport).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
   it.each(["auto", "always-approve"])(
     "rejects explicit %s for approval-required sessions",
     async (permissionMode) => {

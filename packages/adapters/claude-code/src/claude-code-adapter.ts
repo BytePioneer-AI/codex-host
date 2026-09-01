@@ -2536,7 +2536,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           (input.executionPolicy === "unattended-full-access"
             ? encodeClaudePermissionModeId("bypassPermissions")
             : CLAUDE_DEFAULT_PERMISSION_MODE_ID))
-        : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+        : input.executionPolicy === "unattended-full-access"
+          ? encodeClaudePermissionModeId("bypassPermissions")
+          : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeClaudePermissionModeId(requestedPermissionModeId);
     } catch {

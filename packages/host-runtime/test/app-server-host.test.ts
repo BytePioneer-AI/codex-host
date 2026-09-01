@@ -3499,6 +3499,61 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("preserves persisted Delegation policy through external fork and last-Turn rollback", async () => {
+    class RecordingRollbackAdapter extends FakeHarnessAdapter {
+      readonly openInputs: Parameters<FakeHarnessAdapter["open"]>[0][] = [];
+
+      constructor() {
+        super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+      }
+
+      override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+        this.openInputs.push(input);
+        return super.open(input);
+      }
+    }
+    const adapter = new RecordingRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startPiThread(fixture);
+    await fixture.mappingStore.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegation-policy-lifetime"),
+      parentHostThreadId: hostThreadIdSchema.parse("parent-policy-lifetime"),
+      childHostThreadId: hostThreadIdSchema.parse(sourceThreadId),
+      sourceHarnessId: harnessIdSchema.parse("pi"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+      executionPolicy: "unattended-full-access",
+      taskDigest: "d".repeat(64),
+    });
+    const turnId = await completePiTurn(fixture, sourceThreadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId, lastTurnId: turnId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 10));
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: sourceThreadId, numTurns: 1 },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 11));
+
+    expect(adapter.openInputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "fork",
+          executionPolicy: "unattended-full-access",
+        }),
+        expect.objectContaining({
+          kind: "rollbackLastTurn",
+          executionPolicy: "unattended-full-access",
+        }),
+      ]),
+    );
+    await stopFixture(fixture);
+  });
+
   it("forks a completed boundary while a later source Turn is still running", async () => {
     const fixture = createFixture();
     const sourceThreadId = await startPiThread(fixture);

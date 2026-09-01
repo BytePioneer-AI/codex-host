@@ -728,30 +728,6 @@ fn required_string<'a>(
         })
 }
 
-#[cfg(target_os = "macos")]
-fn macos_asar_integrity(
-    dictionary: &plist::Dictionary,
-    bundle: &Path,
-) -> Result<String, PlatformError> {
-    let official = dictionary
-        .get("ElectronAsarIntegrity")
-        .and_then(Value::as_dictionary)
-        .and_then(|entries| entries.get("Resources/app.asar"))
-        .and_then(Value::as_dictionary)
-        .and_then(|entry| {
-            let algorithm = entry.get("algorithm")?.as_string()?;
-            let hash = entry.get("hash")?.as_string()?;
-            (algorithm == "SHA256"
-                && hash.len() == 64
-                && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| format!("sha256:{}", hash.to_ascii_lowercase()))
-        });
-    official.map_or_else(
-        || sha256_file(&bundle.join("Contents/Resources/app.asar")),
-        Ok,
-    )
-}
-
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) fn canonical_unix_executable(
     path: &Path,
@@ -830,7 +806,7 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
     }
     let version = required_string(dictionary, "CFBundleShortVersionString", &bundle)?.to_owned();
     let build = required_string(dictionary, "CFBundleVersion", &bundle)?.to_owned();
-    let asar_integrity = macos_asar_integrity(dictionary, &bundle)?;
+    let asar_integrity = sha256_file(&bundle.join("Contents/Resources/app.asar"))?;
     let desktop_executable = canonical_macho_executable(
         &bundle.join("Contents/MacOS").join(executable_name),
         "Desktop executable",
@@ -938,6 +914,11 @@ mod tests {
                     "<key>CFBundleExecutable</key><string>ChatGPT</string>",
                     "<key>CFBundleShortVersionString</key><string>1.2.3</string>",
                     "<key>CFBundleVersion</key><string>456</string>",
+                    "<key>ElectronAsarIntegrity</key><dict>",
+                    "<key>Resources/app.asar</key><dict>",
+                    "<key>algorithm</key><string>SHA256</string>",
+                    "<key>hash</key><string>ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</string>",
+                    "</dict></dict>",
                     "</dict></plist>"
                 ),
                 bundle_identifier
@@ -964,13 +945,16 @@ mod tests {
     }
 
     #[test]
-    fn discovers_a_valid_macos_bundle_under_current_or_legacy_app_names() {
+    fn discovers_macos_bundles_using_the_complete_asar_file_identity() {
         for app_name in ["Codex.app", "ChatGPT.app"] {
             let bundle = temporary_bundle(app_name, "com.openai.codex", true);
             let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
             assert_eq!(installation.version, "1.2.3");
             assert_eq!(installation.build, "456");
-            assert!(installation.asar_integrity.starts_with("sha256:"));
+            assert_eq!(
+                installation.asar_integrity,
+                "sha256:38b44a3ffd5184594e4f60f9181b9a0b53113d40a1830cc46ff3cad2fc75cbc9"
+            );
             assert_eq!(
                 installation.install_root,
                 bundle.canonicalize().expect("bundle")

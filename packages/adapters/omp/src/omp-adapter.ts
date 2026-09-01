@@ -1917,6 +1917,20 @@ export class OmpAdapter implements HarnessAdapter {
       } catch (error) {
         return { ok: false, error: normalizedError(error, "invalidRequest") };
       }
+      const permissionModeConflictsWithPolicy =
+        (input.executionPolicy === "approval-required" && permissionMode !== "always-ask") ||
+        (input.executionPolicy === "unattended-full-access" && permissionMode !== "yolo") ||
+        (permissionMode === "yolo" && input.executionPolicy !== "unattended-full-access");
+      if (permissionModeConflictsWithPolicy) {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "Omp Permission Mode conflicts with the requested execution policy",
+            retryable: false,
+          },
+        };
+      }
       if (input.model) {
         try {
           decodeOmpModelRef(input.model);

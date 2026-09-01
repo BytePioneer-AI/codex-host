@@ -301,6 +301,62 @@ describe("OMP Adapter Session environment", () => {
     await adapter.close();
   });
 
+  it.each(["write", "yolo"])(
+    "rejects explicit %s for approval-required creates",
+    async (permissionMode) => {
+      const adapter = new OmpAdapter({}, { createTransport: () => new FakeOmpTransport() });
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "approval-required",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      await adapter.close();
+    },
+  );
+
+  it.each(["always-ask", "write"])(
+    "rejects explicit %s for unattended-full-access creates",
+    async (permissionMode) => {
+      const adapter = new OmpAdapter({}, { createTransport: () => new FakeOmpTransport() });
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "unattended-full-access",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      await adapter.close();
+    },
+  );
+
+  it("rejects explicit yolo unless unattended-full-access is requested", async () => {
+    const adapter = new OmpAdapter({}, { createTransport: () => new FakeOmpTransport() });
+
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    await adapter.close();
+  });
+
   it("defers a cold OMP Permission Mode selection until startup", async () => {
     const transport = new RestartableOmpTransport();
     const createTransport = vi.fn(() => transport);

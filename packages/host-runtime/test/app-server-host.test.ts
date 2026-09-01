@@ -746,6 +746,38 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("fails when official output closes while Desktop output is backpressured", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopOutput.pause();
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
+      );
+      await vi.waitFor(() =>
+        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      fixture.desktopOutput.resume();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("fails when the official app-server exits while its output stays open", async () => {
     const fixture = createFixture();
 

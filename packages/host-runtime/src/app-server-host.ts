@@ -113,6 +113,7 @@ const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
 const OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS = 250;
+const NEVER_SETTLES = new Promise<never>(() => undefined);
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1020,11 +1021,18 @@ export class AppServerHost {
     const official = this.#official;
     if (!official) throw new Error("official app-server is unavailable");
     try {
-      for await (const frame of readLfFrames(official.stdout)) {
+      const frames = readLfFrames(official.stdout)[Symbol.asyncIterator]();
+      let current = await frames.next();
+      while (!current.done) {
+        const frame = current.value;
+        const following = frames.next();
         const parsed = parseJsonFrame(frame);
         if (isRecord(parsed) && parsed.method === "account/updated")
           this.#resetOfficialUsageState();
-        if (this.#officialRequestBroker.handle(parsed)) continue;
+        if (this.#officialRequestBroker.handle(parsed)) {
+          current = await following;
+          continue;
+        }
         const tokenUsage = observeCodexTokenUsage(parsed);
         if (tokenUsage) {
           const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
@@ -1045,7 +1053,12 @@ export class AppServerHost {
           this.#diagnose(error);
         }
         this.#routeObservationTracker.bindOfficialResponse(parsed);
-        await this.#writer.frame(frame);
+        const prematureOutputEnd = following.then((result) => {
+          if (!result.done || this.#closeRequested || this.#desktopInputEnded) return NEVER_SETTLES;
+          throw new Error("official app-server output closed before Desktop input ended");
+        });
+        await Promise.race([this.#writer.frame(frame), prematureOutputEnd]);
+        current = await following;
       }
     } finally {
       this.#officialRequestBroker.failAll(new Error("official app-server output closed"));

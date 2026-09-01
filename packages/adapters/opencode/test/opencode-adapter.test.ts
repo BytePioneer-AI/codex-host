@@ -770,6 +770,11 @@ describe("OpenCode HarnessAdapter", () => {
     const iterator = created.value.outputs[Symbol.asyncIterator]();
 
     await expect(
+      created.value.execute({ type: "permissionMode.select", permissionModeId: "ask" as never }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transport.permissionUpdates).toHaveLength(0);
+
+    await expect(
       created.value.execute({ type: "permissionMode.select", permissionModeId: "allow" as never }),
     ).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.permissionUpdates.at(-1)).toEqual({

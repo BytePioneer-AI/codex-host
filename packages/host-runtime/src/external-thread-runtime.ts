@@ -477,7 +477,7 @@ export class ExternalThreadRuntime {
         harnessId,
         record.transportModelId,
       );
-      if (restoredSelection?.permissionModeId) {
+      if (restoredSelection?.permissionModeId && harnessId !== "opencode") {
         if (!session.capabilities.configuration.selectPermissionMode) {
           throw new ExternalThreadOpenError({
             code: -32076,
@@ -510,13 +510,15 @@ export class ExternalThreadRuntime {
         ? restoredState.effectivePermissionModeId
         : restoredSelection?.permissionModeId;
       let transportModelId = aligned.record.transportModelId;
-      // OMP can silently replace an unavailable Model during resume; persist the live selection
-      // so the next restore does not reapply the obsolete transport token.
-      if (harnessId === "omp" && restoredState?.effectiveModel) {
+      // OMP can silently replace an unavailable Model during resume, while OpenCode's
+      // additive Permission API cannot reliably restore a stale mode. Persist live state so the
+      // next restore does not reapply an obsolete transport token.
+      if ((harnessId === "omp" || harnessId === "opencode") && effectiveModel) {
         const liveSelection: ExternalConfigurationSelection = {
-          model: restoredState.effectiveModel,
-          ...(restoredState.effectiveThinkingOptionId
-            ? { thinkingOptionId: restoredState.effectiveThinkingOptionId }
+          model: effectiveModel,
+          ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
+          ...(harnessId === "opencode" && effectivePermissionModeId
+            ? { permissionModeId: effectivePermissionModeId }
             : {}),
         };
         transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);

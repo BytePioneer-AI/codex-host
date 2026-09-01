@@ -1021,6 +1021,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
+    if (permissionMode === this.#permissionMode) {
+      return { ok: true, value: { completed: true } };
+    }
     const permission = requestedPermissionRules(this.#session.permission, permissionMode);
     this.#configuring = true;
     try {

@@ -138,10 +138,12 @@ import {
   decodeThreadMetadataUpdateRequest,
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
+  decorateOfficialCollabSpawnModels,
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
   observeCodexRateLimits,
   observeCodexTokenUsage,
+  observeOfficialThreadModels,
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
@@ -154,6 +156,7 @@ import {
   transportModelIdForHarness,
   type CodexApprovalProjection,
   type CodexQuestionProjection,
+  type OfficialThreadModel,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
   type DecodedThreadRevertRequest,
@@ -438,6 +441,7 @@ export class AppServerHost {
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   #officialUsageByThread = new Map<string, HostUsage>();
+  #officialThreadModels = new Map<string, OfficialThreadModel>();
   #officialRateLimitUsage: Partial<HostUsage> | null = null;
   #officialRateLimitRefresh: Promise<void> | null = null;
   #officialRateLimitFreshUntilMs = 0;
@@ -1006,7 +1010,15 @@ export class AppServerHost {
           this.#diagnose(error);
         }
         this.#routeObservationTracker.bindOfficialResponse(parsed);
-        await this.#writer.frame(frame);
+        observeOfficialThreadModels(parsed, (threadId, snapshot) => {
+          const previous = this.#officialThreadModels.get(threadId) ?? {};
+          this.#officialThreadModels.set(threadId, { ...previous, ...snapshot });
+        });
+        const decorated = decorateOfficialCollabSpawnModels(parsed, (threadId) =>
+          this.#officialThreadModels.get(threadId),
+        );
+        if (decorated) await this.#writer.json(parsed);
+        else await this.#writer.frame(frame);
       }
     } finally {
       this.#officialRequestBroker.failAll(new Error("official app-server output closed"));

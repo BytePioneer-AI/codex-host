@@ -31,6 +31,7 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { formatCollabSpawnModel } from "./codex-collab-spawn-model.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
@@ -105,19 +106,10 @@ function collabAgentStatus(
   }
 }
 
-function prettyReasoningEffort(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
 function collabAgentModel(
   subagent: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number] | undefined,
 ): string | null {
-  const model = subagent?.model?.trim();
-  const effort = prettyReasoningEffort(subagent?.reasoningEffort);
-  if (model && effort) return `${model} · ${effort}`;
-  return model || effort || null;
+  return formatCollabSpawnModel(subagent?.model, subagent?.reasoningEffort);
 }
 
 function projectItem(

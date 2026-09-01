@@ -1454,8 +1454,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "thread/start",
       params: {
         cwd: "/synthetic",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
       },
     });
     fixture.official.stdout.write(
@@ -1473,6 +1473,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       threadId: "native-child",
       turnId: "native-turn",
       status: "running",
+      configuration: { requested: { executionPolicy: "approval-required" } },
     });
     expect(
       fixture.collector.messages.some(
@@ -1508,8 +1509,45 @@ describe("AppServerHost HarnessAdapter projection", () => {
         parentThreadId: "parent-thread",
         requestId: "native-request-1",
       }),
-    ).resolves.toMatchObject({ threadId: "native-child" });
+    ).resolves.toMatchObject({
+      threadId: "native-child",
+      configuration: { requested: { executionPolicy: "approval-required" } },
+    });
     expect(fixture.official.stdin.readableLength).toBe(0);
+    await expect(
+      delegationApi.start({
+        harnessId: "codex",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "native-request-1",
+        executionPolicy: "unattended-full-access",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+    const explicitPending = delegationApi.start({
+      harnessId: "codex",
+      task: "trusted automation",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+      executionPolicy: "unattended-full-access",
+    });
+    const explicitThreadStart = await readJsonLine(fixture.official.stdin);
+    expect(explicitThreadStart).toMatchObject({
+      method: "thread/start",
+      params: { approvalPolicy: "never", sandbox: "danger-full-access" },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: explicitThreadStart.id, result: { thread: { id: "explicit-child" } } })}\n`,
+    );
+    const explicitTurnStart = await readJsonLine(fixture.official.stdin);
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: explicitTurnStart.id, result: { turn: { id: "explicit-turn" } } })}\n`,
+    );
+    await expect(explicitPending).resolves.toMatchObject({
+      threadId: "explicit-child",
+      configuration: { requested: { executionPolicy: "unattended-full-access" } },
+    });
 
     const implicitPending = delegationApi.start({
       harnessId: "codex",

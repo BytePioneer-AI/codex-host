@@ -1200,6 +1200,8 @@ export class AppServerHost {
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string },
   ): Promise<DelegationStartResult> {
+    const executionPolicy = input.executionPolicy ?? "approval-required";
+    const unattended = executionPolicy === "unattended-full-access";
     let requestedModel: HarnessModelRef | undefined;
     try {
       requestedModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
@@ -1212,6 +1214,7 @@ export class AppServerHost {
         JSON.stringify({
           task: input.task,
           cwd: input.cwd,
+          executionPolicy,
           modelId: requestedModel?.id ?? null,
           thinkingOptionId: input.thinkingOptionId ?? null,
         }),
@@ -1244,6 +1247,9 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${existing.childHostThreadId}`,
         status: existing.status,
+        configuration: {
+          requested: { executionPolicy: existing.executionPolicy ?? "approval-required" },
+        },
         next: {
           read: `codexhost thread read ${existing.childHostThreadId}`,
           wait: `codexhost thread wait ${existing.childHostThreadId} --timeout-ms 30000`,
@@ -1291,8 +1297,8 @@ export class AppServerHost {
     const started = await this.#officialRequestBroker.request("thread/start", {
       cwd: input.cwd,
       ...(nativeModelId ? { model: nativeModelId } : {}),
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      approvalPolicy: unattended ? "never" : "on-request",
+      sandbox: unattended ? "danger-full-access" : "workspace-write",
       ephemeral: false,
       historyMode: "paginated",
     });
@@ -1344,10 +1350,11 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
-        ...(requestedModel || input.thinkingOptionId
+        ...(executionPolicy || requestedModel || input.thinkingOptionId
           ? {
               configuration: {
                 requested: {
+                  executionPolicy,
                   ...(requestedModel ? { model: requestedModel } : {}),
                   ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
                 },

@@ -20,6 +20,7 @@ node_modules/
 .vite/
 .vitest/
 .eslintcache
+.worktrees/
 *.tsbuildinfo
 
 # Build, test, and coverage output

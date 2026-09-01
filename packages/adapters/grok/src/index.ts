@@ -11,6 +11,7 @@ export type { GrokCreditsSnapshot, GrokProductUsage } from "./grok-credits.js";
 export {
   GrokAcpTransport,
   GrokTransportError,
+  grokNativeSessionDirectory,
   locateGrokNativeSession,
   readGrokNativeHistory,
 } from "./acp-transport.js";

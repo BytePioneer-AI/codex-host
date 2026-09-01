@@ -4,6 +4,7 @@ export { MappingStore, MappingStoreError } from "./mapping-store.js";
 export type { MappingStoreErrorCode, MappingStoreOptions } from "./mapping-store.js";
 export {
   delegationStatusSchema,
+  delegationExecutionPolicySchema,
   storedDelegationRecordV1Schema,
   storedThreadRecordV1Schema,
   storedTurnMappingV1Schema,
@@ -13,6 +14,7 @@ export type {
   CreateDelegationInput,
   CreateProvisionalThreadInput,
   DelegationStatus,
+  DelegationExecutionPolicy,
   FindRecentDelegationInput,
   ReplaceReadySessionAfterLastTurnInput,
   ReplaceReadySessionInput,

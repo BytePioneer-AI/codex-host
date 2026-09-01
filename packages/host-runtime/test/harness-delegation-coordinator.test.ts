@@ -20,6 +20,15 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
   const adapters = new Map([["pi" as const, adapter]]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
+  const startOfficial = vi.fn(async () => ({
+    delegationId: "delegation",
+    threadId: "thread",
+    turnId: "turn",
+    harnessId: "codex" as const,
+    deepLink: "codex://threads/thread",
+    status: "running" as const,
+    next: { read: "read", wait: "wait" },
+  }));
   const runtime = new ExternalThreadRuntime({
     adapters,
     repository,
@@ -53,7 +62,7 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
     readOfficial: vi.fn(),
     sendOfficial: vi.fn(),
     cancelOfficial: vi.fn(),
-    startOfficial: vi.fn(),
+    startOfficial,
     listOfficial: vi.fn(async () => ({ threads: [], nextCursor: null })),
     activeOfficialParents: () => [],
   });
@@ -65,6 +74,7 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
     registered,
     repository,
     runtime,
+    startOfficial,
     store,
     close: async () => {
       runtime.clear();
@@ -249,9 +259,42 @@ describe("HarnessDelegationCoordinator", () => {
         parentThreadId: "parent-thread",
       });
       expect(explicitRetry.threadId).toBe(first.threadId);
+      expect(explicitRetry.configuration?.requested).toMatchObject({
+        executionPolicy: "approval-required",
+      });
+      expect((await value.repository.listDelegations())[0]?.executionPolicy).toBe(
+        "approval-required",
+      );
       expect(implicitRetry.threadId).toBe(implicit.threadId);
       expect(different.threadId).not.toBe(implicit.threadId);
       expect(value.adapter.sessions).toHaveLength(3);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("passes the normalized policy to official Codex delegation", async () => {
+    const value = await fixture();
+    try {
+      await value.coordinator.start({
+        harnessId: "codex",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      expect(value.startOfficial).toHaveBeenLastCalledWith(
+        expect.objectContaining({ executionPolicy: "approval-required" }),
+      );
+      await value.coordinator.start({
+        harnessId: "codex",
+        task: "trusted automation",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        executionPolicy: "unattended-full-access",
+      });
+      expect(value.startOfficial).toHaveBeenLastCalledWith(
+        expect.objectContaining({ executionPolicy: "unattended-full-access" }),
+      );
     } finally {
       await value.close();
     }

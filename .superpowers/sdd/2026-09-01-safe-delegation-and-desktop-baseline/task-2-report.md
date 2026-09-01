@@ -25,3 +25,13 @@ The same focused command passes: 2 test files, 25 tests. The implementation now:
 ## Self-review and concerns
 
 `git diff --check` and Prettier pass for changed files. No Task 3 native approval/sandbox mapping was added. Existing persisted delegation records do not store execution policy, so duplicate-result reconstruction cannot expose policy evidence beyond the original start response; changing the storage schema is outside this task.
+
+## REVIEW FIX
+
+### RED
+
+Added exact request-ID retry and official Codex path tests. The retry initially returned no `configuration.requested.executionPolicy`; the stored delegation record also had no policy. The official-path test established the required default and explicit override forwarding contract.
+
+### GREEN
+
+Persisted `executionPolicy` on delegation records (optional for backward-compatible reads), restored it in `#existingResult` with an approval-required fallback, and passed normalized policy into official starts. The focused build and test command now passes: 2 files, 26 tests.

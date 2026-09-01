@@ -281,6 +281,7 @@ export class HarnessDelegationCoordinator {
         sourceHarnessId: harnessIdSchema.parse(parent.harnessId),
         targetHarnessId: harnessIdSchema.parse(targetHarnessId),
         status: "creating",
+        executionPolicy,
         ...(input.requestId ? { requestId: input.requestId } : {}),
         taskDigest: digest,
       });
@@ -617,6 +618,7 @@ export class HarnessDelegationCoordinator {
       turnId,
       delegation.targetHarnessId as RoutedHarnessId,
       delegation.status,
+      { requested: { executionPolicy: delegation.executionPolicy ?? "approval-required" } },
     );
   }
 

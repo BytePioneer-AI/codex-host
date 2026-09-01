@@ -139,6 +139,12 @@ export const delegationStatusSchema = z.enum([
   "interrupted",
 ]);
 
+export const delegationExecutionPolicySchema = z.enum([
+  "approval-required",
+  "unattended-full-access",
+]);
+export type DelegationExecutionPolicy = z.infer<typeof delegationExecutionPolicySchema>;
+
 export type DelegationStatus = z.infer<typeof delegationStatusSchema>;
 
 export const storedDelegationRecordV1Schema = z
@@ -151,6 +157,7 @@ export const storedDelegationRecordV1Schema = z
     sourceHarnessId: harnessIdSchema,
     targetHarnessId: harnessIdSchema,
     status: delegationStatusSchema,
+    executionPolicy: delegationExecutionPolicySchema.optional(),
     requestId: nonBlankTextSchema.max(1_024).optional(),
     taskDigest: z.string().regex(/^[a-f0-9]{64}$/u),
     createdAt: isoDateSchema,
@@ -171,6 +178,7 @@ export interface CreateDelegationInput {
   sourceHarnessId: HarnessId;
   targetHarnessId: HarnessId;
   status?: DelegationStatus;
+  executionPolicy?: DelegationExecutionPolicy;
   requestId?: string;
   taskDigest: string;
 }

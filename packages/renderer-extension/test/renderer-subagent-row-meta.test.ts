@@ -50,4 +50,20 @@ describe("Subagent row meta", () => {
       status: "done",
     });
   });
+
+  it("does not recurse through arbitrary nested React props", () => {
+    const nested = {
+      displayName: "Hidden",
+      conversationId: "child-1",
+      spawnModel: "Grok 4.6 · High",
+      status: "done",
+    };
+    expect(
+      subagentRowMetaFromProps({
+        children: nested,
+        onClick: nested,
+        unrelated: nested,
+      }),
+    ).toBeNull();
+  });
 });

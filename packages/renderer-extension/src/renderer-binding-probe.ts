@@ -2196,7 +2196,6 @@ export function installRendererBindingProbe(
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
-    subagentRowMeta.refresh();
   });
   const onHostRouteChange = (): void => {
     reconcileHarnessAvailabilityHost();

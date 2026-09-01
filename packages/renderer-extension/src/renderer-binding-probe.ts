@@ -78,6 +78,7 @@ import {
   rendererHarnessCommandExecutesDirectly,
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
+import { installRendererSubagentRowMeta } from "./renderer-subagent-row-meta.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
@@ -639,6 +640,7 @@ export function installRendererBindingProbe(
     getClient: (hostId) => modelClientForHost(hostId),
     getLocalAgent: localAgentForSidebarThread,
   });
+  const subagentRowMeta = installRendererSubagentRowMeta();
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
@@ -2790,6 +2792,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       sidebarAgentIcons.dispose();
+      subagentRowMeta.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

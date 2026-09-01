@@ -1,6 +1,7 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
+import openCodeAgentIconUrl from "./assets/opencode-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -83,17 +84,15 @@ export function createRendererAgentIcon(
     );
   }
   if (agent === "opencode") {
-    return createSvgIcon(
-      [
-        {
-          d: "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm4 5v8h8V8H8zm2 2h4v4h-4v-4z",
-          fillRule: "evenodd",
-        },
-      ],
-      "currentColor",
-      size,
-      ownerDocument,
-    );
+    const image = ownerDocument.createElement("img");
+    image.src = openCodeAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.flex = "none";
+    return image;
   }
   if (agent === "omp") {
     const image = ownerDocument.createElement("img");

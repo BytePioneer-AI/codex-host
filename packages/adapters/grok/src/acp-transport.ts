@@ -35,6 +35,7 @@ import {
   grokCompactionEventFromUpdate,
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
+import { grokSubagentEventFromUpdate } from "./grok-subagent.js";
 import {
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
@@ -119,6 +120,21 @@ export type GrokTransportEvent =
       tokensAfter?: number;
       contextWindowTokens?: number;
       errorMessage?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.spawned";
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.finished";
+      nativeSubagentId: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
       metadata?: Record<string, unknown>;
     };
 
@@ -293,6 +309,8 @@ function transportEvent(
   }
   const compaction = grokCompactionEventFromUpdate(extension);
   if (compaction) return compaction;
+  const subagent = grokSubagentEventFromUpdate(extension);
+  if (subagent) return subagent;
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":

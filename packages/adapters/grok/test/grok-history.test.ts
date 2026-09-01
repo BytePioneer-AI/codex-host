@@ -193,7 +193,15 @@ describe("Grok history Fork mapping", () => {
           type: "tool.update",
           callId: "wait-1",
           status: "completed",
-          rawOutput: { task_id: "child-session", status: "completed", output: "Inspection done" },
+          rawOutput: {
+            type: "TaskOutput",
+            MultiResult: {
+              mode: "wait_all",
+              results: [
+                { task_id: "child-session", status: "completed", output: "Inspection done" },
+              ],
+            },
+          },
         },
         { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
       ],

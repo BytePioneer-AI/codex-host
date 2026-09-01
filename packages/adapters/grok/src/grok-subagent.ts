@@ -167,13 +167,72 @@ export function grokSubagentResultSummary(...candidates: unknown[]): string | un
   return undefined;
 }
 
+export interface GrokSubagentWaitSettlement {
+  id: string;
+  status: HostSubagentStatus;
+  resultSummary?: string;
+}
+
+export type GrokSubagentTransportEvent =
+  | {
+      type: "subagent.spawned";
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+    }
+  | {
+      type: "subagent.finished";
+      nativeSubagentId: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
+    };
+
+export function grokSubagentEventFromUpdate(update: unknown): GrokSubagentTransportEvent | null {
+  if (!isRecord(update) || typeof update.sessionUpdate !== "string") return null;
+  const nativeSubagentId = idField(update, "subagent_id") ?? idField(update, "child_session_id");
+  if (!nativeSubagentId) return null;
+  if (update.sessionUpdate === "subagent_spawned") {
+    const description = bounded(stringField(update, "description"), DESCRIPTION_LIMIT);
+    const role = bounded(
+      stringField(update, "subagent_type") ?? stringField(update, "role"),
+      DESCRIPTION_LIMIT,
+    );
+    const model = bounded(stringField(update, "model"), DESCRIPTION_LIMIT);
+    return {
+      type: "subagent.spawned",
+      nativeSubagentId,
+      ...(description ? { description } : {}),
+      ...(role ? { role } : {}),
+      ...(model ? { model } : {}),
+    };
+  }
+  if (update.sessionUpdate === "subagent_finished") {
+    const mapped = mapTaskStatus(typeof update.status === "string" ? update.status : undefined);
+    if (!mapped || mapped === "running" || mapped === "pending") return null;
+    const status: "completed" | "failed" | "interrupted" =
+      mapped === "failed" ? "failed" : mapped === "interrupted" ? "interrupted" : "completed";
+    const resultSummary = bounded(
+      typeof update.output === "string" ? update.output.trim() : undefined,
+      SUMMARY_LIMIT,
+    );
+    return {
+      type: "subagent.finished",
+      nativeSubagentId,
+      status,
+      ...(resultSummary ? { resultSummary } : {}),
+    };
+  }
+  return null;
+}
+
 export function grokSubagentWaitSettlements(input: {
   name?: string | null;
   title?: string | null;
   rawInput?: unknown;
   content?: unknown;
   rawOutput?: unknown;
-}): Array<{ id: string; status: HostSubagentStatus }> {
+}): GrokSubagentWaitSettlement[] {
   const ids = grokSubagentWaitIds(input.name, input.title, input.rawInput);
   if (grokSubagentKill(input.name, input.title)) {
     return ids.map((id) => ({ id, status: "interrupted" as const }));
@@ -182,15 +241,22 @@ export function grokSubagentWaitSettlements(input: {
 
   const resultEntries = taskOutputResults(input.rawOutput);
   if (resultEntries.length > 0) {
-    const settled: Array<{ id: string; status: HostSubagentStatus }> = [];
+    const settled: GrokSubagentWaitSettlement[] = [];
     for (const result of resultEntries) {
       const id = idField(result, "task_id") ?? idField(result, "subagent_id");
       const status = mapTaskStatus(typeof result.status === "string" ? result.status : undefined);
       if (!id || !status || status === "running" || status === "pending") continue;
-      settled.push({ id, status });
+      const resultSummary = bounded(
+        typeof result.output === "string" ? result.output.trim() : undefined,
+        SUMMARY_LIMIT,
+      );
+      settled.push({ id, status, ...(resultSummary ? { resultSummary } : {}) });
     }
     return settled;
   }
+
+  const fromText = taskOutputTextSettlements(input.rawOutput, input.content, ids);
+  if (fromText.length > 0) return fromText;
 
   const overall = mapTaskStatus(taskOutputStatus(input.rawOutput, input.content));
   if (!overall || overall === "running" || overall === "pending") return [];
@@ -202,8 +268,39 @@ function taskOutputResults(rawOutput: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(rawOutput.results)) {
     return rawOutput.results.filter(isRecord);
   }
+  const nested = firstRecord(rawOutput.MultiResult, rawOutput.multiResult, rawOutput.multi_result);
+  if (nested && Array.isArray(nested.results)) {
+    return nested.results.filter(isRecord);
+  }
   if (typeof rawOutput.status === "string") return [rawOutput];
   return [];
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  for (const value of values) {
+    if (isRecord(value)) return value;
+  }
+  return undefined;
+}
+
+function taskOutputTextSettlements(
+  rawOutput: unknown,
+  content: unknown,
+  ids: string[],
+): GrokSubagentWaitSettlement[] {
+  const text = extractText(content) ?? extractText(rawOutput);
+  if (!text) return [];
+  const settled: GrokSubagentWaitSettlement[] = [];
+  const pattern =
+    /---\s*Task\s+(\S+)\s+\[(completed|failed|interrupted|cancelled|canceled)\]\s*---/gi;
+  for (const match of text.matchAll(pattern)) {
+    const id = match[1]?.trim();
+    const status = mapTaskStatus(match[2]);
+    if (!id || !status || status === "running" || status === "pending") continue;
+    if (!ids.includes(id)) continue;
+    settled.push({ id, status });
+  }
+  return settled;
 }
 
 function taskOutputStatus(rawOutput: unknown, content: unknown): string | undefined {

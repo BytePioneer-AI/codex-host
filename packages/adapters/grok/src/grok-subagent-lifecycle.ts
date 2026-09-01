@@ -90,6 +90,32 @@ export class GrokSubagentLifecycle {
     return subagent;
   }
 
+  bindNativeId(
+    turnId: HostTurnId,
+    input: {
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+    },
+  ): HostSubagentState | undefined {
+    for (const [callId, active] of this.#delegations) {
+      const current = active.item.subagents[0];
+      if (!current) continue;
+      if (current.nativeSubagentId === input.nativeSubagentId) {
+        return this.update(turnId, callId, input);
+      }
+    }
+    for (const [callId, active] of this.#delegations) {
+      const current = active.item.subagents[0];
+      if (!current || current.nativeSubagentId) continue;
+      if (input.description && current.description === input.description) {
+        return this.update(turnId, callId, input);
+      }
+    }
+    return undefined;
+  }
+
   update(
     turnId: HostTurnId,
     callId: string,

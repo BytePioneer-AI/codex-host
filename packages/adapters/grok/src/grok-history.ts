@@ -195,6 +195,7 @@ export function mapGrokReplay(
       const item = spawnId ? subagents.get(spawnId) : undefined;
       if (!item?.subagents[0]) continue;
       if (spawnId) subagents.delete(spawnId);
+      const resultSummary = settlement.resultSummary ?? summary;
       items.push({
         item: {
           ...item,
@@ -204,7 +205,7 @@ export function mapGrokReplay(
               status: settlement.status,
               nativeSubagentId: item.subagents[0].nativeSubagentId ?? settlement.id,
               subagentId: item.subagents[0].nativeSubagentId ?? settlement.id,
-              ...(summary ? { resultSummary: summary } : {}),
+              ...(resultSummary ? { resultSummary } : {}),
             },
           ],
         },
@@ -518,6 +519,38 @@ export function mapGrokReplay(
           completeTool(event.callId, event.status, event.content, event.rawOutput);
         }
       }
+    } else if (event.type === "subagent.spawned") {
+      for (const [callId, current] of subagents) {
+        const agent = current.subagents[0];
+        if (!agent) continue;
+        const matchesId = agent.nativeSubagentId === event.nativeSubagentId;
+        const matchesDescription =
+          !agent.nativeSubagentId &&
+          event.description !== undefined &&
+          agent.description === event.description;
+        if (!matchesId && !matchesDescription) continue;
+        rememberSubagentAlias(callId, event.nativeSubagentId);
+        subagents.set(callId, {
+          ...current,
+          subagents: [
+            {
+              ...agent,
+              nativeSubagentId: event.nativeSubagentId,
+              subagentId: event.nativeSubagentId,
+              ...(event.role ? { role: event.role } : {}),
+              ...(event.model ? { model: event.model } : {}),
+            },
+          ],
+        });
+        break;
+      }
+    } else if (event.type === "subagent.finished") {
+      settleWatchedSubagents(
+        "get_command_or_subagent_output",
+        { task_ids: [event.nativeSubagentId] },
+        event.resultSummary ? [event.resultSummary] : undefined,
+        { task_id: event.nativeSubagentId, status: event.status, output: event.resultSummary },
+      );
     }
   }
   completeTurn({ status: "unknown", reason: "Grok Native history has no terminal signal" });

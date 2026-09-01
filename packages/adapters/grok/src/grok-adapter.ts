@@ -891,6 +891,8 @@ class GrokHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.text, event.messageId);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
+    else if (event.type === "subagent.spawned") this.#bindSpawnedSubagent(active, event);
+    else if (event.type === "subagent.finished") this.#finishNativeSubagent(active, event);
     else if (event.type === "compaction.started") this.#startCompaction(active, event);
     else if (event.type === "compaction.completed") {
       active.compactionTerminal = event;
@@ -1212,9 +1214,38 @@ class GrokHarnessSession implements HarnessSession {
         failed: settlement.status === "failed",
         cancellationRequested: active.cancellationRequested || settlement.status === "interrupted",
         status: settlement.status,
-        ...(resultSummary ? { resultSummary } : {}),
+        ...(settlement.resultSummary
+          ? { resultSummary: settlement.resultSummary }
+          : resultSummary
+            ? { resultSummary }
+            : {}),
       });
     }
+  }
+
+  #bindSpawnedSubagent(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "subagent.spawned" }>,
+  ): void {
+    const model = event.model ? this.#subagentModelLabel(event.model) : undefined;
+    active.subagents.bindNativeId(active.command.turnId, {
+      nativeSubagentId: event.nativeSubagentId,
+      ...(event.description ? { description: event.description } : {}),
+      ...(event.role ? { role: event.role } : {}),
+      ...(model ? { model } : {}),
+    });
+  }
+
+  #finishNativeSubagent(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "subagent.finished" }>,
+  ): void {
+    active.subagents.completeByNativeId(active.command.turnId, event.nativeSubagentId, {
+      failed: event.status === "failed",
+      cancellationRequested: active.cancellationRequested || event.status === "interrupted",
+      status: event.status,
+      ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
+    });
   }
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {

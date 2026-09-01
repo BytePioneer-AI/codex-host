@@ -207,6 +207,7 @@ function createFixture(
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
+    desktopOutput?: PassThrough;
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
@@ -220,7 +221,7 @@ function createFixture(
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
-  const desktopOutput = new PassThrough();
+  const desktopOutput = options.desktopOutput ?? new PassThrough();
   const diagnosticOutput = new PassThrough();
   const official = new FakeOfficialProcess();
   const collector = new JsonLineCollector(desktopOutput);
@@ -748,7 +749,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("fails when official output closes while Desktop output is backpressured", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
 
     try {
       await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());

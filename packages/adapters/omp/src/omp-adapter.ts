@@ -1919,8 +1919,7 @@ export class OmpAdapter implements HarnessAdapter {
       }
       const permissionModeConflictsWithPolicy =
         (input.executionPolicy === "approval-required" && permissionMode !== "always-ask") ||
-        (input.executionPolicy === "unattended-full-access" && permissionMode !== "yolo") ||
-        (permissionMode === "yolo" && input.executionPolicy !== "unattended-full-access");
+        (input.executionPolicy === "unattended-full-access" && permissionMode !== "yolo");
       if (permissionModeConflictsWithPolicy) {
         return {
           ok: false,

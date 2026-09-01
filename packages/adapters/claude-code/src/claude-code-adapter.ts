@@ -2534,7 +2534,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.kind === "create"
         ? (input.permissionModeId ??
           (input.executionPolicy === "unattended-full-access"
-            ? encodeClaudePermissionModeId("auto")
+            ? encodeClaudePermissionModeId("bypassPermissions")
             : CLAUDE_DEFAULT_PERMISSION_MODE_ID))
         : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
     try {
@@ -2545,6 +2545,23 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: {
           code: "invalidRequest",
           message: "Claude Code create Permission Mode is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const permissionModeConflictsWithPolicy =
+      (input.kind === "create" &&
+        input.executionPolicy === "approval-required" &&
+        requestedPermissionModeId !== CLAUDE_DEFAULT_PERMISSION_MODE_ID) ||
+      (input.kind === "create" &&
+        input.executionPolicy === "unattended-full-access" &&
+        requestedPermissionModeId !== encodeClaudePermissionModeId("bypassPermissions"));
+    if (permissionModeConflictsWithPolicy) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Claude Code Permission Mode conflicts with the requested execution policy",
           retryable: false,
         },
       };

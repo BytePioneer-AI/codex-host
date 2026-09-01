@@ -341,19 +341,25 @@ describe("OMP Adapter Session environment", () => {
     },
   );
 
-  it("rejects explicit yolo unless unattended-full-access is requested", async () => {
-    const adapter = new OmpAdapter({}, { createTransport: () => new FakeOmpTransport() });
+  it("preserves explicit yolo for ordinary creates", async () => {
+    const transport = new FakeOmpTransport();
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
 
-    await expect(
-      adapter.open({
-        kind: "create",
-        cwd: "/synthetic",
-        permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported", retryable: false },
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
     });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "ordinary-yolo" as HostTurnId,
+      input: [{ type: "text", text: "task" }],
+    });
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionMode: "yolo" }),
+    );
     await adapter.close();
   });
 

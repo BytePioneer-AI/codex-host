@@ -1391,6 +1391,23 @@ export class GrokAdapter implements HarnessAdapter {
         },
       };
     }
+    const permissionModeConflictsWithPolicy =
+      (input.kind === "create" &&
+        input.executionPolicy === "approval-required" &&
+        requestedPermissionModeId !== GROK_DEFAULT_PERMISSION_MODE_ID) ||
+      (input.kind === "create" &&
+        input.executionPolicy === "unattended-full-access" &&
+        requestedPermissionModeId !== harnessPermissionModeIdSchema.parse("always-approve"));
+    if (permissionModeConflictsWithPolicy) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Grok Permission Mode conflicts with the requested execution policy",
+          retryable: false,
+        },
+      };
+    }
     const cwd = path.resolve(input.cwd);
     const parsedRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;

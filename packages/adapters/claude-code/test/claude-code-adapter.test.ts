@@ -3062,7 +3062,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("uses auto Permission Mode for unattended delegation sessions", async () => {
+  it("uses bypassPermissions for unattended delegation sessions", async () => {
     const { adapter, dependencies } = fixture();
     const opened = await adapter.open({
       kind: "create",
@@ -3073,10 +3073,52 @@ describe("Claude Code HarnessAdapter", () => {
 
     await opened.value.execute(textTurn("unattended"));
     expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ permissionMode: "auto" }),
+      expect.objectContaining({ permissionMode: "bypassPermissions" }),
     );
     await opened.value.close();
   });
+
+  it.each(["plan", "acceptEdits", "auto", "bypassPermissions"])(
+    "rejects explicit %s for approval-required delegation",
+    async (permissionMode) => {
+      const { adapter, dependencies } = fixture();
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "approval-required",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
+  it.each(["plan", "default", "acceptEdits", "auto"])(
+    "rejects explicit %s for unattended delegation",
+    async (permissionMode) => {
+      const { adapter, dependencies } = fixture();
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "unattended-full-access",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
 
   it("uses default Permission Mode for approval-required delegation sessions", async () => {
     const { adapter, dependencies } = fixture();

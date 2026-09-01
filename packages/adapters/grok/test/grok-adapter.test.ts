@@ -398,6 +398,66 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["auto", "always-approve"])(
+    "rejects explicit %s for approval-required sessions",
+    async (permissionMode) => {
+      const transport = new FakeGrokTransport();
+      const createTransport = vi.fn(() => transport);
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport,
+          fetchCredits: async () => null,
+        },
+      );
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "approval-required",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      expect(createTransport).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
+  it.each(["ask", "auto"])(
+    "rejects explicit %s for unattended sessions",
+    async (permissionMode) => {
+      const transport = new FakeGrokTransport();
+      const createTransport = vi.fn(() => transport);
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport,
+          fetchCredits: async () => null,
+        },
+      );
+
+      await expect(
+        adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          executionPolicy: "unattended-full-access",
+          permissionModeId: harnessPermissionModeIdSchema.parse(permissionMode),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported", retryable: false },
+      });
+      expect(createTransport).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
   it("seeds the native Grok Permission Mode at Session creation", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(

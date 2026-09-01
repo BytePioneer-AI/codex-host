@@ -106,16 +106,24 @@ export function encodeOmpTransportModel(
 export function encodeAntigravityTransportModel(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (permissionModeId)
+    if (permissionModeId || thinkingOptionId) {
       throw new Error("Antigravity transport configuration requires a Model Ref");
+    }
     return ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
   const parsedPermission = permissionModeId
     ? harnessPermissionModeIdSchema.parse(permissionModeId)
     : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
+  }
   return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
 }
 
@@ -127,10 +135,16 @@ export function decodeAntigravityTransportSelection(
     return null;
   }
   const components = value.slice(ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) {
+  if (components.length < 1 || components.length > 3) {
     throw new Error("Antigravity transport configuration has an invalid component count");
   }
-  const [modelId, permissionModeId] = components;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Antigravity transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Antigravity transport configuration has an empty Thinking option");
+  }
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("Antigravity transport Model contains an invalid Model Ref");
   const permissionMode = permissionModeId
@@ -139,9 +153,16 @@ export function decodeAntigravityTransportSelection(
   if (permissionMode && !permissionMode.success) {
     throw new Error("Antigravity transport configuration contains an invalid Permission Mode");
   }
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Antigravity transport configuration contains an invalid Thinking option");
+  }
   return {
     model: model.data,
     ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
 
@@ -401,7 +422,11 @@ export function encodeExternalTransportSelection(
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
     case "antigravity":
-      return encodeAntigravityTransportModel(selection.model, selection.permissionModeId);
+      return encodeAntigravityTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
   }
 }
 

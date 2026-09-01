@@ -501,6 +501,9 @@ export class ExternalThreadRuntime {
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+      ...(restoredSelection?.thinkingOptionId
+        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+        : {}),
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
     });
     if (!opened.ok) {

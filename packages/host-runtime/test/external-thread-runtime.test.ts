@@ -13,6 +13,7 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
+  encodeAntigravityTransportModel,
   encodeGrokTransportModel,
   encodeOmpTransportModel,
   type ExternalHarnessId,
@@ -214,6 +215,49 @@ describe("ExternalThreadRuntime register", () => {
       encodeOmpTransportModel(actualModel, actualThinking),
     );
 
+    await adapter.close();
+  });
+
+  it("hands the persisted Antigravity effort back to the Adapter on restore", async () => {
+    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
+    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const nativeRef = created.value.initialState.nativeRef;
+    const model = adapter.catalog.defaultModel;
+    if (!nativeRef || !model) throw new Error("Fake Antigravity Session is missing state");
+
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: antigravityHarnessId,
+      nativeSessionRef: nativeRef,
+      transportModelId: encodeAntigravityTransportModel(model, undefined, thinkingOptionId),
+      historyMode: "legacy",
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async () => stored,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["antigravity", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    const open = vi.spyOn(adapter, "open");
+
+    await runtime.resolve(hostThreadId);
+
+    // The Antigravity CLI keeps no server-side effort, so a restore that drops
+    // the persisted value would silently run the next Turn without --effort.
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "resume", model, thinkingOptionId }),
+    );
+
+    open.mockRestore();
     await adapter.close();
   });
 

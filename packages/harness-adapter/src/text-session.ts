@@ -83,6 +83,8 @@ export interface ResumeSessionInput {
   environment?: Record<string, string | undefined>;
   /** Persisted model hint used to restore model-aware session metadata. */
   model?: HarnessModelRef;
+  /** Persisted Thinking hint, for Harnesses that do not remember it themselves. */
+  thinkingOptionId?: HarnessThinkingOptionId;
   knownTurnRefs?: NativeTurnRef[];
 }
 

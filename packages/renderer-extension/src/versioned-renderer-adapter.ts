@@ -176,16 +176,24 @@ export function ompTransportModelId(
 export function antigravityTransportModelId(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
 ): string {
   if (!model) {
-    if (permissionModeId)
+    if (permissionModeId || thinkingOptionId) {
       throw new Error("Antigravity transport configuration requires a Model Ref");
+    }
     return ANTIGRAVITY_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
   const parsedPermission = permissionModeId
     ? harnessPermissionModeIdSchema.parse(permissionModeId)
     : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
+  }
   return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
 }
 
@@ -818,7 +826,7 @@ export function modelSelectionForAgent(
             : agent === "omp"
               ? ompTransportModelId(model, thinkingOptionId)
               : agent === "antigravity"
-                ? antigravityTransportModelId(model, permissionModeId)
+                ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
                 : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }

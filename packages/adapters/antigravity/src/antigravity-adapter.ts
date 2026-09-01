@@ -1130,10 +1130,15 @@ export class AntigravityAdapter implements HarnessAdapter {
         };
       }
     }
-    // The Catalog carries which efforts each Model accepts; the Host inspects
-    // before opening, so the cached entry is normally present.
-    const catalog = this.#inspectionCache.get(path.resolve(input.cwd))?.catalog;
-    const thinkingOptionId = input.kind === "create" ? input.thinkingOptionId : undefined;
+    // Thinking selection is validated against the Catalog, so it has to be
+    // present before the Session exists rather than whenever the Host happens
+    // to have warmed the cache.
+    const cwd = path.resolve(input.cwd);
+    let catalog = this.#inspectionCache.get(cwd)?.catalog;
+    if (!catalog) {
+      const inspection = await this.inspect({ cwd: input.cwd });
+      if (inspection.status === "ready") catalog = inspection.catalog;
+    }
     const session = new AntigravitySession({
       ...(catalog ? { catalog } : {}),
       cwd: input.cwd,
@@ -1146,7 +1151,7 @@ export class AntigravityAdapter implements HarnessAdapter {
         : {}),
       permissionMode,
       printTimeout: this.#printTimeout,
-      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
       onClosed: () => this.#sessions.delete(session),
     });

@@ -107,6 +107,57 @@ describe("external Harness transport model routing", () => {
     ).toMatchObject({ harnessId: "antigravity", model, permissionModeId });
   });
 
+  it("round-trips an Antigravity Model, Permission Mode and effort", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
+    const transportModelId = encodeAntigravityTransportModel(
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    );
+
+    expect(transportModelId).toBe(
+      `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    // The effort has to survive the Host-side decode, otherwise the first Turn
+    // runs without `--effort`.
+    expect(
+      decodeCreateRoute({ id: 13, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "antigravity", model, permissionModeId, thinkingOptionId });
+  });
+
+  it("carries an Antigravity effort without a Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodeAntigravityTransportModel(model, undefined, thinkingOptionId);
+
+    expect(transportModelId).toBe(
+      `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+    );
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      thinkingOptionId,
+    });
+  });
+
+  it("still decodes Antigravity carriers written before efforts existed", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" });
+    expect(
+      decodeAntigravityTransportSelection(
+        `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@configured`,
+      ),
+    ).toEqual({ model, permissionModeId: "configured" });
+    expect(
+      decodeAntigravityTransportSelection(`${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`),
+    ).toEqual({ model });
+  });
+
   it("round-trips a request-scoped Pi Model and Thinking pair", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");

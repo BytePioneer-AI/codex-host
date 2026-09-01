@@ -430,6 +430,7 @@ if (updateEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1") {
 
 let launchArguments;
 let remoteArguments = null;
+let brokerArguments = null;
 let delegationArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
@@ -440,6 +441,9 @@ if (userArguments.length === 0) {
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
   remoteArguments = userArguments.slice(1);
+} else if (userArguments[0] === "broker") {
+  launchArguments = null;
+  brokerArguments = userArguments.slice(1);
 } else if (
   userArguments[0] === "harness" ||
   userArguments[0] === "delegate" ||
@@ -456,6 +460,7 @@ if (userArguments.length === 0) {
       "  codexhost inspect",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
+      "  codexhost broker install|status|stop|uninstall",
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
@@ -519,7 +524,50 @@ if (delegationArguments !== null) {
     }
     process.exit(code ?? 1);
   });
+} else if (brokerArguments !== null) {
+  const child = spawn(
+    launcher,
+    [
+      "broker",
+      ...brokerArguments,
+      "--node", process.execPath, "--host-runtime", hostRuntime,
+    ],
+    {
+      env: updateEnvironment,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
 } else if (remoteArguments !== null) {
+  const runNativeBroker = (command) => {
+    const broker = spawn(
+      launcher,
+      ["broker", command, "--node", process.execPath, "--host-runtime", hostRuntime],
+      {
+        env: updateEnvironment,
+        // remote status is a stable JSON stdout surface. Keep the broker's
+        // human-readable status beside it on stderr instead of corrupting JSON.
+        stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
+        windowsHide: true,
+      },
+    );
+    broker.on("error", (error) => fail(error.message));
+    broker.on("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      process.exit(code ?? 1);
+    });
+  };
   const child = spawn(
     process.execPath,
     [
@@ -544,6 +592,20 @@ if (delegationArguments !== null) {
     if (signal) {
       process.kill(process.pid, signal);
       return;
+    }
+    if (code === 0 && process.platform === "darwin") {
+      if (remoteArguments[0] === "install") {
+        runNativeBroker("install");
+        return;
+      }
+      if (remoteArguments[0] === "status") {
+        runNativeBroker("status");
+        return;
+      }
+      if (remoteArguments[0] === "uninstall") {
+        runNativeBroker("uninstall");
+        return;
+      }
     }
     process.exit(code ?? 1);
   });
@@ -644,6 +706,7 @@ codexhost remote start
 codexhost remote stop
 codexhost remote status
 codexhost remote uninstall
+codexhost broker status
 \`\`\`
 
 The \`codexhost\` command launches the packaged Rust launcher with:
@@ -661,6 +724,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 ## Notes
 
 - This npm package does **not** embed a private Node.js runtime.
+- On macOS, \`remote install\` manages the current-user Aqua Harness broker; it never asks for a Keychain password or copies Claude credentials.
 - Installer packages (DMG/EXE) remain the zero-dependency desktop distribution path.
 - Prefer \`npm install -g ${NPM_PACKAGE_NAME}\` over installing the monorepo root.
 `;

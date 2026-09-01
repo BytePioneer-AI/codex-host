@@ -284,7 +284,9 @@ export async function runHostRuntime(input: {
         socketPath,
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
+          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment, {
+            managedRemoteHost: true,
+          });
           void prefetchClaudeCodeModelCatalog(externalAdapters);
           return new AppServerHost({
             stockCodexPath,

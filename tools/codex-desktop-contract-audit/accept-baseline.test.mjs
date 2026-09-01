@@ -106,7 +106,8 @@ async function runConcurrentAcceptance(fixture_, firstReportPath, secondReportPa
     },
   });
   expect(entered).toBe(true);
-  await enteredPromise;
+  const heldLock = await enteredPromise;
+  const heldStat = fs.lstatSync(heldLock.lockPath);
   const second = Promise.resolve().then(() =>
     acceptReviewedBaseline({
       root: fixture_.root,
@@ -114,9 +115,20 @@ async function runConcurrentAcceptance(fixture_, firstReportPath, secondReportPa
       reportPath: secondReportPath,
     }),
   );
-  const outcomes = Promise.all([settle(Promise.resolve(first)), settle(second)]);
-  releaseResolve();
-  return outcomes;
+  let secondOutcome;
+  try {
+    secondOutcome = await settle(second);
+    const currentStat = fs.lstatSync(heldLock.lockPath);
+    const currentLock = JSON.parse(fs.readFileSync(heldLock.lockPath, "utf8"));
+    expect({ dev: currentStat.dev, ino: currentStat.ino }).toEqual({
+      dev: heldStat.dev,
+      ino: heldStat.ino,
+    });
+    expect(currentLock).toEqual({ schemaVersion: 1, transactionId: heldLock.transactionId });
+  } finally {
+    releaseResolve();
+  }
+  return Promise.all([settle(Promise.resolve(first)), Promise.resolve(secondOutcome)]);
 }
 
 function expectOneLocked(outcomes) {
@@ -189,20 +201,24 @@ describe("reviewed baseline acceptance", () => {
     expect(manifest.desktops).toHaveLength(2);
     expect(manifest.desktops[1]).toEqual({
       ...identity,
-      baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+      baseline:
+        "baselines/macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
     });
     expect(path.basename(result.baselinePath)).toBe(
-      "macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+      "macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
     );
     expect(JSON.parse(fs.readFileSync(result.baselinePath, "utf8"))).toEqual(
       validateAuditReport(auditReport()),
     );
   });
 
-  it("uses the ASAR digest to distinguish new baseline filenames", () => {
+  it("uses the complete ASAR digest to distinguish identities with a shared prefix", () => {
     const oldIdentity = { ...identity, version: "26.824.1", build: "7000" };
     const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
-    const secondIdentity = { ...identity, asarIntegrity: `sha256:${"b".repeat(64)}` };
+    const secondIdentity = {
+      ...identity,
+      asarIntegrity: "sha256:c089b63abb7ca4a7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    };
     const secondReportPath = writeReport(fixture_, auditReport(secondIdentity), "candidate-2.json");
 
     const first = acceptReviewedBaseline({
@@ -217,15 +233,22 @@ describe("reviewed baseline acceptance", () => {
     });
 
     const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
-    expect(path.basename(first.baselinePath)).toBe("macos-26.825.41651-7345-c089b63abb7ca4a7.json");
+    expect(path.basename(first.baselinePath)).toBe(
+      "macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
+    );
     expect(path.basename(second.baselinePath)).toBe(
-      "macos-26.825.41651-7345-bbbbbbbbbbbbbbbb.json",
+      "macos-26.825.41651-7345-c089b63abb7ca4a7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
     );
     expect(manifest.desktops.slice(1)).toEqual([
-      { ...identity, baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json" },
+      {
+        ...identity,
+        baseline:
+          "baselines/macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
+      },
       {
         ...secondIdentity,
-        baseline: "baselines/macos-26.825.41651-7345-bbbbbbbbbbbbbbbb.json",
+        baseline:
+          "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
       },
     ]);
     expect(JSON.parse(fs.readFileSync(first.baselinePath, "utf8")).desktop).toEqual(identity);
@@ -239,7 +262,7 @@ describe("reviewed baseline acceptance", () => {
     const fixture_ = fixture({ manifestIdentity: oldIdentity, baseline: "baselines/old.json" });
     const baselinePath = path.join(
       fixture_.auditDirectory,
-      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
     );
     const journalPath = path.join(
       path.dirname(fs.realpathSync(fixture_.manifestPath)),
@@ -247,7 +270,7 @@ describe("reviewed baseline acceptance", () => {
     );
     const resolvedBaselinePath = path.join(
       fs.realpathSync(fixture_.auditDirectory),
-      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+      "baselines/macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
     );
     const renameSync = fs.renameSync.bind(fs);
     const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
@@ -285,7 +308,8 @@ describe("reviewed baseline acceptance", () => {
     const manifest = JSON.parse(fs.readFileSync(fixture_.manifestPath, "utf8"));
     expect(manifest.desktops[1]).toEqual({
       ...identity,
-      baseline: "baselines/macos-26.825.41651-7345-c089b63abb7ca4a7.json",
+      baseline:
+        "baselines/macos-26.825.41651-7345-c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d.json",
     });
     expect(result).toMatchObject({ baselinePath: fs.realpathSync(baselinePath), appended: true });
     expect(fs.existsSync(journalPath)).toBe(false);
@@ -683,6 +707,54 @@ describe("reviewed baseline acceptance", () => {
     ]);
     expect(new Set(manifest.desktops.slice(1).map(({ baseline }) => baseline)).size).toBe(2);
     expect(fs.existsSync(outcomes[0].value.baselinePath)).toBe(true);
+    expect(fs.existsSync(retry.baselinePath)).toBe(true);
+  });
+
+  it("releases its own lock when the private barrier throws synchronously", () => {
+    const fixture_ = fixture();
+    const lockPath = path.join(fixture_.auditDirectory, ".accept-baseline.lock");
+
+    expect(() =>
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+        __testBarrier: () => {
+          throw new Error("synchronous barrier failure");
+        },
+      }),
+    ).toThrow("synchronous barrier failure");
+    expect(fs.existsSync(lockPath)).toBe(false);
+
+    const retry = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: fixture_.reportPath,
+    });
+    expect(fs.existsSync(retry.baselinePath)).toBe(true);
+  });
+
+  it("releases its own lock when the private barrier rejects asynchronously", async () => {
+    const fixture_ = fixture();
+    const lockPath = path.join(fixture_.auditDirectory, ".accept-baseline.lock");
+
+    await expect(
+      acceptReviewedBaseline({
+        root: fixture_.root,
+        manifestPath: fixture_.manifestPath,
+        reportPath: fixture_.reportPath,
+        __testBarrier: async () => {
+          throw new Error("asynchronous barrier failure");
+        },
+      }),
+    ).rejects.toThrow("asynchronous barrier failure");
+    expect(fs.existsSync(lockPath)).toBe(false);
+
+    const retry = acceptReviewedBaseline({
+      root: fixture_.root,
+      manifestPath: fixture_.manifestPath,
+      reportPath: fixture_.reportPath,
+    });
     expect(fs.existsSync(retry.baselinePath)).toBe(true);
   });
 

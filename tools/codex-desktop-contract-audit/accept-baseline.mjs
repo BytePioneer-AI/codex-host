@@ -370,7 +370,6 @@ export function acceptReviewedBaseline(input) {
     "manifest path",
   );
   const manifestDirectory = path.dirname(manifestPath);
-  const lock = acquireAcceptanceLock(manifestDirectory);
   const acceptWhileLocked = () => {
     const report = validateAuditReport(JSON.parse(fs.readFileSync(reportPath, "utf8")));
     if (rejectedVerdicts.has(report.verdict)) {
@@ -395,7 +394,7 @@ export function acceptReviewedBaseline(input) {
     if (existing) {
       baselinePath = existing.baseline;
     } else {
-      const digest = report.desktop.asarIntegrity.slice("sha256:".length, "sha256:".length + 16);
+      const digest = report.desktop.asarIntegrity.slice("sha256:".length);
       const filename = `${safeSegment(report.desktop.platform)}-${safeSegment(report.desktop.version)}-${safeSegment(report.desktop.build)}-${digest}.json`;
       const relativeBaseline = path.join("baselines", filename);
       baselinePath = path.resolve(manifestDirectory, relativeBaseline);
@@ -425,22 +424,24 @@ export function acceptReviewedBaseline(input) {
     return { baselinePath, manifestPath, appended: false };
   };
 
-  if (input.__testBarrier !== undefined) {
+  let releaseWithPromise = false;
+  const lock = acquireAcceptanceLock(manifestDirectory);
+  try {
+    if (input.__testBarrier === undefined) return acceptWhileLocked();
     if (typeof input.__testBarrier !== "function") {
-      releaseAcceptanceLock(lock);
       throw new Error("acceptance test barrier must be a function");
     }
-    return Promise.resolve(
-      input.__testBarrier({ lockPath: lock.lockPath, transactionId: lock.transactionId }),
-    )
+    const barrierResult = input.__testBarrier({
+      lockPath: lock.lockPath,
+      transactionId: lock.transactionId,
+    });
+    const acceptance = Promise.resolve(barrierResult)
       .then(acceptWhileLocked)
       .finally(() => releaseAcceptanceLock(lock));
-  }
-
-  try {
-    return acceptWhileLocked();
+    releaseWithPromise = true;
+    return acceptance;
   } finally {
-    releaseAcceptanceLock(lock);
+    if (!releaseWithPromise) releaseAcceptanceLock(lock);
   }
 }
 

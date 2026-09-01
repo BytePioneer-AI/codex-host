@@ -5,6 +5,7 @@ import {
   grokSubagentBackground,
   grokSubagentDescription,
   grokSubagentKill,
+  grokSubagentModel,
   grokSubagentOperation,
   grokSubagentWaitIds,
   grokSubagentWaitSettlements,
@@ -40,6 +41,7 @@ describe("Grok Subagent ACP mapping", () => {
     expect(grokSubagentDescription({ description: "Inspect the repo" }, "spawn_subagent")).toBe(
       "Inspect the repo",
     );
+    expect(grokSubagentModel({ model: "grok-4.6" })).toBe("grok-4.6");
   });
 
   it("settles wait and kill only when the child is actually terminal", () => {

@@ -23,6 +23,7 @@ import {
   grokNativeSubagentId,
   grokSubagentBackground,
   grokSubagentDescription,
+  grokSubagentModel,
   grokSubagentOperation,
   grokSubagentPrompt,
   grokSubagentResultSummary,
@@ -441,6 +442,7 @@ export function mapGrokReplay(
         rememberSubagentAlias(event.callId, nativeSubagentId);
         const prompt = grokSubagentPrompt(event.rawInput);
         const role = grokSubagentRole(event.rawInput);
+        const model = grokSubagentModel(event.rawInput);
         subagents.set(event.callId, {
           type: "subagentDelegation",
           itemId: stableId("subagent", turnIndex, ++messageIndex),
@@ -452,6 +454,7 @@ export function mapGrokReplay(
               ...(nativeSubagentId ? { nativeSubagentId } : {}),
               description: grokSubagentDescription(event.rawInput, event.title),
               ...(role ? { role } : {}),
+              ...(model ? { model } : {}),
               background: grokSubagentBackground(event.rawInput),
               status: "running",
             },

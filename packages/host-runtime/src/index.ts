@@ -6,6 +6,7 @@ import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
 import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
+import { packageMetadata as harnessBroker } from "@codexhost/harness-broker";
 import { packageMetadata as mappingStore } from "@codexhost/mapping-store";
 import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts";
@@ -62,6 +63,7 @@ export type {
   ThreadWaitInput,
 } from "./delegation-types.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
+export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {
   REMOTE_CONTROL_BRIDGE_DESCRIPTOR_FILE,
   createRemoteControlAppServerPlan,
@@ -117,6 +119,7 @@ export const packageMetadata = {
     deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,
+    harnessBroker.name,
     grokAdapter.name,
     mappingStore.name,
     piAdapter.name,

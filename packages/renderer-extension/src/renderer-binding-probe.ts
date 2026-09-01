@@ -2610,6 +2610,7 @@ export function installRendererBindingProbe(
   const mutationObserver = new MutationObserver((mutations) => {
     transferReplacedComposers(mutations);
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    subagentRowMeta.refresh();
   });
   const onHostRouteChange = (): void => {
     sidebarAgentIcons.refresh();
@@ -2632,6 +2633,7 @@ export function installRendererBindingProbe(
     if (shouldRefreshCodexAccountsForAdapterState(adapterStatus.state)) {
       void loadCodexAccounts();
       sidebarAgentIcons.refresh();
+      subagentRowMeta.refresh();
       void refreshHarnessAvailabilityForHost("local");
       void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {

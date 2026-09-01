@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { formatSubagentRowMeta, prettySubagentStatus } from "../src/renderer-subagent-row-meta.js";
+import {
+  formatSubagentRowMeta,
+  prettySubagentStatus,
+  subagentRowMetaFromProps,
+} from "../src/renderer-subagent-row-meta.js";
 
 describe("Subagent row meta", () => {
   it("labels Codex Subagent statuses in Traditional Chinese", () => {
@@ -26,5 +30,24 @@ describe("Subagent row meta", () => {
         status: "active",
       }),
     ).toBe("Grok 4.6 · High · 進行中");
+  });
+
+  it("reads nested backgroundAgent props used by the artifacts popover", () => {
+    expect(
+      subagentRowMetaFromProps({
+        type: "agent",
+        backgroundAgent: {
+          conversationId: "child-1",
+          displayName: "Find test run commands",
+          spawnModel: "Grok 4.6 · High",
+          agentRole: "explore",
+          status: "done",
+        },
+      }),
+    ).toMatchObject({
+      displayName: "Find test run commands",
+      spawnModel: "Grok 4.6 · High",
+      status: "done",
+    });
   });
 });

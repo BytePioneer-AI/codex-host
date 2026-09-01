@@ -72,8 +72,6 @@ export {
   OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
-  QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
-  QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeClaudeTransportSelection,
   decodeCreateRoute,
   decodeDeepSeekHarnessTransportSelection,
@@ -85,7 +83,6 @@ export {
   decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
-  decodeQwenCodeTransportSelection,
   encodeClaudeTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeExternalTransportSelection,
@@ -94,7 +91,6 @@ export {
   encodeQwenCodeTransportModel,
   encodeOpenCodeTransportModel,
   encodePiTransportModel,
-  encodeQwenCodeTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
 export type {

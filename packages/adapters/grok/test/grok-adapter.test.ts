@@ -155,11 +155,13 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     return null;
   }
 
+  lastPromptText: string | null = null;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
   ): Promise<PromptResponse> {
+    this.lastPromptText = text;
     this.#activePromptText = text;
     this.#activePromptEvents = [];
     this.#onEvent = onEvent;
@@ -431,6 +433,21 @@ describe("Grok Adapter ACP projection", () => {
       permissionModeId: "default",
       modelId: "grok-4.6",
     });
+    await adapter.close();
+  });
+
+  it("tells Grok the live Model on every Turn so identity matches the picker", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-identity"),
+      input: [{ type: "text", text: "你係咩模型" }],
+    });
+    expect(transport.lastPromptText).toContain("你係咩模型");
+    expect(transport.lastPromptText).toContain("The active model for this turn is Grok 4.6.");
+    expect(transport.lastPromptText?.startsWith("<system-reminder>")).toBe(false);
+    transport.finish();
     await adapter.close();
   });
 

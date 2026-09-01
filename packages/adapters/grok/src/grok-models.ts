@@ -102,6 +102,16 @@ export function modelStateFromSessionResponse(response: unknown): GrokModelState
   return parseGrokModelState(isRecord(response) ? response.models : undefined);
 }
 
+export function grokModelDisplayLabel(modelState: GrokModelState, modelId?: string): string {
+  const id = modelId ?? modelState.currentModel.id;
+  return modelState.catalog.models.find(({ ref }) => ref.id === id)?.label ?? id;
+}
+
+export function grokActiveModelReminder(modelLabel: string, thinkingLabel?: string): string {
+  const thinking = thinkingLabel ? ` Reasoning effort is ${thinkingLabel}.` : "";
+  return `<system-reminder>\nThe active model for this turn is ${modelLabel}.${thinking} If asked which model you are, answer ${modelLabel}. Do not identify as a previous Grok version.\n</system-reminder>`;
+}
+
 export function stateForGrokModel(
   modelState: GrokModelState,
   nativeState: Pick<HarnessSessionState, "nativeRef">,

@@ -111,6 +111,8 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
+  grokActiveModelReminder,
+  grokModelDisplayLabel,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -495,9 +497,13 @@ class GrokHarnessSession implements HarnessSession {
     };
     this.#active = active;
     this.#event({ type: "turn.started", turnId: command.turnId });
+    const modelLabel = grokModelDisplayLabel(this.#modelState, this.#state.effectiveModel?.id);
+    const thinkingLabel = this.#state.availableThinkingOptions?.find(
+      (option) => option.id === this.#state.effectiveThinkingOptionId,
+    )?.label;
     void this.#transport
       .runTurn(
-        text,
+        `${text}\n\n${grokActiveModelReminder(modelLabel, thinkingLabel)}`,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
       )

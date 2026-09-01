@@ -20,6 +20,8 @@ export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/codebuddy-native";
+export const CODEBUDDY_NATIVE_TRANSPORT_MODEL_PREFIX = `${CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
@@ -27,6 +29,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "opencode",
   "grok",
   "omp",
+  "codebuddy",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -39,6 +42,7 @@ const transportModelByHarness = {
   opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
+  codebuddy: CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -398,6 +402,54 @@ export function decodeDeepSeekHarnessTransportSelection(
   };
 }
 
+export function encodeCodeBuddyTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("CodeBuddy transport Permission Mode requires a Model Ref");
+    }
+    return CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${CODEBUDDY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
+}
+
+export function decodeCodeBuddyTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CODEBUDDY_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(CODEBUDDY_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("CodeBuddy transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("CodeBuddy transport configuration has an empty Permission Mode");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) {
+    throw new Error("CodeBuddy transport Model contains an invalid Model Ref");
+  }
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("CodeBuddy transport contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
@@ -427,6 +479,8 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+    case "codebuddy":
+      return encodeCodeBuddyTransportModel(selection.model, selection.permissionModeId);
   }
 }
 
@@ -447,6 +501,8 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "codebuddy":
+      return decodeCodeBuddyTransportSelection(value);
   }
 }
 
@@ -516,6 +572,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...ompSelection,
+    };
+  }
+  const codeBuddySelection = decodeCodeBuddyTransportSelection(request.params.model);
+  if (codeBuddySelection !== null) {
+    return {
+      harnessId: "codebuddy",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...codeBuddySelection,
     };
   }
 

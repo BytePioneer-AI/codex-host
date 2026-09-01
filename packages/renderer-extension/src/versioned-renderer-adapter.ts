@@ -40,6 +40,8 @@ export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
+export const CODEBUDDY_TRANSPORT_MODEL_ID = "codexhost/codebuddy-native";
+export const CODEBUDDY_TRANSPORT_MODEL_PREFIX = `${CODEBUDDY_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -136,6 +138,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
+  if (agent === "codebuddy") return CODEBUDDY_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -388,6 +391,50 @@ export function decodeDeepSeekHarnessTransportModelId(value: unknown): {
 
 export function isDeepSeekHarnessTransportModelId(value: unknown): value is string {
   return decodeDeepSeekHarnessTransportModelId(value) !== null;
+}
+
+export function codeBuddyTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("CodeBuddy transport Permission Mode requires a Model Ref");
+    }
+    return CODEBUDDY_TRANSPORT_MODEL_ID;
+  }
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${CODEBUDDY_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
+}
+
+export function decodeCodeBuddyTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === CODEBUDDY_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CODEBUDDY_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(CODEBUDDY_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
+export function isCodeBuddyTransportModelId(value: unknown): value is string {
+  return decodeCodeBuddyTransportModelId(value) !== null;
 }
 
 export function decodePiTransportModelId(value: unknown): {
@@ -834,7 +881,9 @@ export function modelSelectionForAgent(
               ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
               : agent === "omp"
                 ? ompTransportModelId(model, thinkingOptionId)
-                : transportModelIdForAgent(agent);
+                : agent === "codebuddy"
+                  ? codeBuddyTransportModelId(model, permissionModeId)
+                  : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

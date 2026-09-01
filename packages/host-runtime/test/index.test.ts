@@ -5,13 +5,14 @@ import { classifyCreateRequestRoute, packageMetadata } from "../src/index.js";
 
 describe("host-runtime package", () => {
   it("declares the composition-root dependencies", () => {
-    expect(packageMetadata.dependencies).toHaveLength(12);
+    expect(packageMetadata.dependencies).toHaveLength(13);
     expect(packageMetadata.dependencies).toContain("@codexhost/protocol-core");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-claude-code");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-deepseek-harness");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-grok");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-opencode");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-omp");
+    expect(packageMetadata.dependencies).toContain("@codexhost/adapter-codebuddy");
     expect(packageMetadata.dependencies).toContain("@codexhost/harness-adapter");
     expect(packageMetadata.dependencies).toContain("@codexhost/shared-contracts");
     expect(packageMetadata.dependencies).toContain("@codexhost/update-manager");

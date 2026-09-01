@@ -46,12 +46,14 @@ describe("Host external Harness composition", () => {
       "opencode",
       "grok",
       "omp",
+      "codebuddy",
     ]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     expect(adapters.get("omp")?.harnessId).toBe("omp");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
     expect(adapters.get("opencode")?.harnessId).toBe("opencode");
+    expect(adapters.get("codebuddy")?.harnessId).toBe("codebuddy");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 

@@ -18,6 +18,7 @@ export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
 const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Object.freeze({
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
+  "qwen-code": "https://github.com/QwenLM/qwen-code",
   "deepseek-harness": "https://deepseek-harness.github.io/deepseek-harness/",
   opencode: "https://opencode.ai/docs/",
   grok: "https://grok.com/",

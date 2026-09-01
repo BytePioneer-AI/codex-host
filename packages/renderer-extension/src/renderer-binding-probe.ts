@@ -80,6 +80,7 @@ import type {
 const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
   "claude-code": harnessIdSchema.parse("claude-code"),
+  "qwen-code": harnessIdSchema.parse("qwen-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   opencode: harnessIdSchema.parse("opencode"),
   grok: harnessIdSchema.parse("grok"),
@@ -89,6 +90,7 @@ const externalHarnessIds = {
 const externalAgents: readonly ExternalRendererAgent[] = [
   "pi",
   "claude-code",
+  "qwen-code",
   "deepseek-harness",
   "opencode",
   "grok",
@@ -597,6 +599,7 @@ export function installRendererBindingProbe(
     errors: {
       pi: undefined,
       "claude-code": undefined,
+      "qwen-code": undefined,
       "deepseek-harness": undefined,
       opencode: undefined,
       grok: undefined,

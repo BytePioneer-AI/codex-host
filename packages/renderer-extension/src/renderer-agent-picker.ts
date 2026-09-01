@@ -47,6 +47,7 @@ function openConnectionsSettings(opener?: HTMLElement): void {
 export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
   pi: "https://pi.dev/",
   "claude-code": "https://code.claude.com/docs/en/quickstart",
+  "qwen-code": "https://github.com/QwenLM/qwen-code",
   "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
   opencode: "https://opencode.ai/docs/",
   grok: "https://grok.com/",

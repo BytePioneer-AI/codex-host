@@ -15,7 +15,7 @@ import {
 } from "@qwen-code/sdk";
 import type { HarnessPermissionModeId } from "@codexhost/shared-contracts";
 
-import { QwenCodeExecutableError, resolveQwenExecutable } from "./command.js";
+import { QwenCodeExecutableError } from "./command.js";
 import { decodeQwenCodePermissionModeId } from "./permission-modes.js";
 
 export type QwenCodeTransportFaultKind =
@@ -146,6 +146,11 @@ function classifyError(error: unknown): QwenCodeTransportError {
   }
   const text = errorText(error);
   const lower = text.toLowerCase();
+  if (lower.includes("enoent") || lower.includes("executable file not found")) {
+    return new QwenCodeTransportError("notInstalled", "Qwen Code CLI is not installed", {
+      cause: error,
+    });
+  }
   if (
     lower.includes("auth_required") ||
     lower.includes("authentication") ||
@@ -273,10 +278,9 @@ export class QwenCodeSdkTransport {
     if (input.kind === "resume" && !resumeSessionId) {
       throw new QwenCodeTransportError("protocolError", "Qwen Code resume requires a Session identity");
     }
-    const executable = resolveQwenExecutable({
-      ...(this.#options.command ? { command: this.#options.command } : {}),
-      environment: this.#options.environment ?? process.env,
-    });
+    // The SDK accepts a command name and resolves it with PATH. Passing the
+    // absolute Windows npm `.cmd` shim makes Node spawn fail with EINVAL.
+    const executable = this.#options.command ?? "qwen";
     const inputStream = new PushableInput();
     const queryFactory = this.#options.queryFactory ?? query;
     const sessionId = input.kind === "resume" ? resumeSessionId! : randomUUID();

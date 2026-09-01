@@ -104,11 +104,11 @@ describe("remote Host lifecycle", () => {
     expect(terminate).not.toHaveBeenCalled();
   });
 
-  it("replaces a verified stock listener before launching the managed Host", async () => {
+  it("uses process verification when an active listener cannot be classified", async () => {
     const operations: string[] = [];
     restore = setRemoteHostLifecycleDependenciesForTest({
       inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
-      probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+      probeProtocol: vi.fn().mockResolvedValue(runtime("unknown", "unknown")),
       runTerminator: vi.fn(async (_manifest, _socket, role) => {
         operations.push(`terminate:${role}`);
       }),
@@ -132,7 +132,11 @@ describe("remote Host lifecycle", () => {
 
   it("fails closed for an unknown active socket", async () => {
     const launch = vi.fn();
-    const terminate = vi.fn();
+    const terminate = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("remote Host socket owner does not match the requested installed listener"),
+      );
     restore = setRemoteHostLifecycleDependenciesForTest({
       inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
       probeProtocol: vi
@@ -144,9 +148,11 @@ describe("remote Host lifecycle", () => {
 
     await expect(
       startRemoteHost({ platform: "linux", environment: { HOME: home } }),
-    ).rejects.toThrow("unknown owner");
+    ).rejects.toThrow("socket owner does not match");
     expect(launch).not.toHaveBeenCalled();
-    expect(terminate).not.toHaveBeenCalled();
+    expect(terminate).toHaveBeenCalledWith(expect.objectContaining(manifest), socketPath, "stock", {
+      HOME: home,
+    });
   });
 
   it("stops only a protocol-verified managed Host", async () => {

@@ -128,7 +128,7 @@ fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let executable = env::current_exe()?.canonicalize()?;
     let resources = InstalledResources::from_executable(&executable)?;
     let status = Command::new(&resources.node)
-        .arg(&resources.host_runtime)
+        .arg(node_entrypoint_path(&resources.host_runtime))
         .arg("--codexhost-delegation-cli")
         .args(arguments)
         .env(CODEXHOST_CLI_PATH_ENV, &executable)

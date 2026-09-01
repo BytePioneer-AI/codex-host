@@ -30,7 +30,6 @@ import {
   type HostSubagentDelegationItem,
   type HostSubagentState,
   type HostSubagentStatus,
-  type HostToolExecutionItem,
   type HostToolOutput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -98,6 +97,7 @@ import {
   type OmpPermissionMode,
 } from "./omp-permission-modes.js";
 import { OmpSubagentLifecycle } from "./omp-subagent-lifecycle.js";
+import { projectOmpToolItem } from "./omp-tool-presentation.js";
 
 export interface OmpAdapterOptions {
   command?: string;
@@ -140,7 +140,7 @@ export interface OmpAdapterDependencies {
 }
 
 interface ActiveTool {
-  item: HostCommandExecutionItem | HostToolExecutionItem;
+  item: HostCommandExecutionItem;
   nativeName: string;
   startedAtMs: number;
 }
@@ -269,6 +269,34 @@ function harnessStateFromOmp(
     ...(state.thinkingLevel ? { effectiveThinkingOptionId: state.thinkingLevel } : {}),
     ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
     ...(permissionModeId ? { effectivePermissionModeId: permissionModeId } : {}),
+  };
+}
+
+/**
+ * OMP can retain the previous model's Thinking level when it silently falls
+ * back to another model. Normalize that stale value before publishing the
+ * Session state so a recoverable Native Session is not rejected by the
+ * Host-side state invariant.
+ */
+async function reconcileThinkingLevel(
+  transport: OmpTurnTransport,
+  state: OmpSessionState,
+  thinkingLevels: HarnessThinkingOptionId[] | null,
+): Promise<{ state: OmpSessionState; thinkingLevels: HarnessThinkingOptionId[] | null }> {
+  if (
+    thinkingLevels === null ||
+    (state.thinkingLevel !== null && thinkingLevels.includes(state.thinkingLevel))
+  ) {
+    return { state, thinkingLevels };
+  }
+
+  const fallback = thinkingLevels.find((level) => level === "high") ?? thinkingLevels.at(-1);
+  if (!fallback) return { state, thinkingLevels };
+
+  const selectedState = await transport.selectThinkingOption(fallback);
+  return {
+    state: selectedState,
+    thinkingLevels: await transport.getAvailableThinkingLevels(),
   };
 }
 
@@ -877,6 +905,9 @@ class OmpHarnessSession implements HarnessSession {
       try {
         state = await transport.selectModel(requested);
         thinkingLevels = await transport.getAvailableThinkingLevels();
+        const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+        state = reconciled.state;
+        thinkingLevels = reconciled.thinkingLevels;
         this.#publishTransportState(state, thinkingLevels);
       } catch (error) {
         if (error instanceof OmpRpcFaultError) this.#fault(error);
@@ -1251,6 +1282,10 @@ class OmpHarnessSession implements HarnessSession {
           }
           state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
           thinkingLevels = await transport.getAvailableThinkingLevels();
+        } else {
+          const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+          state = reconciled.state;
+          thinkingLevels = reconciled.thinkingLevels;
         }
         this.#transport = transport;
         this.#publishTransportState(state, thinkingLevels);
@@ -1508,20 +1543,12 @@ class OmpHarnessSession implements HarnessSession {
 
   #startTool(active: ActiveTurn, event: Extract<OmpTurnEvent, { type: "tool.started" }>): void {
     if (active.tools.has(event.callId)) throw new Error("Omp Tool started more than once");
-    const command = event.toolName === "bash" ? stringField(event.arguments, "command") : undefined;
-    const item: HostCommandExecutionItem | HostToolExecutionItem = command
-      ? {
-          type: "commandExecution",
-          itemId: this.#newItemId(),
-          command,
-          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
-        }
-      : {
-          type: "toolExecution",
-          itemId: this.#newItemId(),
-          toolName: event.toolName,
-          arguments: event.arguments,
-        };
+    const item = projectOmpToolItem({
+      itemId: this.#newItemId(),
+      toolName: event.toolName,
+      arguments: event.arguments,
+      cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+    });
     active.tools.set(event.callId, {
       item,
       nativeName: event.toolName,
@@ -1535,34 +1562,24 @@ class OmpHarnessSession implements HarnessSession {
     if (!tool) throw new Error("Omp Tool update references an unknown Tool Call");
     const output = boundedOutput(event.output, this.#toolOutputLimit);
     if (!output) return;
-    if (tool.item.type === "commandExecution") {
-      const previous = tool.item.output ?? "";
-      const next = outputText(output);
-      tool.item = {
-        ...tool.item,
-        output: next,
-        outputTruncated: output.truncated === true,
-      };
-      if (next.startsWith(previous)) {
-        const delta = next.slice(previous.length);
-        if (delta.length > 0) {
-          this.#event({
-            type: "item.updated",
-            turnId: active.command.turnId,
-            itemId: tool.item.itemId,
-            update: { type: "output.append", text: delta },
-          });
-        }
+    const previous = tool.item.output ?? "";
+    const next = outputText(output);
+    tool.item = {
+      ...tool.item,
+      output: next,
+      outputTruncated: output.truncated === true,
+    };
+    if (next.startsWith(previous)) {
+      const delta = next.slice(previous.length);
+      if (delta.length > 0) {
+        this.#event({
+          type: "item.updated",
+          turnId: active.command.turnId,
+          itemId: tool.item.itemId,
+          update: { type: "output.append", text: delta },
+        });
       }
-      return;
     }
-    tool.item = { ...tool.item, output };
-    this.#event({
-      type: "item.updated",
-      turnId: active.command.turnId,
-      itemId: tool.item.itemId,
-      update: { type: "output.replace", output },
-    });
   }
 
   #completeTool(
@@ -1576,22 +1593,18 @@ class OmpHarnessSession implements HarnessSession {
     active.tools.delete(event.callId);
     const durationMs = Math.max(0, Date.now() - tool.startedAtMs);
     const output = boundedOutput(event.result, this.#toolOutputLimit);
-    if (tool.item.type === "commandExecution") {
-      const exitCode = numberField(event.result, "exitCode");
-      tool.item = {
-        ...tool.item,
-        ...(output
-          ? {
-              output: outputText(output),
-              outputTruncated: output.truncated === true,
-            }
-          : {}),
-        ...(exitCode !== undefined ? { exitCode } : {}),
-        durationMs,
-      };
-    } else {
-      tool.item = { ...tool.item, ...(output ? { output } : {}), durationMs };
-    }
+    const exitCode = numberField(event.result, "exitCode");
+    tool.item = {
+      ...tool.item,
+      ...(output
+        ? {
+            output: outputText(output),
+            outputTruncated: output.truncated === true,
+          }
+        : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      durationMs,
+    };
     const outcome: HostItemOutcome = active.cancellationRequested
       ? { status: "cancelled", reason: "Cancelled by user" }
       : event.isError
@@ -2036,7 +2049,13 @@ export class OmpAdapter implements HarnessAdapter {
         }
       }
 
-      const startedThinkingLevels = await transport.getAvailableThinkingLevels();
+      let startedThinkingLevels = await transport.getAvailableThinkingLevels();
+      const reconciled = await reconcileThinkingLevel(
+        transport,
+        transport.state,
+        startedThinkingLevels,
+      );
+      startedThinkingLevels = reconciled.thinkingLevels;
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
       session = this.#trackSession(input.cwd, {

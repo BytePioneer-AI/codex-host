@@ -69,6 +69,16 @@ export interface RendererSettingsMessages {
   readonly connectionIssueDescription: string;
   readonly connectionReadyDescription: string;
   readonly connectionUnavailableDescription: string;
+  readonly connectionGroupMoreLabel: string;
+  readonly connectionGroupMoreHintTitle: string;
+  readonly connectionGroupMoreHintBody: string;
+  readonly connectionGroupMoveToMore: string;
+  readonly connectionGroupMoveToMain: string;
+  readonly connectionGroupDragHandle: string;
+  readonly connectionGroupReset: string;
+  readonly pickerMoreAgentsLabel: string;
+  readonly pickerManageLink: string;
+  readonly pickerHideUnusedAgentsCta: string;
   readonly enabled: string;
   readonly disabled: string;
   readonly openSettings: string;
@@ -170,6 +180,16 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionReadyDescription: "This component is available on the selected Host.",
   connectionUnavailableDescription:
     "This component is not currently available on the selected Host.",
+  connectionGroupMoreLabel: "More",
+  connectionGroupMoreHintTitle: "Drag Agents here to collapse the ones you rarely use",
+  connectionGroupMoreHintBody: "They fold into the picker's “More Agents” group",
+  connectionGroupMoveToMore: "Move to More",
+  connectionGroupMoveToMain: "Move back to Main",
+  connectionGroupDragHandle: "Drag to reorder",
+  connectionGroupReset: "Reset order",
+  pickerMoreAgentsLabel: "More agents",
+  pickerManageLink: "Manage",
+  pickerHideUnusedAgentsCta: "Hide unused agents",
   enabled: "Enabled",
   disabled: "Disabled",
   openSettings: "Open codexhost settings",
@@ -280,6 +300,16 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionIssueDescription: "提交前请复制错误日志，并在 Issue 中说明当前 Host 与复现步骤。",
   connectionReadyDescription: "该组件在当前 Host 上可用。",
   connectionUnavailableDescription: "该组件当前无法在所选 Host 上使用。",
+  connectionGroupMoreLabel: "更多",
+  connectionGroupMoreHintTitle: "拖到这里可以收起不常用的 Agent",
+  connectionGroupMoreHintBody: "它们会折叠进选择器的「更多」分组",
+  connectionGroupMoveToMore: "移到更多",
+  connectionGroupMoveToMain: "移回常用",
+  connectionGroupDragHandle: "拖动排序",
+  connectionGroupReset: "恢复默认排列",
+  pickerMoreAgentsLabel: "更多 Agent",
+  pickerManageLink: "管理",
+  pickerHideUnusedAgentsCta: "收起不常用的 Agent",
   enabled: "已开启",
   disabled: "已关闭",
   openSettings: "打开 codexhost 设置",

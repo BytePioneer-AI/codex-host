@@ -41,6 +41,7 @@ describe("Renderer Agent picker presentation", () => {
       nativeModelHidden: false,
       optionDisabled: { codex: false, pi: true, "claude-code": true, grok: true },
       downloadVisible: { pi: false, "claude-code": false, grok: false },
+      errorVisible: { pi: false, "claude-code": false, grok: false },
     });
   });
 
@@ -55,6 +56,7 @@ describe("Renderer Agent picker presentation", () => {
       nativeModelHidden: true,
       optionDisabled: { codex: true, pi: true },
       downloadVisible: { pi: false },
+      errorVisible: { pi: false },
     });
   });
 
@@ -80,6 +82,22 @@ describe("Renderer Agent picker presentation", () => {
       nativeModelHidden: false,
       optionDisabled: { codex: false, pi: true },
       downloadVisible: { pi: true },
+      errorVisible: { pi: false },
+    });
+  });
+
+  it("surfaces a distinct error action (not the install action) once a Harness fails", () => {
+    expect(
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex", "pi"], {
+        pi: "error",
+      }),
+    ).toEqual({
+      label: "Codex",
+      triggerDisabled: false,
+      nativeModelHidden: false,
+      optionDisabled: { codex: false, pi: true },
+      downloadVisible: { pi: false },
+      errorVisible: { pi: true },
     });
   });
 

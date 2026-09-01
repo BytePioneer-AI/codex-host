@@ -70,6 +70,8 @@
     "gate:claude": "node tools/gate-claude-code/run.mjs gate",
     "probe:renderer-binding": "npm run build:typescript && npm run build:renderer && node tools/renderer-binding/run.mjs",
     "audit:codex-desktop": "npm run build:typescript && npm run build:renderer && node tools/codex-desktop-contract-audit/run.mjs",
+    "test:codex-desktop:integration": "npm run build:typescript && npm run build:renderer && node tools/codex-desktop-contract-audit/integration.mjs",
+    "accept:codex-desktop-baseline": "node tools/codex-desktop-contract-audit/accept-baseline.mjs",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools -- -D warnings && cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:typescript && npm run check:rust",
     "clean": "node tools/clean.mjs"

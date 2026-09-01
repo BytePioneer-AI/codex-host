@@ -28,7 +28,7 @@ function usage() {
   npm run audit:codex-desktop -- [--mode read-only|controlled]
     [--endpoint <loopback-url>] [--inspector-endpoint <loopback-url>]
     [--baseline <audit-report.json>] [--output <directory>]
-    [--desktop-version <version>] [--desktop-build <build>]
+    [--desktop-platform <platform>] [--desktop-version <version>] [--desktop-build <build>]
     [--asar-integrity <sha256:value>] [--launcher <absolute-codexhost-file>]
 
 Read-only mode is the default. Controlled mode installs the existing production Renderer policies
@@ -55,6 +55,7 @@ export function parseAuditArguments(arguments_) {
     inspectorEndpoint: defaultInspectorEndpoint,
     baselinePath: null,
     outputRoot: defaultOutputRoot,
+    desktopPlatform: null,
     desktopVersion: null,
     desktopBuild: null,
     asarIntegrity: null,
@@ -85,6 +86,9 @@ export function parseAuditArguments(arguments_) {
         break;
       case "--output":
         options.outputRoot = path.resolve(value());
+        break;
+      case "--desktop-platform":
+        options.desktopPlatform = boundedText(value(), argument, 32);
         break;
       case "--desktop-version":
         options.desktopVersion = boundedText(value(), argument, 64);
@@ -131,15 +135,28 @@ function parseInspectOutput(output) {
     values[line.slice(0, separator)] = line.slice(separator + 1);
   }
   return {
+    platform: values.platform ?? "unknown",
     version: values.desktop_version ?? "unknown",
     build: values.desktop_build ?? values.desktop_version ?? "unknown",
     asarIntegrity: values.desktop_asar_integrity ?? "unknown",
   };
 }
 
-function readDesktopIdentity(options) {
-  if (options.desktopVersion && options.desktopBuild && options.asarIntegrity) {
+export function readDesktopIdentity(options) {
+  const explicit = [
+    options.desktopPlatform,
+    options.desktopVersion,
+    options.desktopBuild,
+    options.asarIntegrity,
+  ];
+  if (explicit.some((value) => value !== null) && !explicit.every((value) => value !== null)) {
+    throw new Error(
+      "explicit Desktop identity requires all four fields: platform, version, build, and asar integrity",
+    );
+  }
+  if (explicit.every((value) => value !== null)) {
     return {
+      platform: options.desktopPlatform,
       version: options.desktopVersion,
       build: options.desktopBuild,
       asarIntegrity: options.asarIntegrity,
@@ -155,9 +172,10 @@ function readDesktopIdentity(options) {
     execFileSync(launcher, ["inspect"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
   );
   return {
-    version: options.desktopVersion ?? inspected.version,
-    build: options.desktopBuild ?? inspected.build,
-    asarIntegrity: options.asarIntegrity ?? inspected.asarIntegrity,
+    platform: inspected.platform,
+    version: inspected.version,
+    build: inspected.build,
+    asarIntegrity: inspected.asarIntegrity,
   };
 }
 
@@ -195,8 +213,7 @@ async function runControlled(options, rendererSource, installRendererControlSess
   }
 }
 
-async function main() {
-  const options = parseAuditArguments(process.argv.slice(2));
+export async function runCodexDesktopAudit(options) {
   const auditBundlePath = path.join(
     repositoryRoot,
     "packages",
@@ -269,15 +286,20 @@ async function main() {
   const markdownPath = path.join(outputDirectory, "audit-report.md");
   fs.writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(markdownPath, auditReportMarkdown(report), "utf8");
+  return { report, jsonPath, markdownPath };
+}
+
+async function main() {
+  const result = await runCodexDesktopAudit(parseAuditArguments(process.argv.slice(2)));
   console.log(
     JSON.stringify({
       type: "codex-desktop-contract-audit",
-      verdict: report.verdict,
-      jsonPath,
-      markdownPath,
+      verdict: result.report.verdict,
+      jsonPath: result.jsonPath,
+      markdownPath: result.markdownPath,
     }),
   );
-  if (report.verdict === "confirmed-impact") process.exitCode = 2;
+  if (result.report.verdict === "confirmed-impact") process.exitCode = 2;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) {

@@ -42,7 +42,12 @@ function reportFor(surfaces) {
     recordedAt: "2026-08-30T00:00:00.000Z",
     mode: "read-only",
     verdict: aggregateVerdict(surfaces),
-    desktop: { version: "26.1", build: "100", asarIntegrity: `sha256:${"a".repeat(64)}` },
+    desktop: {
+      platform: "macos",
+      version: "26.1",
+      build: "100",
+      asarIntegrity: `sha256:${"a".repeat(64)}`,
+    },
     browser: { browser: "Chrome/151", protocolVersion: "1.3" },
     checksRun: ["renderer-contracts-read-only"],
     baseline: { supplied: false, version: null, build: null },
@@ -157,5 +162,16 @@ describe("Codex Desktop contract audit report", () => {
     expect(() => validateAuditReport({ ...reportFor(surfaces), privatePrompt: "secret" })).toThrow(
       "unknown or missing fields",
     );
+  });
+
+  it("rejects multiline Desktop identity fields", () => {
+    const surfaces = buildSurfaceResults(contracts);
+    const report = reportFor(surfaces);
+    expect(() =>
+      validateAuditReport({
+        ...report,
+        desktop: { ...report.desktop, platform: "macos\nsecret" },
+      }),
+    ).toThrow(/bounded text/i);
   });
 });

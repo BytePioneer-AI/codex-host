@@ -14,6 +14,8 @@ npm run audit:codex-desktop -- \
 
 The default `read-only` mode evaluates a standalone audit bundle in the selected Renderer. It does not reload the page, install codexhost production policies, switch Agent state, submit a Composer, create or delete a Thread, open Settings, Fork, or alter the installed application.
 
+Both endpoint options must be loopback HTTP URLs. The defaults are `http://127.0.0.1:9222` for CDP and `http://127.0.0.1:9223` for Electron Inspector; override either with `--endpoint` or `--inspector-endpoint`.
+
 To compare against a report that has already been reviewed:
 
 ```bash
@@ -31,6 +33,35 @@ npm run audit:codex-desktop -- --mode controlled
 ```
 
 Controlled mode reuses the existing production `RendererControlSession`. It can reload the Renderer and install Title, Draft/Prewarm, and Renderer binding policies. It still does not automatically submit, create a Thread, open Settings, execute Fork, or exercise title creation, so those behavior checks remain `unverified`.
+
+## Reviewed integration gate
+
+Run the fixed-build local/release gate against an isolated Desktop lifecycle:
+
+```bash
+npm run test:codex-desktop:integration -- \
+  --endpoint http://127.0.0.1:9222 \
+  --inspector-endpoint http://127.0.0.1:9223
+```
+
+The command reads the installed identity, requires an exact platform, version, build, and `app.asar` digest match in `reviewed-desktops.json`, loads only that entry's confined baseline, and runs the controlled audit. A mismatched identity, missing or invalid baseline, `possible-impact`, or `confirmed-impact` exits non-zero. State-conditional `unverified` surfaces exit zero but are printed to stderr as warnings for the reviewer.
+
+Hosted CI can run the fixture tests, but this command is a local/release gate because it needs a controlled installed GUI application.
+
+## Accepting a reviewed baseline
+
+Baseline updates are always explicit. In a controlled environment:
+
+1. Audit the candidate with all four identity fields and inspect the sanitized JSON report.
+2. Perform any required live gates for warned `unverified` surfaces.
+3. Accept the reviewed report explicitly:
+
+```bash
+npm run accept:codex-desktop-baseline -- \
+  --report .codexhost/update-impact/26.825.41651/audit-report.json
+```
+
+The acceptance command requires a repository-confined report, validates its exact schema, rejects `possible-impact` and `confirmed-impact`, refuses an existing baseline or duplicate identity, and writes JSON by atomic rename. A predeclared identity may populate its missing baseline once; a new identity appends one manifest entry. Review the resulting manifest and baseline diff before committing it.
 
 ## Transcript surface
 
@@ -79,10 +110,11 @@ The tool does not retain prompts, transcripts, input or rendered text, Model val
 
 ## Supplying Desktop identity
 
-By default the command uses a built `target/debug/codexhost inspect`. A different Launcher may be provided with `--launcher`. For fixture or remote endpoint audits, all three bounded values may be supplied directly:
+By default the command uses a built `target/debug/codexhost inspect`. A different Launcher may be provided with `--launcher`. For fixture or remote endpoint audits, all four bounded values must be supplied together:
 
 ```bash
 npm run audit:codex-desktop -- \
+  --desktop-platform macos \
   --desktop-version 26.1 \
   --desktop-build 100 \
   --asar-integrity sha256:<64-lowercase-hex>

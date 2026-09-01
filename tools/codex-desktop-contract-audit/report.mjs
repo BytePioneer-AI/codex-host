@@ -40,7 +40,12 @@ function exactKeys(value, expected, label) {
 }
 
 function boundedText(value, label, maximum = 128) {
-  if (typeof value !== "string" || value.length === 0 || value.length > maximum) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maximum ||
+    /[\r\n\0]/u.test(value)
+  ) {
     throw new Error(`${label} must be bounded text`);
   }
   return value;
@@ -121,7 +126,11 @@ export function validateAuditReport(value) {
   if (!["read-only", "controlled"].includes(value.mode))
     throw new Error("audit report mode is invalid");
   if (!AUDIT_VERDICTS.includes(value.verdict)) throw new Error("audit report verdict is invalid");
-  exactKeys(value.desktop, ["version", "build", "asarIntegrity"], "audit report desktop");
+  exactKeys(
+    value.desktop,
+    ["platform", "version", "build", "asarIntegrity"],
+    "audit report desktop",
+  );
   exactKeys(value.browser, ["browser", "protocolVersion"], "audit report browser");
   exactKeys(value.baseline, ["supplied", "version", "build"], "audit report baseline");
   if (typeof value.baseline.supplied !== "boolean")
@@ -145,6 +154,7 @@ export function validateAuditReport(value) {
     mode: value.mode,
     verdict: value.verdict,
     desktop: {
+      platform: boundedText(value.desktop.platform, "audit report desktop.platform", 32),
       version: boundedText(value.desktop.version, "audit report desktop.version", 64),
       build: boundedText(value.desktop.build, "audit report desktop.build", 64),
       asarIntegrity: boundedText(
@@ -429,7 +439,7 @@ export function auditReportMarkdown(report) {
     "",
     `**Verdict:** ${report.verdict}`,
     `**Mode:** ${report.mode}`,
-    `**Desktop:** ${report.desktop.version} (${report.desktop.build})`,
+    `**Desktop:** ${report.desktop.platform} ${report.desktop.version} (${report.desktop.build})`,
     `**Browser:** ${report.browser.browser}; protocol ${report.browser.protocolVersion}`,
     `**Reviewed baseline:** ${report.baseline.supplied ? `${report.baseline.version} (${report.baseline.build})` : "not supplied"}`,
     "",

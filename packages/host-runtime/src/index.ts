@@ -44,7 +44,17 @@ export type {
 export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
-export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
+export {
+  installDelegationSkills,
+  inspectDelegationSkills,
+  uninstallDelegationSkills,
+  CODEXHOST_DELEGATION_SKILL,
+} from "./delegation-skill.js";
+export type {
+  DelegationSkillLifecycleInput,
+  DelegationSkillStatusResult,
+  DelegationSkillUninstallResult,
+} from "./delegation-skill.js";
 export {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,

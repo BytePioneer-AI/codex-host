@@ -4,7 +4,12 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { CODEXHOST_DELEGATION_SKILL, installDelegationSkills } from "../src/delegation-skill.js";
+import {
+  CODEXHOST_DELEGATION_SKILL,
+  inspectDelegationSkills,
+  installDelegationSkills,
+  uninstallDelegationSkills,
+} from "../src/delegation-skill.js";
 
 async function home(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "codexhost-skill-test-"));
@@ -80,5 +85,48 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("target keeps its default");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
+  });
+
+  it("reports missing, current, legacy, and conflict without changing files", async () => {
+    const root = await home();
+    expect(await inspectDelegationSkills({ homeDirectory: root })).toMatchObject([
+      { status: "missing", version: null, digest: null },
+      { status: "missing", version: null, digest: null },
+    ]);
+    await installDelegationSkills({ homeDirectory: root });
+    const destinations = paths(root);
+    const legacy = "---\nname: codexhost-delegation\nversion: 3\n---\nlegacy\n";
+    const { createHash } = await import("node:crypto");
+    const legacyDigest = createHash("sha256").update(legacy).digest("hex");
+    await writeFile(destinations[0] ?? "", legacy, "utf8");
+    await writeFile(destinations[1] ?? "", "user content\n", "utf8");
+    const before = await Promise.all(destinations.map(async (file) => ({
+      content: await readFile(file, "utf8"),
+      mtimeMs: (await stat(file)).mtimeMs,
+    })));
+    const statuses = await inspectDelegationSkills({
+      homeDirectory: root,
+      previousManagedDigests: [legacyDigest],
+    });
+    expect(statuses).toMatchObject([
+      { status: "managed-legacy", version: 3, digest: legacyDigest },
+      { status: "conflict" },
+    ]);
+    const after = await Promise.all(destinations.map(async (file) => ({
+      content: await readFile(file, "utf8"),
+      mtimeMs: (await stat(file)).mtimeMs,
+    })));
+    expect(after).toEqual(before);
+  });
+
+  it("removes only managed copies and preserves conflicts", async () => {
+    const root = await home();
+    await installDelegationSkills({ homeDirectory: root });
+    const destinations = paths(root);
+    await writeFile(destinations[0] ?? "", "user content\n", "utf8");
+    const results = await uninstallDelegationSkills({ homeDirectory: root });
+    expect(results.map(({ status }) => status)).toEqual(["conflict", "removed"]);
+    await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe("user content\n");
+    await expect(stat(destinations[1] ?? "")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

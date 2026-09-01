@@ -76,6 +76,62 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function destinations(home: string): string[] {
+  return [
+    path.join(home, ".agents", SKILL_RELATIVE_PATH),
+    path.join(home, ".claude", SKILL_RELATIVE_PATH),
+  ];
+}
+
+export type DelegationSkillState = "missing" | "current" | "managed-legacy" | "conflict";
+
+export interface DelegationSkillLifecycleInput {
+  homeDirectory?: string;
+  previousManagedDigests?: readonly string[];
+}
+
+export interface DelegationSkillStatusResult {
+  path: string;
+  status: DelegationSkillState;
+  version: number | null;
+  digest: string | null;
+}
+
+export interface DelegationSkillUninstallResult {
+  path: string;
+  status: DelegationSkillState | "removed";
+  version: number | null;
+  digest: string | null;
+}
+
+function knownManagedDigests(input: DelegationSkillLifecycleInput): Set<string> {
+  return new Set([
+    CURRENT_DIGEST,
+    ...PREVIOUS_MANAGED_DIGESTS,
+    ...(input.previousManagedDigests ?? []),
+  ]);
+}
+
+async function classifyDelegationSkill(
+  destination: string,
+  knownDigests: ReadonlySet<string>,
+): Promise<DelegationSkillStatusResult> {
+  const current = await readOptional(destination);
+  if (current === null) {
+    return { path: destination, status: "missing", version: null, digest: null };
+  }
+  const currentDigest = digest(current);
+  if (current === CODEXHOST_DELEGATION_SKILL) {
+    return { path: destination, status: "current", version: SKILL_VERSION, digest: CURRENT_DIGEST };
+  }
+  return {
+    path: destination,
+    status: knownDigests.has(currentDigest) ? "managed-legacy" : "conflict",
+    version: managedVersion(current),
+    digest: currentDigest,
+  };
+}
+
 function managedVersion(value: string): number | null {
   const match = /^version:\s*(\d+)\s*$/mu.exec(value);
   return match ? Number(match[1]) : null;
@@ -117,25 +173,15 @@ export interface DelegationSkillInstallResult {
 }
 
 export async function installDelegationSkills(
-  input: {
-    homeDirectory?: string;
-    previousManagedDigests?: readonly string[];
-  } = {},
+  input: DelegationSkillLifecycleInput = {},
 ): Promise<DelegationSkillInstallResult[]> {
   const home = input.homeDirectory ?? os.homedir();
-  const destinations = [
-    path.join(home, ".agents", SKILL_RELATIVE_PATH),
-    path.join(home, ".claude", SKILL_RELATIVE_PATH),
-  ];
-  const knownDigests = new Set([
-    CURRENT_DIGEST,
-    ...PREVIOUS_MANAGED_DIGESTS,
-    ...(input.previousManagedDigests ?? []),
-  ]);
+  const destinationPaths = destinations(home);
+  const knownDigests = knownManagedDigests(input);
   const results: DelegationSkillInstallResult[] = [];
-  for (const destination of destinations) {
-    const current = await readOptional(destination);
-    if (current === CODEXHOST_DELEGATION_SKILL) {
+  for (const destination of destinationPaths) {
+    const classified = await classifyDelegationSkill(destination, knownDigests);
+    if (classified.status === "current") {
       results.push({
         path: destination,
         status: "current",
@@ -144,13 +190,16 @@ export async function installDelegationSkills(
       });
       continue;
     }
-    if (current !== null) {
-      const currentDigest = digest(current);
-      const version = managedVersion(current);
-      if (!knownDigests.has(currentDigest)) {
-        results.push({ path: destination, status: "conflict", version, digest: currentDigest });
-        continue;
-      }
+    if (classified.status === "conflict") {
+      results.push({
+        path: classified.path,
+        status: "conflict",
+        version: classified.version,
+        digest: classified.digest,
+      });
+      continue;
+    }
+    if (classified.status === "managed-legacy") {
       await atomicWrite(destination, CODEXHOST_DELEGATION_SKILL);
       results.push({
         path: destination,
@@ -184,6 +233,41 @@ export async function installDelegationSkills(
     const copies = await Promise.all(results.map((result) => readFile(result.path, "utf8")));
     if (copies.some((copy) => copy !== copies[0])) {
       throw new Error("Delegation Skill copies are inconsistent");
+    }
+  }
+  return results;
+}
+
+export async function inspectDelegationSkills(
+  input: DelegationSkillLifecycleInput = {},
+): Promise<DelegationSkillStatusResult[]> {
+  const home = input.homeDirectory ?? os.homedir();
+  const knownDigests = knownManagedDigests(input);
+  return Promise.all(destinations(home).map((destination) =>
+    classifyDelegationSkill(destination, knownDigests)));
+}
+
+export async function uninstallDelegationSkills(
+  input: DelegationSkillLifecycleInput = {},
+): Promise<DelegationSkillUninstallResult[]> {
+  const home = input.homeDirectory ?? os.homedir();
+  const knownDigests = knownManagedDigests(input);
+  const results: DelegationSkillUninstallResult[] = [];
+  for (const destination of destinations(home)) {
+    const classified = await classifyDelegationSkill(destination, knownDigests);
+    if (classified.status !== "current" && classified.status !== "managed-legacy") {
+      results.push(classified);
+      continue;
+    }
+    try {
+      await rm(destination);
+      results.push({ ...classified, status: "removed" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        results.push({ path: destination, status: "missing", version: null, digest: null });
+        continue;
+      }
+      throw error;
     }
   }
   return results;

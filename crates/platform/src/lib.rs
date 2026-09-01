@@ -50,7 +50,7 @@ pub use process::{
     process_exists, process_snapshot, terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
-pub use process::{desktop_process_ids, desktop_root_process_ids};
+pub use process::{desktop_process_ids, desktop_root_process_ids, process_started_at_micros};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
@@ -145,6 +145,11 @@ pub enum PlatformError {
     NotFound(String),
     UnmanagedDesktopConflict,
     Invalid(String),
+    ProcessInspection {
+        process_id: u32,
+        operation: &'static str,
+        source: io::Error,
+    },
     Io(io::Error),
 }
 
@@ -157,12 +162,27 @@ impl Display for PlatformError {
                 "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost",
             ),
             Self::Invalid(message) => write!(formatter, "{message}"),
+            Self::ProcessInspection {
+                process_id,
+                operation,
+                source,
+            } => write!(
+                formatter,
+                "{operation} while inspecting PID {process_id}: {source}"
+            ),
             Self::Io(error) => Display::fmt(error, formatter),
         }
     }
 }
 
-impl Error for PlatformError {}
+impl Error for PlatformError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ProcessInspection { source, .. } | Self::Io(source) => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for PlatformError {
     fn from(error: io::Error) -> Self {

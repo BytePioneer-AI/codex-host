@@ -13,6 +13,11 @@ use codexhost_platform::{
 };
 use fs2::FileExt;
 
+use crate::process_identity::{
+    RecordedProcessObservation, current_process_snapshot, recorded_process_identity,
+    recorded_process_snapshot,
+};
+
 const OWNER_DIRECTORY_NAME: &str = "local-host-runtime-owner-v1";
 const OWNER_LOCK_NAME: &str = "local-host-runtime-owner.lock";
 const OWNER_RECORD_NAME: &str = "owner";
@@ -582,12 +587,12 @@ fn migrated_owner_record(
 }
 
 fn owner_shim_state(owner: &OwnerRecord) -> Result<OwnerShimState, Box<dyn Error>> {
-    let Some(owner_snapshot) = current_process_snapshot(owner.process_id)? else {
-        return Ok(OwnerShimState::Missing);
-    };
-    if owner_snapshot.started_at_micros != owner.process_started_at_micros {
-        return Ok(OwnerShimState::Reused);
-    }
+    let owner_snapshot =
+        match recorded_process_identity(owner.process_id, owner.process_started_at_micros)? {
+            RecordedProcessObservation::Matching(snapshot) => snapshot,
+            RecordedProcessObservation::Missing => return Ok(OwnerShimState::Missing),
+            RecordedProcessObservation::Reused => return Ok(OwnerShimState::Reused),
+        };
     let current_executable = env::current_exe()?;
     // npm upgrades and candidate packages can move the same Shim to another absolute path.
     // PID plus start time is the process-instance identity. The basename additionally rejects a
@@ -613,10 +618,8 @@ fn retire_legacy_mapping_store_owner(
     let Some(runtime_process_id) = legacy_lock_process_id(&lock_path) else {
         return Ok(());
     };
-    let runtime_snapshot = match process_snapshot(runtime_process_id) {
-        Ok(snapshot) => snapshot,
-        Err(_) if !process_exists(runtime_process_id) => return Ok(()),
-        Err(error) => return Err(error.into()),
+    let Some(runtime_snapshot) = current_process_snapshot(runtime_process_id)? else {
+        return Ok(());
     };
     if !runtime_snapshot
         .executable
@@ -627,10 +630,8 @@ fn retire_legacy_mapping_store_owner(
     }
 
     let shim_process_id = runtime_snapshot.parent_id;
-    let shim_snapshot = match process_snapshot(shim_process_id) {
-        Ok(snapshot) => snapshot,
-        Err(_) if !process_exists(shim_process_id) => return Ok(()),
-        Err(error) => return Err(error.into()),
+    let Some(shim_snapshot) = current_process_snapshot(shim_process_id)? else {
+        return Ok(());
     };
     let current_executable = env::current_exe()?;
     if !executable_file_name_matches(&shim_snapshot.executable, &current_executable) {
@@ -751,27 +752,6 @@ fn wait_for_owner_exit(owner: &OwnerRecord, timeout: Duration) -> Result<bool, B
             return Ok(false);
         }
         thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn current_process_snapshot(process_id: u32) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
-    match process_snapshot(process_id) {
-        Ok(snapshot) => Ok(Some(snapshot)),
-        Err(PlatformError::NotFound(_)) => Ok(None),
-        Err(_) if !process_exists(process_id) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn recorded_process_snapshot(
-    process_id: u32,
-    started_at_micros: u64,
-) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
-    match process_snapshot(process_id) {
-        Ok(snapshot) if snapshot.started_at_micros == started_at_micros => Ok(Some(snapshot)),
-        Ok(_) | Err(PlatformError::NotFound(_)) => Ok(None),
-        Err(_) if !process_exists(process_id) => Ok(None),
-        Err(error) => Err(error.into()),
     }
 }
 

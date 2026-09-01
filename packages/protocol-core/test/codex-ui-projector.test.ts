@@ -895,6 +895,41 @@ describe("Codex UI projector", () => {
     ]);
   });
 
+  it("renders Claude Task snapshots after the adapter normalizes them to Todo", () => {
+    const value = projector();
+    const taskId = itemId("claude-task-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId: taskId, toolName: "Todo", arguments: {} },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: taskId,
+            toolName: "Todo",
+            arguments: {
+              todos: [{ id: "1", content: "Run tests", status: "in_progress" }],
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: { plan: [{ step: "Run tests", status: "inProgress" }] },
+      },
+    ]);
+  });
+
   it("projects Edit/Write tools as File Change cards with a native kind object", () => {
     const value = projector();
     const editId = itemId("edit-1");

@@ -1,6 +1,10 @@
+import { createServer, type Server } from "node:http";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 
 import type {
   RemoteHostInstallationStatus,
@@ -188,4 +192,64 @@ describe("remote Host lifecycle", () => {
     ).rejects.toThrow("not owned by codexhost");
     expect(terminate).not.toHaveBeenCalled();
   });
+
+  it.skipIf(process.platform === "win32")(
+    "probes a listener that rejects clients offering WebSocket extensions",
+    async () => {
+      // The stock codex app-server uses tokio-tungstenite, which supports no
+      // extension and aborts the upgrade without writing an HTTP response when a
+      // client offers one. `ws` enables permessage-deflate by default, so a probe
+      // that keeps that default hangs until its timeout and reports "unknown"
+      // instead of classifying the listener.
+      //
+      // Unix socket paths are capped near 104 bytes and the probe appends a
+      // fixed suffix to CODEX_HOME, so bind under a short base directory.
+      const codexHome = await mkdtemp("/tmp/cxh-");
+      await mkdir(path.join(codexHome, "app-server-control"), { recursive: true });
+      const listenerPath = path.join(codexHome, "app-server-control", "app-server-control.sock");
+
+      const server: Server = createServer();
+      const webSockets = new WebSocketServer({ noServer: true });
+      server.on("upgrade", (request, socket: Duplex, head) => {
+        if (request.headers["sec-websocket-extensions"]) {
+          socket.destroy();
+          return;
+        }
+        webSockets.handleUpgrade(request, socket, head, (client) => {
+          client.on("message", () =>
+            client.send(
+              JSON.stringify({
+                id: 1,
+                error: {
+                  code: -32600,
+                  message: "Invalid request: unknown variant `codexhost/update/status`",
+                },
+              }),
+            ),
+          );
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(listenerPath, resolve));
+
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
+      });
+
+      try {
+        await expect(
+          inspectRemoteHost({ environment: { CODEX_HOME: codexHome } }),
+        ).resolves.toMatchObject({
+          runtime: {
+            state: "conflict",
+            protocol: "stock-codex",
+            socketPath: listenerPath,
+          },
+        });
+      } finally {
+        webSockets.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(codexHome, { recursive: true, force: true });
+      }
+    },
+  );
 });

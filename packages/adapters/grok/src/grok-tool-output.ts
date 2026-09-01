@@ -75,7 +75,11 @@ export function grokToolLabel(item: GrokProjectedToolItem): string {
 
 export function grokToolArguments(rawInput: unknown): JsonValue {
   const parsed = jsonValueSchema.safeParse(rawInput);
-  return parsed.success ? parsed.data : {};
+  if (!parsed.success) return {};
+  const argumentsValue = parsed.data;
+  if (!isRecord(argumentsValue) || stringField(argumentsValue, "path")) return argumentsValue;
+  const targetFile = stringField(argumentsValue, "target_file");
+  return targetFile ? { ...argumentsValue, path: targetFile } : argumentsValue;
 }
 
 export function grokCommand(

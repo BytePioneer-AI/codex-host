@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatSubagentRowMeta,
+  prettySubagentModel,
   prettySubagentStatus,
   subagentRowMetaFromProps,
 } from "../src/renderer-subagent-row-meta.js";
@@ -13,6 +14,12 @@ describe("Subagent row meta", () => {
     expect(prettySubagentStatus("done")).toBe("已完成");
     expect(prettySubagentStatus("failed")).toBe("失敗");
     expect(prettySubagentStatus("interrupted")).toBe("已中斷");
+  });
+
+  it("pretty-prints official Codex Model slugs", () => {
+    expect(prettySubagentModel("gpt-5.2-codex")).toBe("GPT-5.2 Codex");
+    expect(prettySubagentModel("gpt-5.6-sol")).toBe("GPT-5.6 Sol");
+    expect(prettySubagentModel("xai/grok-4.6")).toBe("Grok 4.6");
   });
 
   it("shows model, effort, and status on one untruncated subtitle", () => {
@@ -32,6 +39,25 @@ describe("Subagent row meta", () => {
     ).toBe("Grok 4.6 · High · 進行中");
   });
 
+  it("shows official Codex spawn Model, reasoning effort, and status", () => {
+    expect(
+      formatSubagentRowMeta({
+        displayName: "Einstein",
+        spawnModel: "gpt-5.2-codex",
+        reasoningEffort: "high",
+        status: "done",
+      }),
+    ).toBe("GPT-5.2 Codex · High · 已完成");
+    expect(
+      formatSubagentRowMeta({
+        displayName: "Gibbs",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        status: "active",
+      }),
+    ).toBe("GPT-5.6 Sol · xHigh · 進行中");
+  });
+
   it("reads nested backgroundAgent props used by the artifacts popover", () => {
     expect(
       subagentRowMetaFromProps({
@@ -47,6 +73,33 @@ describe("Subagent row meta", () => {
     ).toMatchObject({
       displayName: "Find test run commands",
       spawnModel: "Grok 4.6 · High",
+      status: "done",
+    });
+  });
+
+  it("joins official collabAgentToolCall Model and effort onto the matching row", () => {
+    expect(
+      subagentRowMetaFromProps({
+        backgroundAgent: {
+          conversationId: "child-1",
+          displayName: "Einstein",
+          spawnModel: "gpt-5.2-codex",
+          status: "done",
+        },
+        items: [
+          {
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            model: "gpt-5.2-codex",
+            reasoningEffort: "high",
+            receiverThreadIds: ["child-1"],
+          },
+        ],
+      }),
+    ).toMatchObject({
+      displayName: "Einstein",
+      spawnModel: "gpt-5.2-codex",
+      reasoningEffort: "high",
       status: "done",
     });
   });

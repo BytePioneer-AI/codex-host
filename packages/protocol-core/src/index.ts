@@ -4,6 +4,14 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { jsonRpcRequestSchema, jsonRpcSuccessResponseSchema } from "@codexhost/shared-contracts";
 export type { JsonObject, JsonRpcId, JsonRpcRequest, JsonValue } from "@codexhost/shared-contracts";
+export {
+  decorateOfficialCollabSpawnModels,
+  formatCollabSpawnModel,
+  observeOfficialThreadModels,
+  prettyCollabModelLabel,
+  prettyCollabReasoningEffort,
+} from "./codex-collab-spawn-model.js";
+export type { OfficialThreadModel } from "./codex-collab-spawn-model.js";
 export { projectCodexApprovalRequest } from "./codex-approval.js";
 export type { CodexApprovalRequestProjection } from "./codex-approval.js";
 export { projectCodexQuestionRequest } from "./codex-question.js";

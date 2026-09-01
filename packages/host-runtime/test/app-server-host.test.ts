@@ -207,6 +207,7 @@ function createFixture(
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
+    desktopOutput?: PassThrough;
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
@@ -220,7 +221,7 @@ function createFixture(
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
-  const desktopOutput = new PassThrough();
+  const desktopOutput = options.desktopOutput ?? new PassThrough();
   const diagnosticOutput = new PassThrough();
   const official = new FakeOfficialProcess();
   const collector = new JsonLineCollector(desktopOutput);
@@ -718,6 +719,109 @@ describe("AppServerHost HarnessAdapter projection", () => {
       expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when official app-server output closes before Desktop input", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 100);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when official output closes while Desktop output is backpressured", async () => {
+    const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopOutput.pause();
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
+      );
+      await vi.waitFor(() =>
+        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      fixture.desktopOutput.resume();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the official app-server exits while its output stays open", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      expect(
+        fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
+      ).toBe(false);
+      writeRequest(fixture.desktopInput, { id: 90, method: "model/list", params: {} });
+      await vi.waitFor(() =>
+        expect(fixture.official.stdin.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.emit("exit", 0, null);
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.stdout.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Desktop-first official app-server shutdown successful", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopInput.end();
+
+      await expect(fixture.running).resolves.toBe(0);
+    } finally {
+      fixture.host.close();
       await fixture.running;
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
     }

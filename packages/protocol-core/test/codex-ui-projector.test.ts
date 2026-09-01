@@ -274,7 +274,7 @@ describe("Codex UI projector", () => {
             status: "inProgress",
             senderThreadId: "thread-1",
             receiverThreadIds: ["claude-agent-1"],
-            model: "Grok 4.6",
+            model: "Grok 4.6 · High",
             reasoningEffort: "high",
             agentsStates: {
               "claude-agent-1": { status: "pendingInit", message: null },

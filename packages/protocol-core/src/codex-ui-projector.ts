@@ -105,6 +105,21 @@ function collabAgentStatus(
   }
 }
 
+function prettyReasoningEffort(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function collabAgentModel(
+  subagent: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number] | undefined,
+): string | null {
+  const model = subagent?.model?.trim();
+  const effort = prettyReasoningEffort(subagent?.reasoningEffort);
+  if (model && effort) return `${model} · ${effort}`;
+  return model || effort || null;
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -179,7 +194,7 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: primary?.model ?? null,
+        model: collabAgentModel(primary),
         reasoningEffort: primary?.reasoningEffort ?? null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [

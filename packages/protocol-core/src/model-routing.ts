@@ -448,7 +448,6 @@ export function decodeDeepSeekHarnessTransportSelection(
   };
 }
 
-
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
@@ -480,8 +479,6 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
-    case "qwen-code":
-      return encodeQwenCodeTransportModel(selection.model, selection.permissionModeId);
   }
 }
 
@@ -504,8 +501,6 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
-    case "qwen-code":
-      return decodeQwenCodeTransportSelection(value);
   }
 }
 

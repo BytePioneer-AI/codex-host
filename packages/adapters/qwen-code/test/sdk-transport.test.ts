@@ -1,4 +1,9 @@
-import type { Query, SDKMessage, SDKUserMessage } from "@qwen-code/sdk";
+import {
+  query as sdkQuery,
+  type Query,
+  type SDKMessage,
+  type SDKUserMessage,
+} from "@qwen-code/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import { QwenCodeSdkTransport } from "../src/sdk-transport.js";
@@ -50,7 +55,7 @@ describe("QwenCodeSdkTransport", () => {
       cwd: process.cwd(),
       command: process.execPath,
       environment: { CODEXHOST_DELEGATION_THREAD_ID: "child-thread-1" },
-      queryFactory: queryFactory as unknown as typeof import("@qwen-code/sdk").query,
+      queryFactory: queryFactory as unknown as typeof sdkQuery,
     });
 
     const opened = await transport.open({ kind: "create", permissionMode: "yolo" as never });
@@ -75,7 +80,11 @@ describe("QwenCodeSdkTransport", () => {
     expect(options).toHaveProperty("sessionId");
     expect(options).not.toHaveProperty("resume");
 
-    const turn = transport.runTurn("status", vi.fn(), vi.fn(async () => ({ behavior: "allow" })));
+    const turn = transport.runTurn(
+      "status",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" })),
+    );
     const sent = await input?.[Symbol.asyncIterator]().next();
     expect(sent?.value).toMatchObject({
       type: "user",
@@ -108,7 +117,7 @@ describe("QwenCodeSdkTransport", () => {
       queryFactory: (({ options: received }) => {
         options = received;
         return query as unknown as Query;
-      }) as unknown as typeof import("@qwen-code/sdk").query,
+      }) as unknown as typeof sdkQuery,
     });
     const sessionId = "550e8400-e29b-41d4-a716-446655440000";
     await transport.open({ kind: "resume", sessionId, permissionMode: "plan" as never });
@@ -116,9 +125,13 @@ describe("QwenCodeSdkTransport", () => {
     expect(options).not.toHaveProperty("sessionId");
 
     const events: unknown[] = [];
-    const turn = transport.runTurn("status", (event) => events.push(event), async () => ({
-      behavior: "allow",
-    }));
+    const turn = transport.runTurn(
+      "status",
+      (event) => events.push(event),
+      async () => ({
+        behavior: "allow",
+      }),
+    );
     query.emit({
       type: "stream_event",
       uuid: "stream-1",
@@ -136,7 +149,14 @@ describe("QwenCodeSdkTransport", () => {
         type: "message",
         role: "assistant",
         model: "qwen-max",
-        content: [{ type: "tool_use", id: "tool-1", name: "run_shell_command", input: { command: "git status" } }],
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "run_shell_command",
+            input: { command: "git status" },
+          },
+        ],
         usage: {},
       },
     } as SDKMessage);
@@ -146,7 +166,9 @@ describe("QwenCodeSdkTransport", () => {
       parent_tool_use_id: null,
       message: {
         role: "user",
-        content: [{ type: "tool_result", tool_use_id: "tool-1", content: "clean", is_error: false }],
+        content: [
+          { type: "tool_result", tool_use_id: "tool-1", content: "clean", is_error: false },
+        ],
       },
     } as SDKMessage);
     query.emit({
@@ -175,8 +197,28 @@ describe("QwenCodeSdkTransport", () => {
         rawInput: { command: "git status" },
       },
       { type: "tool.update", callId: "tool-1", status: "completed", rawOutput: "clean" },
-      { type: "usage", metadata: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } },
+      {
+        type: "usage",
+        metadata: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+      },
     ]);
+    await transport.close();
+  });
+
+  it("uses the Qwen command name by default instead of resolving a Windows CMD shim", async () => {
+    const query = new FakeQuery();
+    let options: Record<string, unknown> | undefined;
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      queryFactory: (({ options: received }) => {
+        options = received;
+        return query as unknown as Query;
+      }) as unknown as typeof sdkQuery,
+    });
+
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    expect(options).toHaveProperty("pathToQwenExecutable", "qwen");
     await transport.close();
   });
 });

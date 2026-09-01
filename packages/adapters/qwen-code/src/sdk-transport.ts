@@ -15,15 +15,10 @@ import {
 } from "@qwen-code/sdk";
 import type { HarnessPermissionModeId } from "@codexhost/shared-contracts";
 
-import { QwenCodeExecutableError } from "./command.js";
 import { decodeQwenCodePermissionModeId } from "./permission-modes.js";
 
 export type QwenCodeTransportFaultKind =
-  | "notInstalled"
-  | "authenticationRequired"
-  | "unavailable"
-  | "protocolError"
-  | "processExited";
+  "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
 
 export class QwenCodeTransportError extends Error {
   readonly diagnostic: string | undefined;
@@ -141,9 +136,6 @@ function errorText(error: unknown): string {
 
 function classifyError(error: unknown): QwenCodeTransportError {
   if (error instanceof QwenCodeTransportError) return error;
-  if (error instanceof QwenCodeExecutableError) {
-    return new QwenCodeTransportError("notInstalled", error.message, { cause: error });
-  }
   const text = errorText(error);
   const lower = text.toLowerCase();
   if (lower.includes("enoent") || lower.includes("executable file not found")) {
@@ -163,14 +155,20 @@ function classifyError(error: unknown): QwenCodeTransportError {
       { cause: error },
     );
   }
-  return new QwenCodeTransportError("unavailable", `Qwen Code SDK failed: ${text}`, { cause: error });
+  return new QwenCodeTransportError("unavailable", `Qwen Code SDK failed: ${text}`, {
+    cause: error,
+  });
 }
 
 function rawToolOutput(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return undefined;
   const text = content
-    .flatMap((block) => (isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []))
+    .flatMap((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
     .join("\n");
   return text.length > 0 ? text : undefined;
 }
@@ -273,10 +271,14 @@ export class QwenCodeSdkTransport {
   }
 
   async #start(input: QwenCodeOpenInput): Promise<void> {
-    if (this.#query || this.#closed) throw new Error("Qwen Code SDK Transport cannot be opened twice");
+    if (this.#query || this.#closed)
+      throw new Error("Qwen Code SDK Transport cannot be opened twice");
     const resumeSessionId = input.sessionId;
     if (input.kind === "resume" && !resumeSessionId) {
-      throw new QwenCodeTransportError("protocolError", "Qwen Code resume requires a Session identity");
+      throw new QwenCodeTransportError(
+        "protocolError",
+        "Qwen Code resume requires a Session identity",
+      );
     }
     // The SDK accepts a command name and resolves it with PATH. Passing the
     // absolute Windows npm `.cmd` shim makes Node spawn fail with EINVAL.
@@ -307,7 +309,10 @@ export class QwenCodeSdkTransport {
       await session.initialized;
       const initializedSessionId = session.getSessionId();
       if (!initializedSessionId) {
-        throw new QwenCodeTransportError("protocolError", "Qwen Code SDK did not return a Session identity");
+        throw new QwenCodeTransportError(
+          "protocolError",
+          "Qwen Code SDK did not return a Session identity",
+        );
       }
       this.#sessionId = initializedSessionId;
     } catch (error) {
@@ -320,7 +325,9 @@ export class QwenCodeSdkTransport {
     const environment = this.#options.environment;
     if (!environment) return undefined;
     return Object.fromEntries(
-      Object.entries(environment).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      Object.entries(environment).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     );
   }
 
@@ -329,20 +336,28 @@ export class QwenCodeSdkTransport {
     if (!active) return { behavior: "deny", message: "No active codexhost Turn" };
     const response = await active.onPermission({ toolName, input });
     if (response.behavior === "allow") {
-      return { behavior: "allow", updatedInput: response.updatedInput ?? input } satisfies PermissionResult;
+      return {
+        behavior: "allow",
+        updatedInput: response.updatedInput ?? input,
+      } satisfies PermissionResult;
     }
     return { behavior: "deny", message: "Denied by user" } satisfies PermissionResult;
   };
 
   async #models(): Promise<unknown> {
     const session = this.#query;
-    if (!session) throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
+    if (!session)
+      throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     const response = await session.getAvailableModels();
     if (!isRecord(response) || !Array.isArray(response.models)) {
-      throw new QwenCodeTransportError("protocolError", "Qwen Code SDK returned an invalid Model catalog");
+      throw new QwenCodeTransportError(
+        "protocolError",
+        "Qwen Code SDK returned an invalid Model catalog",
+      );
     }
     const availableModels = response.models.flatMap((candidate) => {
-      if (!isRecord(candidate) || typeof candidate.id !== "string" || candidate.id.length === 0) return [];
+      if (!isRecord(candidate) || typeof candidate.id !== "string" || candidate.id.length === 0)
+        return [];
       return [
         {
           modelId: candidate.id,
@@ -359,7 +374,10 @@ export class QwenCodeSdkTransport {
     });
     const currentModelId = this.#modelId ?? availableModels[0]?.modelId;
     if (!currentModelId || availableModels.length === 0) {
-      throw new QwenCodeTransportError("protocolError", "Qwen Code SDK returned no selectable Models");
+      throw new QwenCodeTransportError(
+        "protocolError",
+        "Qwen Code SDK returned no selectable Models",
+      );
     }
     return { currentModelId, availableModels };
   }
@@ -407,7 +425,9 @@ export class QwenCodeSdkTransport {
       return;
     }
     if (isSDKUserMessage(message)) {
-      for (const block of typeof message.message.content === "string" ? [] : message.message.content) {
+      for (const block of typeof message.message.content === "string"
+        ? []
+        : message.message.content) {
         if (block.type !== "tool_result") continue;
         active.onEvent({
           type: "tool.update",

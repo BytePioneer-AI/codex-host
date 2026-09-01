@@ -33,6 +33,9 @@ describe("reviewed desktop manifest", () => {
     expect(() => parse({ platform: "" })).toThrow();
     expect(() => parseReviewedDesktopManifest({ schemaVersion: 2, desktops: [] }, "/repo/audit")).toThrow();
     expect(() => parseReviewedDesktopManifest({ schemaVersion: 1, desktops: [] }, "/repo/audit")).toThrow();
+    const sparse = new Array(1);
+    sparse.length = 1;
+    expect(() => parseReviewedDesktopManifest({ schemaVersion: 1, desktops: sparse }, "/repo/audit")).toThrow();
   });
 
   it("rejects duplicate compound identities", () => {

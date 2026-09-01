@@ -17,6 +17,9 @@ export function parseReviewedDesktopManifest(value, manifestDirectory) {
   if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.desktops) || value.desktops.length === 0) {
     throw new Error("invalid reviewed desktop manifest: schemaVersion 1 and non-empty desktops required");
   }
+  for (let index = 0; index < value.desktops.length; index += 1) {
+    if (!Object.hasOwn(value.desktops, index)) throw new Error("desktop entries must not be sparse");
+  }
   if (typeof manifestDirectory !== "string" || manifestDirectory.length === 0) {
     throw new Error("manifestDirectory must be a non-empty string");
   }

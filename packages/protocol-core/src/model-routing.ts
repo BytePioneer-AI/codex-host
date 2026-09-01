@@ -22,6 +22,8 @@ export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
+export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
@@ -30,6 +32,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "opencode",
   "grok",
   "omp",
+  "qwen-code",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -43,6 +46,7 @@ const transportModelByHarness = {
   opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
+  "qwen-code": QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -448,6 +452,54 @@ export function decodeDeepSeekHarnessTransportSelection(
   };
 }
 
+export function encodeQwenCodeTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("Qwen Code transport configuration requires a Model Ref");
+    }
+    return QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
+}
+
+export function decodeQwenCodeTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("Qwen Code transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Qwen Code transport configuration has an empty Permission Mode");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) {
+    throw new Error("Qwen Code transport Model contains an invalid Model Ref");
+  }
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Qwen Code transport configuration contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
@@ -479,6 +531,8 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+    case "qwen-code":
+      return encodeQwenCodeTransportModel(selection.model, selection.permissionModeId);
   }
 }
 
@@ -501,6 +555,8 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "qwen-code":
+      return decodeQwenCodeTransportSelection(value);
   }
 }
 
@@ -580,6 +636,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...ompSelection,
+    };
+  }
+  const qwenCodeSelection = decodeQwenCodeTransportSelection(request.params.model);
+  if (qwenCodeSelection !== null) {
+    return {
+      harnessId: "qwen-code",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...qwenCodeSelection,
     };
   }
 

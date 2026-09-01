@@ -433,24 +433,31 @@ describe("Renderer draft Agent controller", () => {
     const agents = controller();
     const piModel = harnessModelRefSchema.parse({ id: "pi-model-v1.isolated" });
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.isolated" });
+    const qwenModel = harnessModelRefSchema.parse({ id: "GLM-5.3-flash-openai" });
     const claudePermissionMode = harnessPermissionModeIdSchema.parse("acceptEdits");
     const piPermissionMode = harnessPermissionModeIdSchema.parse("future-pi-mode");
+    const qwenPermissionMode = harnessPermissionModeIdSchema.parse("plan");
     const piThinking = harnessThinkingOptionIdSchema.parse("max");
     const claudeThinking = harnessThinkingOptionIdSchema.parse("auto");
 
     agents.mount(draft, ["default"]);
     agents.setExternalModel(draft, "pi", piModel);
     agents.setExternalModel(draft, "claude-code", claudeModel);
+    agents.setExternalModel(draft, "qwen-code", qwenModel);
     agents.setExternalPermissionMode(draft, "pi", piPermissionMode);
     agents.setExternalPermissionMode(draft, "claude-code", claudePermissionMode);
+    agents.setExternalPermissionMode(draft, "qwen-code", qwenPermissionMode);
     agents.setExternalThinkingOption(draft, "pi", piThinking);
     agents.setExternalThinkingOption(draft, "claude-code", claudeThinking);
     expect(agents.modelForAgent(draft, "pi")).toEqual(piModel);
     expect(agents.modelForAgent(draft, "claude-code")).toEqual(claudeModel);
+    expect(agents.modelForAgent(draft, "qwen-code")).toEqual(qwenModel);
     expect(agents.permissionModeForAgent(draft, "pi")).toBe(piPermissionMode);
     expect(agents.permissionModeForAgent(draft, "claude-code")).toBe(claudePermissionMode);
+    expect(agents.permissionModeForAgent(draft, "qwen-code")).toBe(qwenPermissionMode);
     expect(agents.thinkingOptionForAgent(draft, "pi")).toBe(piThinking);
     expect(agents.thinkingOptionForAgent(draft, "claude-code")).toBe(claudeThinking);
+    expect(agents.thinkingOptionForAgent(draft, "qwen-code")).toBeUndefined();
     expect(agents.transfer(draft, conversation, ["conversation", "claude-thread"])).toBe(true);
     agents.mount(revisit, ["conversation", "claude-thread"]);
     expect(agents.get(revisit)).toMatchObject({
@@ -458,17 +465,21 @@ describe("Renderer draft Agent controller", () => {
       piThinkingOptionId: piThinking,
       claudeModel,
       claudeThinkingOptionId: claudeThinking,
+      qwenCodeModel: qwenModel,
       permissionModeByAgent: {
         pi: piPermissionMode,
         "claude-code": claudePermissionMode,
+        "qwen-code": qwenPermissionMode,
       },
     });
 
     agents.mount(newDefault, ["default"]);
     expect(agents.modelForAgent(newDefault, "pi")).toBeUndefined();
     expect(agents.modelForAgent(newDefault, "claude-code")).toBeUndefined();
+    expect(agents.modelForAgent(newDefault, "qwen-code")).toBeUndefined();
     expect(agents.permissionModeForAgent(newDefault, "pi")).toBeUndefined();
     expect(agents.permissionModeForAgent(newDefault, "claude-code")).toBeUndefined();
+    expect(agents.permissionModeForAgent(newDefault, "qwen-code")).toBeUndefined();
     expect(agents.thinkingOptionForAgent(newDefault, "pi")).toBeUndefined();
     expect(agents.thinkingOptionForAgent(newDefault, "claude-code")).toBeUndefined();
   });

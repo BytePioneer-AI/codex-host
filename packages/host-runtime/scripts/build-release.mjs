@@ -59,6 +59,7 @@ export function auditHostBundleMetafile(metafile) {
     "/packages/adapters/opencode/",
     "/packages/adapters/grok/",
     "/packages/adapters/omp/",
+    "/packages/adapters/qwen-code/",
     "/node_modules/@agentclientprotocol/sdk/",
     "/node_modules/@anthropic-ai/claude-agent-sdk/",
     "/node_modules/@deepseek-ai/cosmokit/",

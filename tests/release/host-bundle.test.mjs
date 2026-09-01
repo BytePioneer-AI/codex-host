@@ -53,6 +53,7 @@ function validMetafile(extraInputs = {}) {
       "packages/adapters/opencode/dist/index.js": {},
       "packages/adapters/grok/dist/index.js": {},
       "packages/adapters/omp/dist/index.js": {},
+      "packages/adapters/qwen-code/dist/index.js": {},
       "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
       "node_modules/@opencode-ai/sdk/dist/v2/client.js": {},
@@ -153,6 +154,12 @@ describe("release Host Bundle", () => {
     delete withoutOmp["packages/adapters/omp/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutOmp })).toThrow(
       "missing required input: /packages/adapters/omp/",
+    );
+
+    const withoutQwenCode = { ...validMetafile().inputs };
+    delete withoutQwenCode["packages/adapters/qwen-code/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutQwenCode })).toThrow(
+      "missing required input: /packages/adapters/qwen-code/",
     );
   });
 

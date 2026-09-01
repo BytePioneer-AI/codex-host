@@ -94,6 +94,9 @@ maps it to custom summarization instructions. `/init` and `/recap` take no
 arguments. These commands invoke Harness-native operations and must not be
 submitted as Host text Turns.
 
+Qwen Code does not expose a Harness command catalog yet; its Adapter omits the
+`commands` capability (`HarnessCommandCapability`).
+
 ## Boundaries
 
 - The Adapter owns Harness-specific semantics.

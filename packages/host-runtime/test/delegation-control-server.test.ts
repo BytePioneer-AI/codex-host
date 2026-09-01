@@ -69,6 +69,7 @@ describe("delegation control server", () => {
             selectModel: false,
             selectThinkingOption: false,
             selectPermissionMode: false,
+            permissionModeScope: "live" as const,
           },
           history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         },

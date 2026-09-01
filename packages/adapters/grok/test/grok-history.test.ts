@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -225,5 +229,37 @@ describe("Grok history Fork mapping", () => {
         outcome: { status: "succeeded" },
       },
     ]);
+  });
+});
+
+describe("Grok history local media Markdown", () => {
+  it("rewrites session-relative video images onto absolute paths", async () => {
+    const sessionDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-grok-media-"));
+    const videoPath = path.join(sessionDirectory, "videos", "1.mp4");
+    try {
+      await mkdir(path.dirname(videoPath), { recursive: true });
+      await writeFile(videoPath, "mp4");
+      const snapshot = mapGrokReplay(
+        [
+          { type: "user.text", text: "make a clip" },
+          { type: "agent.text", text: "![clip](videos/1.mp4)" },
+          { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        ],
+        grokHarnessId,
+        "session-1",
+        sessionDirectory,
+        [],
+        undefined,
+        sessionDirectory,
+      );
+      expect(snapshot.turns[0]?.items).toMatchObject([
+        {
+          item: { type: "agentMessage", text: `![clip](${videoPath})` },
+          outcome: { status: "succeeded" },
+        },
+      ]);
+    } finally {
+      await rm(sessionDirectory, { recursive: true, force: true });
+    }
   });
 });

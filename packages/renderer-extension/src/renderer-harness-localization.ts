@@ -11,6 +11,7 @@ export interface RendererHarnessMessages {
   readonly loadingPermissions: string;
   readonly selecting: string;
   readonly permissionsUnavailable: string;
+  readonly permissionModeFixedAtCreate: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -22,6 +23,8 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   loadingPermissions: "Loading permissions...",
   selecting: "Selecting...",
   permissionsUnavailable: "Permissions unavailable",
+  permissionModeFixedAtCreate:
+    "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -33,6 +36,7 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   loadingPermissions: "正在加载权限...",
   selecting: "正在选择...",
   permissionsUnavailable: "权限不可用",
+  permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
 });
 
 const CHINESE_PERMISSION_MODE_LABELS = new Map<string, string>([

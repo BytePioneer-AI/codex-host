@@ -116,7 +116,7 @@ describe("HarnessDelegationCoordinator", () => {
       expect(adapter.openInputs).toContainEqual(
         expect.objectContaining({
           kind: "create",
-          executionPolicy: "unattended-full-access",
+          executionPolicy: "approval-required",
         }),
       );
       expect(adapter.openInputs[0]).not.toHaveProperty("model");
@@ -131,6 +131,53 @@ describe("HarnessDelegationCoordinator", () => {
         childHostThreadId: result.threadId,
         status: "running",
       });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("allows explicit unattended access while returning policy evidence", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "trusted automation",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        executionPolicy: "unattended-full-access",
+      });
+      expect(adapter.openInputs.at(-1)).toMatchObject({
+        executionPolicy: "unattended-full-access",
+      });
+      expect(result.configuration?.requested).toMatchObject({
+        executionPolicy: "unattended-full-access",
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not reuse a request ID across execution policies", async () => {
+    const value = await fixture();
+    try {
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "same task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "policy-request",
+      });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "same task",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+          requestId: "policy-request",
+          executionPolicy: "unattended-full-access",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     } finally {
       await value.close();
     }
@@ -155,7 +202,11 @@ describe("HarnessDelegationCoordinator", () => {
         thinkingOptionId,
       });
       expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
-      expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
+      expect(result.configuration?.requested).toMatchObject({
+        executionPolicy: "approval-required",
+        model,
+        thinkingOptionId,
+      });
       expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
     } finally {
       await value.close();

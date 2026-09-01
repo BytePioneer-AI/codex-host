@@ -66,6 +66,8 @@ describe("delegation CLI", () => {
           "claude-code",
           "--task",
           "review auth",
+          "--execution-policy",
+          "unattended-full-access",
           "--model",
           "model-ref",
           "--thinking",
@@ -90,6 +92,7 @@ describe("delegation CLI", () => {
       requestId: "request-1",
       model: { id: "model-ref" },
       thinkingOptionId: "high",
+      executionPolicy: "unattended-full-access",
     });
     expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
   });
@@ -112,6 +115,7 @@ describe("delegation CLI", () => {
     if (!call) throw new Error("Runtime fetch was not called");
     expect(JSON.parse(String(call[1]?.body))).toMatchObject({
       parentThreadId: "parent-from-environment",
+      executionPolicy: "approval-required",
     });
   });
 

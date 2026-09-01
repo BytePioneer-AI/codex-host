@@ -1,6 +1,7 @@
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
+  HarnessExecutionPolicy,
   HarnessModelRef,
   HarnessSessionState,
   HarnessThinkingOptionId,
@@ -15,6 +16,8 @@ export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
 
 export type DelegationResultAvailability = "pending" | "available" | "unavailable";
+
+export type DelegationExecutionPolicy = Exclude<HarnessExecutionPolicy, "default">;
 
 export interface DelegationMessage {
   id: string;
@@ -49,6 +52,7 @@ export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
   cwd: string;
+  executionPolicy?: DelegationExecutionPolicy;
   parentThreadId?: string;
   requestId?: string;
   model?: HarnessModelRef;
@@ -67,7 +71,11 @@ export interface HarnessInspectResult {
 }
 
 export interface DelegationConfigurationResult {
-  requested?: { model?: HarnessModelRef; thinkingOptionId?: HarnessThinkingOptionId };
+  requested?: {
+    executionPolicy?: DelegationExecutionPolicy;
+    model?: HarnessModelRef;
+    thinkingOptionId?: HarnessThinkingOptionId;
+  };
   effective?: Pick<
     HarnessSessionState,
     "effectiveModel" | "resolvedModelLabel" | "effectiveThinkingOptionId"

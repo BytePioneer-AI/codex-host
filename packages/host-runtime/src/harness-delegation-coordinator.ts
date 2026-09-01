@@ -22,6 +22,7 @@ import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhos
 import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  type DelegationExecutionPolicy,
   type DelegationConfigurationResult,
   type DelegationStartInput,
   type DelegationStartResult,
@@ -57,7 +58,9 @@ function terminal(status: DelegationThreadSnapshot["status"]): boolean {
 }
 
 function taskDigest(
-  input: Pick<DelegationStartInput, "task" | "cwd" | "model" | "thinkingOptionId">,
+  input: Pick<DelegationStartInput, "task" | "cwd" | "model" | "thinkingOptionId"> & {
+    executionPolicy: DelegationExecutionPolicy;
+  },
 ): string {
   return createHash("sha256")
     .update(
@@ -66,6 +69,7 @@ function taskDigest(
         cwd: path.resolve(input.cwd),
         modelId: input.model?.id ?? null,
         thinkingOptionId: input.thinkingOptionId ?? null,
+        executionPolicy: input.executionPolicy,
       }),
     )
     .digest("hex");
@@ -191,8 +195,11 @@ export class HarnessDelegationCoordinator {
 
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
+    const executionPolicy = input.executionPolicy ?? "approval-required";
+    const normalizedInput = { ...input, executionPolicy };
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    if (input.harnessId === "codex") return this.#startOfficial({ ...input, parentThreadId });
+    if (input.harnessId === "codex")
+      return this.#startOfficial({ ...normalizedInput, parentThreadId });
     if (!EXTERNAL_HARNESS_IDS.includes(input.harnessId as ExternalHarnessId)) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
@@ -203,7 +210,7 @@ export class HarnessDelegationCoordinator {
       );
     }
     const targetHarnessId = input.harnessId as ExternalHarnessId;
-    const digest = taskDigest(input);
+    const digest = taskDigest(normalizedInput);
     const duplicate = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
       : await this.#repository.findRecentDelegation({
@@ -281,7 +288,7 @@ export class HarnessDelegationCoordinator {
         kind: "create",
         cwd: record.cwd,
         environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
-        executionPolicy: "unattended-full-access",
+        executionPolicy,
         ...(input.model ? { model: input.model } : {}),
         ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
       });
@@ -327,6 +334,7 @@ export class HarnessDelegationCoordinator {
       await this.#notifyThreadStarted(thread.thread);
       return this.#result(delegationId, childThreadId, turnId, targetHarnessId, "running", {
         requested: {
+          executionPolicy,
           ...(input.model ? { model: input.model } : {}),
           ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
         },

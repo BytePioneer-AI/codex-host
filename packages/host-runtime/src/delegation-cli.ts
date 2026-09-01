@@ -5,6 +5,7 @@ import {
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  type DelegationExecutionPolicy,
   type DelegationControlErrorCode,
 } from "./delegation-types.js";
 
@@ -70,7 +71,7 @@ function rejectUnknown(parsed: ReturnType<typeof options>, allowed: readonly str
 
 export const DELEGATION_HELP = `usage:
   codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false]
-  codexhost delegate start --harness <id> --task <text> [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>]
+  codexhost delegate start --harness <id> --task <text> [--execution-policy approval-required|unattended-full-access] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>]
   codexhost thread send <thread> --message <text>
   codexhost thread cancel <thread>
   codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]
@@ -206,6 +207,7 @@ export async function runDelegationCli(input: {
       rejectUnknown(parsed, [
         "--harness",
         "--task",
+        "--execution-policy",
         "--model",
         "--thinking",
         "--parent-thread",
@@ -220,6 +222,13 @@ export async function runDelegationCli(input: {
       const task = value(parsed, "--task");
       if (!harnessId || !task)
         throw new DelegationControlError("INVALID_ARGUMENT", "--harness and --task are required");
+      const executionPolicy = value(parsed, "--execution-policy") ?? "approval-required";
+      if (executionPolicy !== "approval-required" && executionPolicy !== "unattended-full-access") {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--execution-policy must be approval-required or unattended-full-access",
+        );
+      }
       const parentThread =
         value(parsed, "--parent-thread") ?? environment[DELEGATION_THREAD_ID_ENV];
       writeJson(
@@ -230,6 +239,7 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
+            executionPolicy: executionPolicy as DelegationExecutionPolicy,
             cwd: process.cwd(),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")

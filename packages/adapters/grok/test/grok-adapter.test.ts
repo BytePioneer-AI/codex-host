@@ -410,6 +410,30 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it("passes the requested Model into Grok Session creation", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: { id: "grok-4.6" },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: "default",
+      modelId: "grok-4.6",
+    });
+    await adapter.close();
+  });
+
   it("keeps Native Turn identity stable across live completion and resume", async () => {
     const liveTransport = new FakeGrokTransport();
     const live = await openedSession(liveTransport);

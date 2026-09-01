@@ -54,6 +54,7 @@ const inspection = {
       selectModel: true,
       selectThinkingOption: true,
       selectPermissionMode: false,
+      permissionModeScope: "live" as const,
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
   },

@@ -409,6 +409,7 @@ class PiHarnessSession implements HarnessSession {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: false,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
     };
@@ -1606,6 +1607,7 @@ export class PiAdapter implements HarnessAdapter {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: false,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },

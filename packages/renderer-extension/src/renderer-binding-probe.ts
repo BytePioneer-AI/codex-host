@@ -1,11 +1,13 @@
 import {
   harnessIdSchema,
+  permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
   type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessModelSelectionState,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
+  type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
   type AccountCreditsSnapshot,
   type ThreadInspection,
@@ -40,6 +42,7 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
+import { rendererHarnessMessages } from "./renderer-harness-localization.js";
 import {
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -299,6 +302,13 @@ export function lockedPermissionMode(
     throw new Error("Existing Thread Permission Mode is absent from the current Catalog");
   }
   return restored;
+}
+
+export function permissionModeSelectionLocked(input: {
+  phase: ComposerAgentPhase;
+  permissionModeScope?: HarnessPermissionModeScope;
+}): boolean {
+  return input.phase === "locked" && permissionModeFixedAtCreate(input);
 }
 
 export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
@@ -1055,13 +1065,27 @@ export function installRendererBindingProbe(
             )
           : undefined;
       const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+      const permissionModeLock = permissionModeSelectionLocked({
+        phase: current.phase,
+        permissionModeScope: inspection.capabilities.configuration.permissionModeScope,
+      })
+        ? {
+            selectionLocked: true as const,
+            selectionLockedReason: rendererHarnessMessages(settingsLifecycle.locale)
+              .permissionModeFixedAtCreate,
+          }
+        : {};
       let selectedPermissionModeId: HarnessPermissionModeId | undefined;
       if (inspection.capabilities.configuration.selectPermissionMode) {
         const permissionModes = inspection.permissionModes;
         if (!permissionModes) {
           throw new Error("External Harness omitted its Permission Mode catalog");
         }
-        mounted.permissionModeView = { status: "loading", catalog: permissionModes };
+        mounted.permissionModeView = {
+          status: "loading",
+          catalog: permissionModes,
+          ...permissionModeLock,
+        };
         const restoredPermissionModeId =
           current.phase === "locked"
             ? lockedPermissionMode(
@@ -1083,6 +1107,7 @@ export function installRendererBindingProbe(
           status: "loading",
           catalog: permissionModes,
           selected: selectedPermissionModeId,
+          ...permissionModeLock,
         };
       } else {
         mounted.permissionModeView = { status: "unsupported" };
@@ -1103,6 +1128,7 @@ export function installRendererBindingProbe(
             status: "ready",
             catalog: mounted.permissionModeView.catalog,
             selected: selectedPermissionModeId,
+            ...permissionModeLock,
           };
         }
         return;
@@ -1179,6 +1205,7 @@ export function installRendererBindingProbe(
           status: "ready",
           catalog: mounted.permissionModeView.catalog,
           selected: selectedPermissionModeId,
+          ...permissionModeLock,
         };
       }
     } catch (error) {
@@ -1373,7 +1400,15 @@ export function installRendererBindingProbe(
     const catalog = mounted.permissionModeView.catalog;
     const selectedPermissionModeId = catalog?.modes.find(({ id }) => id === permissionModeId)?.id;
     const model = controller.modelForAgent(mounted.composer, agent);
-    if (!catalog || !selectedPermissionModeId || !model || !modelControl) return;
+    if (
+      !catalog ||
+      !selectedPermissionModeId ||
+      !model ||
+      !modelControl ||
+      mounted.permissionModeView.selectionLocked
+    ) {
+      return;
+    }
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const thinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
     const generation = controller.beginModelRequest(mounted.composer);

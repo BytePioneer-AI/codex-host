@@ -529,6 +529,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },

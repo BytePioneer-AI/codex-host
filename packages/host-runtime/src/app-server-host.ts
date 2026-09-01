@@ -250,6 +250,7 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_PI_COMMAND",
     "CODEXHOST_ENABLE_CLAUDE_CODE",
     "CODEXHOST_CLAUDE_COMMAND",
+    "CODEXHOST_CURSOR_COMMAND",
     "CODEXHOST_STOCK_CODEX_PATH",
     "CODEXHOST_LAUNCHER_PID",
     "CODEXHOST_LAUNCHER_EXECUTABLE",
@@ -294,6 +295,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Grok";
     case "omp":
       return "Oh My Pi";
+    case "cursor":
+      return "Cursor";
   }
 }
 

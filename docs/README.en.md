@@ -24,6 +24,7 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a>
 </p>
 
 <p align="center">
@@ -43,7 +44,7 @@ But **Codex** is not the only capable **Agent Harness**. Some developers prefer 
 
 ## Interface Preview
 
-No app switching required: use Pi, Claude Code, OMP, Grok Build, and DeepSeek Harness directly in the same Codex Desktop window.
+No app switching required: use Pi, Claude Code, OMP, Grok Build, DeepSeek Harness, and Cursor directly in the same Codex Desktop window.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
@@ -103,7 +104,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Codex, Pi, Claude Code, DeepSeek Harness, Grok, and Oh My Pi are available">
+      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting it; Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi, and Cursor are available">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage and cost information</strong></p>
@@ -127,21 +128,34 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 ## Feature Status
 
-| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- |
-| Streaming responses | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 |
-| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | ✅ | ✅ | ✅ | — |
-| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | Native | ✅ | ✅ | ✅ | ✅ | — |
-| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — |
-| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Streaming responses | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | Native | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | 🚧 | — |
+| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| Permission modes | Native | — | ✅ | ✅ | ✅ | — | — |
+| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | Native | ✅ | ✅ | ✅ | ✅ | — | — |
+| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | — | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — | — |
+
+### Cursor
+
+Choose **Cursor** in the Codex Desktop Agent picker to use the local [Cursor CLI](https://cursor.com/docs/cli/installation) (`cursor-agent`, verified `2026.08.25-3e8eec8`). Run the existing `cursor-agent login` first. Do not treat a Grok `agent` on `PATH` as Cursor; set `CODEXHOST_CURSOR_COMMAND` only to override the executable.
+
+Cursor connects over official ACP stdio (`cursor-agent acp`). Supported: streaming replies, tool status, tool approvals, cancel, and resume when ACP advertises `loadSession`. Not supported: in-Desktop Model / Thinking / Permission Mode selection, Fork, edit-previous, slash commands, or context compaction. `unattended-full-access` returns unsupported because Cursor ACP still requests runtime permission.
+
+Optional smoke test (requires a logged-in local Cursor CLI; skipped by default):
+
+```bash
+CODEXHOST_RUN_CURSOR_ADAPTER_REAL=1 npx vitest run --config tests/vitest.config.js packages/adapters/cursor/test/cursor-adapter.real.test.ts
+```
+
 
 ## Cross-Agent collaboration
 

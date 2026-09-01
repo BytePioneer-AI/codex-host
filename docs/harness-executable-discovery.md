@@ -94,11 +94,12 @@ Windows 当前覆盖常见的：
 | Pi | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
+| Cursor | 是 | 是 | 否 | 优先 `cursor-agent`；`agent` 必须通过 `--help`/`--version` 身份校验，拒绝 Grok `agent` |
 | DeepSeek Harness | 否 | 否 | 否 | 优先连接 loopback DSH Web Host；本地 `dsh`/`npx` fallback 仍使用 Adapter 内发现代码 |
 
 因此，当前准确结论是：
 
-> Claude Code、Pi、OMP 和 Grok 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
+> Claude Code、Pi、OMP、Grok 和 Cursor 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
 
 ## DeepSeek Harness 的特殊性
 

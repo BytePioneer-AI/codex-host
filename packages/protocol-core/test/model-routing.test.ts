@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  CURSOR_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
+  decodeCursorTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
@@ -21,6 +23,7 @@ import {
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeCursorTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
@@ -35,6 +38,7 @@ describe("external Harness transport model routing", () => {
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
+    ["cursor", CURSOR_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -177,6 +181,27 @@ describe("external Harness transport model routing", () => {
     expect(
       decodeCreateRoute({ id: 9, method: "thread/start", params: { model: configured } }),
     ).toMatchObject({ harnessId: "claude-code", model, permissionModeId, thinkingOptionId });
+  });
+
+  it("round-trips an optional Cursor Model Ref and the base native carrier", () => {
+    expect(encodeCursorTransportModel()).toBe(CURSOR_NATIVE_TRANSPORT_MODEL_ID);
+    expect(decodeCursorTransportSelection(CURSOR_NATIVE_TRANSPORT_MODEL_ID)).toEqual({});
+    const model = harnessModelRefSchema.parse({ id: "cursor-model-v1.Y29tcG9zZXI" });
+    const transportModelId = encodeCursorTransportModel(model);
+    expect(transportModelId).toBe(`${CURSOR_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(decodeCursorTransportSelection(transportModelId)).toEqual({ model });
+    expect(
+      decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } }),
+    ).toEqual({
+      harnessId: "cursor",
+      routeMode: "native",
+      transportModelId,
+      model,
+    });
+    expect(
+      decodeExternalTransportModel("cursor", CURSOR_NATIVE_TRANSPORT_MODEL_ID),
+    ).toBeUndefined();
+    expect(decodeExternalTransportModel("cursor", PI_NATIVE_TRANSPORT_MODEL_ID)).toBeNull();
   });
 
   it("round-trips a request-scoped DeepSeek Harness Model Ref", () => {

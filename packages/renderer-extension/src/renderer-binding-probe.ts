@@ -42,6 +42,7 @@ import {
 } from "./renderer-composer-dom.js";
 import {
   decodeClaudeTransportModelId,
+  decodeCursorTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodeOmpTransportModelId,
@@ -79,6 +80,7 @@ const externalHarnessIds = {
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
+  cursor: harnessIdSchema.parse("cursor"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -87,6 +89,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "deepseek-harness",
   "grok",
   "omp",
+  "cursor",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -335,6 +338,14 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const model = inspection.effectiveModel ?? transportSelection.model;
     return { agent: "deepseek-harness", ...(model ? { model } : {}) };
   }
+  if (inspection.harnessId === "cursor") {
+    const transportSelection = decodeCursorTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Cursor Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    return { agent: "cursor", ...(model ? { model } : {}) };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -421,7 +432,10 @@ export function shouldApplyDraftAgentCarrier(
   agent: RendererAgent,
   model: HarnessModelRef | undefined,
 ): boolean {
-  return agent === "codex" || model !== undefined;
+  // Cursor inspects with selectModel: false and an empty Catalog. The base
+  // native transport ID is the complete draft configuration; waiting for a
+  // Model would leave Composer on the official Codex carrier.
+  return agent === "codex" || agent === "cursor" || model !== undefined;
 }
 
 export function applyComposerModelWrite(
@@ -545,6 +559,7 @@ export function installRendererBindingProbe(
       "deepseek-harness": undefined,
       grok: undefined,
       omp: undefined,
+      cursor: undefined,
     },
     requestGeneration: 0,
     request: null,
@@ -759,13 +774,13 @@ export function installRendererBindingProbe(
   const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
     const current = controller.get(mounted.composer);
     if (current.agent === "codex") return true;
-    return (
-      mounted.modelView.status !== "selecting" &&
-      mounted.modelView.catalog?.models.some(
-        (model) => model.ref.id === mounted.modelView.selected?.id,
-      ) === true &&
-      isPermissionModeControlReady(mounted.permissionModeView)
-    );
+    const modelReady =
+      mounted.modelView.status === "empty" ||
+      (mounted.modelView.status !== "selecting" &&
+        mounted.modelView.catalog?.models.some(
+          (model) => model.ref.id === mounted.modelView.selected?.id,
+        ) === true);
+    return modelReady && isPermissionModeControlReady(mounted.permissionModeView);
   };
 
   const clearDraftPrewarm = async (): Promise<void> => {
@@ -1024,6 +1039,19 @@ export function installRendererBindingProbe(
           catalog: inspection.catalog,
           thinkingSelectionSupported: false,
         };
+        if (current.phase === "draft") {
+          applyComposerModelWrite(
+            mounted.modelTarget,
+            () =>
+              applyAdapterAgent?.(
+                agent,
+                undefined,
+                undefined,
+                selectedPermissionModeId,
+                mounted.composer,
+              ) ?? false,
+          );
+        }
         if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
           controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
           mounted.permissionModeView = {

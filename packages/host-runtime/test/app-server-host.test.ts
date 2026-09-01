@@ -5345,6 +5345,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         CODEXHOST_ENABLE_CLAUDE_CODE: "1",
         CODEXHOST_CLAUDE_COMMAND: "/synthetic/claude",
         CODEXHOST_PI_COMMAND: "/synthetic/pi",
+        CODEXHOST_CURSOR_COMMAND: "/synthetic/cursor-agent",
       },
     });
 

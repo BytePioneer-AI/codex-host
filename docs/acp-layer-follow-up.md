@@ -1,6 +1,6 @@
 # ACP 层后续开发说明
 
-> 状态：尚未触发；当前仍只有 Grok 使用生产 ACP Transport。
+> 状态：Cursor 已通过独立 Adapter 内 ACP Transport 接入；Grok 仍使用其私有 ACP Transport。共享 ACP 层尚未抽取。
 
 ## 背景
 

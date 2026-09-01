@@ -1,4 +1,5 @@
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { CursorAdapter } from "@codexhost/adapter-cursor";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
 import { PiAdapter } from "@codexhost/adapter-pi";
@@ -10,6 +11,7 @@ export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
+export const CURSOR_COMMAND_ENV = "CODEXHOST_CURSOR_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 
@@ -68,6 +70,13 @@ export function createExternalHarnessAdapters(
       "omp",
       new OmpAdapter({
         ...(environment[OMP_COMMAND_ENV] ? { command: environment[OMP_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "cursor",
+      new CursorAdapter({
+        ...(environment[CURSOR_COMMAND_ENV] ? { command: environment[CURSOR_COMMAND_ENV] } : {}),
         environment,
       }),
     ],

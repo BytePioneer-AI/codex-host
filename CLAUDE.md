@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-`codexhost` lets non-Codex Agent Harnesses (Pi, Claude Code, Grok Build, DeepSeek Harness, OMP)
+`codexhost` lets non-Codex Agent Harnesses (Pi, Claude Code, Grok Build, DeepSeek Harness, OMP,
+Cursor)
 run as independent Threads inside the official **Codex Desktop** shell, instead of Codex's own
 Harness. It does this without forking Codex Desktop or normalizing everything through ACP:
 
@@ -89,7 +90,7 @@ shared-contracts (browser-safe types + zod schemas, no Node-only APIs)
   └── protocol-core         (depends on harness-adapter + mapping-store + shared-contracts;
                              Host protocol routing/projection — talks to the real app-server)
 
-packages/adapters/{claude-code,pi,grok,omp,deepseek-harness}
+packages/adapters/{claude-code,pi,grok,omp,deepseek-harness,cursor}
   — each depends on harness-adapter + shared-contracts, plus its own native SDK/CLI
     (Claude Code: @anthropic-ai/claude-agent-sdk + MCP SDK; Grok: @agentclientprotocol/sdk;
     DeepSeek: @deepseek-ai/dsh-*). Harness-specific protocol details MUST stay inside the

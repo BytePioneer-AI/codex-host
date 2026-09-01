@@ -18,12 +18,15 @@ export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const CURSOR_NATIVE_TRANSPORT_MODEL_ID = "codexhost/cursor-native";
+export const CURSOR_NATIVE_TRANSPORT_MODEL_PREFIX = `${CURSOR_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
   "deepseek-harness",
   "grok",
   "omp",
+  "cursor",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -35,6 +38,7 @@ const transportModelByHarness = {
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
+  cursor: CURSOR_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -286,6 +290,27 @@ export function encodeDeepSeekHarnessTransportModel(model?: HarnessModelRef): st
   return `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}`;
 }
 
+export function encodeCursorTransportModel(model?: HarnessModelRef): string {
+  if (!model) return CURSOR_NATIVE_TRANSPORT_MODEL_ID;
+  const parsedModel = harnessModelRefSchema.parse(model);
+  return `${CURSOR_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}`;
+}
+
+export function decodeCursorTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === CURSOR_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CURSOR_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const modelId = value.slice(CURSOR_NATIVE_TRANSPORT_MODEL_PREFIX.length);
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) {
+    throw new Error("Cursor transport Model contains an invalid Model Ref");
+  }
+  return { model: model.data };
+}
+
 export function decodeDeepSeekHarnessTransportSelection(
   value: unknown,
 ): ExternalConfigurationSelection | null {
@@ -327,6 +352,8 @@ export function encodeExternalTransportSelection(
       );
     case "omp":
       return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+    case "cursor":
+      return encodeCursorTransportModel(selection.model);
   }
 }
 
@@ -345,6 +372,8 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "cursor":
+      return decodeCursorTransportSelection(value);
   }
 }
 
@@ -405,6 +434,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...ompSelection,
+    };
+  }
+  const cursorSelection = decodeCursorTransportSelection(request.params.model);
+  if (cursorSelection !== null) {
+    return {
+      harnessId: "cursor",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...cursorSelection,
     };
   }
 

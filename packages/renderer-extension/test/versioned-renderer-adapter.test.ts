@@ -7,17 +7,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
+  CURSOR_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
   claudeTransportModelId,
+  cursorTransportModelId,
   decodeClaudeTransportModelId,
+  decodeCursorTransportModelId,
   decodeGrokTransportModelId,
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
   isClaudeTransportModelId,
+  isCursorTransportModelId,
   isGrokTransportModelId,
   isPiTransportModelId,
   isDraftPrewarmPolicyReady,
@@ -29,6 +33,7 @@ import {
 } from "../src/index.js";
 import {
   createRendererRequestRouteResolver,
+  OMP_TRANSPORT_MODEL_ID,
   rendererRequestTargetsForHost,
   resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
@@ -444,7 +449,23 @@ describe("current Codex Renderer Agent adapter", () => {
       DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
     );
     expect(modelSelectionForAgent(null, null, "grok")?.model).toBe(GROK_TRANSPORT_MODEL_ID);
+    expect(modelSelectionForAgent(null, null, "omp")?.model).toBe(OMP_TRANSPORT_MODEL_ID);
+    expect(modelSelectionForAgent(null, null, "cursor")?.model).toBe(CURSOR_TRANSPORT_MODEL_ID);
     expect(modelSelectionForAgent(null, null, "codex")).toBeNull();
+  });
+
+  it("encodes the Cursor base carrier and an optional Model Ref", () => {
+    const model = harnessModelRefSchema.parse({ id: "cursor-model-v1.Y29tcG9zZXI" });
+    expect(cursorTransportModelId()).toBe(CURSOR_TRANSPORT_MODEL_ID);
+    expect(isCursorTransportModelId(CURSOR_TRANSPORT_MODEL_ID)).toBe(true);
+    expect(decodeCursorTransportModelId(CURSOR_TRANSPORT_MODEL_ID)).toEqual({});
+    expect(cursorTransportModelId(model)).toBe(`${CURSOR_TRANSPORT_MODEL_ID}@${model.id}`);
+    expect(decodeCursorTransportModelId(`${CURSOR_TRANSPORT_MODEL_ID}@${model.id}`)).toEqual({
+      model,
+    });
+    expect(modelSelectionForAgent(null, null, "cursor", model)?.model).toBe(
+      `${CURSOR_TRANSPORT_MODEL_ID}@${model.id}`,
+    );
   });
 
   it("encodes selected Pi Model and Thinking in the transport carrier", () => {

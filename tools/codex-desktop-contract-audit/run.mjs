@@ -20,6 +20,7 @@ const productionRendererAgents = Object.freeze([
   "deepseek-harness",
   "grok",
   "omp",
+  "cursor",
 ]);
 
 function usage() {

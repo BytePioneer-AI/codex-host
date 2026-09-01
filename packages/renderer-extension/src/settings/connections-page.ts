@@ -16,6 +16,7 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   "deepseek-harness": "https://deepseek-harness.github.io/deepseek-harness/",
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
+  cursor: "https://cursor.com/docs/cli/installation",
 });
 
 export interface RendererConnectionAgentSnapshot {

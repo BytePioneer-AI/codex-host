@@ -18,7 +18,8 @@
     { "path": "../adapters/claude-code/tsconfig.json" },
     { "path": "../adapters/deepseek-harness/tsconfig.json" },
     { "path": "../adapters/grok/tsconfig.json" },
-    { "path": "../adapters/omp/tsconfig.json" }
+    { "path": "../adapters/omp/tsconfig.json" },
+    { "path": "../adapters/cursor/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

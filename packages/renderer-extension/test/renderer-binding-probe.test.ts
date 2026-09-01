@@ -92,6 +92,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "notInstalled",
           grok: "ready",
           omp: "ready",
+          cursor: "ready",
         },
         {
           pi: undefined,
@@ -103,6 +104,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
     ).toEqual([]);
@@ -115,6 +117,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "error",
           grok: "ready",
           omp: "ready",
+          cursor: "ready",
         },
         {
           pi: undefined,
@@ -126,6 +129,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -138,6 +142,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "unavailable",
           grok: "ready",
           omp: "ready",
+          cursor: "ready",
         },
         {
           pi: undefined,
@@ -149,6 +154,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -163,6 +169,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "checking",
           grok: "checking",
           omp: "checking",
+          cursor: "checking",
         },
         {
           pi: undefined,
@@ -170,9 +177,10 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": undefined,
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp", "cursor"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -182,6 +190,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "notInstalled",
           grok: "ready",
           omp: "ready",
+          cursor: "ready",
         },
         {
           pi: undefined,
@@ -193,6 +202,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
     ).toEqual([]);
@@ -205,6 +215,7 @@ describe("Renderer Composer DOM behavior", () => {
           "deepseek-harness": "unavailable",
           grok: "ready",
           omp: "ready",
+          cursor: "ready",
         },
         {
           pi: undefined,
@@ -216,6 +227,7 @@ describe("Renderer Composer DOM behavior", () => {
           },
           grok: undefined,
           omp: undefined,
+          cursor: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -925,6 +937,15 @@ describe("Renderer Composer DOM behavior", () => {
       agent: "deepseek-harness",
       model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
     });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "cursor",
+        transportModelId: "codexhost/cursor-native",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({ agent: "cursor" });
     expect(() =>
       restoredThreadOwnership({
         owner: "external",
@@ -1074,6 +1095,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       shouldApplyDraftAgentCarrier("grok", harnessModelRefSchema.parse({ id: "grok-4.6" })),
     ).toBe(true);
+    expect(shouldApplyDraftAgentCarrier("cursor", undefined)).toBe(true);
   });
 
   it("never writes the native Model while repeatedly switching existing conversations", () => {

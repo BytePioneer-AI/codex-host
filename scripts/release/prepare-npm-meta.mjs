@@ -29,7 +29,7 @@ export function createNpmMetaPackageManifest({ version }) {
     optionalDependencies: Object.fromEntries(
       Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((packageName) => [packageName, version]),
     ),
-    keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
+    keywords: ["codex", "codexhost", "pi", "claude-code", "cursor", "agent", "harness"],
     repository: {
       type: "git",
       url: "git+https://github.com/BytePioneer-AI/codex-host.git",

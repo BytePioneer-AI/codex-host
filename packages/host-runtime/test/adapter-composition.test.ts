@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import {
   CLAUDE_CODE_COMMAND_ENV,
+  CURSOR_COMMAND_ENV,
   GROK_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchClaudeCodeModelCatalog,
@@ -38,11 +39,19 @@ describe("Host external Harness composition", () => {
   it("registers all external Harnesses by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 
-    expect([...adapters.keys()]).toEqual(["pi", "claude-code", "deepseek-harness", "grok", "omp"]);
+    expect([...adapters.keys()]).toEqual([
+      "pi",
+      "claude-code",
+      "deepseek-harness",
+      "grok",
+      "omp",
+      "cursor",
+    ]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     expect(adapters.get("omp")?.harnessId).toBe("omp");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
+    expect(adapters.get("cursor")?.harnessId).toBe("cursor");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 
@@ -53,6 +62,19 @@ describe("Host external Harness composition", () => {
     });
 
     await expect(adapters.get("grok")?.inspect()).resolves.toMatchObject({
+      status: "notInstalled",
+      error: { code: "notInstalled" },
+    });
+    await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
+  });
+
+  it("preserves an explicit user-installed Cursor command", async () => {
+    const adapters = createExternalHarnessAdapters({
+      PATH: "",
+      [CURSOR_COMMAND_ENV]: "/synthetic/cursor-agent",
+    });
+
+    await expect(adapters.get("cursor")?.inspect()).resolves.toMatchObject({
       status: "notInstalled",
       error: { code: "notInstalled" },
     });

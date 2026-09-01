@@ -10,6 +10,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "deepseek-harness": "DeepSeek Harness",
   grok: "Grok",
   omp: "Oh My Pi",
+  cursor: "Cursor",
 };
 
 const PI_PATHS = [
@@ -79,6 +80,18 @@ export function createRendererAgentIcon(
       size,
       ownerDocument,
       "0 0 23.16 17.04",
+    );
+  }
+  if (agent === "cursor") {
+    return createSvgIcon(
+      [
+        {
+          d: "M4 3.2 20.4 12 4 20.8V14.2l8.3-2.2L4 9.8V3.2z",
+        },
+      ],
+      "currentColor",
+      size,
+      ownerDocument,
     );
   }
   if (agent === "omp") {

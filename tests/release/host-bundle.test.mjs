@@ -51,6 +51,7 @@ function validMetafile(extraInputs = {}) {
       "packages/adapters/deepseek-harness/dist/index.js": {},
       "packages/adapters/grok/dist/index.js": {},
       "packages/adapters/omp/dist/index.js": {},
+      "packages/adapters/cursor/dist/index.js": {},
       "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
       "node_modules/@deepseek-ai/dsh-host-apiproxy/lib/esm/fetch/client.js": {},
@@ -133,6 +134,12 @@ describe("release Host Bundle", () => {
     delete withoutOmp["packages/adapters/omp/dist/index.js"];
     expect(() => auditHostBundleMetafile({ inputs: withoutOmp })).toThrow(
       "missing required input: /packages/adapters/omp/",
+    );
+
+    const withoutCursor = { ...validMetafile().inputs };
+    delete withoutCursor["packages/adapters/cursor/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutCursor })).toThrow(
+      "missing required input: /packages/adapters/cursor/",
     );
   });
 

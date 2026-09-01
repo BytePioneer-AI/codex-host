@@ -1,4 +1,5 @@
 import { packageMetadata as claudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { packageMetadata as cursorAdapter } from "@codexhost/adapter-cursor";
 import { packageMetadata as deepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { packageMetadata as grokAdapter } from "@codexhost/adapter-grok";
 import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
@@ -12,6 +13,7 @@ import { packageMetadata as updateManager } from "@codexhost/update-manager";
 
 export {
   CLAUDE_CODE_COMMAND_ENV,
+  CURSOR_COMMAND_ENV,
   DEEPSEEK_HARNESS_COMMAND_ENV,
   DEEPSEEK_HARNESS_ENDPOINT_ENV,
   GROK_COMMAND_ENV,
@@ -112,6 +114,7 @@ export const packageMetadata = {
   dependencies: [
     protocolCore.name,
     claudeCodeAdapter.name,
+    cursorAdapter.name,
     deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,

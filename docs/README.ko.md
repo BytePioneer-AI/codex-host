@@ -24,6 +24,7 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a>
 </p>
 
 <p align="center">
@@ -42,7 +43,7 @@
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OMP, Grok Build, DeepSeek Harness, Cursor**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
@@ -102,7 +103,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 및 Model 선택</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
+      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi, Cursor를 사용할 수 있습니다">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 및 비용 정보</strong></p>
@@ -126,21 +127,34 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 기능 상태
 
-| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- |
-| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 |
-| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ |
-| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | — |
-| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
-| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — |
+| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | 🚧 | — |
+| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | — | — |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — | — |
+| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — | — |
+
+### Cursor
+
+Codex Desktop Agent 선택기에서 **Cursor**를 고르면 로컬 [Cursor CLI](https://cursor.com/docs/cli/installation)(`cursor-agent`, 검증된 버전 `2026.08.25-3e8eec8`)를 사용합니다. 먼저 기존 `cursor-agent login`을 실행하세요. PATH의 Grok `agent`를 Cursor로 취급하지 마세요. 실행 파일을 덮어쓸 때만 `CODEXHOST_CURSOR_COMMAND`를 설정합니다.
+
+Cursor는 공식 ACP stdio(`cursor-agent acp`)로 연결됩니다. 지원: 스트리밍 응답, 도구 상태, 도구 승인, 취소, ACP가 `loadSession`을 광고할 때의 세션 복원. 미지원: Desktop 내 Model / Thinking / Permission Mode 선택, Fork, 이전 메시지 수정, 슬래시 명령, 컨텍스트 압축. Cursor ACP가 런타임 권한을 계속 요청하므로 `unattended-full-access`는 unsupported를 반환합니다.
+
+선택적 스모크 테스트(로그인한 로컬 Cursor CLI 필요, 기본 건너뜀):
+
+```bash
+CODEXHOST_RUN_CURSOR_ADAPTER_REAL=1 npx vitest run --config tests/vitest.config.js packages/adapters/cursor/test/cursor-adapter.real.test.ts
+```
+
 
 ## Agent 간 협업
 

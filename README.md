@@ -24,6 +24,7 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a>
+  <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a>
 </p>
 
 <p align="center">
@@ -45,7 +46,7 @@
 
 ## 界面预览
 
-无需切换应用，**Pi、Claude Code、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
+无需切换应用，**Pi、Claude Code、OMP、Grok Build、DeepSeek Harness 和 Cursor** 都可以在同一个 Codex Desktop 窗口中直接使用。
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
@@ -105,7 +106,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/agent-harness-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Codex、Pi、Claude Code、DeepSeek Harness、Grok 和 Oh My Pi 均可选择">
+      <img src="docs/imgs/agent-harness-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Codex、Pi、Claude Code、DeepSeek Harness、Grok、Oh My Pi 和 Cursor 均可选择">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
@@ -129,21 +130,34 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 功能状态
 
-| 能力 | <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- |
-| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | 🚧 |
-| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ |
-| 权限模式 | 原生 | — | ✅ | ✅ | ✅ | — |
-| Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | 原生 | ✅ | ✅ | ✅ | ✅ | — |
-| 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
-| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | — |
+| 能力 | <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://cursor.com/docs/cli/installation"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white" /></a> |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 工具状态 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | 🚧 | — |
+| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| 权限模式 | 原生 | — | ✅ | ✅ | ✅ | — | — |
+| Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 原生 | ✅ | ✅ | ✅ | ✅ | — | — |
+| 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | — | — |
+| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | — | — |
+
+### Cursor
+
+在 Codex Desktop 的 Agent 选择器中选择 **Cursor**，即可使用本机 [Cursor CLI](https://cursor.com/docs/cli/installation)（`cursor-agent`，已验证 `2026.08.25-3e8eec8`）。请先运行现有的 `cursor-agent login`。不要把 PATH 里的 Grok `agent` 当成 Cursor；需要覆盖可执行文件时设置 `CODEXHOST_CURSOR_COMMAND`。
+
+Cursor 通过官方 ACP stdio（`cursor-agent acp`）接入：支持流式回复、工具状态、工具审批、取消，以及在 ACP 声明 `loadSession` 时恢复会话。不支持 Desktop 内 Model / Thinking / Permission Mode 选择、Fork、修订上一条、斜杠命令或上下文压缩。`unattended-full-access` 会返回 unsupported，因为 Cursor ACP 仍会请求运行时权限。
+
+可选冒烟测试（需要本机已登录的 Cursor CLI，默认跳过）：
+
+```bash
+CODEXHOST_RUN_CURSOR_ADAPTER_REAL=1 npx vitest run --config tests/vitest.config.js packages/adapters/cursor/test/cursor-adapter.real.test.ts
+```
+
 
 ## 跨 Agent 协作
 

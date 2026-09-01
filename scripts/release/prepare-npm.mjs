@@ -36,7 +36,7 @@ export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "linux-arm64": NPM_PLATFORM_PACKAGE_NAMES["linux-arm64"],
 });
 export const NPM_PACKAGE_DESCRIPTION =
-  "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
+  "Run external Agent Harnesses as first-class Threads inside Codex Desktop.";
 
 export function npmPlatformPackageName(target) {
   const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
@@ -222,7 +222,7 @@ export function createNpmPackageManifest({ version, target }) {
     },
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
-    keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
+    keywords: ["codex", "codexhost", "pi", "claude-code", "cursor", "agent", "harness"],
     repository: {
       type: "git",
       url: "git+https://github.com/BytePioneer-AI/codex-host.git",

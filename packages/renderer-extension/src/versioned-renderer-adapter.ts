@@ -44,6 +44,8 @@ export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
+export const CURSOR_TRANSPORT_MODEL_ID = "codexhost/cursor-native";
+export const CURSOR_TRANSPORT_MODEL_PREFIX = `${CURSOR_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -139,6 +141,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
+  if (agent === "cursor") return CURSOR_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -361,6 +364,28 @@ export function decodeOmpTransportModelId(value: unknown): {
 
 export function isOmpTransportModelId(value: unknown): value is string {
   return decodeOmpTransportModelId(value) !== null;
+}
+
+export function cursorTransportModelId(model?: HarnessModelRef): string {
+  if (!model) return CURSOR_TRANSPORT_MODEL_ID;
+  return `${CURSOR_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}`;
+}
+
+export function decodeCursorTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+} | null {
+  if (value === CURSOR_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(CURSOR_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const model = harnessModelRefSchema.safeParse({
+    id: value.slice(CURSOR_TRANSPORT_MODEL_PREFIX.length),
+  });
+  return model.success ? { model: model.data } : null;
+}
+
+export function isCursorTransportModelId(value: unknown): value is string {
+  return decodeCursorTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(
@@ -756,7 +781,9 @@ export function modelSelectionForAgent(
             ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
             : agent === "omp"
               ? ompTransportModelId(model, thinkingOptionId)
-              : transportModelIdForAgent(agent);
+              : agent === "cursor"
+                ? cursorTransportModelId(model)
+                : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

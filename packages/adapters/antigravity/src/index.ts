@@ -4,11 +4,15 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 export {
   AntigravityAdapter,
   parseAntigravityContextUsage,
-  parseAntigravityModels,
   permissionDeniedTurnError,
 } from "./antigravity-adapter.js";
 export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";
 export { resolveAntigravityExecutable } from "./command.js";
+export {
+  antigravityAvailableThinkingOptions,
+  antigravityModelArguments,
+  parseAntigravityModels,
+} from "./model-catalog.js";
 export { fetchAntigravityQuota, parseAntigravityUsageCommand } from "./quota.js";
 export type {
   AntigravityCommandRunner,

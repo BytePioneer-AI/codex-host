@@ -48,13 +48,14 @@ import {
 import { commandInvocation } from "@codexhost/harness-discovery";
 import {
   harnessIdSchema,
-  harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
   type HarnessPermissionModeId,
+  type HarnessThinkingOptionId,
   type HostItemId,
   type JsonValue,
   type NativeSessionRef,
@@ -62,6 +63,11 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { resolveAntigravityExecutable } from "./command.js";
+import {
+  antigravityAvailableThinkingOptions,
+  antigravityModelArguments,
+  parseAntigravityModels,
+} from "./model-catalog.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
@@ -120,7 +126,7 @@ const GEMINI_CONTEXT_WINDOW_TOKENS = 1_048_576;
 const CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
     selectModel: true,
-    selectThinkingOption: false,
+    selectThinkingOption: true,
     selectPermissionMode: true,
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
@@ -319,28 +325,6 @@ function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
-export function parseAntigravityModels(output: string): HarnessModelCatalog {
-  const models = output
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const separator = line.indexOf("\t");
-      if (separator <= 0) return null;
-      const id = line.slice(0, separator).trim();
-      const label = line.slice(separator + 1).trim();
-      const ref = harnessModelRefSchema.safeParse({ id });
-      return ref.success && label ? { ref: ref.data, label, resolvedModelLabel: label } : null;
-    })
-    .filter((model): model is NonNullable<typeof model> => model !== null);
-  if (models.length === 0) throw new Error("Antigravity CLI returned no usable Models");
-  return harnessModelCatalogSchema.parse({
-    models,
-    defaultModel: models[0]?.ref,
-    thinkingOptions: [],
-  });
-}
-
 function normalizedProcessError(stderr: string, fallback: string): HarnessError {
   // stderr can echo the invoked command line, so redact before it is surfaced.
   const diagnostic = sanitizeDiagnosticTail(stderr.trim());
@@ -413,8 +397,11 @@ class AntigravitySession implements HarnessSession {
   #model: HarnessModelRef | undefined;
   #nativeRef: NativeSessionRef | undefined;
   #permissionMode: AntigravityPermissionMode;
+  #thinkingOptionId: HarnessThinkingOptionId | undefined;
+  readonly #catalog: HarnessModelCatalog | undefined;
 
   constructor(input: {
+    catalog?: HarnessModelCatalog;
     cwd: string;
     environment: NodeJS.ProcessEnv;
     executable: string;
@@ -423,9 +410,11 @@ class AntigravitySession implements HarnessSession {
     knownTurnRefs?: NativeTurnRef[];
     permissionMode: AntigravityPermissionMode;
     printTimeout: string;
+    thinkingOptionId?: HarnessThinkingOptionId;
     toolOutputLimit: number;
     onClosed(): void;
   }) {
+    this.#catalog = input.catalog;
     this.#cwd = input.cwd;
     this.#environment = input.environment;
     this.#executable = input.executable;
@@ -433,6 +422,7 @@ class AntigravitySession implements HarnessSession {
     this.#nativeRef = input.nativeRef;
     this.#permissionMode = input.permissionMode;
     this.#printTimeout = input.printTimeout;
+    this.#thinkingOptionId = input.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#onClosed = input.onClosed;
     this.#turns = (input.knownTurnRefs ?? []).map((nativeTurnRef) => ({
@@ -479,9 +469,7 @@ class AntigravitySession implements HarnessSession {
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
-    if (command.type === "thinking.select") {
-      return { ok: false, error: unsupported("Antigravity Thinking selection is Model-specific") };
-    }
+    if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "interaction.respond") {
       return {
         ok: false,
@@ -519,7 +507,7 @@ class AntigravitySession implements HarnessSession {
       this.#printTimeout,
     ];
     if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
-    if (this.#model) arguments_.push("--model", this.#model.id);
+    arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
     if (this.#permissionMode === "dangerously-skip-permissions") {
       arguments_.push("--dangerously-skip-permissions");
     }
@@ -877,6 +865,46 @@ class AntigravitySession implements HarnessSession {
       };
     }
     this.#model = harnessModelRefSchema.parse(command.model);
+    // Efforts are per-Model, so a Model that does not accept the retained
+    // option must drop it rather than pass a combination the CLI rejects.
+    const available = antigravityAvailableThinkingOptions(this.#catalog, this.#model);
+    if (this.#thinkingOptionId && !available?.some(({ id }) => id === this.#thinkingOptionId)) {
+      this.#thinkingOptionId = undefined;
+    }
+    this.#event({ type: "session.state.changed", state: this.#state() });
+    return { ok: true, value: { completed: true } };
+  }
+
+  #selectThinking(command: ThinkingSelectCommand): HarnessResult<ThinkingSelectCompleted> {
+    if (this.#active) {
+      return {
+        ok: false,
+        error: { code: "sessionBusy", message: "Turn is active", retryable: true },
+      };
+    }
+    const requested = harnessThinkingOptionIdSchema.safeParse(command.thinkingOptionId);
+    if (!requested.success) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Antigravity Thinking option is not a valid identifier",
+          retryable: false,
+        },
+      };
+    }
+    const available = antigravityAvailableThinkingOptions(this.#catalog, this.#model);
+    if (!available?.some(({ id }) => id === requested.data)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: `Antigravity Model does not accept effort "${requested.data}"`,
+          retryable: false,
+        },
+      };
+    }
+    this.#thinkingOptionId = requested.data;
     this.#event({ type: "session.state.changed", state: this.#state() });
     return { ok: true, value: { completed: true } };
   }
@@ -903,9 +931,15 @@ class AntigravitySession implements HarnessSession {
   }
 
   #state(): HarnessSessionState {
+    const availableThinkingOptions = antigravityAvailableThinkingOptions(
+      this.#catalog,
+      this.#model,
+    );
     return {
       ...(this.#nativeRef ? { nativeRef: this.#nativeRef } : {}),
       ...(this.#model ? { effectiveModel: this.#model } : {}),
+      ...(this.#thinkingOptionId ? { effectiveThinkingOptionId: this.#thinkingOptionId } : {}),
+      ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
       effectivePermissionModeId: ANTIGRAVITY_PERMISSION_MODE_CATALOG.modes.find(
         ({ id }) => id === this.#permissionMode,
       )?.id as HarnessPermissionModeId,
@@ -1096,7 +1130,12 @@ export class AntigravityAdapter implements HarnessAdapter {
         };
       }
     }
+    // The Catalog carries which efforts each Model accepts; the Host inspects
+    // before opening, so the cached entry is normally present.
+    const catalog = this.#inspectionCache.get(path.resolve(input.cwd))?.catalog;
+    const thinkingOptionId = input.kind === "create" ? input.thinkingOptionId : undefined;
     const session = new AntigravitySession({
+      ...(catalog ? { catalog } : {}),
       cwd: input.cwd,
       environment: this.#environment,
       executable,
@@ -1107,6 +1146,7 @@ export class AntigravityAdapter implements HarnessAdapter {
         : {}),
       permissionMode,
       printTimeout: this.#printTimeout,
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
       onClosed: () => this.#sessions.delete(session),
     });

@@ -1,7 +1,13 @@
-import { accountCreditsSnapshotSchema } from "@codexhost/shared-contracts";
+import {
+  accountCreditsSnapshotSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  antigravityAvailableThinkingOptions,
+  antigravityModelArguments,
   antigravityToolErrorMessage,
   fetchAntigravityQuota,
   isAntigravityPermissionDenial,
@@ -61,16 +67,100 @@ describe("Antigravity Adapter", () => {
   it("parses the CLI Model catalog", () => {
     expect(
       parseAntigravityModels(
-        "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n",
+        [
+          "gemini-3.7-flash-high\tGemini 3.7 Flash (High)",
+          "gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)",
+          "gemini-3.7-flash-low\tGemini 3.7 Flash (Low)",
+          "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+          "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+          "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+          "",
+        ].join("\n"),
       ),
     ).toMatchObject({
       models: [
-        { ref: { id: "gemini-3.7-flash-high" }, label: "Gemini 3.7 Flash (High)" },
+        {
+          ref: { id: "gemini-3.7-flash" },
+          label: "Gemini 3.7 Flash",
+          supportedThinkingOptionIds: ["low", "medium", "high"],
+        },
+        // The CLI rejects `--effort medium` for Pro, so it must not be offered.
+        {
+          ref: { id: "gemini-3.1-pro" },
+          label: "Gemini 3.1 Pro",
+          supportedThinkingOptionIds: ["low", "high"],
+        },
         { ref: { id: "claude-sonnet-4-6" }, label: "Claude Sonnet 4.6 (Thinking)" },
       ],
-      defaultModel: { id: "gemini-3.7-flash-high" },
-      thinkingOptions: [],
+      defaultModel: { id: "gemini-3.7-flash" },
+      thinkingOptions: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "high",
     });
+  });
+
+  it("leaves Models without effort variants free of Thinking options", () => {
+    const catalog = parseAntigravityModels(
+      "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\nclaude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n",
+    );
+    // `-thinking` is not an effort suffix, so the ID must stay intact.
+    expect(catalog.models.map(({ ref }) => ref.id)).toEqual([
+      "claude-sonnet-4-6",
+      "claude-opus-4-6-thinking",
+    ]);
+    expect(catalog.models.every((model) => !model.supportedThinkingOptionIds)).toBe(true);
+    expect(catalog.thinkingOptions).toEqual([]);
+    expect(catalog.defaultThinkingOptionId).toBeUndefined();
+  });
+
+  it("passes effort as its own flag and never alongside a suffixed Model ID", () => {
+    const ref = (id: string) => harnessModelRefSchema.parse({ id });
+    const effort = (id: string) => harnessThinkingOptionIdSchema.parse(id);
+    expect(antigravityModelArguments(ref("gemini-3.1-pro"), effort("low"))).toEqual([
+      "--model",
+      "gemini-3.1-pro",
+      "--effort",
+      "low",
+    ]);
+    // A Thread stored before efforts were split keeps its suffixed ID, and the
+    // CLI fails that ID outright when `--effort` is also present.
+    expect(antigravityModelArguments(ref("gemini-3.1-pro-low"), effort("high"))).toEqual([
+      "--model",
+      "gemini-3.1-pro-low",
+    ]);
+    expect(antigravityModelArguments(ref("claude-sonnet-4-6"), undefined)).toEqual([
+      "--model",
+      "claude-sonnet-4-6",
+    ]);
+    expect(antigravityModelArguments(undefined, effort("high"))).toEqual([]);
+  });
+
+  it("reports only the efforts the selected Model accepts", () => {
+    const catalog = parseAntigravityModels(
+      [
+        "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+        "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
+        "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+      ].join("\n"),
+    );
+    expect(
+      antigravityAvailableThinkingOptions(
+        catalog,
+        harnessModelRefSchema.parse({ id: "gemini-3.1-pro" }),
+      ),
+    ).toEqual([
+      { id: "low", label: "Low" },
+      { id: "high", label: "High" },
+    ]);
+    expect(
+      antigravityAvailableThinkingOptions(
+        catalog,
+        harnessModelRefSchema.parse({ id: "claude-sonnet-4-6" }),
+      ),
+    ).toBeUndefined();
   });
 
   it("accepts typed stream events and ignores terminal noise", () => {

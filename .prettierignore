@@ -6,6 +6,8 @@ node_modules/
 target/
 **/dist/
 build/
+# Generated visual preview bundle; formatting it creates a large non-semantic diff.
+packages/renderer-extension/src/settings/windows-update.preview.html
 coverage/
 playwright-report/
 test-results/

@@ -12,8 +12,10 @@ import type {
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeExternalTransportSelection,
+  encodeExternalTransportSelection,
   mapExternalThreadHarnessError,
   type CodexTurnProjector,
+  type ExternalConfigurationSelection,
   type ExternalHarnessId,
   type ExternalThreadRpcError,
   type JsonObject,
@@ -250,6 +252,7 @@ export class ExternalThreadRuntime {
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
+    transportModelId?: string;
     restoredState?: HarnessSessionState;
   }): ExternalThread {
     const harnessId = input.record.harnessId as ExternalHarnessId;
@@ -285,7 +288,7 @@ export class ExternalThreadRuntime {
       sessionId: input.sessionId,
       stateObserver: new SessionStateObserver(observerState),
       thread: input.thread,
-      transportModelId: input.record.transportModelId,
+      transportModelId: input.transportModelId ?? input.record.transportModelId,
       turns: input.turns,
       historyHydrated: true,
       running: false,
@@ -526,7 +529,42 @@ export class ExternalThreadRuntime {
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }
-      const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
+      let aligned = await this.#repository.alignSnapshot(record, snapshot.value);
+      const restoredState = snapshot.value.state;
+      const effectiveModel = restoredState
+        ? restoredState.effectiveModel
+        : restoredSelection?.model;
+      const effectiveThinkingOptionId = restoredState
+        ? restoredState.effectiveThinkingOptionId
+        : restoredSelection?.thinkingOptionId;
+      const effectivePermissionModeId = restoredState
+        ? restoredState.effectivePermissionModeId
+        : restoredSelection?.permissionModeId;
+      let transportModelId = aligned.record.transportModelId;
+      // OMP can silently replace an unavailable Model during resume; persist the live selection
+      // so the next restore does not reapply the obsolete transport token.
+      if (harnessId === "omp" && restoredState?.effectiveModel) {
+        const liveSelection: ExternalConfigurationSelection = {
+          model: restoredState.effectiveModel,
+          ...(restoredState.effectiveThinkingOptionId
+            ? { thinkingOptionId: restoredState.effectiveThinkingOptionId }
+            : {}),
+        };
+        transportModelId = encodeExternalTransportSelection(harnessId, liveSelection);
+        if (transportModelId !== aligned.record.transportModelId) {
+          try {
+            aligned = {
+              ...aligned,
+              record: await this.#repository.setTransportModelId(
+                aligned.record.hostThreadId,
+                transportModelId,
+              ),
+            };
+          } catch (error) {
+            this.#diagnose(error);
+          }
+        }
+      }
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
       const turns = restoredTurns(aligned.record, snapshot.value, aligned.turns);
       return this.register({
@@ -539,14 +577,15 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns,
-        ...(restoredSelection?.model ? { requestedModel: restoredSelection.model } : {}),
-        ...(restoredSelection?.thinkingOptionId
-          ? { requestedThinkingOptionId: restoredSelection.thinkingOptionId }
+        ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
+        ...(effectiveThinkingOptionId
+          ? { requestedThinkingOptionId: effectiveThinkingOptionId }
           : {}),
-        ...(restoredSelection?.permissionModeId
-          ? { requestedPermissionModeId: restoredSelection.permissionModeId }
+        ...(effectivePermissionModeId
+          ? { requestedPermissionModeId: effectivePermissionModeId }
           : {}),
-        ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
+        ...(restoredState ? { restoredState } : {}),
+        transportModelId,
       });
     } catch (error) {
       await session.close().catch(() => undefined);

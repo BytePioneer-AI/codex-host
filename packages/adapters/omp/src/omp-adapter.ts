@@ -272,6 +272,34 @@ function harnessStateFromOmp(
   };
 }
 
+/**
+ * OMP can retain the previous model's Thinking level when it silently falls
+ * back to another model. Normalize that stale value before publishing the
+ * Session state so a recoverable Native Session is not rejected by the
+ * Host-side state invariant.
+ */
+async function reconcileThinkingLevel(
+  transport: OmpTurnTransport,
+  state: OmpSessionState,
+  thinkingLevels: HarnessThinkingOptionId[] | null,
+): Promise<{ state: OmpSessionState; thinkingLevels: HarnessThinkingOptionId[] | null }> {
+  if (
+    thinkingLevels === null ||
+    (state.thinkingLevel !== null && thinkingLevels.includes(state.thinkingLevel))
+  ) {
+    return { state, thinkingLevels };
+  }
+
+  const fallback = thinkingLevels.find((level) => level === "high") ?? thinkingLevels.at(-1);
+  if (!fallback) return { state, thinkingLevels };
+
+  const selectedState = await transport.selectThinkingOption(fallback);
+  return {
+    state: selectedState,
+    thinkingLevels: await transport.getAvailableThinkingLevels(),
+  };
+}
+
 function nativeModelForHistory(state: OmpSessionState): OmpNativeModelRef | null {
   return nativeModelFromState(state);
 }
@@ -877,6 +905,9 @@ class OmpHarnessSession implements HarnessSession {
       try {
         state = await transport.selectModel(requested);
         thinkingLevels = await transport.getAvailableThinkingLevels();
+        const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+        state = reconciled.state;
+        thinkingLevels = reconciled.thinkingLevels;
         this.#publishTransportState(state, thinkingLevels);
       } catch (error) {
         if (error instanceof OmpRpcFaultError) this.#fault(error);
@@ -1251,6 +1282,10 @@ class OmpHarnessSession implements HarnessSession {
           }
           state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
           thinkingLevels = await transport.getAvailableThinkingLevels();
+        } else {
+          const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+          state = reconciled.state;
+          thinkingLevels = reconciled.thinkingLevels;
         }
         this.#transport = transport;
         this.#publishTransportState(state, thinkingLevels);
@@ -2036,7 +2071,13 @@ export class OmpAdapter implements HarnessAdapter {
         }
       }
 
-      const startedThinkingLevels = await transport.getAvailableThinkingLevels();
+      let startedThinkingLevels = await transport.getAvailableThinkingLevels();
+      const reconciled = await reconcileThinkingLevel(
+        transport,
+        transport.state,
+        startedThinkingLevels,
+      );
+      startedThinkingLevels = reconciled.thinkingLevels;
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
       session = this.#trackSession(input.cwd, {

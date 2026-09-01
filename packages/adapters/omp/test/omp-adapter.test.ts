@@ -102,7 +102,8 @@ class FakeOmpTransport implements OmpTurnTransport {
     return this.state;
   }
 
-  async selectThinkingOption(): Promise<OmpSessionState> {
+  async selectThinkingOption(thinkingLevel: HarnessThinkingOptionId): Promise<OmpSessionState> {
+    void thinkingLevel;
     return this.state;
   }
 
@@ -183,6 +184,53 @@ class RestartableOmpTransport extends FakeOmpTransport {
     this.closed = true;
   }
 }
+
+describe("OMP Adapter startup", () => {
+  it("repairs an unavailable persisted Thinking level after model fallback", async () => {
+    const transport = new FakeOmpTransport();
+    const availableThinkingLevels = ["minimal", "low", "medium", "high"].map((level) =>
+      harnessThinkingOptionIdSchema.parse(level),
+    );
+    transport.state = {
+      ...transport.state,
+      thinkingLevel: harnessThinkingOptionIdSchema.parse("xhigh"),
+      availableThinkingLevels,
+    };
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockImplementation(async () => [
+      ...availableThinkingLevels,
+    ]);
+    const selectThinkingOption = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockImplementation(async (thinkingLevel) => {
+        transport.state = { ...transport.state, thinkingLevel };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef });
+
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(selectThinkingOption).toHaveBeenCalledWith("high");
+    expect(opened.value.initialState).toMatchObject({
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [
+        { id: "minimal" },
+        { id: "low" },
+        { id: "medium" },
+        { id: "high" },
+      ],
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 function historyTurn(input: {
   assistantId: string;

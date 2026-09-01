@@ -1,4 +1,4 @@
-import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { HarnessResult, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
@@ -12,7 +12,11 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
-import { encodeGrokTransportModel } from "@codexhost/protocol-core";
+import {
+  encodeGrokTransportModel,
+  encodeOmpTransportModel,
+  type ExternalHarnessId,
+} from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
@@ -149,6 +153,181 @@ describe("ExternalThreadRuntime register", () => {
       effectiveModel: model,
       effectiveThinkingOptionId: thinkingOptionId,
     });
+  });
+
+  it("uses live OMP state instead of stale persisted model and Thinking selections", async () => {
+    const ompHarnessId = harnessIdSchema.parse("omp");
+    const adapter = new FakeHarnessAdapter(ompHarnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const nativeRef = created.value.initialState.nativeRef;
+    const actualModel = created.value.initialState.effectiveModel;
+    const actualThinking = created.value.initialState.effectiveThinkingOptionId;
+    const staleModel = adapter.catalog.models[1]?.ref;
+    if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
+      throw new Error("Fake OMP Session did not expose the expected configuration state");
+    }
+
+    let stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: ompHarnessId,
+      nativeSessionRef: nativeRef,
+      transportModelId: encodeOmpTransportModel(
+        staleModel,
+        harnessThinkingOptionIdSchema.parse("low"),
+      ),
+      historyMode: "legacy",
+    };
+    const setTransportModelId = vi.fn(
+      async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => {
+        stored = { ...stored, transportModelId };
+        return stored;
+      },
+    );
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    expect(resolved.thread.stateObserver.state).toMatchObject({
+      effectiveModel: actualModel,
+      effectiveThinkingOptionId: actualThinking,
+    });
+    expect(resolved.thread.record.transportModelId).toBe(
+      encodeOmpTransportModel(actualModel, actualThinking),
+    );
+    expect(setTransportModelId).toHaveBeenCalledWith(
+      hostThreadId,
+      encodeOmpTransportModel(actualModel, actualThinking),
+    );
+
+    await adapter.close();
+  });
+
+  it("does not restore persisted Thinking when live OMP state omits it", async () => {
+    const ompHarnessId = harnessIdSchema.parse("omp");
+    const adapter = new FakeHarnessAdapter(ompHarnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const session = created.value;
+    const nativeRef = session.initialState.nativeRef;
+    const actualModel = session.initialState.effectiveModel;
+    const staleThinking = harnessThinkingOptionIdSchema.parse("low");
+    if (!nativeRef || !actualModel || !(session instanceof FakeHarnessSession)) {
+      throw new Error("Fake OMP Session did not expose the expected configuration state");
+    }
+    session.setStateForSnapshot({ nativeRef, effectiveModel: actualModel });
+
+    const staleTransportModelId = encodeOmpTransportModel(actualModel, staleThinking);
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: ompHarnessId,
+      nativeSessionRef: nativeRef,
+      transportModelId: staleTransportModelId,
+      historyMode: "legacy",
+    } as StoredThreadRecordV1;
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async (_threadId: string, transportModelId: string) => ({
+        ...stored,
+        transportModelId,
+      }),
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    expect(resolved.thread.stateObserver.state).toMatchObject({
+      effectiveModel: actualModel,
+    });
+    expect(resolved.thread.stateObserver.state.effectiveThinkingOptionId).toBeUndefined();
+    expect(resolved.thread.requestedThinkingOptionId).toBeUndefined();
+    expect(resolved.thread.transportModelId).toBe(encodeOmpTransportModel(actualModel));
+
+    await adapter.close();
+  });
+
+  it("keeps OMP restore successful when live selection persistence fails", async () => {
+    const ompHarnessId = harnessIdSchema.parse("omp");
+    const adapter = new FakeHarnessAdapter(ompHarnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const nativeRef = created.value.initialState.nativeRef;
+    const actualModel = created.value.initialState.effectiveModel;
+    const actualThinking = created.value.initialState.effectiveThinkingOptionId;
+    const staleModel = adapter.catalog.models[1]?.ref;
+    if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
+      throw new Error("Fake OMP Session did not expose the expected configuration state");
+    }
+
+    const staleTransportModelId = encodeOmpTransportModel(
+      staleModel,
+      harnessThinkingOptionIdSchema.parse("low"),
+    );
+    const setTransportModelId = vi.fn(async () => {
+      throw new Error("synthetic mapping persistence failure");
+    });
+    const diagnose = vi.fn();
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      harnessId: ompHarnessId,
+      nativeSessionRef: nativeRef,
+      transportModelId: staleTransportModelId,
+      historyMode: "legacy",
+    } as StoredThreadRecordV1;
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    expect(resolved.thread.stateObserver.state).toMatchObject({
+      effectiveModel: actualModel,
+      effectiveThinkingOptionId: actualThinking,
+    });
+    expect(resolved.thread.record.transportModelId).toBe(staleTransportModelId);
+    expect(resolved.thread.transportModelId).toBe(
+      encodeOmpTransportModel(actualModel, actualThinking),
+    );
+    expect(setTransportModelId).toHaveBeenCalledOnce();
+    expect(diagnose).toHaveBeenCalledWith(expect.any(Error));
+
+    await adapter.close();
   });
 
   it("reapplies a persisted Grok Permission Mode before reading restored history", async () => {

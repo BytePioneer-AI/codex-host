@@ -15,3 +15,21 @@ Pending in this task's follow-up commit.
 ## Concerns
 
 The MappingStore serialization is a single mutation queue: deliberately simple and safe, with throughput bounded by serialized creates. Official request dedupe remains owned by the official Host implementation; this task only ensures normalized policy reaches that path and avoids changing native mapping behavior.
+
+## SECOND FIX
+
+### RED
+
+The review regressions targeted unconstrained IDs/harness values at the HTTP boundary and post-write index failure leakage. The existing route schemas accepted these values and dispatch casts bypassed domain contracts.
+
+### GREEN
+
+Control schemas now use the existing routed-harness, branded model/thinking, and host-thread parsers, transform optional fields without undefined leakage, and dispatch parsed contract values without assertions. Mapping Store create writes snapshot/restore indexes and remove newly written files on post-write failure; the mutation queue remains usable. Focused build plus control-server/coordinator/mapping-store suites pass: 3 files, 45 tests.
+
+### Commit
+
+Pending in this follow-up commit.
+
+### Remaining concern
+
+Official concurrent behavior is serialized by the coordinator start queue; no native mapping changes were made.

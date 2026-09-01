@@ -1,6 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
+import {
+  harnessIdSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+  hostThreadIdSchema,
+} from "@codexhost/shared-contracts";
+import { EXTERNAL_HARNESS_IDS } from "@codexhost/protocol-core";
 
 import {
   DelegationControlError,
@@ -16,36 +23,77 @@ import {
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
+const routedHarnessIdSchema = z.enum(["codex", ...EXTERNAL_HARNESS_IDS]);
 const inspectBody = z
-  .object({ harnessId: z.string(), cwd: z.string().optional(), refresh: z.boolean().optional() })
-  .strict();
+  .object({
+    harnessId: routedHarnessIdSchema,
+    cwd: z.string().optional(),
+    refresh: z.boolean().optional(),
+  })
+  .strict()
+  .transform((v): HarnessInspectInput => ({
+    harnessId: v.harnessId,
+    ...(v.cwd !== undefined ? { cwd: v.cwd } : {}),
+    ...(v.refresh !== undefined ? { refresh: v.refresh } : {}),
+  }));
 const startBody = z
   .object({
-    harnessId: z.string(),
+    harnessId: routedHarnessIdSchema,
     task: z.string(),
     cwd: z.string(),
     executionPolicy: z.enum(["approval-required", "unattended-full-access"]).optional(),
-    parentThreadId: z.string().optional(),
+    parentThreadId: hostThreadIdSchema.optional(),
     requestId: z.string().optional(),
-    model: z.object({ id: z.string() }).strict().optional(),
-    thinkingOptionId: z.string().optional(),
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
   })
-  .strict();
-const sendBody = z.object({ threadId: z.string(), message: z.string() }).strict();
-const cancelBody = z.object({ threadId: z.string() }).strict();
+  .strict()
+  .transform((v): DelegationStartInput => ({
+    harnessId: v.harnessId,
+    task: v.task,
+    cwd: v.cwd,
+    ...(v.executionPolicy !== undefined ? { executionPolicy: v.executionPolicy } : {}),
+    ...(v.parentThreadId !== undefined ? { parentThreadId: v.parentThreadId } : {}),
+    ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    ...(v.model !== undefined ? { model: v.model } : {}),
+    ...(v.thinkingOptionId !== undefined ? { thinkingOptionId: v.thinkingOptionId } : {}),
+  }));
+const sendBody = z.object({ threadId: hostThreadIdSchema, message: z.string() }).strict();
+const cancelBody = z.object({ threadId: hostThreadIdSchema }).strict();
 const readBody = z
   .object({
-    threadId: z.string(),
+    threadId: hostThreadIdSchema,
     view: z.enum(["result", "messages"]),
     cursor: z.string().optional(),
     limit: z.number().int().positive().optional(),
   })
-  .strict();
-const waitBody = readBody.extend({ timeoutMs: z.number().int().positive() }).strict();
+  .strict()
+  .transform((v): ThreadReadInput => ({
+    threadId: v.threadId,
+    view: v.view,
+    ...(v.cursor !== undefined ? { cursor: v.cursor } : {}),
+    ...(v.limit !== undefined ? { limit: v.limit } : {}),
+  }));
+const waitBody = z
+  .object({
+    threadId: hostThreadIdSchema,
+    view: z.enum(["result", "messages"]),
+    cursor: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    timeoutMs: z.number().int().positive(),
+  })
+  .strict()
+  .transform((v): ThreadWaitInput => ({
+    threadId: v.threadId,
+    view: v.view,
+    timeoutMs: v.timeoutMs,
+    ...(v.cursor !== undefined ? { cursor: v.cursor } : {}),
+    ...(v.limit !== undefined ? { limit: v.limit } : {}),
+  }));
 const listBody = z
   .object({
     cwd: z.string().optional(),
-    parentThreadId: z.string().optional(),
+    parentThreadId: hostThreadIdSchema.optional(),
     limit: z.number().int().positive(),
     cursor: z.string().optional(),
     sort: z.enum([
@@ -57,7 +105,14 @@ const listBody = z
       "recency-desc",
     ]),
   })
-  .strict();
+  .strict()
+  .transform((v): ThreadListInput => ({
+    limit: v.limit,
+    sort: v.sort,
+    ...(v.cwd !== undefined ? { cwd: v.cwd } : {}),
+    ...(v.parentThreadId !== undefined ? { parentThreadId: v.parentThreadId } : {}),
+    ...(v.cursor !== undefined ? { cursor: v.cursor } : {}),
+  }));
 
 function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
@@ -145,18 +200,10 @@ export async function startDelegationControlServer(input: {
       const body = await jsonBody(request);
       switch (request.url) {
         case "/v1/harness/inspect":
-          writeJson(
-            response,
-            200,
-            await input.api.inspect(parseBody(inspectBody, body) as HarnessInspectInput),
-          );
+          writeJson(response, 200, await input.api.inspect(parseBody(inspectBody, body)));
           return;
         case "/v1/delegate/start":
-          writeJson(
-            response,
-            200,
-            await input.api.start(parseBody(startBody, body) as DelegationStartInput),
-          );
+          writeJson(response, 200, await input.api.start(parseBody(startBody, body)));
           return;
         case "/v1/thread/send":
           writeJson(response, 200, await input.api.send(parseBody(sendBody, body)));
@@ -165,25 +212,13 @@ export async function startDelegationControlServer(input: {
           writeJson(response, 200, await input.api.cancel(parseBody(cancelBody, body)));
           return;
         case "/v1/thread/read":
-          writeJson(
-            response,
-            200,
-            await input.api.read(parseBody(readBody, body) as ThreadReadInput),
-          );
+          writeJson(response, 200, await input.api.read(parseBody(readBody, body)));
           return;
         case "/v1/thread/wait":
-          writeJson(
-            response,
-            200,
-            await input.api.wait(parseBody(waitBody, body) as ThreadWaitInput),
-          );
+          writeJson(response, 200, await input.api.wait(parseBody(waitBody, body)));
           return;
         case "/v1/thread/list":
-          writeJson(
-            response,
-            200,
-            await input.api.list(parseBody(listBody, body) as ThreadListInput),
-          );
+          writeJson(response, 200, await input.api.list(parseBody(listBody, body)));
           return;
         default:
           throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");

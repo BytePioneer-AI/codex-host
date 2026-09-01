@@ -388,9 +388,17 @@ export class MappingStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     }) as StoredDelegationRecordV1;
-    await this.#replaceDelegationFile(record);
-    this.#delegations.set(record.delegationId, record);
-    this.#rebuildIndexes();
+    const indexes = this.#snapshotIndexes();
+    try {
+      await this.#replaceDelegationFile(record);
+      this.#delegations.set(record.delegationId, record);
+      this.#rebuildIndexes();
+    } catch (error) {
+      this.#delegations.delete(record.delegationId);
+      this.#restoreIndexes(indexes);
+      await rm(this.#delegationPath(record.delegationId), { force: true }).catch(() => undefined);
+      throw error;
+    }
     return cloneRecord(record);
   }
 
@@ -729,9 +737,41 @@ export class MappingStore {
 
   async #writeNew(record: StoredThreadRecordV1): Promise<void> {
     this.#validateGlobal(record, null);
-    await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
-    this.#records.set(record.hostThreadId, record);
-    this.#rebuildIndexes();
+    const indexes = this.#snapshotIndexes();
+    try {
+      await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
+      this.#records.set(record.hostThreadId, record);
+      this.#rebuildIndexes();
+    } catch (error) {
+      this.#records.delete(record.hostThreadId);
+      this.#restoreIndexes(indexes);
+      await rm(this.#recordPath(record.hostThreadId), { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  #snapshotIndexes(): Map<string, Map<string, string>> {
+    const snapshot = new Map<string, Map<string, string>>();
+    snapshot.set("create", new Map(this.#createRequests));
+    snapshot.set("delegation", new Map(this.#delegationRequests));
+    snapshot.set("children", new Map(this.#delegationChildren));
+    snapshot.set("sessions", new Map(this.#nativeSessions));
+    snapshot.set("hostTurns", new Map(this.#hostTurns));
+    snapshot.set("nativeTurns", new Map(this.#nativeTurns));
+    return snapshot;
+  }
+
+  #restoreIndexes(snapshot: Map<string, Map<string, string>>): void {
+    const restore = (target: Map<string, string>, key: string) => {
+      target.clear();
+      for (const [k, v] of snapshot.get(key) ?? []) target.set(k, v);
+    };
+    restore(this.#createRequests, "create");
+    restore(this.#delegationRequests, "delegation");
+    restore(this.#delegationChildren, "children");
+    restore(this.#nativeSessions, "sessions");
+    restore(this.#hostTurns, "hostTurns");
+    restore(this.#nativeTurns, "nativeTurns");
   }
 
   async #replaceFile(

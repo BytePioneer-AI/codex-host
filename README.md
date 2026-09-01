@@ -156,14 +156,18 @@ codexhost skill status
 codexhost skill uninstall
 ```
 
-Host 启动不会自动安装或修改 Skill。委派默认使用 `approval-required`；如需明确允许无人值守的完整访问，必须显式传入执行策略：
+Host 启动不会自动安装或修改全局 Skill。`skill status` 只读；安装和更新绝不覆盖冲突文件。仅当活跃的 `SKILL.md` 是当前版或经 codexhost 固定摘要确认的真实历史托管版时，卸载才会移走它；冲突内容逐字节保留，父目录也会保留。
+
+为恢复进程级故障，托管的 quarantine 和 journal 文件会被刻意保留。若错误信息要求手工清理，请先停止并发的 Skill 命令，备份并逐一核对错误中报告的精确路径和内容，再单文件处理；不要使用通配符或递归删除。
+
+委派省略执行策略时默认使用 `approval-required`。`unattended-full-access` 会授予危险的无人值守完整访问；除非用户明确要求或接受，Agent 绝不能自行选择：
 
 ```bash
 codexhost delegate start --harness claude-code --task "review auth"
 codexhost delegate start --harness pi --task "investigate the failure" --execution-policy unattended-full-access
 ```
 
-Pi 目前没有委派审批桥接，因此会拒绝默认的 `approval-required`，只能通过上述显式无人值守策略委派。OMP 的委派权限模式默认是 `always-ask`。
+Pi 目前没有委派审批桥接，`approval-required` 的创建和恢复都会 fail closed；只有用户明确要求或接受时才能显式使用 `unattended-full-access`。OMP 的委派权限模式默认是 `always-ask`。
 
 你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
 

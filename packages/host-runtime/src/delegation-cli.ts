@@ -84,6 +84,16 @@ export const DELEGATION_HELP = `usage:
   codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread list [--cwd <path>] [--parent <thread>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc]
 
+Agent safety rules are mandatory.
+Omitting --execution-policy defaults to approval-required. unattended-full-access is dangerous. Agents must never choose unattended-full-access unless the user explicitly requested or accepted it.
+Pi has no delegation approval bridge: approval-required creation and recovery fail closed. For Pi, use unattended-full-access only after explicit user request or acceptance.
+OMP delegated sessions default to always-ask.
+
+Host startup never installs or modifies global Skills; skill install, status, and uninstall are explicit.
+skill status is read-only. Install and update never overwrite conflicts.
+Uninstall removes the active SKILL.md only when it is current or a genuine known managed legacy copy; conflicts are preserved byte-for-byte and parent directories are retained.
+Managed quarantine and journal files are intentionally retained for process-fault recovery and may require manual cleanup only as documented in README.
+
 Thread identifiers accept a bare ID or codex://threads/<id>. Output is JSON by default.
 harness inspect returns the target Model catalog, default Model, Thinking options, and configuration capabilities without creating a Thread. Use opaque IDs exactly as returned.
 delegate start requires --harness and --task, creates and submits the child Thread, then returns immediately. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference. Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly.

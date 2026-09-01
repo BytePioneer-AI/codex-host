@@ -108,6 +108,40 @@ describe("delegation CLI", () => {
     expect(outputText(output)).toBe(DELEGATION_HELP);
   });
 
+  it.each([
+    ["the omitted policy default", "Omitting --execution-policy defaults to approval-required."],
+    ["the unattended danger", "unattended-full-access is dangerous."],
+    [
+      "the unattended agent prohibition",
+      "Agents must never choose unattended-full-access unless the user explicitly requested or accepted it.",
+    ],
+    [
+      "the Pi fail-closed boundary",
+      "Pi has no delegation approval bridge: approval-required creation and recovery fail closed.",
+    ],
+    [
+      "the Pi explicit unattended boundary",
+      "For Pi, use unattended-full-access only after explicit user request or acceptance.",
+    ],
+    ["the OMP delegated default", "OMP delegated sessions default to always-ask."],
+    [
+      "explicit Skill management",
+      "Host startup never installs or modifies global Skills; skill install, status, and uninstall are explicit.",
+    ],
+    ["read-only Skill status", "skill status is read-only."],
+    ["conflict-safe Skill writes", "Install and update never overwrite conflicts."],
+    [
+      "safe Skill removal ownership",
+      "Uninstall removes the active SKILL.md only when it is current or a genuine known managed legacy copy; conflicts are preserved byte-for-byte and parent directories are retained.",
+    ],
+    [
+      "retained recovery files",
+      "Managed quarantine and journal files are intentionally retained for process-fault recovery and may require manual cleanup only as documented in README.",
+    ],
+  ])("documents %s in authoritative help", (_name, expected) => {
+    expect(DELEGATION_HELP).toContain(expected);
+  });
+
   it("inspects Harness configuration through the Runtime", async () => {
     const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
     const output = new PassThrough();

@@ -2,7 +2,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import {
-  harnessIdSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -14,9 +13,7 @@ import {
   type DelegationControlApi,
   type DelegationStartInput,
   type HarnessInspectInput,
-  type ThreadCancelInput,
   type ThreadListInput,
-  type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
 } from "./delegation-types.js";

@@ -60,6 +60,7 @@ export interface MappingStoreOptions {
   instanceId?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
+  beforeRebuild?: () => void;
 }
 
 interface LockRecord {
@@ -200,6 +201,7 @@ export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
+  readonly #beforeRebuild: MappingStoreOptions["beforeRebuild"];
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
@@ -229,6 +231,7 @@ export class MappingStore {
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
+    this.#beforeRebuild = options.beforeRebuild;
   }
 
   async initialize(): Promise<void> {
@@ -392,6 +395,7 @@ export class MappingStore {
     try {
       await this.#replaceDelegationFile(record);
       this.#delegations.set(record.delegationId, record);
+      this.#beforeRebuild?.();
       this.#rebuildIndexes();
     } catch (error) {
       this.#delegations.delete(record.delegationId);
@@ -741,6 +745,7 @@ export class MappingStore {
     try {
       await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
       this.#records.set(record.hostThreadId, record);
+      this.#beforeRebuild?.();
       this.#rebuildIndexes();
     } catch (error) {
       this.#records.delete(record.hostThreadId);

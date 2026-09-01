@@ -92,6 +92,37 @@ afterEach(async () => {
 });
 
 describe("mapping-store package", () => {
+  it("rolls back a post-write rebuild failure and keeps the mutation queue usable", async () => {
+    const directory = await temporaryStoreDirectory();
+    let fail = true;
+    const store = new MappingStore({
+      directory,
+      beforeRebuild: () => {
+        if (fail) {
+          fail = false;
+          throw new Error("synthetic rebuild failure");
+        }
+      },
+    });
+    await store.initialize();
+    const input = {
+      hostThreadId: hostThreadIdSchema.parse("rollback-thread"),
+      createRequestId: "rollback-request",
+      harnessId,
+      cwd: "/synthetic",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "legacy" as const,
+    };
+    await expect(store.createProvisional(input)).rejects.toThrow("synthetic rebuild failure");
+    await expect(store.listThreads()).resolves.toEqual([]);
+    await expect(store.getThread(input.hostThreadId)).resolves.toBeNull();
+    await expect(store.getThreadByCreateRequest(input.createRequestId)).resolves.toBeNull();
+    await expect(store.createProvisional(input)).resolves.toMatchObject({
+      hostThreadId: input.hostThreadId,
+    });
+    await store.close();
+  });
   it("participates in the shared contract", () => {
     expect(packageMetadata.name).toBe("@codexhost/mapping-store");
     expect(packageMetadata.contractVersion).toBe(1);

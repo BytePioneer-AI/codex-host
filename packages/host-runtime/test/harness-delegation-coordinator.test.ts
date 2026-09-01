@@ -317,10 +317,66 @@ describe("HarnessDelegationCoordinator", () => {
       expect(second.threadId).toBe(first.threadId);
       expect(value.adapter.sessions).toHaveLength(1);
       expect(await value.repository.listDelegations()).toHaveLength(1);
-      await expect(
+      const conflict = await Promise.allSettled([
         value.coordinator.start({ ...inputs, task: "conflicting task" }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+        value.coordinator.start({ ...inputs, task: "other conflicting task" }),
+      ]);
+      expect(conflict.filter((entry) => entry.status === "fulfilled")).toHaveLength(0);
+      expect(conflict.map((entry) => entry.status)).toEqual(["rejected", "rejected"]);
       expect(await value.repository.list()).toHaveLength(1);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("covers concurrent official request-id idempotency and conflict routing", async () => {
+    const value = await fixture();
+    const records = new Map<string, { task: string; result: unknown }>();
+    let nativeCreates = 0;
+    value.startOfficial.mockImplementation(async (input) => {
+      const existing = input.requestId ? records.get(input.requestId) : undefined;
+      if (existing && existing.task !== input.task) {
+        throw new Error("Request ID is already associated with another Delegation configuration");
+      }
+      if (existing) return existing.result as never;
+      nativeCreates += 1;
+      const result = {
+        delegationId: "delegation-official",
+        threadId: "thread-official",
+        turnId: "turn-official",
+        harnessId: "codex" as const,
+        deepLink: "codex://threads/thread-official",
+        status: "running" as const,
+        configuration: { requested: { executionPolicy: input.executionPolicy } },
+        next: { read: "read", wait: "wait" },
+      };
+      if (input.requestId) records.set(input.requestId, { task: input.task, result });
+      return result;
+    });
+    try {
+      const input = {
+        harnessId: "codex" as const,
+        task: "review",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "official-concurrent",
+      };
+      const [first, retry] = await Promise.all([
+        value.coordinator.start(input),
+        value.coordinator.start(input),
+      ]);
+      expect(nativeCreates).toBe(1);
+      expect(retry.threadId).toBe(first.threadId);
+      expect(retry.configuration?.requested).toMatchObject({
+        executionPolicy: "approval-required",
+      });
+      await expect(
+        Promise.all([
+          value.coordinator.start({ ...input, task: "conflict-a" }),
+          value.coordinator.start({ ...input, task: "conflict-b" }),
+        ]),
+      ).rejects.toThrow("Request ID");
+      expect(nativeCreates).toBe(1);
     } finally {
       await value.close();
     }

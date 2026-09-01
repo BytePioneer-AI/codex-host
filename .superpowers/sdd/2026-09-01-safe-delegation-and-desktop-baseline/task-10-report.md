@@ -33,3 +33,13 @@ Pending in this follow-up commit.
 ### Remaining concern
 
 Official concurrent behavior is serialized by the coordinator start queue; no native mapping changes were made.
+
+## THIRD FIX
+
+### RED
+
+Added rollback fault injection after the provisional write, concurrent external identical/conflicting request coverage, and an injected official Codex Promise.all idempotency/conflict matrix. The pre-fix boundary still had an unused import lint failure and lacked the post-write rollback regression.
+
+### GREEN
+
+Control-server schemas retain only contract-compatible parsers with no dispatch assertions. MappingStore now restores all indexes and removes a newly written file when post-write rebuild fails, while later queued creates succeed. External and injected official concurrency matrices assert one creation for identical requests and no additional creation for conflicts. Build passed; four focused files passed with 164 tests, and changed-file ESLint passed.

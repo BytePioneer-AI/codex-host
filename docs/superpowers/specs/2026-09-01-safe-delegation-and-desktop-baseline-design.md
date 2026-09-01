@@ -162,7 +162,7 @@ The update flow is:
 5. Add the new identity and sanitized baseline report as a normal code change.
 6. Review and commit the diff.
 
-The acceptance command validates the report schema, exact Desktop identity, absence of confirmed/possible impact, destination path confinement, and duplicate identity before writing. It does not infer approval from merely detecting a new installation.
+The acceptance command validates the report schema, exact Desktop identity, absence of confirmed/possible impact, and destination path confinement before writing. It may populate the missing baseline for a predeclared identity once; it refuses to overwrite an existing baseline or duplicate an identity, while a newly reviewed build appends a new entry. It does not infer approval from merely detecting a new installation.
 
 ## Data and Security Boundaries
 

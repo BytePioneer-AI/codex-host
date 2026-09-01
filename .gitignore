@@ -4,6 +4,8 @@
 /.pi/
 /downloads/
 /.codexhost/
+/.codex/
+/.superpowers/
 /.claude/
 
 # Environment and secrets
@@ -53,6 +55,7 @@ npm-debug.log*
 
 # Operating systems
 .DS_Store
+._*
 .AppleDouble
 .LSOverride
 Thumbs.db

@@ -156,6 +156,15 @@ codexhost skill status
 codexhost skill uninstall
 ```
 
+Host 启动不会自动安装或修改 Skill。委派默认使用 `approval-required`；如需明确允许无人值守的完整访问，必须显式传入执行策略：
+
+```bash
+codexhost delegate start --harness claude-code --task "review auth"
+codexhost delegate start --harness pi --task "investigate the failure" --execution-policy unattended-full-access
+```
+
+Pi 目前没有委派审批桥接，因此会拒绝默认的 `approval-required`，只能通过上述显式无人值守策略委派。OMP 的委派权限模式默认是 `always-ask`。
+
 你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
 
 > 让 `claude-code` 独立审查这次修改，并指出兼容性风险。
@@ -256,6 +265,20 @@ cd codex-host
 npm ci
 npm start
 ```
+
+Codex Desktop 更新兼容性使用精确的平台、版本、构建号和 `app.asar` 摘要门禁。在隔离的 Desktop 生命周期中运行已审核构建的集成检查：
+
+```bash
+npm run test:codex-desktop:integration
+```
+
+新 Desktop 构建不会自动获得信任。维护者需要先生成并人工检查审计报告、完成报告中要求的 live gate，再显式接纳基线：
+
+```bash
+npm run accept:codex-desktop-baseline -- --report .codexhost/update-impact/26.825.41651/audit-report.json
+```
+
+接纳前确认报告不包含潜在或已确认影响，并审查生成的 manifest 与基线 diff。完整端点参数和审核步骤见 [Codex Desktop contract audit](tools/codex-desktop-contract-audit/README.md)。
 
 ## 鸣谢
 

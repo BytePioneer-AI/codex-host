@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "desktops": [
+    {
+      "platform": "macos",
+      "version": "26.825.41651",
+      "build": "7345",
+      "asarIntegrity": "sha256:c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d",
+      "baseline": "baselines/macos-26.825.41651-7345.json"
+    }
+  ]
+}

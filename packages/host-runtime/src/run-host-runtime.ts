@@ -93,7 +93,7 @@ function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
   return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
 }
 
-async function prepareDelegationRuntime(input: {
+export async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   createHost(
     environment: NodeJS.ProcessEnv,

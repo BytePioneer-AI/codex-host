@@ -36,3 +36,21 @@ The existing `run-host-runtime` focused suite was executed. A dedicated temporar
 - Uninstall leaves the verified transaction-owned quarantine in place after exact-entry rename and reclassification; it never removes a post-hash pathname. Conflict restoration remains no-clobber by rename semantics and fails closed if occupied.
 - GREEN: `npm run build:typescript`; focused lifecycle test suite: 8 passed. Prettier was run on changed lifecycle files. The dedicated startup temporary-home zero-write test remains an outstanding gap (no startup code was changed in this pass).
 - Self-review concern: a full crash-recovery journal/pending-transaction protocol and injected swap/fault seam are not present; retaining quarantine avoids destructive TOCTOU but needs a follow-up recovery workflow before claiming complete crash cleanup.
+
+## THIRD REWORK
+
+- Replaced the unjournaled quarantine flow with a strict, random-id transaction journal. Journal files are established with exclusive create and fsync before any rename; completion is an exclusive hard link to the exact journal inode, so retry state is never cleared by pathname deletion.
+- Lifecycle entry points recover journals before install, status, or uninstall. Faults after journal creation, quarantine rename, and quarantine hashing resume the same transaction. A managed uninstall remains recoverable as a retained quarantine; active `SKILL.md` is absent, and later installs do not cause recovery to touch a new occupant.
+- Conflict recovery uses a no-clobber hard link. If the destination is occupied, destination, quarantine, and journal are all retained and the operation fails closed. No verified quarantine is physically removed by pathname.
+- Canonical home validation now compares native `realpath` of the raw input with canonical resolution of its lexical absolute form, rejecting `safe/link/..`; destinations are derived only from the canonical home. Commit seams revalidate canonical ancestry immediately before and after create/link/rename operations.
+- Missing installs use `open(..., "wx")`; managed legacy updates use the same journal/quarantine protocol. A forged journal cannot inject a digest: only the current digest and the genuine historical `15eb6351...` digest are trusted.
+- Added a source-private filesystem/hook seam (not exported from the package index) for uid, fault, race, hash-swap, and ancestor-swap regressions.
+- Exported the existing source-level `prepareDelegationRuntime` seam and ran real preparation under a temporary `HOME`; `createHost` completed, `.agents`/`.claude` remained absent, and the control endpoint was closed afterward.
+
+### THIRD REWORK verification
+
+1. `npm run build:typescript` — passed.
+2. `npx vitest run packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/run-host-runtime.test.ts --config tests/vitest.config.js` — 24 passed.
+3. `npx eslint packages/host-runtime/src/delegation-skill.ts packages/host-runtime/src/run-host-runtime.ts packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/run-host-runtime.test.ts` — passed.
+4. `npx prettier --check packages/host-runtime/src/delegation-skill.ts packages/host-runtime/src/run-host-runtime.ts packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/run-host-runtime.test.ts` — passed.
+5. `git diff --check` — passed.

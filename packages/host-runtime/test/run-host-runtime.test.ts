@@ -1,3 +1,5 @@
+import { mkdtemp, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -6,6 +8,7 @@ import {
   createRemoteControlOfficialAppServerPlan,
   createRemoteOfficialAppServerPlan,
   hasLauncherManagedUpdateRuntime,
+  prepareDelegationRuntime,
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
@@ -71,5 +74,26 @@ describe("Host Runtime composition", () => {
         path.join(packageRoot, "app", "host-runtime.mjs"),
       ),
     ).toBe(true);
+  });
+
+  it("prepares and closes delegation control without writing agent homes", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-runtime-home-"));
+    let endpoint = "";
+    let created = false;
+    const result = await prepareDelegationRuntime({
+      environment: { HOME: home },
+      async createHost(environment) {
+        created = true;
+        endpoint = environment.CODEXHOST_RUNTIME_ENDPOINT ?? "";
+        expect(endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+        return 17;
+      },
+    });
+
+    expect(result).toBe(17);
+    expect(created).toBe(true);
+    await expect(stat(path.join(home, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fetch(`${endpoint}/health`)).rejects.toThrow();
   });
 });

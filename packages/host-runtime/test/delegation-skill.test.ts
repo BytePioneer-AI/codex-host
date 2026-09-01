@@ -1,4 +1,15 @@
-import { mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -6,6 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CODEXHOST_DELEGATION_SKILL,
+  createDelegationSkillLifecycleForTest,
   inspectDelegationSkills,
   installDelegationSkills,
   uninstallDelegationSkills,
@@ -20,6 +32,17 @@ function paths(root: string): string[] {
     path.join(root, ".agents", "skills", "codexhost-delegation", "SKILL.md"),
     path.join(root, ".claude", "skills", "codexhost-delegation", "SKILL.md"),
   ];
+}
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("Missing test path");
+  return value;
+}
+
+async function artifacts(destination: string): Promise<string[]> {
+  return (await readdir(path.dirname(destination))).filter((name) =>
+    /^\.SKILL\.md\..+\.(?:journal|quarantine)$/u.test(name),
+  );
 }
 
 describe("delegation Skill installation", () => {
@@ -135,6 +158,7 @@ describe("delegation Skill installation", () => {
     expect(results.map(({ status }) => status)).toEqual(["conflict", "removed"]);
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe("user content\n");
     await expect(stat(destinations[1] ?? "")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.dirname(destinations[1] ?? ""))).resolves.toMatchObject({});
   });
 
   it("rejects symlinked ancestors and Skill entries", async () => {
@@ -156,4 +180,259 @@ describe("delegation Skill installation", () => {
       "Unsafe Skill entry",
     );
   });
+
+  it("rejects a home whose lexical and filesystem resolutions disagree", async () => {
+    const root = await home();
+    const safe = path.join(root, "safe");
+    const outside = path.join(root, "outside");
+    await import("node:fs/promises").then(({ mkdir }) =>
+      Promise.all([mkdir(safe), mkdir(path.join(outside, "child"), { recursive: true })]),
+    );
+    await symlink(path.join(outside, "child"), path.join(safe, "link"));
+
+    await expect(
+      installDelegationSkills({ homeDirectory: `${safe}${path.sep}link${path.sep}..` }),
+    ).rejects.toThrow("Ambiguous Skill home");
+    await expect(stat(path.join(safe, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(outside, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects unsafe writable directories", async () => {
+    const root = await home();
+    await mkdir(path.join(root, ".agents"));
+    await chmod(path.join(root, ".agents"), 0o777);
+
+    await expect(installDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+      "Unsafe Skill directory",
+    );
+  });
+
+  it("recovers the same uninstall transaction after faults without new quarantines", async () => {
+    for (const faultEvent of ["afterJournal", "afterRename", "afterHash"] as const) {
+      const root = await home();
+      await installDelegationSkills({ homeDirectory: root });
+      const destination = required(paths(await realpath(root))[0]);
+      let failed = false;
+      const lifecycle = createDelegationSkillLifecycleForTest({
+        onEvent(event, paths_) {
+          if (!failed && event === faultEvent && paths_.destination === destination) {
+            failed = true;
+            throw new Error(`fault:${faultEvent}`);
+          }
+        },
+      });
+
+      await expect(lifecycle.uninstall({ homeDirectory: root })).rejects.toThrow(
+        `fault:${faultEvent}`,
+      );
+      await uninstallDelegationSkills({ homeDirectory: root });
+      const afterRecovery = await artifacts(destination);
+      await uninstallDelegationSkills({ homeDirectory: root });
+      expect(await artifacts(destination)).toEqual(afterRecovery);
+      expect(afterRecovery.filter((name) => name.endsWith(".quarantine"))).toHaveLength(1);
+      await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("restores a swapped conflict without clobbering an occupied destination", async () => {
+    const root = await home();
+    await installDelegationSkills({ homeDirectory: root });
+    const destination = required(paths(await realpath(root))[0]);
+    let swapped = false;
+    const lifecycle = createDelegationSkillLifecycleForTest({
+      async onEvent(event, paths_) {
+        if (swapped || event !== "afterHash" || paths_.destination !== destination) return;
+        swapped = true;
+        const quarantine = required(paths_.quarantine);
+        await rename(quarantine, `${quarantine}.managed`);
+        await writeFile(quarantine, "swapped user bytes\n", "utf8");
+        await writeFile(destination, "new occupant\n", "utf8");
+      },
+    });
+
+    await expect(lifecycle.uninstall({ homeDirectory: root })).rejects.toThrow(
+      "destination is occupied",
+    );
+    await expect(readFile(destination, "utf8")).resolves.toBe("new occupant\n");
+    const names = await readdir(path.dirname(destination));
+    const quarantine = required(names.find((name) => name.endsWith(".quarantine")));
+    await expect(readFile(path.join(path.dirname(destination), quarantine), "utf8")).resolves.toBe(
+      "swapped user bytes\n",
+    );
+    await expect(
+      readFile(path.join(path.dirname(destination), `${quarantine}.managed`), "utf8"),
+    ).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+    expect(names.some((name) => name.endsWith(".journal"))).toBe(true);
+  });
+
+  it("restores a swapped conflict by no-clobber hard link when the destination is free", async () => {
+    const root = await home();
+    await installDelegationSkills({ homeDirectory: root });
+    const destination = required(paths(await realpath(root))[0]);
+    let swapped = false;
+    const lifecycle = createDelegationSkillLifecycleForTest({
+      async onEvent(event, paths_) {
+        if (swapped || event !== "afterHash" || paths_.destination !== destination) return;
+        swapped = true;
+        const quarantine = required(paths_.quarantine);
+        await rename(quarantine, `${quarantine}.managed`);
+        await writeFile(quarantine, "swapped user bytes\n", "utf8");
+      },
+    });
+
+    await expect(lifecycle.uninstall({ homeDirectory: root })).rejects.toThrow(
+      "transaction contains foreign content",
+    );
+    await expect(readFile(destination, "utf8")).resolves.toBe("swapped user bytes\n");
+    expect((await artifacts(destination)).some((name) => name.endsWith(".journal"))).toBe(true);
+  });
+
+  it("recovers an interrupted legacy update before retrying installation", async () => {
+    const root = await home();
+    const destination = required(paths(await realpath(root))[0]);
+    const previous = (
+      await readFile(new URL("./fixtures/delegation-skill-v3.md", import.meta.url), "utf8")
+    ).replace(/\n$/u, "");
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, previous, "utf8");
+    let failed = false;
+    const lifecycle = createDelegationSkillLifecycleForTest({
+      onEvent(event, paths_) {
+        if (!failed && event === "afterRename" && paths_.destination === destination) {
+          failed = true;
+          throw new Error("fault:update-after-rename");
+        }
+      },
+    });
+
+    await expect(lifecycle.install({ homeDirectory: root })).rejects.toThrow(
+      "fault:update-after-rename",
+    );
+    await installDelegationSkills({ homeDirectory: root });
+    await expect(readFile(destination, "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+    expect(
+      (await artifacts(destination)).filter((name) => name.endsWith(".quarantine")),
+    ).toHaveLength(1);
+  });
+
+  it("rejects a foreign uid through the private filesystem seam", async () => {
+    const root = await home();
+    await installDelegationSkills({ homeDirectory: root });
+    const destination = required(paths(await realpath(root))[0]);
+    const lifecycle = createDelegationSkillLifecycleForTest({
+      async lstat(filePath, fallback) {
+        const metadata = await fallback();
+        if (filePath !== destination) return metadata;
+        return new Proxy(metadata, {
+          get(target, property) {
+            if (property === "uid") return target.uid + 1;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+      onEvent() {},
+    });
+
+    await expect(lifecycle.inspect({ homeDirectory: root })).rejects.toThrow("Unsafe Skill entry");
+  });
+
+  it("does not overwrite a file raced into a missing install destination", async () => {
+    const root = await home();
+    const destination = required(paths(await realpath(root))[0]);
+    let raced = false;
+    const lifecycle = createDelegationSkillLifecycleForTest({
+      async onEvent(event, paths_) {
+        if (raced || event !== "beforeCommit" || paths_.destination !== destination) return;
+        raced = true;
+        await writeFile(destination, "race winner\n", "utf8");
+      },
+    });
+
+    await expect(lifecycle.install({ homeDirectory: root })).rejects.toThrow(
+      "destination is occupied",
+    );
+    await expect(readFile(destination, "utf8")).resolves.toBe("race winner\n");
+    expect((await artifacts(destination)).some((name) => name.endsWith(".journal"))).toBe(true);
+  });
+
+  it("fails closed when an ancestor is swapped immediately before or after commit", async () => {
+    for (const swapEvent of ["beforeCommit", "afterCommit"] as const) {
+      const root = await home();
+      const canonicalRoot = await realpath(root);
+      const destination = required(paths(canonicalRoot)[0]);
+      const outside = await home();
+      await mkdir(path.join(outside, "skills", "codexhost-delegation"), { recursive: true });
+      const saved = path.join(canonicalRoot, `.agents.${swapEvent}.saved`);
+      let swapped = false;
+      const lifecycle = createDelegationSkillLifecycleForTest({
+        async onEvent(event, paths_) {
+          if (swapped || event !== swapEvent || paths_.destination !== destination) return;
+          swapped = true;
+          await rename(path.join(canonicalRoot, ".agents"), saved);
+          await symlink(outside, path.join(canonicalRoot, ".agents"));
+        },
+      });
+
+      await expect(lifecycle.install({ homeDirectory: root })).rejects.toThrow(
+        "Unsafe Skill directory",
+      );
+      await expect(
+        stat(path.join(outside, "skills", "codexhost-delegation", "SKILL.md")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      const savedFiles = await readdir(path.join(saved, "skills", "codexhost-delegation"));
+      expect(savedFiles.some((name) => name.endsWith(".journal"))).toBe(true);
+      if (swapEvent === "afterCommit") {
+        await expect(
+          readFile(path.join(saved, "skills", "codexhost-delegation", "SKILL.md"), "utf8"),
+        ).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+      }
+    }
+  });
+
+  it("rejects malformed transaction journals without touching active bytes", async () => {
+    const root = await home();
+    await installDelegationSkills({ homeDirectory: root });
+    const destination = required(paths(await realpath(root))[0]);
+    const journal = path.join(
+      path.dirname(destination),
+      ".SKILL.md.00000000-0000-4000-8000-000000000000.journal",
+    );
+    await writeFile(journal, "not json\n", "utf8");
+
+    await expect(inspectDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+      "Invalid Delegation Skill transaction journal",
+    );
+    await expect(readFile(destination, "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+    await expect(readFile(journal, "utf8")).resolves.toBe("not json\n");
+  });
+
+  it("rejects a forged journal digest without quarantining foreign bytes", async () => {
+    const root = await home();
+    const destination = required(paths(await realpath(root))[0]);
+    await mkdir(path.dirname(destination), { recursive: true });
+    const content = "foreign bytes named by forged journal\n";
+    await writeFile(destination, content, "utf8");
+    const id = "00000000-0000-4000-8000-000000000001";
+    const quarantine = path.join(path.dirname(destination), `.SKILL.md.${id}.quarantine`);
+    const journal = path.join(path.dirname(destination), `.SKILL.md.${id}.journal`);
+    await writeFile(
+      journal,
+      `${JSON.stringify({
+        version: 1,
+        id,
+        operation: "uninstall",
+        destination,
+        quarantine,
+        expectedDigest: createHash("sha256").update(content).digest("hex"),
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(inspectDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+      "Invalid Delegation Skill transaction journal",
+    );
+    await expect(readFile(destination, "utf8")).resolves.toBe(content);
+    await expect(stat(quarantine)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
+import { createHash } from "node:crypto";

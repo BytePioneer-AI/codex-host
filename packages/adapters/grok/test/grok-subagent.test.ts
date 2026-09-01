@@ -4,6 +4,7 @@ import {
   grokNativeSubagentId,
   grokSubagentBackground,
   grokSubagentDescription,
+  grokSubagentEventFromUpdate,
   grokSubagentKill,
   grokSubagentModel,
   grokSubagentOperation,
@@ -62,12 +63,85 @@ describe("Grok Subagent ACP mapping", () => {
         rawInput: { task_ids: ["child-1"], timeout_ms: 30_000 },
         rawOutput: { task_id: "child-1", status: "completed", output: "done" },
       }),
-    ).toEqual([{ id: "child-1", status: "completed" }]);
+    ).toEqual([{ id: "child-1", status: "completed", resultSummary: "done" }]);
     expect(
       grokSubagentWaitSettlements({
         name: "kill_task",
         rawInput: { task_id: "child-1" },
       }),
     ).toEqual([{ id: "child-1", status: "interrupted" }]);
+    expect(
+      grokSubagentWaitSettlements({
+        name: "get_command_or_subagent_output",
+        rawInput: {
+          task_ids: ["child-1", "child-2", "child-3"],
+          timeout_ms: 180_000,
+        },
+        rawOutput: {
+          type: "TaskOutput",
+          MultiResult: {
+            mode: "wait_all",
+            results: [
+              { task_id: "child-1", status: "completed", output: "entry points" },
+              { task_id: "child-2", status: "completed", output: "no tests" },
+              { task_id: "child-3", status: "completed", output: "empty mirror" },
+            ],
+          },
+        },
+      }),
+    ).toEqual([
+      { id: "child-1", status: "completed", resultSummary: "entry points" },
+      { id: "child-2", status: "completed", resultSummary: "no tests" },
+      { id: "child-3", status: "completed", resultSummary: "empty mirror" },
+    ]);
+    expect(
+      grokSubagentWaitSettlements({
+        name: "get_command_or_subagent_output",
+        rawInput: { task_ids: ["child-1"], timeout_ms: 30_000 },
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text: "=== Multi-wait (wait_all) ===\n--- Task child-1 [completed] ---\nInspection done\n",
+            },
+          },
+        ],
+      }),
+    ).toEqual([{ id: "child-1", status: "completed" }]);
+  });
+
+  it("reads Grok subagent_spawned and subagent_finished session updates", () => {
+    expect(
+      grokSubagentEventFromUpdate({
+        sessionUpdate: "subagent_spawned",
+        subagent_id: "child-1",
+        child_session_id: "child-1",
+        subagent_type: "explore",
+        description: "Scan repo entry points",
+        model: "grok-4.6",
+      }),
+    ).toEqual({
+      type: "subagent.spawned",
+      nativeSubagentId: "child-1",
+      description: "Scan repo entry points",
+      role: "explore",
+      model: "grok-4.6",
+    });
+    expect(
+      grokSubagentEventFromUpdate({
+        sessionUpdate: "subagent_finished",
+        subagent_id: "child-1",
+        child_session_id: "child-1",
+        status: "completed",
+        output: "Inspection complete",
+        will_wake: false,
+      }),
+    ).toEqual({
+      type: "subagent.finished",
+      nativeSubagentId: "child-1",
+      status: "completed",
+      resultSummary: "Inspection complete",
+    });
   });
 });

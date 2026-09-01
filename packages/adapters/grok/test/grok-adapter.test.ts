@@ -2355,6 +2355,19 @@ describe("Grok Adapter ACP projection", () => {
     });
 
     transport.event({
+      type: "subagent.finished",
+      nativeSubagentId: "child-session",
+      status: "completed",
+      resultSummary: "Inspection done",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "child-session",
+      status: "completed",
+      resultSummary: "Inspection done",
+    });
+
+    transport.event({
       type: "tool.call",
       callId: "wait-1",
       title: "Wait for child",
@@ -2370,7 +2383,13 @@ describe("Grok Adapter ACP projection", () => {
       type: "tool.update",
       callId: "wait-1",
       status: "completed",
-      rawOutput: { task_id: "child-session", status: "completed", output: "Inspection done" },
+      rawOutput: {
+        type: "TaskOutput",
+        MultiResult: {
+          mode: "wait_all",
+          results: [{ task_id: "child-session", status: "completed", output: "Inspection done" }],
+        },
+      },
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",

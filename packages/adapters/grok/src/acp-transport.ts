@@ -183,6 +183,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function acpToolName(update: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (!isRecord(update)) return undefined;
+  if (typeof update.name === "string" && update.name.length > 0) return update.name;
+  const meta = isRecord(update._meta) ? update._meta : metadata;
+  const tool = meta && isRecord(meta["x.ai/tool"]) ? meta["x.ai/tool"] : undefined;
+  return tool && typeof tool.name === "string" && tool.name.length > 0 ? tool.name : undefined;
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -300,30 +308,34 @@ function transportEvent(
         text: update.content.text,
         ...(update.messageId ? { messageId: update.messageId } : {}),
       };
-    case "tool_call":
+    case "tool_call": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.call",
         callId: update.toolCallId,
         title: update.title,
-        ...(update.name ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content ? { content: update.content } : {}),
       };
-    case "tool_call_update":
+    }
+    case "tool_call_update": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.update",
         callId: update.toolCallId,
         ...(update.title !== undefined ? { title: update.title } : {}),
-        ...(update.name !== undefined ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind !== undefined ? { kind: update.kind } : {}),
         ...(update.status !== undefined ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content !== undefined ? { content: update.content } : {}),
       };
+    }
     case "usage_update":
       return { type: "usage", update, ...(metadata ? { metadata } : {}) };
     default:

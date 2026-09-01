@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { z } from "zod";
 
 import {
   DelegationControlError,
@@ -14,6 +15,49 @@ import {
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+
+const inspectBody = z
+  .object({ harnessId: z.string(), cwd: z.string().optional(), refresh: z.boolean().optional() })
+  .strict();
+const startBody = z
+  .object({
+    harnessId: z.string(),
+    task: z.string(),
+    cwd: z.string(),
+    executionPolicy: z.enum(["approval-required", "unattended-full-access"]).optional(),
+    parentThreadId: z.string().optional(),
+    requestId: z.string().optional(),
+    model: z.object({ id: z.string() }).strict().optional(),
+    thinkingOptionId: z.string().optional(),
+  })
+  .strict();
+const sendBody = z.object({ threadId: z.string(), message: z.string() }).strict();
+const cancelBody = z.object({ threadId: z.string() }).strict();
+const readBody = z
+  .object({
+    threadId: z.string(),
+    view: z.enum(["result", "messages"]),
+    cursor: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+  })
+  .strict();
+const waitBody = readBody.extend({ timeoutMs: z.number().int().positive() }).strict();
+const listBody = z
+  .object({
+    cwd: z.string().optional(),
+    parentThreadId: z.string().optional(),
+    limit: z.number().int().positive(),
+    cursor: z.string().optional(),
+    sort: z.enum([
+      "created-asc",
+      "created-desc",
+      "updated-asc",
+      "updated-desc",
+      "recency-asc",
+      "recency-desc",
+    ]),
+  })
+  .strict();
 
 function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
@@ -59,6 +103,15 @@ async function jsonBody(request: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
+function parseBody<T>(schema: z.ZodType<T>, body: Record<string, unknown>): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success)
+    throw new DelegationControlError("INVALID_ARGUMENT", "Invalid request body", {
+      issues: parsed.error.issues,
+    });
+  return parsed.data;
+}
+
 export interface DelegationControlServer {
   endpoint: string;
   close(): Promise<void>;
@@ -92,25 +145,45 @@ export async function startDelegationControlServer(input: {
       const body = await jsonBody(request);
       switch (request.url) {
         case "/v1/harness/inspect":
-          writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
+          writeJson(
+            response,
+            200,
+            await input.api.inspect(parseBody(inspectBody, body) as HarnessInspectInput),
+          );
           return;
         case "/v1/delegate/start":
-          writeJson(response, 200, await input.api.start(body as unknown as DelegationStartInput));
+          writeJson(
+            response,
+            200,
+            await input.api.start(parseBody(startBody, body) as DelegationStartInput),
+          );
           return;
         case "/v1/thread/send":
-          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
+          writeJson(response, 200, await input.api.send(parseBody(sendBody, body)));
           return;
         case "/v1/thread/cancel":
-          writeJson(response, 200, await input.api.cancel(body as unknown as ThreadCancelInput));
+          writeJson(response, 200, await input.api.cancel(parseBody(cancelBody, body)));
           return;
         case "/v1/thread/read":
-          writeJson(response, 200, await input.api.read(body as unknown as ThreadReadInput));
+          writeJson(
+            response,
+            200,
+            await input.api.read(parseBody(readBody, body) as ThreadReadInput),
+          );
           return;
         case "/v1/thread/wait":
-          writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
+          writeJson(
+            response,
+            200,
+            await input.api.wait(parseBody(waitBody, body) as ThreadWaitInput),
+          );
           return;
         case "/v1/thread/list":
-          writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
+          writeJson(
+            response,
+            200,
+            await input.api.list(parseBody(listBody, body) as ThreadListInput),
+          );
           return;
         default:
           throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");

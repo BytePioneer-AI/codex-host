@@ -99,6 +99,38 @@ describe("delegation control server", () => {
     }
   });
 
+  it.each([
+    ["default", { executionPolicy: "default" }],
+    ["unknown", { executionPolicy: "later" }],
+    ["wrong scalar", { executionPolicy: 42 }],
+    ["unknown field", { extra: true }],
+  ])("rejects invalid delegation policy/body: %s", async (_name, extra) => {
+    const start = vi.fn();
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        inspect: vi.fn(),
+        start,
+        send: vi.fn(),
+        cancel: vi.fn(),
+        read: vi.fn(),
+        wait: vi.fn(),
+        list: vi.fn(),
+      },
+    });
+    try {
+      const response = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "review", cwd: "/synthetic", ...extra }),
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("dispatches thread send and cancel", async () => {
     const send = vi.fn(async () => ({
       threadId: "thread-1",

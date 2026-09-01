@@ -300,6 +300,32 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("serializes concurrent external starts by request ID", async () => {
+    const value = await fixture();
+    try {
+      const inputs = {
+        harnessId: "pi" as const,
+        task: "same task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "concurrent-request",
+      };
+      const [first, second] = await Promise.all([
+        value.coordinator.start(inputs),
+        value.coordinator.start(inputs),
+      ]);
+      expect(second.threadId).toBe(first.threadId);
+      expect(value.adapter.sessions).toHaveLength(1);
+      expect(await value.repository.listDelegations()).toHaveLength(1);
+      await expect(
+        value.coordinator.start({ ...inputs, task: "conflicting task" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      expect(await value.repository.list()).toHaveLength(1);
+    } finally {
+      await value.close();
+    }
+  });
+
   it("sends follow-up Turns, rejects busy sends, and cancels the active Turn", async () => {
     const value = await fixture();
     try {

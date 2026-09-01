@@ -123,6 +123,7 @@ export class HarnessDelegationCoordinator {
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #activeOfficialParents: () => string[];
+  #startTail: Promise<void> = Promise.resolve();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -194,6 +195,15 @@ export class HarnessDelegationCoordinator {
   }
 
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
+    const result = this.#startTail.then(() => this.#start(input));
+    this.#startTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async #start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
     const executionPolicy = input.executionPolicy ?? "approval-required";
     const normalizedInput = { ...input, executionPolicy };
@@ -253,27 +263,28 @@ export class HarnessDelegationCoordinator {
     const childThreadId = hostThreadIdSchema.parse(randomUUID());
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const createRequestId = input.requestId ? `delegation:${input.requestId}` : randomUUID();
-    let record = await this.#repository.createProvisional(
-      createExternalThreadRecordInput({
-        hostThreadId: childThreadId,
-        createRequestId,
-        harnessId: harnessIdSchema.parse(targetHarnessId),
-        cwd: path.resolve(input.cwd),
-        title: input.task.trim().slice(0, 120),
-        transportModelId:
-          input.model || input.thinkingOptionId
-            ? encodeExternalTransportSelection(targetHarnessId, {
-                ...(input.model ? { model: input.model } : {}),
-                ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-              })
-            : transportModelIdForHarness(targetHarnessId),
-        ephemeral: false,
-        historyMode: "paginated",
-      }),
-    );
+    let record: StoredThreadRecordV1;
     let delegation: StoredDelegationRecordV1 | null = null;
     let session: HarnessSession | null = null;
     try {
+      record = await this.#repository.createProvisional(
+        createExternalThreadRecordInput({
+          hostThreadId: childThreadId,
+          createRequestId,
+          harnessId: harnessIdSchema.parse(targetHarnessId),
+          cwd: path.resolve(input.cwd),
+          title: input.task.trim().slice(0, 120),
+          transportModelId:
+            input.model || input.thinkingOptionId
+              ? encodeExternalTransportSelection(targetHarnessId, {
+                  ...(input.model ? { model: input.model } : {}),
+                  ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+                })
+              : transportModelIdForHarness(targetHarnessId),
+          ephemeral: false,
+          historyMode: "paginated",
+        }),
+      );
       delegation = await this.#repository.createDelegation({
         delegationId,
         parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),

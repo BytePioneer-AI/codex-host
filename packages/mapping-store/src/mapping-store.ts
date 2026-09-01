@@ -215,6 +215,7 @@ export class MappingStore {
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
   readonly #writeTails = new Map<HostThreadId, Promise<void>>();
+  #mutationTail: Promise<void> = Promise.resolve();
   #initialized = false;
   #lockHandle: FileHandle | null = null;
 
@@ -361,6 +362,10 @@ export class MappingStore {
   }
 
   async createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
+    return this.#serializeMutation(() => this.#createDelegation(input));
+  }
+
+  async #createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
     this.#requireInitialized();
     if (this.#delegations.has(input.delegationId)) {
       throw new MappingStoreError("DUPLICATE_DELEGATION_ID", "Delegation ID already exists");
@@ -427,6 +432,10 @@ export class MappingStore {
   }
 
   async createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
+    return this.#serializeMutation(() => this.#createProvisional(input));
+  }
+
+  async #createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     const existingThreadId = this.#createRequests.get(input.createRequestId);
     if (existingThreadId) {
@@ -459,6 +468,15 @@ export class MappingStore {
     }) as StoredThreadRecordV1;
     await this.#writeNew(record);
     return cloneRecord(record);
+  }
+
+  #serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#mutationTail.then(operation);
+    this.#mutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1> {

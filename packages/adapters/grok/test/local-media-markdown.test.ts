@@ -31,9 +31,42 @@ describe("Grok local media Markdown", () => {
       [
         "10 秒宣傳片做好了。",
         "",
-        "`/Users/chris/Downloads/usegrokbot-templates-promo-10s.mp4`",
+        "![usegrokbot-templates-promo-10s.mp4](/Users/chris/Downloads/usegrokbot-templates-promo-10s.mp4)",
         "",
         `![UseGrokBot Templates 10s promo](${session}/videos/usegrokbot-templates-promo-10s.mp4)`,
+      ].join("\n"),
+    );
+  });
+
+  it("turns Grok backtick video paths into Markdown images", () => {
+    const filesWithAura = new Set([
+      ...files,
+      `${session}/videos/aura-10s.mp4`,
+      "/Users/chris/Downloads/aura-product-film-10s.mp4",
+    ]);
+    expect(
+      rewriteLocalMediaMarkdown(
+        [
+          "影片在這裡：",
+          "",
+          "`videos/aura-10s.mp4`",
+          "",
+          "打開這份：",
+          "",
+          "`/Users/chris/Downloads/aura-product-film-10s.mp4`",
+        ].join("\n"),
+        grokMediaResolveRoots("/workspace", session),
+        { exists: (absolutePath) => filesWithAura.has(path.resolve(absolutePath)) },
+      ),
+    ).toBe(
+      [
+        "影片在這裡：",
+        "",
+        `![aura-10s.mp4](${session}/videos/aura-10s.mp4)`,
+        "",
+        "打開這份：",
+        "",
+        "![aura-product-film-10s.mp4](/Users/chris/Downloads/aura-product-film-10s.mp4)",
       ].join("\n"),
     );
   });
@@ -67,13 +100,36 @@ describe("Grok local media Markdown", () => {
     ).toBe("![remote](https://example.com/a.png) ![missing](videos/missing.mp4)");
   });
 
-  it("does not rewrite images inside fenced code", () => {
+  it("does not rewrite images or paths inside fenced code", () => {
     expect(
       rewriteLocalMediaMarkdown(
-        "```md\n![clip](videos/usegrokbot-templates-promo-10s.mp4)\n```",
+        "```md\n![clip](videos/usegrokbot-templates-promo-10s.mp4)\n`videos/usegrokbot-templates-promo-10s.mp4`\n```",
         roots,
         { exists },
       ),
-    ).toBe("```md\n![clip](videos/usegrokbot-templates-promo-10s.mp4)\n```");
+    ).toBe(
+      "```md\n![clip](videos/usegrokbot-templates-promo-10s.mp4)\n`videos/usegrokbot-templates-promo-10s.mp4`\n```",
+    );
+  });
+
+  it("holds an unfinished backtick path so streamed deltas stay prefix-stable", () => {
+    let emitted = "";
+    const chunks = ["影片：\n\n`", "videos/usegrokbot-templates-promo-10s.mp4", "`\n完成"];
+    let raw = "";
+    for (const chunk of chunks) {
+      raw += chunk;
+      const projected = rewriteLocalMediaMarkdown(raw, roots, { exists, holdIncomplete: true });
+      expect(projected.startsWith(emitted)).toBe(true);
+      emitted = projected;
+    }
+    expect(emitted).toBe(
+      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${session}/videos/usegrokbot-templates-promo-10s.mp4)\n完成`,
+    );
+  });
+
+  it("leaves ordinary inline code unchanged", () => {
+    expect(rewriteLocalMediaMarkdown("run `npm test` then done", roots, { exists })).toBe(
+      "run `npm test` then done",
+    );
   });
 });

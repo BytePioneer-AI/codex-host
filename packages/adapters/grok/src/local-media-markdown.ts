@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const MEDIA_EXTENSIONS = new Set([
@@ -27,9 +28,12 @@ export interface RewriteLocalMediaMarkdownOptions {
 
 export function grokMediaResolveRoots(cwd: string, sessionDirectory?: string): string[] {
   const roots = [path.resolve(cwd)];
-  if (!sessionDirectory) return roots;
-  const session = path.resolve(sessionDirectory);
-  roots.push(session, path.join(session, "videos"), path.join(session, "images"));
+  if (sessionDirectory) {
+    const session = path.resolve(sessionDirectory);
+    roots.push(session, path.join(session, "videos"), path.join(session, "images"));
+  }
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
+  if (home) roots.push(path.join(home, "Downloads"));
   return roots;
 }
 
@@ -44,20 +48,33 @@ export function rewriteLocalMediaMarkdown(
   let index = 0;
   let fence = false;
   while (index < text.length) {
-    if (!fence) {
-      const fenceStart = text.indexOf("```", index);
-      const imageStart = text.indexOf("![", index);
-      if (fenceStart !== -1 && (imageStart === -1 || fenceStart < imageStart)) {
-        output += text.slice(index, fenceStart + 3);
-        index = fenceStart + 3;
-        fence = true;
-        continue;
-      }
-      if (imageStart === -1) {
+    if (fence) {
+      const fenceEnd = text.indexOf("```", index);
+      if (fenceEnd === -1) {
         output += text.slice(index);
         break;
       }
-      output += text.slice(index, imageStart);
+      output += text.slice(index, fenceEnd + 3);
+      index = fenceEnd + 3;
+      fence = false;
+      continue;
+    }
+    const fenceStart = text.indexOf("```", index);
+    const imageStart = text.indexOf("![", index);
+    const tickStart = indexOfInlineTick(text, index);
+    const next = earliestIndex([fenceStart, imageStart, tickStart]);
+    if (next === -1) {
+      output += text.slice(index);
+      break;
+    }
+    output += text.slice(index, next);
+    if (next === fenceStart) {
+      output += "```";
+      index = fenceStart + 3;
+      fence = true;
+      continue;
+    }
+    if (next === imageStart) {
       const parsed = parseMarkdownImage(text, imageStart);
       if (!parsed) {
         output += "!";
@@ -78,16 +95,60 @@ export function rewriteLocalMediaMarkdown(
       index = parsed.end;
       continue;
     }
-    const fenceEnd = text.indexOf("```", index);
-    if (fenceEnd === -1) {
-      output += text.slice(index);
+    const inline = parseInlineCode(text, tickStart);
+    if (!inline.closed) {
+      if (!holdIncomplete) output += text.slice(tickStart);
       break;
     }
-    output += text.slice(index, fenceEnd + 3);
-    index = fenceEnd + 3;
-    fence = false;
+    const resolved = resolveLocalMediaPath(inline.content, roots, exists);
+    output += resolved ? mediaMarkdownImage(resolved) : text.slice(tickStart, inline.end);
+    index = inline.end;
   }
   return output;
+}
+
+function indexOfInlineTick(text: string, start: number): number {
+  let index = start;
+  while (index < text.length) {
+    const tick = text.indexOf("`", index);
+    if (tick === -1) return -1;
+    if (text.startsWith("```", tick)) {
+      index = tick + 3;
+      continue;
+    }
+    return tick;
+  }
+  return -1;
+}
+
+function earliestIndex(candidates: readonly number[]): number {
+  let next = -1;
+  for (const candidate of candidates) {
+    if (candidate === -1) continue;
+    if (next === -1 || candidate < next) next = candidate;
+  }
+  return next;
+}
+
+function parseInlineCode(
+  text: string,
+  start: number,
+): { closed: boolean; content: string; end: number } {
+  let index = start + 1;
+  while (index < text.length) {
+    const character = text[index];
+    if (character === "\n")
+      return { closed: false, content: text.slice(start + 1, index), end: index };
+    if (character === "`")
+      return { closed: true, content: text.slice(start + 1, index), end: index + 1 };
+    index += 1;
+  }
+  return { closed: false, content: text.slice(start + 1), end: text.length };
+}
+
+function mediaMarkdownImage(absolutePath: string): string {
+  const name = path.basename(absolutePath).replaceAll("]", "\\]");
+  return `![${name}](${formatMarkdownDestination(absolutePath, false)})`;
 }
 
 function parseMarkdownImage(

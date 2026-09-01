@@ -69,10 +69,12 @@ function upgradeBrokenVideoImages(root: ParentNode): void {
 }
 
 function upgradeVideoPathCode(root: ParentNode): void {
-  const nodes = root.querySelectorAll?.("code") ?? [];
+  const nodes = [
+    ...(root.querySelectorAll?.("code") ?? []),
+    ...(root.querySelectorAll?.('[data-markdown-copy="inline-code"]') ?? []),
+  ];
   for (const node of nodes) {
-    if (!(node instanceof HTMLElement) || node.getAttribute(UPGRADED_ATTRIBUTE) === "path")
-      continue;
+    if (!(node instanceof Element) || node.getAttribute(UPGRADED_ATTRIBUTE) === "path") continue;
     const absolute = absoluteLocalVideoPath(node.textContent ?? "");
     if (!absolute) continue;
     if (hasNearbyVideo(node, absolute)) {

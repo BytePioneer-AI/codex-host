@@ -54,3 +54,14 @@ The existing `run-host-runtime` focused suite was executed. A dedicated temporar
 3. `npx eslint packages/host-runtime/src/delegation-skill.ts packages/host-runtime/src/run-host-runtime.ts packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/run-host-runtime.test.ts` — passed.
 4. `npx prettier --check packages/host-runtime/src/delegation-skill.ts packages/host-runtime/src/run-host-runtime.ts packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/run-host-runtime.test.ts` — passed.
 5. `git diff --check` — passed.
+
+## STATUS FIX
+
+- `skill status` / `inspectDelegationSkills` is strictly read-only again: it classifies only each active destination and never scans or recovers transaction journals.
+- Added pending-uninstall regressions for faults after journal creation, quarantine rename, and quarantine hashing. Status reports the active entry as `current` or `missing` and leaves destination, quarantine, journal, completion link, directory entries, contents, inode, mode, size, and mtime unchanged; no mutation hook runs.
+- Recovery remains limited to install and uninstall entry points. Strict malformed/forged journal checks now exercise those mutating entry points rather than status.
+
+### STATUS FIX verification
+
+1. `npm run build:typescript` — passed.
+2. `npx vitest run packages/host-runtime/test/delegation-skill.test.ts packages/host-runtime/test/delegation-cli.test.ts --config tests/vitest.config.js` — 52 passed.

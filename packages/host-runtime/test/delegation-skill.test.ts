@@ -1,5 +1,6 @@
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -43,6 +44,32 @@ async function artifacts(destination: string): Promise<string[]> {
   return (await readdir(path.dirname(destination))).filter((name) =>
     /^\.SKILL\.md\..+\.(?:journal|quarantine)$/u.test(name),
   );
+}
+
+async function directorySnapshot(destination: string): Promise<unknown> {
+  const directory = path.dirname(destination);
+  const directoryStat = await lstat(directory);
+  return {
+    directory: {
+      ino: directoryStat.ino,
+      mode: directoryStat.mode,
+      mtimeMs: directoryStat.mtimeMs,
+    },
+    entries: await Promise.all(
+      (await readdir(directory)).sort().map(async (name) => {
+        const filePath = path.join(directory, name);
+        const metadata = await lstat(filePath);
+        return {
+          name,
+          ino: metadata.ino,
+          mode: metadata.mode,
+          mtimeMs: metadata.mtimeMs,
+          size: metadata.size,
+          content: metadata.isFile() ? (await readFile(filePath)).toString("base64") : null,
+        };
+      }),
+    ),
+  };
 }
 
 describe("delegation Skill installation", () => {
@@ -234,6 +261,38 @@ describe("delegation Skill installation", () => {
     }
   });
 
+  it("classifies only the active destination without recovering pending transactions", async () => {
+    for (const faultEvent of ["afterJournal", "afterRename", "afterHash"] as const) {
+      const root = await home();
+      await installDelegationSkills({ homeDirectory: root });
+      const destination = required(paths(await realpath(root))[0]);
+      let failed = false;
+      const faultingLifecycle = createDelegationSkillLifecycleForTest({
+        onEvent(event, paths_) {
+          if (!failed && event === faultEvent && paths_.destination === destination) {
+            failed = true;
+            throw new Error(`fault:readonly-${faultEvent}`);
+          }
+        },
+      });
+      await expect(faultingLifecycle.uninstall({ homeDirectory: root })).rejects.toThrow(
+        `fault:readonly-${faultEvent}`,
+      );
+      const before = await directorySnapshot(destination);
+      const readOnlyLifecycle = createDelegationSkillLifecycleForTest({
+        onEvent(event) {
+          throw new Error(`status mutated transaction:${event}`);
+        },
+      });
+
+      const statuses = await readOnlyLifecycle.inspect({ homeDirectory: root });
+
+      expect(statuses[0]?.status).toBe(faultEvent === "afterJournal" ? "current" : "missing");
+      expect(statuses[1]?.status).toBe("current");
+      expect(await directorySnapshot(destination)).toEqual(before);
+    }
+  });
+
   it("restores a swapped conflict without clobbering an occupied destination", async () => {
     const root = await home();
     await installDelegationSkills({ homeDirectory: root });
@@ -399,7 +458,7 @@ describe("delegation Skill installation", () => {
     );
     await writeFile(journal, "not json\n", "utf8");
 
-    await expect(inspectDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+    await expect(uninstallDelegationSkills({ homeDirectory: root })).rejects.toThrow(
       "Invalid Delegation Skill transaction journal",
     );
     await expect(readFile(destination, "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
@@ -428,7 +487,7 @@ describe("delegation Skill installation", () => {
       "utf8",
     );
 
-    await expect(inspectDelegationSkills({ homeDirectory: root })).rejects.toThrow(
+    await expect(installDelegationSkills({ homeDirectory: root })).rejects.toThrow(
       "Invalid Delegation Skill transaction journal",
     );
     await expect(readFile(destination, "utf8")).resolves.toBe(content);

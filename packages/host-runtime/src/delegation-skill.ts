@@ -642,7 +642,6 @@ async function inspectDelegationSkillsInternal(
   const knownDigests = knownManagedDigests();
   const results: DelegationSkillStatusResult[] = [];
   for (const destination of destinations(home)) {
-    await recoverTransactions(home, destination, _hooks);
     results.push(await classifyDelegationSkill(home, destination, knownDigests, _hooks));
   }
   return results;

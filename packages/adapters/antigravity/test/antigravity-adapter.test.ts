@@ -1,3 +1,7 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
@@ -6,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  AntigravityAdapter,
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
@@ -62,6 +67,47 @@ const USAGE_COMMAND = {
     ],
   },
 } as const;
+
+/**
+ * Writes a stand-in for `agy models` so `open()` can be exercised without the
+ * real CLI. `commandInvocation` wraps `.cmd` through cmd.exe on Windows, so a
+ * batch shim is executable there and a shell script elsewhere.
+ */
+async function fakeAgy(lines: readonly string[]): Promise<{
+  command: string;
+  cwd: string;
+  cleanup(): Promise<void>;
+}> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-"));
+  // The Session's cwd stays outside the shim directory; Windows keeps a handle
+  // on a directory it has executed from and cleanup would hit EBUSY.
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-cwd-"));
+  const cleanup = async (): Promise<void> => {
+    for (const target of [directory, cwd]) {
+      await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  };
+  if (process.platform === "win32") {
+    const command = path.join(directory, "agy.cmd");
+    await writeFile(
+      command,
+      `@echo off\r\n${lines.map((line) => `echo ${line}`).join("\r\n")}\r\n`,
+    );
+    return { command, cwd, cleanup };
+  }
+  const command = path.join(directory, "agy");
+  await writeFile(command, `#!/bin/sh\ncat <<'MODELS'\n${lines.join("\n")}\nMODELS\n`);
+  await chmod(command, 0o755);
+  return { command, cwd, cleanup };
+}
+
+// Labels stay free of parentheses so the batch shim does not need escaping;
+// the label-suffix handling is covered by the Catalog tests above.
+const FAKE_MODELS = [
+  "gemini-3.1-pro-high\tGemini 3.1 Pro High",
+  "gemini-3.1-pro-low\tGemini 3.1 Pro Low",
+  "claude-sonnet-4-6\tClaude Sonnet 4.6 Thinking",
+] as const;
 
 describe("Antigravity Adapter", () => {
   it("parses the CLI Model catalog", () => {
@@ -136,6 +182,53 @@ describe("Antigravity Adapter", () => {
       "claude-sonnet-4-6",
     ]);
     expect(antigravityModelArguments(undefined, effort("high"))).toEqual([]);
+  });
+
+  it("refuses an initial effort the Model does not accept", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      // `thread/start` reaches open() directly, so refusing here is what keeps
+      // the CLI from failing on `--effort` only once the first Turn runs.
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        model: harnessModelRefSchema.parse({ id: "claude-sonnet-4-6" }),
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      });
+      expect(opened.ok).toBe(false);
+      if (opened.ok) return;
+      expect(opened.error.code).toBe("invalidRequest");
+      expect(opened.error.message).toContain("high");
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  });
+
+  it("opens with an effort the Model accepts and reports it as effective", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        model: harnessModelRefSchema.parse({ id: "gemini-3.1-pro" }),
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+      });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      // No inspect() ran first, so the Catalog had to be fetched inside open().
+      expect(opened.value.initialState.effectiveThinkingOptionId).toBe("low");
+      expect(opened.value.initialState.availableThinkingOptions).toEqual([
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ]);
+      await opened.value.close();
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
   });
 
   it("reports only the efforts the selected Model accepts", () => {

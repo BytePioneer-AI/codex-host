@@ -409,22 +409,30 @@ export function isOmpTransportModelId(value: unknown): value is string {
 export function decodeAntigravityTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   permissionModeId?: HarnessPermissionModeId;
+  thinkingOptionId?: HarnessThinkingOptionId;
 } | null {
   if (value === ANTIGRAVITY_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(ANTIGRAVITY_TRANSPORT_MODEL_PREFIX)) {
     return null;
   }
   const components = value.slice(ANTIGRAVITY_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return null;
-  const [modelId, permissionModeId] = components;
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   const permission = permissionModeId
     ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
     : null;
   if (!model.success || (permission && !permission.success)) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
   return {
     model: model.data,
     ...(permission?.success ? { permissionModeId: permission.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
   };
 }
 

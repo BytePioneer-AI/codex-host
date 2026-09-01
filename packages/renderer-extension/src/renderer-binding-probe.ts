@@ -339,10 +339,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const model = inspection.effectiveModel ?? transportSelection.model;
     const permissionModeId =
       inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
     return {
       agent: "antigravity",
       ...(model ? { model } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {

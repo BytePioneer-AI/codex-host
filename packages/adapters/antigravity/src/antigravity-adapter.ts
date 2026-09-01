@@ -1139,6 +1139,22 @@ export class AntigravityAdapter implements HarnessAdapter {
       const inspection = await this.inspect({ cwd: input.cwd });
       if (inspection.status === "ready") catalog = inspection.catalog;
     }
+    // `thread/start` reaches open() directly, so an effort the Model does not
+    // accept has to be refused here; otherwise the CLI only rejects the
+    // resulting `--effort` once the first Turn runs.
+    if (input.thinkingOptionId) {
+      const available = antigravityAvailableThinkingOptions(catalog, input.model);
+      if (!available?.some(({ id }) => id === input.thinkingOptionId)) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: `Antigravity Model does not accept effort "${input.thinkingOptionId}"`,
+            retryable: false,
+          },
+        };
+      }
+    }
     const session = new AntigravitySession({
       ...(catalog ? { catalog } : {}),
       cwd: input.cwd,

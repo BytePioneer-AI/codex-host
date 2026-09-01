@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  harnessIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import { packageMetadata } from "../src/index.js";
 import type { HarnessExecutionPolicy, OpenSessionInput } from "../src/index.js";
 
@@ -16,12 +21,15 @@ describe("harness-adapter package", () => {
   });
 
   it("carries execution policy through every recovery input", () => {
-    const nativeRef = {
-      harnessId: "claude-code",
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: harnessIdSchema.parse("claude-code"),
       nativeSessionId: "native-1",
       formatVersion: 1,
-    } as const;
-    const checkpoint = { ...nativeRef, nativeCheckpointKey: "checkpoint-1" } as const;
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      ...nativeRef,
+      checkpointId: "checkpoint-1",
+    });
     const inputs: OpenSessionInput[] = [
       { kind: "resume", cwd: "/workspace", nativeRef, executionPolicy: "approval-required" },
       {

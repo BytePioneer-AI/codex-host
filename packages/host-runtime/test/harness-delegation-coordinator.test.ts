@@ -20,7 +20,9 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
   const adapters = new Map([["pi" as const, adapter]]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
-  const startOfficial = vi.fn(async () => ({
+  const startOfficial = vi.fn<
+    ConstructorParameters<typeof HarnessDelegationCoordinator>[0]["startOfficial"]
+  >(async () => ({
     delegationId: "delegation",
     threadId: "thread",
     turnId: "turn",
@@ -347,7 +349,9 @@ describe("HarnessDelegationCoordinator", () => {
         harnessId: "codex" as const,
         deepLink: "codex://threads/thread-official",
         status: "running" as const,
-        configuration: { requested: { executionPolicy: input.executionPolicy } },
+        configuration: {
+          requested: { executionPolicy: input.executionPolicy ?? "approval-required" },
+        },
         next: { read: "read", wait: "wait" },
       };
       if (input.requestId) records.set(input.requestId, { task: input.task, result });

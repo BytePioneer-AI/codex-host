@@ -103,8 +103,9 @@ describe("ExternalThreadRepository", () => {
       ],
     ]);
     const repository = new ExternalThreadRepository({
-      getThread: async (threadId) => records.get(threadId) as StoredThreadRecordV1,
-      getDelegationByChild: async (threadId) =>
+      getThread: async (threadId: typeof delegated) =>
+        records.get(threadId) as StoredThreadRecordV1,
+      getDelegationByChild: async (threadId: typeof delegated) =>
         threadId === delegated
           ? ({ executionPolicy: "unattended-full-access" } as never)
           : threadId === legacy

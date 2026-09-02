@@ -7,7 +7,6 @@ import {
   harnessThinkingOptionIdSchema,
   jsonValueSchema,
   type HarnessThinkingOptionId,
-  type HostItemId,
   type JsonObject,
   type JsonValue,
 } from "@codexhost/shared-contracts";
@@ -27,7 +26,6 @@ import type { OmpNativeModel, OmpNativeModelRef } from "./omp-model-catalog.js";
 import type { OmpPermissionMode } from "./omp-permission-modes.js";
 import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpFrameDecoder } from "./omp-protocol.js";
-import { isOmpProcessId, isOmpProcessPayload, ompProcessOsPid } from "./omp-subagent.js";
 
 export interface OmpSessionState {
   sessionId: string;
@@ -86,16 +84,8 @@ export type OmpTurnEvent =
       resultSummary?: string;
       sessionFile?: string;
     }
-  | { type: "subagent.transcript.changed"; callId: string; nativeSubagentId: string }
-  | {
-      type: "process.state.changed";
-      processId: string;
-      status: "running" | "exited";
-      itemId?: HostItemId;
-      command?: string;
-      cwd?: string;
-      osPid?: number | null;
-    };
+  | { type: "subagent.transcript.changed"; callId: string; nativeSubagentId: string };
+
 export interface OmpTurnResult {
   text: string;
   cancelled: boolean;
@@ -321,7 +311,6 @@ function parseSubagentMessages(response: Record<string, unknown>): OmpSubagentMe
 
 function subagentStatus(value: unknown): OmpSubagentTurnStatus {
   if (value === "pending" || value === "running" || value === "completed") return value;
-  if (value === "working" || value === "in_progress" || value === "in-progress") return "running";
   if (value === "failed" || value === "aborted" || value === "interrupted") return "failed";
   throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent status is invalid");
 }
@@ -840,20 +829,6 @@ export class OmpRpcSession {
     return settled;
   }
 
-  async steer(text: string): Promise<void> {
-    if (!this.#child || !this.#state || this.#closed || this.#failed) {
-      throw new Error("Omp RPC Session is unavailable");
-    }
-    if (!this.#activeTurn) throw new Error("Omp RPC Session has no active Turn");
-    if (text.length === 0) throw new Error("Omp steer input must not be empty");
-    try {
-      await this.#send("steer", { message: text });
-    } catch (error) {
-      if (error instanceof OmpRpcFaultError) throw error;
-      throw new OmpRpcFaultError("protocolError", `Omp RPC Steer failed: ${message(error)}`);
-    }
-  }
-
   abort(): Promise<void> {
     const active = this.#activeTurn;
     if (!active || this.#closed || this.#failed) {
@@ -1103,45 +1078,8 @@ export class OmpRpcSession {
     if (
       value.type !== "subagent_lifecycle" &&
       value.type !== "subagent_progress" &&
-      value.type !== "subagent_event" &&
-      value.type !== "process_lifecycle" &&
-      value.type !== "process_event"
+      value.type !== "subagent_event"
     ) {
-      return false;
-    }
-    if (value.type === "process_lifecycle" || value.type === "process_event") {
-      const payload = isRecord(value.payload) ? value.payload : null;
-      const rawId = payload ? (payload.id ?? payload.processId ?? payload.name) : undefined;
-      const processId =
-        typeof rawId === "string" && rawId.trim().length > 0
-          ? rawId.trim()
-          : typeof rawId === "number" && Number.isFinite(rawId)
-            ? String(rawId)
-            : undefined;
-      if (processId) {
-        const emit = active?.onEvent ?? this.#options.onSubagentEvent;
-        const rawStatus = typeof payload?.status === "string" ? payload.status.toLowerCase() : "";
-        const status =
-          rawStatus === "exited" ||
-          rawStatus === "completed" ||
-          rawStatus === "failed" ||
-          rawStatus === "stopped" ||
-          rawStatus === "terminated"
-            ? "exited"
-            : "running";
-        const command = typeof payload?.command === "string" ? payload.command : undefined;
-        const cwd = typeof payload?.cwd === "string" ? payload.cwd : undefined;
-        const osPid = typeof payload?.osPid === "number" ? payload.osPid : undefined;
-        emit?.({
-          type: "process.state.changed",
-          processId,
-          status,
-          ...(command ? { command } : {}),
-          ...(cwd ? { cwd } : {}),
-          ...(osPid !== undefined ? { osPid } : {}),
-        });
-        return true;
-      }
       return false;
     }
     const payload = isRecord(value.payload) ? value.payload : null;
@@ -1158,68 +1096,6 @@ export class OmpRpcSession {
       ? payload.parentToolCallId
       : nativeSubagentId;
     const emit = active?.onEvent ?? this.#options.onSubagentEvent;
-    const isProcess =
-      isOmpProcessId(nativeSubagentId) ||
-      isOmpProcessPayload(payload) ||
-      isOmpProcessPayload(progressPayload);
-    if (isProcess) {
-      if (value.type === "subagent_lifecycle") {
-        const rawStatus = typeof payload?.status === "string" ? payload.status.toLowerCase() : "";
-        const status =
-          rawStatus === "exited" ||
-          rawStatus === "completed" ||
-          rawStatus === "failed" ||
-          rawStatus === "stopped" ||
-          rawStatus === "terminated" ||
-          rawStatus === "aborted"
-            ? "exited"
-            : "running";
-        const command =
-          (typeof payload?.command === "string" && payload.command.trim().length > 0
-            ? payload.command.trim()
-            : undefined) ??
-          (typeof payload?.task === "string" && payload.task.trim().length > 0
-            ? payload.task.trim()
-            : undefined) ??
-          (typeof payload?.description === "string" && payload.description.trim().length > 0
-            ? payload.description.trim()
-            : undefined) ??
-          nativeSubagentId;
-        const cwd = typeof payload?.cwd === "string" ? payload.cwd : undefined;
-        const osPid = ompProcessOsPid(payload);
-        emit?.({
-          type: "process.state.changed",
-          processId: nativeSubagentId,
-          status,
-          ...(command ? { command } : {}),
-          ...(cwd ? { cwd } : {}),
-          ...(osPid !== undefined ? { osPid } : {}),
-        });
-        return true;
-      }
-      if (value.type === "subagent_progress") {
-        const rawStatus =
-          typeof progressPayload?.status === "string" ? progressPayload.status.toLowerCase() : "";
-        const status =
-          rawStatus === "exited" ||
-          rawStatus === "completed" ||
-          rawStatus === "failed" ||
-          rawStatus === "stopped" ||
-          rawStatus === "terminated" ||
-          rawStatus === "aborted"
-            ? "exited"
-            : "running";
-        emit?.({
-          type: "process.state.changed",
-          processId: nativeSubagentId,
-          status,
-        });
-        return true;
-      }
-      if (value.type === "subagent_event") {
-        return true;
-      }
-    }
     if (value.type === "subagent_event") {
       emit?.({ type: "subagent.transcript.changed", callId, nativeSubagentId });
       return true;
@@ -1239,11 +1115,7 @@ export class OmpRpcSession {
           description,
           ...(nonBlankString(payload.agent) ? { role: payload.agent } : {}),
           ...(nonBlankString(payload.task) ? { prompt: payload.task } : {}),
-          background:
-            payload.detached === true ||
-            payload.background === true ||
-            payload.async === true ||
-            payload.run_in_background === true,
+          background: payload.detached === true,
           ...(typeof payload.sessionFile === "string" ? { sessionFile: payload.sessionFile } : {}),
         });
         return true;
@@ -1336,15 +1208,9 @@ export class OmpRpcSession {
 
   #updateTool(active: ActiveTurn, value: Record<string, unknown>): void {
     const callId = value.toolCallId;
-    if (typeof callId !== "string" || callId.length === 0 || !active.tools.has(callId)) {
-      return;
-    }
-    if (!Object.hasOwn(value, "partialResult") || value.partialResult === undefined) {
-      return;
-    }
     const outputResult = jsonValueSchema.safeParse(value.partialResult);
-    if (!outputResult.success) {
-      return;
+    if (typeof callId !== "string" || !active.tools.has(callId) || !outputResult.success) {
+      throw new OmpRpcFaultError("protocolError", "Omp RPC returned an invalid Tool update");
     }
     active.onEvent({ type: "tool.updated", callId, output: outputResult.data });
   }

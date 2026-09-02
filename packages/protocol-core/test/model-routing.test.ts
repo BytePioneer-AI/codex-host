@@ -21,6 +21,7 @@ import {
   decodeExternalTransportModel,
   decodeExternalTransportSelection,
   decodeGrokTransportSelection,
+  decodeOmpTransportSelection,
   decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
@@ -84,15 +85,23 @@ describe("external Harness transport model routing", () => {
     });
   });
 
-  it("round-trips an OMP Model and Thinking selection", () => {
+  it("round-trips an OMP Model, Permission Mode, and Thinking selection", () => {
     const model = harnessModelRefSchema.parse({ id: "omp-model-v1.b21wZW4" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("write");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
-    const transportModelId = encodeOmpTransportModel(model, thinkingOptionId);
+    const transportModelId = encodeOmpTransportModel(model, thinkingOptionId, permissionModeId);
+
+    expect(decodeOmpTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
     expect(
       decodeCreateRoute({ id: 11, method: "thread/start", params: { model: transportModelId } }),
     ).toMatchObject({
       harnessId: "omp",
       model,
+      permissionModeId,
       thinkingOptionId,
     });
   });

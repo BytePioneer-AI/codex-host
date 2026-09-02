@@ -928,6 +928,24 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "omp",
+        transportModelId: "codexhost/omp-native@omp-model-v1.synthetic@write@high",
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        effectiveModel: harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" }),
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("write"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "omp",
+      model: { id: "omp-model-v1.synthetic" },
+      thinkingOptionId: "high",
+      permissionModeId: "write",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "grok",
         transportModelId: "codexhost/grok-native@grok-4.6@auto@high",
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },

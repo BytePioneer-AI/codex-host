@@ -38,7 +38,11 @@ import {
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
+  OMP_TRANSPORT_MODEL_ID,
   createRendererRequestRouteResolver,
+  decodeOmpTransportModelId,
+  isOmpTransportModelId,
+  ompTransportModelId,
   rendererRequestTargetsForHost,
   resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
@@ -474,6 +478,26 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(
       decodePiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
+  });
+
+  it("encodes OMP Model, Permission Mode, and Thinking in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const permissionModeId = harnessPermissionModeIdSchema.parse("write");
+    const carrier = ompTransportModelId(model, thinkingOptionId, permissionModeId);
+
+    expect(carrier).toBe(
+      `${OMP_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(isOmpTransportModelId(carrier)).toBe(true);
+    expect(decodeOmpTransportModelId(carrier)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "omp", model, thinkingOptionId, permissionModeId)?.model,
+    ).toBe(carrier);
   });
 
   it("encodes Claude Model, Permission Mode, and Thinking in the transport carrier", () => {

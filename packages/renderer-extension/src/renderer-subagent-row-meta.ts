@@ -319,10 +319,12 @@ function isOwnMetaMutation(mutations: MutationRecord[]): boolean {
   return mutations.every((mutation) => {
     const nodes = [...mutation.addedNodes, ...mutation.removedNodes, mutation.target];
     return nodes.every((node) => {
-      if (!(node instanceof Element)) return mutation.type === "characterData";
+      if (typeof Element !== "undefined" && !(node instanceof Element)) {
+        return mutation.type === "characterData";
+      }
       return (
-        node.getAttribute?.(SUBAGENT_ROW_META_ATTRIBUTE) === "true" ||
-        Boolean(node.closest?.(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`))
+        (node as Element).getAttribute?.(SUBAGENT_ROW_META_ATTRIBUTE) === "true" ||
+        Boolean((node as Element).closest?.(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`))
       );
     });
   });
@@ -394,7 +396,7 @@ export function installRendererSubagentRowMeta(
       disposed = true;
       if (debounce !== undefined) clearTimeout(debounce);
       observer.disconnect();
-      if (root instanceof Element || root instanceof Document) {
+      if (typeof (root as { querySelectorAll?: unknown })?.querySelectorAll === "function") {
         for (const meta of root.querySelectorAll(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`)) {
           meta.remove();
         }

@@ -125,6 +125,20 @@ describe("OMP Subagent helpers", () => {
         resultSummary: "Execution confirmed",
       },
     ]);
+    expect(
+      ompSubagentWaitSettlements({
+        name: "hub",
+        rawInput: { op: "wait" },
+        rawOutput: {
+          details: {
+            op: "wait",
+            jobs: [
+              { id: "LiveSubagent", type: "task", status: "working", output: "still working" },
+            ],
+          },
+        },
+      }),
+    ).toEqual([{ id: "LiveSubagent", status: "running", resultSummary: "still working" }]);
   });
 
   it("normalizes reasoning effort strings", () => {

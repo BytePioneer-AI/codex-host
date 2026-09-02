@@ -321,6 +321,7 @@ function parseSubagentMessages(response: Record<string, unknown>): OmpSubagentMe
 
 function subagentStatus(value: unknown): OmpSubagentTurnStatus {
   if (value === "pending" || value === "running" || value === "completed") return value;
+  if (value === "working" || value === "in_progress" || value === "in-progress") return "running";
   if (value === "failed" || value === "aborted" || value === "interrupted") return "failed";
   throw new OmpRpcFaultError("protocolError", "Omp RPC Subagent status is invalid");
 }

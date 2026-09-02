@@ -1472,7 +1472,7 @@ describe("Codex UI projector", () => {
           path: "src/server.ts",
           kind: "add",
           unifiedDiff:
-            "--- /dev/null\n+++ b/src/server.ts\n@@ -0,0 +1,1 @@\n+export const port = 3000;\n",
+            "diff --git a/src/server.ts b/src/server.ts\n--- /dev/null\n+++ b/src/server.ts\n@@ -0,0 +1 @@\n+export const port = 3000;\n",
         },
       ]);
     });
@@ -1488,7 +1488,7 @@ describe("Codex UI projector", () => {
           path: "src/server.ts",
           kind: "update",
           unifiedDiff:
-            "--- a/src/server.ts\n+++ b/src/server.ts\n@@ -1,1 +1,1 @@\n-export const port = 3000;\n+export const port = 8080;\n",
+            "diff --git a/src/server.ts b/src/server.ts\n--- a/src/server.ts\n+++ b/src/server.ts\n@@ -1 +1 @@\n-export const port = 3000;\n+export const port = 8080;\n",
         },
       ]);
     });
@@ -1612,7 +1612,8 @@ describe("Codex UI projector", () => {
         {
           path: "src/config.json",
           kind: "update",
-          unifiedDiff: "--- a/src/config.json\n+++ b/src/config.json\n@@ -0,0 +1,1 @@\n+{}\n",
+          unifiedDiff:
+            "diff --git a/src/config.json b/src/config.json\n--- a/src/config.json\n+++ b/src/config.json\n@@ -0,0 +1 @@\n+{}\n",
         },
       ]);
     });
@@ -1626,7 +1627,8 @@ describe("Codex UI projector", () => {
         {
           path: "src/empty.txt",
           kind: "add",
-          unifiedDiff: "--- /dev/null\n+++ b/src/empty.txt\n@@ -0,0 +0,0 @@\n",
+          unifiedDiff:
+            "diff --git a/src/empty.txt b/src/empty.txt\n--- /dev/null\n+++ b/src/empty.txt\n@@ -0,0 +0,0 @@\n",
         },
       ]);
     });
@@ -1644,7 +1646,7 @@ describe("Codex UI projector", () => {
           path: "src/math.ts",
           kind: "update",
           unifiedDiff:
-            "--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1,1 +1,1 @@\n-return a + b;\n+return a * b;\n",
+            "diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1 +1 @@\n-return a + b;\n+return a * b;\n",
         },
       ]);
     });
@@ -1713,7 +1715,8 @@ describe("Codex UI projector", () => {
         {
           path: "src/app.ts",
           kind: "add",
-          unifiedDiff: "--- /dev/null\n+++ b/src/app.ts\n@@ -0,0 +1,1 @@\n+export const x = 1;\n",
+          unifiedDiff:
+            "diff --git a/src/app.ts b/src/app.ts\n--- /dev/null\n+++ b/src/app.ts\n@@ -0,0 +1 @@\n+export const x = 1;\n",
         },
       ]);
 
@@ -1727,7 +1730,7 @@ describe("Codex UI projector", () => {
           path: "src/app.ts",
           kind: "update",
           unifiedDiff:
-            "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,1 @@\n-export const x = 1;\n+export const x = 2;\n",
+            "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-export const x = 1;\n+export const x = 2;\n",
         },
       ]);
     });
@@ -1747,7 +1750,8 @@ describe("Codex UI projector", () => {
         {
           path: "test.txt",
           kind: "add",
-          unifiedDiff: "--- /dev/null\n+++ b/test.txt\n@@ -0,0 +1,1 @@\n+hello\n",
+          unifiedDiff:
+            "diff --git a/test.txt b/test.txt\n--- /dev/null\n+++ b/test.txt\n@@ -0,0 +1 @@\n+hello\n",
         },
       ]);
     });
@@ -1811,6 +1815,92 @@ describe("Codex UI projector", () => {
         },
       });
       expect(completed.messages[0]?.method).toBe("item/completed");
+    });
+
+    it("projects multi-file unified diffs with git headers and accurate non-zero line count calculation", () => {
+      const p = projector();
+      p.project({ type: "turn.started", turnId });
+
+      // File 1: Add new file (3 lines added)
+      const file1Id = itemId("file-change-1");
+      const file1: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: file1Id,
+        changes: [
+          {
+            path: "src/utils.ts",
+            kind: "add",
+            unifiedDiff:
+              "diff --git a/src/utils.ts b/src/utils.ts\n--- /dev/null\n+++ b/src/utils.ts\n@@ -0,0 +1,3 @@\n+export const a = 1;\n+export const b = 2;\n+export const c = 3;\n",
+          },
+        ],
+      };
+      const file1Started = p.project({ type: "item.started", turnId, item: file1 });
+      expect(file1Started.messages.map(({ method }) => method)).toEqual([
+        "item/started",
+        "item/fileChange/patchUpdated",
+        "turn/diff/updated",
+      ]);
+      p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: file1, outcome: { status: "succeeded" } },
+      });
+
+      // File 2: Modify existing file (replace 2 lines with 4 lines -> +4 -2)
+      const file2Id = itemId("file-change-2");
+      const file2: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: file2Id,
+        changes: [
+          {
+            path: "src/main.ts",
+            kind: "update",
+            unifiedDiff:
+              "diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,2 +1,4 @@\n-old line 1\n-old line 2\n+new line 1\n+new line 2\n+new line 3\n+new line 4\n",
+          },
+        ],
+      };
+      const file2Started = p.project({ type: "item.started", turnId, item: file2 });
+      p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: file2, outcome: { status: "succeeded" } },
+      });
+
+      const turnDiffMsg = file2Started.messages.find((msg) => msg.method === "turn/diff/updated");
+      expect(turnDiffMsg).toBeDefined();
+      const combinedDiff = (turnDiffMsg?.params as { diff: string }).diff;
+
+      // Verify Git diff format
+      expect(combinedDiff).toContain("diff --git a/src/utils.ts b/src/utils.ts");
+      expect(combinedDiff).toContain("diff --git a/src/main.ts b/src/main.ts");
+
+      // Verify line count calculation logic
+      function parseDiffLineCounts(diff: string) {
+        const fileChunks = diff.split(/^diff --git\s+/m).filter((c) => c.trim().length > 0);
+        let additions = 0;
+        let deletions = 0;
+        for (const chunk of fileChunks) {
+          const lines = chunk.split("\n");
+          let inHunk = false;
+          for (const line of lines) {
+            if (line.startsWith("@@")) {
+              inHunk = true;
+              continue;
+            }
+            if (!inHunk) continue;
+            if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+            else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+          }
+        }
+        return { files: fileChunks.length, additions, deletions };
+      }
+
+      const counts = parseDiffLineCounts(combinedDiff);
+      expect(counts.files).toBe(2);
+      expect(counts.additions).toBe(7); // 3 + 4
+      expect(counts.deletions).toBe(2); // 0 + 2
     });
   });
 });

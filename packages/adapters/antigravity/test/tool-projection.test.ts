@@ -59,6 +59,7 @@ describe("Antigravity Tool Projection", () => {
         if (!change) throw new Error("Expected change");
         expect(change.path).toBe("src/hello.ts");
         expect(change.kind).toBe("add");
+        expect(change.unifiedDiff).toContain("diff --git a/src/hello.ts b/src/hello.ts");
         expect(change.unifiedDiff).toContain("--- /dev/null");
         expect(change.unifiedDiff).toContain("+++ b/src/hello.ts");
         expect(change.unifiedDiff).toContain("+console.log('hello world');");
@@ -165,6 +166,7 @@ describe("Antigravity Tool Projection", () => {
         if (!change) throw new Error("Expected change");
         expect(change.path).toBe("src/app.ts");
         expect(change.kind).toBe("update");
+        expect(change.unifiedDiff).toContain("diff --git a/src/app.ts b/src/app.ts");
         expect(change.unifiedDiff).toContain("--- a/src/app.ts");
         expect(change.unifiedDiff).toContain("+++ b/src/app.ts");
         expect(change.unifiedDiff).toContain("-const PORT = 3000;");
@@ -572,6 +574,95 @@ describe("Antigravity Tool Projection", () => {
         expect(completed.output).toHaveLength(50);
         expect(completed.outputTruncated).toBe(true);
       }
+    });
+
+    it("binds startAntigravityToolItem and completeAntigravityToolItem to target project cwd", () => {
+      const started = startAntigravityToolItem(
+        newItemId(),
+        {
+          conversation_id: "c1",
+          step_index: 5,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { parameters: { CommandLine: "cargo build" } },
+        },
+        CWD,
+      );
+      expect(started.type).toBe("commandExecution");
+      if (started.type === "commandExecution") {
+        expect(started.cwd).toBe(CWD);
+      }
+
+      const completed = completeAntigravityToolItem(
+        started,
+        {
+          conversation_id: "c1",
+          step_index: 5,
+          state: "DONE",
+          step_type: "tool",
+          tool_info: { output: "Finished dev target(s)" },
+        },
+        64_000,
+        CWD,
+      );
+      expect(completed.type).toBe("commandExecution");
+      if (completed.type === "commandExecution") {
+        expect(completed.cwd).toBe(CWD);
+      }
+    });
+
+    it("calculates accurate line counts (+X -Y) across multi-file synthesized changes", () => {
+      const file1Changes = synthesizeAntigravityFileChange(
+        "write_to_file",
+        {
+          TargetFile: "src/add.ts",
+          CodeContent: "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n",
+        },
+        CWD,
+      );
+      const file2Changes = synthesizeAntigravityFileChange(
+        "replace_file_content",
+        {
+          TargetFile: "src/mod.ts",
+          TargetContent: "const a = 1;\nconst b = 2;\n",
+          ReplacementContent: "const a = 10;\nconst b = 20;\nconst c = 30;\nconst d = 40;\n",
+        },
+        CWD,
+      );
+
+      expect(file1Changes).not.toBeNull();
+      expect(file2Changes).not.toBeNull();
+      const allChanges = [...(file1Changes ?? []), ...(file2Changes ?? [])];
+
+      expect(allChanges).toHaveLength(2);
+
+      const combinedDiff = allChanges.map((c) => c.unifiedDiff.trimEnd()).join("\n") + "\n";
+      expect(combinedDiff).toContain("diff --git a/src/add.ts b/src/add.ts");
+      expect(combinedDiff).toContain("diff --git a/src/mod.ts b/src/mod.ts");
+
+      // Verify line count calculation logic
+      const fileChunks = combinedDiff.split(/^diff --git\s+/m).filter((c) => c.trim().length > 0);
+      expect(fileChunks).toHaveLength(2);
+
+      let additions = 0;
+      let deletions = 0;
+      for (const chunk of fileChunks) {
+        const lines = chunk.split("\n");
+        let inHunk = false;
+        for (const line of lines) {
+          if (line.startsWith("@@")) {
+            inHunk = true;
+            continue;
+          }
+          if (!inHunk) continue;
+          if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+          else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+        }
+      }
+
+      expect(additions).toBe(7); // 3 added in file1, 4 added in file2
+      expect(deletions).toBe(2); // 0 deleted in file1, 2 deleted in file2
     });
   });
 });

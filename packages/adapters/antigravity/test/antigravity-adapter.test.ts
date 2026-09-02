@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -873,6 +873,238 @@ for (const line of lines) {
             outcome: { status: "succeeded" },
           },
         });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("passes --add-dir <cwd> and strictly binds child process cwd to thread project directory", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-inspect-"));
+      const projectCwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-proj-"));
+      const capturedArgsFile = path.join(directory, "captured_args.json");
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, projectCwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-inspect-cwd",
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-inspect-cwd",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "done",
+          },
+        }),
+      ];
+
+      const scriptContent = `
+const fs = require("node:fs");
+const lines = ${JSON.stringify(streamLines)};
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some(a => a === "--print=/usage" || a.startsWith("--print=/"))) {
+  process.stdout.write(JSON.stringify({
+    event: "command_result",
+    command: { name: "usage", data: { groups: [] } }
+  }) + "\\n");
+  process.stdout.write(JSON.stringify({
+    event: "result",
+    result: { conversation_id: "conv-usage", status: "SUCCESS", num_turns: 0 }
+  }) + "\\n");
+  process.exit(0);
+}
+fs.writeFileSync(${JSON.stringify(capturedArgsFile)}, JSON.stringify({
+  argv: process.argv,
+  cwd: process.cwd(),
+}));
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+setTimeout(() => { process.exit(0); }, 50);
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd: projectCwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-inspect-add-dir");
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "inspect args" }],
+        });
+
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+
+        const captured = JSON.parse(await readFile(capturedArgsFile, "utf8")) as {
+          argv: string[];
+          cwd: string;
+        };
+
+        const addDirIndex = captured.argv.indexOf("--add-dir");
+        expect(addDirIndex).toBeGreaterThan(-1);
+        expect(captured.argv[addDirIndex + 1]).toBe(projectCwd);
+
+        const expectedResolvedCwd = path.resolve(projectCwd).toLowerCase();
+        const actualResolvedCwd = path.resolve(captured.cwd).toLowerCase();
+        expect(actualResolvedCwd).toBe(expectedResolvedCwd);
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("projects multiple file changes in a turn producing standard git diff with accurate line counts", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-multi-diff",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-multi-diff",
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "write_to_file",
+            tool_info: {
+              parameters: {
+                TargetFile: "src/file1.ts",
+                CodeContent: "export const a = 1;\nexport const b = 2;\n",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-multi-diff",
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "replace_file_content",
+            tool_info: {
+              parameters: {
+                TargetFile: "src/file2.ts",
+                TargetContent: "old line 1\nold line 2\n",
+                ReplacementContent: "new line 1\nnew line 2\nnew line 3\n",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-multi-diff",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "Files created and modified successfully.",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-multi-diff");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "modify multiple files" }],
+        });
+
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+
+        // Tool 1: write_to_file
+        const item1Started = await nextEvent(iterator);
+        expect(item1Started.type).toBe("item.started");
+        const item1Completed = await nextEvent(iterator);
+        expect(item1Completed.type).toBe("item.completed");
+
+        // FileChange 1
+        const fc1Started = await nextEvent(iterator);
+        expect(fc1Started).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "fileChange",
+            changes: [
+              {
+                path: "src/file1.ts",
+                kind: "add",
+                unifiedDiff: expect.stringContaining("diff --git a/src/file1.ts b/src/file1.ts"),
+              },
+            ],
+          },
+        });
+        const fc1Completed = await nextEvent(iterator);
+        expect(fc1Completed.type).toBe("item.completed");
+
+        // Tool 2: replace_file_content
+        const item2Started = await nextEvent(iterator);
+        expect(item2Started.type).toBe("item.started");
+        const item2Completed = await nextEvent(iterator);
+        expect(item2Completed.type).toBe("item.completed");
+
+        // FileChange 2
+        const fc2Started = await nextEvent(iterator);
+        expect(fc2Started).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "fileChange",
+            changes: [
+              {
+                path: "src/file2.ts",
+                kind: "update",
+                unifiedDiff: expect.stringContaining("diff --git a/src/file2.ts b/src/file2.ts"),
+              },
+            ],
+          },
+        });
+        const fc2Completed = await nextEvent(iterator);
+        expect(fc2Completed.type).toBe("item.completed");
 
         await session.close();
       } finally {

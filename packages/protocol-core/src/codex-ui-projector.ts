@@ -296,6 +296,22 @@ function isWriteTool(toolName: string): boolean {
   );
 }
 
+function formatHunkRange(start: number, count: number): string {
+  if (count === 1) return `${start}`;
+  return `${start},${count}`;
+}
+
+export function ensureGitDiffHeader(filePath: string, unifiedDiff: string): string {
+  const trimmed = unifiedDiff.trim();
+  if (!trimmed) return unifiedDiff;
+  if (trimmed.startsWith("diff --git")) return unifiedDiff;
+  const normalized = filePath.replaceAll("\\", "/");
+  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+  const aPath = isAbsolute ? normalized : `a/${normalized}`;
+  const bPath = isAbsolute ? normalized : `b/${normalized}`;
+  return `diff --git ${aPath} ${bPath}\n${unifiedDiff}`;
+}
+
 function simpleUnifiedDiff(
   displayedPath: string,
   oldText: string,
@@ -304,15 +320,20 @@ function simpleUnifiedDiff(
 ): string {
   const normalized = displayedPath.replaceAll("\\", "/");
   const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+  const aPath = isAbsolute ? normalized : `a/${normalized}`;
+  const bPath = isAbsolute ? normalized : `b/${normalized}`;
+  const gitHeader = `diff --git ${aPath} ${bPath}`;
   const oldLines = oldText === "" ? [] : oldText.replaceAll("\r\n", "\n").split("\n");
   const newLines = newText === "" ? [] : newText.replaceAll("\r\n", "\n").split("\n");
   if (oldLines.at(-1) === "") oldLines.pop();
   if (newLines.at(-1) === "") newLines.pop();
-  const oldHeader = kind === "add" ? "/dev/null" : isAbsolute ? normalized : `a/${normalized}`;
-  const newHeader = isAbsolute ? normalized : `b/${normalized}`;
-  const oldRange = kind === "add" ? "0,0" : oldLines.length === 0 ? "0,0" : `1,${oldLines.length}`;
-  const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
+  const oldHeader = kind === "add" ? "/dev/null" : aPath;
+  const newHeader = bPath;
+  const oldRange =
+    kind === "add" ? "0,0" : oldLines.length === 0 ? "0,0" : formatHunkRange(1, oldLines.length);
+  const newRange = newLines.length === 0 ? "0,0" : formatHunkRange(1, newLines.length);
   return [
+    gitHeader,
     `--- ${oldHeader}`,
     `+++ ${newHeader}`,
     `@@ -${oldRange} +${newRange} @@`,
@@ -402,7 +423,7 @@ function projectFileChanges(changes: HostFileChange[]): JsonValue[] {
   return changes.map(({ path, kind, unifiedDiff }) => ({
     path,
     kind: projectFileChangeKind(kind),
-    diff: unifiedDiff,
+    diff: ensureGitDiffHeader(path, unifiedDiff),
   }));
 }
 
@@ -847,7 +868,11 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
 }
 
 function diffText(changes: HostFileChange[]): string {
-  return changes.map(({ unifiedDiff }) => unifiedDiff).join("\n");
+  return changes
+    .map(({ path, unifiedDiff }) => ensureGitDiffHeader(path, unifiedDiff).trimEnd())
+    .filter((diff) => diff.length > 0)
+    .map((diff) => `${diff}\n`)
+    .join("");
 }
 
 export class CodexTurnProjector {

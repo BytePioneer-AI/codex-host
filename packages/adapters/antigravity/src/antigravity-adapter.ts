@@ -505,6 +505,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#permissionMode === "dangerously-skip-permissions") {
       arguments_.push("--dangerously-skip-permissions");
     }
+    arguments_.push("--add-dir", this.#cwd);
     arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, this.#environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -743,7 +744,7 @@ class AntigravitySession implements HarnessSession {
     if (step.step_type !== "tool") return;
     let item = active.tools.get(step.step_index);
     if (!item) {
-      item = startAntigravityToolItem(this.#newItemId(), step);
+      item = startAntigravityToolItem(this.#newItemId(), step, this.#cwd);
       active.tools.set(step.step_index, item);
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }

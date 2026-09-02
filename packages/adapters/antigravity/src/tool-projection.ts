@@ -138,8 +138,12 @@ function formatUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
-  const oldHeader = kind === "add" ? "/dev/null" : isAbsolute ? displayedPath : `a/${displayedPath}`;
-  const newHeader = isAbsolute ? displayedPath : `b/${displayedPath}`;
+  const normalized = displayedPath.replaceAll("\\", "/");
+  const aPath = isAbsolute ? normalized : `a/${normalized}`;
+  const bPath = isAbsolute ? normalized : `b/${normalized}`;
+  const gitHeader = `diff --git ${aPath} ${bPath}`;
+  const oldHeader = kind === "add" ? "/dev/null" : aPath;
+  const newHeader = bPath;
   const rawPatch = createTwoFilesPatch(
     oldHeader,
     newHeader,
@@ -158,7 +162,7 @@ function formatUnifiedDiff(
     }
     return line;
   });
-  return cleaned.join("\n");
+  return [gitHeader, ...cleaned].join("\n");
 }
 
 export function synthesizeAntigravityFileChange(
@@ -195,13 +199,7 @@ export function synthesizeAntigravityFileChange(
     if (!displayed) return null;
     const overwrite = extractBoolean(record, ["Overwrite", "overwrite", "overWrite"]) ?? false;
     const kind = overwrite ? "update" : "add";
-    const unifiedDiff = formatUnifiedDiff(
-      displayed.path,
-      displayed.absolute,
-      "",
-      rawContent,
-      kind,
-    );
+    const unifiedDiff = formatUnifiedDiff(displayed.path, displayed.absolute, "", rawContent, kind);
     return [{ path: displayed.path, kind, unifiedDiff }];
   }
 
@@ -256,6 +254,7 @@ export function synthesizeAntigravityFileChange(
 export function synthesizeAntigravityCommand(
   toolName: string,
   params: unknown,
+  cwd?: string,
 ): { command: string; cwd?: string } | null {
   const record = unwrapParameters(params);
   if (!record) return null;
@@ -277,7 +276,14 @@ export function synthesizeAntigravityCommand(
       "workingDirectory",
       "working_directory",
     ]);
-    return { command: commandLine, ...(workingDir ? { cwd: workingDir } : {}) };
+    let resolvedCwd: string | undefined;
+    if (workingDir && workingDir.trim().length > 0) {
+      resolvedCwd =
+        cwd && !path.isAbsolute(workingDir) ? path.resolve(cwd, workingDir) : workingDir;
+    } else if (cwd) {
+      resolvedCwd = cwd;
+    }
+    return { command: commandLine, ...(resolvedCwd ? { cwd: resolvedCwd } : {}) };
   }
 
   return null;
@@ -288,17 +294,16 @@ export function startAntigravityToolItem(
   step: AntigravityStepUpdateEvent["step_update"],
   cwd?: string,
 ): HostItem {
-  void cwd;
   const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
   const parameters = step.tool_info?.parameters;
 
-  const command = synthesizeAntigravityCommand(toolName, parameters);
+  const command = synthesizeAntigravityCommand(toolName, parameters, cwd);
   if (command) {
     const item: HostCommandExecutionItem = {
       type: "commandExecution",
       itemId: newItemId,
       command: command.command,
-      ...(command.cwd ? { cwd: command.cwd } : {}),
+      ...(command.cwd ? { cwd: command.cwd } : cwd ? { cwd } : {}),
     };
     return item;
   }
@@ -318,7 +323,6 @@ export function completeAntigravityToolItem(
   toolOutputLimit: number,
   cwd?: string,
 ): HostItem {
-  void cwd;
   const output = boundedText(step.tool_info?.output ?? step.tool_info?.error, toolOutputLimit);
   const durationMs =
     typeof step.duration_seconds === "number"
@@ -328,6 +332,7 @@ export function completeAntigravityToolItem(
   if (item.type === "commandExecution") {
     const completed: HostCommandExecutionItem = {
       ...item,
+      ...(item.cwd ? { cwd: item.cwd } : cwd ? { cwd } : {}),
       ...(output
         ? {
             output: output.text,

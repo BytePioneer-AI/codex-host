@@ -800,6 +800,8 @@ function mapOmpJobStatus(status?: string): HostSubagentStatus {
     case "running":
     case "pending":
     case "in_progress":
+    case "in-progress":
+    case "working":
       return "running";
     default:
       return "completed";

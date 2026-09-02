@@ -504,7 +504,7 @@ describe("OMP RPC session", () => {
           index: 0,
           agent: "task",
           agentSource: "bundled",
-          progress: { id: "subagent-1", status: "running", recentOutput: ["still working"] },
+          progress: { id: "subagent-1", status: "working", recentOutput: ["still working"] },
           parentToolCallId: "tool-1",
         },
       })}\n`,
@@ -514,6 +514,7 @@ describe("OMP RPC session", () => {
       expect.objectContaining({
         type: "subagent.updated",
         nativeSubagentId: "subagent-1",
+        status: "running",
         resultSummary: "still working",
       }),
     );

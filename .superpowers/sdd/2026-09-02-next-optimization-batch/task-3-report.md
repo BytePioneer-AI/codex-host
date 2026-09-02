@@ -25,7 +25,7 @@
 
 ## Commit
 
-`cb0d17f` (`test: stabilize repository test discovery`).
+Implementation commit: `9fb2153` (`test: stabilize repository test discovery`).
 
 ## Self-review
 

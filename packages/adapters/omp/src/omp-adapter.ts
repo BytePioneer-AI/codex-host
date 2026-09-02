@@ -922,7 +922,6 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
-  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -935,7 +934,6 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
-      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -947,7 +945,6 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") {
       return {
         ok: false,
@@ -1336,8 +1333,10 @@ class OmpHarnessSession implements HarnessSession {
       this.#configuring = false;
     }
   }
-
-  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+  async steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Omp Session is not open") };
+    }
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
       return {
@@ -1365,6 +1364,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: normalizedError(error, "nativeFailure") };
     }
   }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {

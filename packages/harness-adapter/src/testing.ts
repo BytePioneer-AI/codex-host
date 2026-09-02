@@ -226,7 +226,6 @@ export class FakeHarnessSession implements HarnessSession {
         forkAcrossCwd: supportsForkAcrossCwd,
         rollbackLastTurn: supportsRollbackLastTurn,
       },
-      turnSteering: { steer: false },
       subagents: { observe: false, readTranscript: false },
     };
     this.cwd = cwd;
@@ -292,6 +291,21 @@ export class FakeHarnessSession implements HarnessSession {
     this.usageRefreshes += 1;
   }
 
+  async steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (this.#closed) return { ok: false, error: invalidStateError };
+    if (this.capabilities.turnSteering?.steer !== true) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Harness does not support Turn steering",
+          retryable: false,
+        },
+      };
+    }
+    return this.#steer(command);
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     this.snapshotReads += 1;
     if (this.#closed) return { ok: false, error: invalidStateError };
@@ -347,7 +361,6 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
-  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -360,7 +373,6 @@ export class FakeHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
-      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -370,7 +382,6 @@ export class FakeHarnessSession implements HarnessSession {
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);

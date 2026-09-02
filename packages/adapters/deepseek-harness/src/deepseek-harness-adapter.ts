@@ -55,8 +55,6 @@ import {
   type TurnCancelCommand,
   type TurnStartAccepted,
   type TurnStartCommand,
-  type TurnSteerAccepted,
-  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -641,7 +639,6 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
-  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -654,7 +651,6 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
-      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -665,16 +661,6 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     if (this.#closed)
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "turn.steer") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "DeepSeek Harness does not support Turn steering",
-          retryable: false,
-        },
-      };
-    }
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);

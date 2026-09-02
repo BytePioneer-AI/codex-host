@@ -3118,7 +3118,10 @@ export class AppServerHost {
       );
       return;
     }
-    if (thread.session.capabilities.turnSteering?.steer !== true) {
+    if (
+      thread.session.capabilities.turnSteering?.steer !== true ||
+      thread.session.steer === undefined
+    ) {
       await this.#writer.json(
         rpcError(request, -32078, "External Harness does not support Turn steering"),
       );
@@ -3131,7 +3134,7 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const result = await thread.session.execute({
+    const result = await thread.session.steer({
       type: "turn.steer",
       turnId: hostTurnIdSchema.parse(requestedTurnId),
       input: [{ type: "text", text }],

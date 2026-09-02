@@ -293,7 +293,7 @@ describe("OMP Adapter Turn steering", () => {
       }),
     ).resolves.toMatchObject({ ok: true, value: { turnId } });
     await expect(
-      opened.value.execute({
+      opened.value.steer?.({
         type: "turn.steer",
         turnId,
         input: [{ type: "text", text: "use uppercase words" }],
@@ -321,7 +321,7 @@ describe("OMP Adapter Turn steering", () => {
       }),
     ).resolves.toMatchObject({ ok: true, value: { turnId } });
     await expect(
-      opened.value.execute({
+      opened.value.steer?.({
         type: "turn.steer",
         turnId,
         input: [{ type: "text", text: "say only HELLO" }],

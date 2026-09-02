@@ -26,6 +26,7 @@
 - `readSnapshot()`：只读历史和当前状态。
 - `execute()`：执行 Turn、取消、Interaction 响应和配置变更。
 - `refreshUsage()`：仅在原生系统支持主动刷新时提供。
+- `steer()`：仅在声明 `turnSteering.steer` 时提供；把用户输入注入当前活动 Turn，而不是新开 Turn。
 - `close()`：终结活动操作、关闭 Transport 并结束输出流。
 
 ## `inspect()` 契约
@@ -82,7 +83,7 @@ History 的详细要求见 [thread-lifecycle-and-history.md](thread-lifecycle-an
 - `subagents.observe`：输出标准 Subagent 生命周期。
 - `subagents.readTranscript`：Adapter 提供 `subagents.readSnapshot()`。
 - `autonomousTurns.observe`：能够输出不是由当前 Host `turn.start` 发起的原生 Turn。
-- `turnSteering.steer`：允许在活动 Turn 上执行 `turn.steer`，把用户输入注入当前原生 Turn，而不是新开 Turn。
+- `turnSteering.steer`：允许在活动 Turn 上调用可选的 `steer()`，把用户输入注入当前原生 Turn，而不是新开 Turn。未声明该能力的 Harness 不得实现 `execute("turn.steer")`。
 
 能力为 false 时，相应命令或打开模式应返回 `unsupported`，不得执行部分操作。能力为 true 时，不能依赖 Harness 专用 Host 分支补齐语义。
 
@@ -109,7 +110,7 @@ History 的详细要求见 [thread-lifecycle-and-history.md](thread-lifecycle-an
 Session 必须显式控制并发，而不是依赖原生调用偶然串行：
 
 - 第二个 `turn.start`、Model/Thinking 配置写入和 History 操作默认与活动操作互斥；冲突返回 `sessionBusy`，并标记 `retryable: true`；
-- `turn.steer` 必须引用当前活动 Turn；能力为 false 时返回 `unsupported`；
+- `steer()` 必须引用当前活动 Turn；未声明 `turnSteering.steer` 时 Host 拒绝该请求，不得要求其他 Adapter 提供相同入口；
 - `interaction.respond` 必须能在所属 Turn 活动时执行；
 - Permission Mode 是否可在活动 Turn 中改变取决于原生语义，允许时仍须与同类配置写入串行，不允许时返回 `sessionBusy`；
 - 空文本 Turn 返回 `invalidRequest`；

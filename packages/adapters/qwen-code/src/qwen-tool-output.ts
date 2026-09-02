@@ -43,6 +43,9 @@ export function qwenCodeToolName(
 export function qwenCodeToolLabel(item: QwenCodeProjectedToolItem): string {
   return item.type === "commandExecution" ? item.command : item.toolName;
 }
+export function qwenCodeToolKind(name: string): string | undefined {
+  return name === "run_shell_command" || name === "Bash" ? "execute" : undefined;
+}
 
 export function qwenCodeToolArguments(rawInput: unknown): JsonValue {
   const parsed = jsonValueSchema.safeParse(rawInput);

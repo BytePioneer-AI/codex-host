@@ -10,6 +10,7 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
     subtype: "get_available_models",
     models: [{ id: "qwen-max", label: "Qwen Max", contextWindowSize: 1_000_000 }],
   }));
+  readonly getContextUsage = vi.fn(async () => ({ modelName: "qwen-max" }));
   readonly getSessionId = vi.fn(() => "550e8400-e29b-41d4-a716-446655440000");
   readonly interrupt = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
@@ -104,6 +105,31 @@ describe("QwenCodeSdkTransport", () => {
       permission_denials: [],
     });
     await expect(turn).resolves.toEqual({ status: "succeeded" });
+    await transport.close();
+  });
+
+  it("uses the SDK context Model instead of the first catalog entry", async () => {
+    const query = new FakeQuery();
+    query.getAvailableModels.mockResolvedValueOnce({
+      subtype: "get_available_models",
+      models: [
+        { id: "catalog-first", label: "Catalog First", contextWindowSize: 100_000 },
+        { id: "configured-model", label: "Configured Model", contextWindowSize: 200_000 },
+      ],
+    });
+    query.getContextUsage.mockResolvedValueOnce({ modelName: "configured-model" });
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+
+    const opened = await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    expect(opened.models).toMatchObject({
+      currentModelId: "configured-model",
+      availableModels: [{ modelId: "catalog-first" }, { modelId: "configured-model" }],
+    });
     await transport.close();
   });
 
@@ -290,6 +316,28 @@ describe("QwenCodeSdkTransport", () => {
       kind: "processExited",
       message: "Qwen Code SDK stream ended unexpectedly",
     });
+    const { promise: deadline, reject } = Promise.withResolvers<never>();
+    const timeout = setTimeout(
+      () => reject(new Error("Qwen Code accepted a Turn after the SDK stream ended")),
+      25,
+    );
+    try {
+      await expect(
+        Promise.race([
+          transport.runTurn(
+            "again",
+            vi.fn(),
+            vi.fn(async () => ({ behavior: "allow" as const })),
+          ),
+          deadline,
+        ]),
+      ).rejects.toMatchObject({
+        kind: "processExited",
+        message: "Qwen Code SDK stream ended unexpectedly",
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     await transport.close();
   });
 
@@ -393,5 +441,33 @@ describe("QwenCodeSdkTransport", () => {
 
     expect(options).toHaveProperty("pathToQwenExecutable", process.execPath);
     await transport.close();
+  });
+  it("aborts a pending SDK input read when an idle Session closes", async () => {
+    const query = new FakeQuery();
+    let input: AsyncIterable<SDKUserMessage> | undefined;
+    let options: Record<string, unknown> | undefined;
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (({
+        prompt,
+        options: received,
+      }: {
+        prompt: AsyncIterable<SDKUserMessage>;
+        options: Record<string, unknown>;
+      }) => {
+        input = prompt;
+        options = received;
+        return query as unknown as Query;
+      }) as unknown as typeof sdkQuery,
+    });
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+    const pendingInput = input?.[Symbol.asyncIterator]().next();
+    if (!pendingInput) throw new Error("Qwen SDK query did not receive an input stream");
+
+    await transport.close();
+
+    expect((options?.abortController as AbortController | undefined)?.signal.aborted).toBe(true);
+    await expect(pendingInput).rejects.toThrow("Qwen Code SDK input closed");
   });
 });

@@ -17,6 +17,7 @@ import type { HarnessPermissionModeId } from "@codexhost/shared-contracts";
 
 import { decodeQwenCodePermissionModeId } from "./permission-modes.js";
 import { resolveQwenCodeExecutable } from "./command.js";
+import { qwenCodeToolKind } from "./qwen-tool-output.js";
 
 export type QwenCodeTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -103,20 +104,26 @@ interface ActiveTurn {
 
 class PushableInput implements AsyncIterable<SDKUserMessage> {
   #closed = false;
+  #failure: Error | null = null;
   #queue: SDKUserMessage[] = [];
-  #waiters: Array<(result: IteratorResult<SDKUserMessage>) => void> = [];
+  #waiters: Array<{
+    resolve(result: IteratorResult<SDKUserMessage>): void;
+    reject(error: Error): void;
+  }> = [];
 
   push(value: SDKUserMessage): void {
     if (this.#closed) throw new Error("Qwen Code SDK input is closed");
     const waiter = this.#waiters.shift();
-    if (waiter) waiter({ done: false, value });
+    if (waiter) waiter.resolve({ done: false, value });
     else this.#queue.push(value);
   }
 
-  close(): void {
+  fail(error: Error): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined });
+    this.#failure = error;
+    this.#queue = [];
+    for (const waiter of this.#waiters.splice(0)) waiter.reject(error);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
@@ -124,8 +131,9 @@ class PushableInput implements AsyncIterable<SDKUserMessage> {
       next: () => {
         const value = this.#queue.shift();
         if (value) return Promise.resolve({ done: false, value });
+        if (this.#failure) return Promise.reject(this.#failure);
         if (this.#closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise((resolve) => this.#waiters.push(resolve));
+        return new Promise((resolve, reject) => this.#waiters.push({ resolve, reject }));
       },
     };
   }
@@ -178,14 +186,12 @@ function rawToolOutput(content: unknown): string | undefined {
   return text.length > 0 ? text : undefined;
 }
 
-function toolKind(name: string): string | undefined {
-  return name === "run_shell_command" || name === "Bash" ? "execute" : undefined;
-}
-
 export class QwenCodeSdkTransport {
   readonly #options: QwenCodeSdkTransportOptions;
+  #abortController: AbortController | null = null;
   #active: ActiveTurn | null = null;
   #closed = false;
+  #failure: QwenCodeTransportError | null = null;
   #input: PushableInput | null = null;
   #modelId: string | undefined;
   #query: Query | null = null;
@@ -223,6 +229,7 @@ export class QwenCodeSdkTransport {
     onEvent: ActiveTurn["onEvent"],
     onPermission: ActiveTurn["onPermission"],
   ): Promise<{ status: "succeeded" | "failed" | "cancelled" }> {
+    if (this.#failure) throw this.#failure;
     if (!this.#input || !this.#sessionId || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
@@ -244,6 +251,7 @@ export class QwenCodeSdkTransport {
   }
 
   async setModel(nativeModelId: string): Promise<void> {
+    if (this.#failure) throw this.#failure;
     if (!this.#query || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
@@ -252,6 +260,7 @@ export class QwenCodeSdkTransport {
   }
 
   async setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void> {
+    if (this.#failure) throw this.#failure;
     if (!this.#query || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
@@ -259,6 +268,7 @@ export class QwenCodeSdkTransport {
   }
 
   async cancel(): Promise<void> {
+    if (this.#failure) throw this.#failure;
     if (!this.#query || !this.#active) {
       throw new Error("Qwen Code SDK Session has no cancellable operation");
     }
@@ -270,12 +280,16 @@ export class QwenCodeSdkTransport {
     this.#closed = true;
     const query = this.#query;
     this.#query = null;
+    const abortController = this.#abortController;
+    this.#abortController = null;
+    const input = this.#input;
+    this.#input = null;
     const active = this.#active;
     this.#active = null;
     active?.resolve({ status: "cancelled" });
     await query?.close().catch(() => undefined);
-    this.#input?.close();
-    this.#input = null;
+    abortController?.abort();
+    input?.fail(new Error("Qwen Code SDK input closed"));
   }
 
   async #start(input: QwenCodeOpenInput): Promise<void> {
@@ -289,6 +303,7 @@ export class QwenCodeSdkTransport {
       );
     }
     const inputStream = new PushableInput();
+    const abortController = new AbortController();
     const queryFactory = this.#options.queryFactory ?? query;
     const sessionId = resumeSessionId ?? randomUUID();
     const permissionMode = decodeQwenCodePermissionModeId(input.permissionMode);
@@ -307,6 +322,7 @@ export class QwenCodeSdkTransport {
             ? { timeout: { controlRequest: this.#options.commandTimeoutMs } }
             : {}),
           ...(environment ? { env: environment } : {}),
+          abortController,
           includePartialMessages: true,
           pathToQwenExecutable: executable,
           permissionMode,
@@ -314,11 +330,13 @@ export class QwenCodeSdkTransport {
           canUseTool: this.#canUseTool,
         },
       });
+      this.#abortController = abortController;
       this.#input = inputStream;
       this.#query = session;
       this.#sessionId = sessionId;
       void this.#consume(session);
       await session.initialized;
+      if (this.#failure) throw this.#failure;
       const initializedSessionId = session.getSessionId();
       if (!initializedSessionId) {
         throw new QwenCodeTransportError(
@@ -357,10 +375,12 @@ export class QwenCodeSdkTransport {
   };
 
   async #models(): Promise<unknown> {
+    if (this.#failure) throw this.#failure;
     const session = this.#query;
     if (!session)
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     const response = await session.getAvailableModels();
+    const context = await session.getContextUsage().catch(() => null);
     if (!isRecord(response) || !Array.isArray(response.models)) {
       throw new QwenCodeTransportError(
         "protocolError",
@@ -384,13 +404,26 @@ export class QwenCodeSdkTransport {
         },
       ];
     });
-    const currentModelId = this.#modelId ?? availableModels[0]?.modelId;
+    const contextModelId =
+      isRecord(context) &&
+      typeof context.modelName === "string" &&
+      context.modelName.trim().length > 0
+        ? context.modelName
+        : undefined;
+    const isAvailable = (modelId: string | undefined): modelId is string =>
+      modelId !== undefined && availableModels.some((candidate) => candidate.modelId === modelId);
+    const currentModelId = isAvailable(this.#modelId)
+      ? this.#modelId
+      : isAvailable(contextModelId)
+        ? contextModelId
+        : availableModels[0]?.modelId;
     if (!currentModelId || availableModels.length === 0) {
       throw new QwenCodeTransportError(
         "protocolError",
         "Qwen Code SDK returned no selectable Models",
       );
     }
+    this.#modelId = currentModelId;
     return { currentModelId, availableModels };
   }
 
@@ -429,7 +462,7 @@ export class QwenCodeSdkTransport {
     if (isSDKAssistantMessage(message)) {
       for (const block of message.message.content) {
         if (block.type !== "tool_use") continue;
-        const kind = toolKind(block.name);
+        const kind = qwenCodeToolKind(block.name);
         active.onEvent({
           type: "tool.call",
           callId: block.id,
@@ -477,7 +510,8 @@ export class QwenCodeSdkTransport {
   }
 
   #fault(error: QwenCodeTransportError): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#failure) return;
+    this.#failure = error;
     const active = this.#active;
     this.#active = null;
     active?.reject(error);

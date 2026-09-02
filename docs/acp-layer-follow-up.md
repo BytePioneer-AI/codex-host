@@ -1,6 +1,6 @@
 # ACP 层后续开发说明
 
-> 状态：进行中；Grok 与 Qwen Code 已使用生产 ACP Transport（Qwen Code 于 2026-08 接入，自带独立 Transport，未抽取共享层）。
+> 状态：进行中；目前只有 Grok 使用生产 ACP Transport。
 
 ## 背景
 
@@ -65,10 +65,8 @@ packages/adapters/grok/src/acp-transport.ts
 
 因此，应等第二个生产 ACP Harness 接入并完成最小实现后，再比较两套代码并抽取共同机制。
 
-> 更新（2026-08）：第二个生产 ACP Harness（Qwen Code）已按本文原则以独立 Transport 接入
-> （`packages/adapters/qwen-code/`，走 ACP 标准 modes/usage，无 Grok 专有扩展）。「抽取触发条件」
-> 已基本满足（close 生命周期在 Qwen Code 侧仅有传输层关闭，无 closeSession 能力），可以开始
-> 比较两套实现并评估抽取。
+> 更新（2026-09）：Qwen Code 已从 ACP Transport 迁移到官方 `@qwen-code/sdk` 的
+> `query()`，因此不再构成第二个生产 ACP 实现。「抽取触发条件」目前仍未满足。
 
 ## 抽取触发条件
 

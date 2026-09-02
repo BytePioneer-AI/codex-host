@@ -151,6 +151,13 @@ type SessionPhase = "open" | "closing" | "closed" | "faulted";
 const qwenCodeHarnessId = harnessIdSchema.parse("qwen-code");
 const qwenCodeUnattendedPermissionModeId = harnessPermissionModeIdSchema.parse("yolo");
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+function mergeEnvironment(
+  base: NodeJS.ProcessEnv | undefined,
+  session: Record<string, string | undefined> | undefined,
+): NodeJS.ProcessEnv | undefined {
+  if (!base && !session) return undefined;
+  return { ...base, ...session };
+}
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -936,7 +943,10 @@ export class QwenCodeAdapter implements HarnessAdapter {
     const startedAt = Date.now();
     let stage = "spawn";
     try {
-      transport = this.#dependencies.createTransport({ cwd });
+      transport = this.#dependencies.createTransport({
+        cwd,
+        ...(this.#environment ? { environment: this.#environment } : {}),
+      });
       stage = "startup";
       const inspected = await transport.inspect();
       stage = "model-catalog";
@@ -995,6 +1005,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
       };
     }
     const cwd = path.resolve(input.cwd);
+    const sessionEnvironment = mergeEnvironment(this.#environment, input.environment);
     let initialPermissionModeId = QWEN_CODE_DEFAULT_PERMISSION_MODE_ID;
     if (input.kind === "create") {
       const requested =
@@ -1031,10 +1042,14 @@ export class QwenCodeAdapter implements HarnessAdapter {
       }
     }
     let session: QwenCodeHarnessSession | null = null;
+    let pendingTransportFault: QwenCodeTransportError | null = null;
     const transport = this.#dependencies.createTransport({
       cwd,
-      onFault: (error) => session?.handleTransportFault(error),
-      ...(input.environment ? { environment: input.environment } : {}),
+      onFault: (error) => {
+        if (session) session.handleTransportFault(error);
+        else pendingTransportFault ??= error;
+      },
+      ...(sessionEnvironment ? { environment: sessionEnvironment } : {}),
     });
     try {
       let opened: QwenCodeOpenResult;
@@ -1061,20 +1076,21 @@ export class QwenCodeAdapter implements HarnessAdapter {
           "Qwen Code returned an invalid Model catalog",
         );
       }
-      if (input.kind === "create") {
-        const selectedModel = input.model ?? modelState.currentModel;
-        const nativeModelId = nativeModelIdForRef(modelState, selectedModel);
-        if (!nativeModelId) {
-          throw new QwenCodeTransportError(
-            "protocolError",
-            "Requested Qwen Code Model is unavailable",
-          );
-        }
-        if (selectedModel.id !== modelState.currentModel.id) {
-          await transport.setModel(nativeModelId);
-          modelState.currentModel = selectedModel;
-        }
+      const selectedModel =
+        input.kind === "create"
+          ? (input.model ?? modelState.currentModel)
+          : modelState.currentModel;
+      const nativeModelId = nativeModelIdForRef(modelState, selectedModel);
+      if (!nativeModelId) {
+        throw new QwenCodeTransportError(
+          "protocolError",
+          "Requested Qwen Code Model is unavailable",
+        );
       }
+      // Pin the SDK Session to the Model observed through getContextUsage(), or
+      // to the explicit create selection, before any Host Turn can start.
+      await transport.setModel(nativeModelId);
+      modelState.currentModel = selectedModel;
       const history: HostTurnSnapshot[] =
         input.kind === "resume"
           ? (
@@ -1084,10 +1100,12 @@ export class QwenCodeAdapter implements HarnessAdapter {
                 opened.sessionId,
                 input.knownTurnRefs,
                 this.#toolOutputLimit,
+                sessionEnvironment,
               )
             ).turns
           : [];
       const initialUsage = null;
+      if (pendingTransportFault) throw pendingTransportFault;
       const openedSession = new QwenCodeHarnessSession(
         cwd,
         transport,
@@ -1097,7 +1115,10 @@ export class QwenCodeAdapter implements HarnessAdapter {
         {
           closeTimeoutMs: this.#closeTimeoutMs,
           history,
-          turnCount: input.kind === "resume" ? (input.knownTurnRefs?.length ?? 0) : 0,
+          turnCount:
+            input.kind === "resume"
+              ? Math.max(input.knownTurnRefs?.length ?? 0, history.length)
+              : 0,
           initialUsage,
           initialPermissionModeId,
           randomUUID: this.#dependencies.randomUUID,

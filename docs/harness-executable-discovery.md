@@ -94,7 +94,7 @@ Windows 当前覆盖常见的：
 | Pi | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
-| Qwen Code | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
+| Qwen Code | 是 | 不需要通用 shim 路径 | 不需要 | Windows 将 `qwen.cmd` 改写为 npm 包内 JavaScript 入口，由官方 SDK 使用 codexhost Node Runtime 启动 |
 | DeepSeek Harness | 否 | 否 | 否 | 优先连接 loopback DSH Web Host；本地 `dsh`/`npx` fallback 仍使用 Adapter 内发现代码 |
 
 因此，当前准确结论是：

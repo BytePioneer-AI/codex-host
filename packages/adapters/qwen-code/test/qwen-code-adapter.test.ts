@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {
   harnessIdSchema,
   hostInteractionIdSchema,
@@ -6,14 +10,14 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  QwenCodeOpenInput,
-  QwenCodeOpenResult,
-  QwenCodePermissionRequest,
-  QwenCodePermissionResponse,
-  QwenCodeTransportEvent,
+import {
+  QwenCodeTransportError,
+  type QwenCodeOpenInput,
+  type QwenCodeOpenResult,
+  type QwenCodePermissionRequest,
+  type QwenCodePermissionResponse,
+  type QwenCodeTransportEvent,
 } from "../src/sdk-transport.js";
-import { mapQwenCodeHistory } from "../src/qwen-history.js";
 import type { QwenCodeSdkTransportLike } from "../src/qwen-code-adapter.js";
 import { QwenCodeAdapter } from "../src/qwen-code-adapter.js";
 
@@ -23,6 +27,7 @@ const SESSION_MODELS = {
 };
 
 class FakeTransport implements QwenCodeSdkTransportLike {
+  models: unknown = SESSION_MODELS;
   sessionId = "550e8400-e29b-41d4-a716-446655440000";
   readonly openCalls: QwenCodeOpenInput[] = [];
   readonly setModelCalls: string[] = [];
@@ -37,12 +42,12 @@ class FakeTransport implements QwenCodeSdkTransportLike {
   cancelImplementation: (() => Promise<void>) | null = null;
 
   async inspect(): Promise<{ models: unknown }> {
-    return { models: SESSION_MODELS };
+    return { models: this.models };
   }
 
   async open(input: QwenCodeOpenInput): Promise<QwenCodeOpenResult> {
     this.openCalls.push(input);
-    return { sessionId: this.sessionId, resumed: input.kind === "resume", models: SESSION_MODELS };
+    return { sessionId: this.sessionId, resumed: input.kind === "resume", models: this.models };
   }
 
   runTurn(
@@ -107,6 +112,47 @@ describe("QwenCodeAdapter", () => {
     expect(transport.closed).toBe(true);
   });
 
+  it("fails open when the SDK faults before the Session owns the Transport", async () => {
+    const transport = new FakeTransport();
+    const open = transport.open.bind(transport);
+    const adapter = new QwenCodeAdapter(
+      {},
+      {
+        createTransport: (options) => {
+          transport.open = async (input) => {
+            const result = await open(input);
+            options.onFault?.(
+              new QwenCodeTransportError("processExited", "Qwen Code exited during open"),
+            );
+            return result;
+          };
+          return transport;
+        },
+        randomUUID: () => "item-1",
+      },
+    );
+
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+
+    expect(opened).toMatchObject({
+      ok: false,
+      error: { code: "processExited", message: "Qwen Code exited during open" },
+    });
+    expect(transport.closed).toBe(true);
+  });
+
+  it("pins SDK creation to the advertised default Model", async () => {
+    const transport = new FakeTransport();
+    const { adapter } = adapterFor(transport);
+
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+
+    if (!opened.ok) throw new Error("create failed");
+    expect(transport.setModelCalls).toEqual(["qwen-max"]);
+    expect(opened.value.initialState.effectiveModel?.id).toBe("qwen-max");
+    await opened.value.close();
+  });
+
   it("gives explicit mode priority over yolo and forwards it to SDK open", async () => {
     const transport = new FakeTransport();
     const { adapter } = adapterFor(transport);
@@ -138,30 +184,46 @@ describe("QwenCodeAdapter", () => {
     if (opened.ok) await opened.value.close();
   });
 
-  it("forwards the delegation environment on SDK create and resume", async () => {
-    const create = new FakeTransport();
-    const resume = new FakeTransport();
-    const { adapter, createTransport } = adapterFor(create, resume);
-    const environment = { CODEXHOST_DELEGATION_THREAD_ID: "child-thread-1" };
+  it("merges the Adapter environment with SDK create and resume overrides", async () => {
+    const transports = [new FakeTransport(), new FakeTransport()];
+    const createTransport = vi.fn(() => {
+      const transport = transports.shift();
+      if (!transport) throw new Error("Missing FakeTransport");
+      return transport;
+    });
+    const adapter = new QwenCodeAdapter(
+      { environment: { CODEXHOST_BASE: "base", CODEXHOST_OVERRIDE: "base" } },
+      { createTransport, randomUUID: () => "item-1" },
+    );
+    const environment = {
+      CODEXHOST_DELEGATION_THREAD_ID: "child-thread-1",
+      CODEXHOST_OVERRIDE: "session",
+    };
+    const expectedEnvironment = {
+      CODEXHOST_BASE: "base",
+      CODEXHOST_DELEGATION_THREAD_ID: "child-thread-1",
+      CODEXHOST_OVERRIDE: "session",
+    };
     const created = await adapter.open({ kind: "create", cwd: "/tmp", environment });
     if (!created.ok) throw new Error("create failed");
+    const nativeRef = created.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("create returned no Native Session Ref");
     await created.value.close();
     const resumed = await adapter.open({
       kind: "resume",
       cwd: "/tmp",
       environment,
-      nativeRef: {
-        harnessId: harnessIdSchema.parse("qwen-code"),
-        nativeSessionId: create.sessionId,
-        formatVersion: 1,
-      },
+      nativeRef,
     });
     if (!resumed.ok) throw new Error("resume failed");
-    expect(createTransport).toHaveBeenNthCalledWith(1, expect.objectContaining({ environment }));
-    expect(createTransport).toHaveBeenNthCalledWith(2, expect.objectContaining({ environment }));
-    expect(resume.openCalls).toEqual([
-      expect.objectContaining({ kind: "resume", sessionId: create.sessionId }),
-    ]);
+    expect(createTransport).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ environment: expectedEnvironment }),
+    );
+    expect(createTransport).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ environment: expectedEnvironment }),
+    );
     await resumed.value.close();
   });
 
@@ -295,6 +357,76 @@ describe("QwenCodeAdapter", () => {
     await vi.waitFor(async () => expect((await session.readSnapshot()).ok).toBe(true));
     await session.close();
   });
+  it("restores the SDK Model and Turn ordinal without known refs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-resume-"));
+    const cwd = path.join(root, "workspace");
+    const runtimeDir = path.join(root, "qwen-runtime");
+    const projectDir = path.join(
+      runtimeDir,
+      "projects",
+      (process.platform === "win32" ? cwd.toLowerCase() : cwd).replace(/[^a-zA-Z0-9]/g, "-"),
+      "chats",
+    );
+    const transport = new FakeTransport();
+    transport.models = {
+      currentModelId: "history-model",
+      availableModels: [
+        { modelId: "catalog-first", name: "Catalog First" },
+        { modelId: "history-model", name: "History Model" },
+      ],
+    };
+    transport.runTurnImplementation = async (onEvent) => {
+      onEvent({ type: "agent.text", text: "third reply" });
+      return { status: "succeeded" };
+    };
+    const { adapter } = adapterFor(transport);
+
+    try {
+      await mkdir(projectDir, { recursive: true });
+      await writeFile(
+        path.join(projectDir, `${transport.sessionId}.jsonl`),
+        [
+          { type: "user", message: { role: "user", parts: [{ text: "first" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "reply one" }] } },
+          { type: "user", message: { role: "user", parts: [{ text: "second" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "reply two" }] } },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n"),
+        "utf8",
+      );
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        environment: { QWEN_RUNTIME_DIR: runtimeDir },
+        nativeRef: {
+          harnessId: harnessIdSchema.parse("qwen-code"),
+          nativeSessionId: transport.sessionId,
+          formatVersion: 1,
+        },
+      });
+      if (!opened.ok) throw new Error("resume failed");
+      expect(transport.setModelCalls).toEqual(["history-model"]);
+      expect(opened.value.initialState.effectiveModel?.id).toBe("history-model");
+
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-after-resume"),
+        input: [{ type: "text", text: "third" }],
+      });
+      await vi.waitFor(async () => {
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot.ok && snapshot.value.turns).toHaveLength(3);
+      });
+      const snapshot = await opened.value.readSnapshot();
+      if (!snapshot.ok) throw new Error("snapshot failed");
+      expect(snapshot.value.turns[2]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-2");
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("bounds session close when SDK interrupt does not settle", async () => {
     const transport = new FakeTransport();
     const { promise: never } = Promise.withResolvers<undefined>();
@@ -321,40 +453,5 @@ describe("QwenCodeAdapter", () => {
       vi.useRealTimers();
     }
     expect(transport.closed).toBe(true);
-  });
-
-  it("reconstructs persisted Qwen turns and preserves known native identities", () => {
-    const snapshot = mapQwenCodeHistory(
-      [
-        { type: "user", message: { role: "user", content: "status" } },
-        { type: "assistant", message: { role: "model", parts: [{ text: "clean" }] } },
-        { type: "user", message: { role: "user", content: "again" } },
-        { type: "assistant", message: { role: "model", parts: [{ text: "done" }] } },
-      ],
-      harnessIdSchema.parse("qwen-code"),
-      "550e8400-e29b-41d4-a716-446655440000",
-      "/tmp",
-      [
-        {
-          harnessId: harnessIdSchema.parse("qwen-code"),
-          nativeSessionId: "550e8400-e29b-41d4-a716-446655440000",
-          nativeTurnKey: "qwen-turn-0",
-          formatVersion: 1,
-        },
-        {
-          harnessId: harnessIdSchema.parse("qwen-code"),
-          nativeSessionId: "550e8400-e29b-41d4-a716-446655440000",
-          nativeTurnKey: "qwen-turn-1",
-          formatVersion: 1,
-        },
-      ],
-    );
-    expect(snapshot.turns).toHaveLength(2);
-    expect(snapshot.turns.map((turn) => turn.input)).toEqual([
-      [{ type: "text", text: "status" }],
-      [{ type: "text", text: "again" }],
-    ]);
-    expect(snapshot.turns[1]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-1");
-    expect(snapshot.turns[1]?.items[0]?.item).toMatchObject({ type: "agentMessage", text: "done" });
   });
 });

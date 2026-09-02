@@ -62,6 +62,7 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  setPinned(hostThreadId: HostThreadId, isPinned: boolean): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
   close(): Promise<void>;
@@ -178,6 +179,11 @@ export class ExternalThreadRepository {
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.store.setArchived(hostThreadId, archived);
+  }
+
+  /** 更新 External Thread 由 Host 持有的持久化置顶元数据。 */
+  setPinned(hostThreadId: HostThreadId, isPinned: boolean): Promise<StoredThreadRecordV1> {
+    return this.store.setPinned(hostThreadId, isPinned);
   }
 
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {
@@ -566,7 +572,7 @@ export function externalThreadValue(input: {
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
-    isPinned: false,
+    isPinned: record.isPinned,
     agentNickname: record.subagent ? record.title || null : null,
     agentRole: record.subagent?.role ?? null,
     extra: null,

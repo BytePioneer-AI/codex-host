@@ -33,6 +33,7 @@ function record(id: string, input: Partial<StoredThreadRecordV1> = {}): StoredTh
     cwd: "/workspace",
     title: `Title ${id}`,
     archived: false,
+    isPinned: false,
     transportModelId: "codexhost/pi-native",
     ephemeral: false,
     historyMode: "legacy",
@@ -114,6 +115,25 @@ describe("External Thread metadata catalog", () => {
         }).data,
       ).toEqual([]);
     }
+  });
+
+  it("filters and projects persisted pin state", () => {
+    const pinned = record("pinned", { isPinned: true });
+    const unpinned = record("unpinned");
+    expect(
+      listExternalThreadMetadata({
+        records: [pinned, unpinned],
+        query: query({ isPinned: true }),
+        runtimeFor: () => null,
+      }).data.map((entry) => entry.thread.id),
+    ).toEqual(["pinned"]);
+    expect(
+      listExternalThreadMetadata({
+        records: [pinned, unpinned],
+        query: query({ isPinned: false }),
+        runtimeFor: () => null,
+      }).data.map((entry) => entry.thread.isPinned),
+    ).toEqual([false]);
   });
 
   it("resolves a Fork tree in one record map and rejects cycles", () => {

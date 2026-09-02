@@ -660,8 +660,15 @@ class AntigravitySession implements HarnessSession {
       });
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
-    if (!active.agentItem && event.result.response) {
-      this.#appendAgentText(active, event.result.response);
+    if (event.result.response) {
+      if (!active.agentItem) {
+        this.#appendAgentText(active, event.result.response);
+      } else if (
+        event.result.response.length > active.agentText.length &&
+        event.result.response.startsWith(active.agentText)
+      ) {
+        this.#appendAgentText(active, event.result.response.slice(active.agentText.length));
+      }
     }
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
@@ -726,8 +733,13 @@ class AntigravitySession implements HarnessSession {
   }
 
   #handleStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
-    if (step.step_type === "agent_response" && step.text_delta) {
-      this.#appendAgentText(active, step.text_delta);
+    const textDelta =
+      step.text_delta ??
+      step.text ??
+      (typeof step.content === "string" ? step.content : undefined) ??
+      (typeof step.message === "string" ? step.message : undefined);
+    if (step.step_type === "agent_response" && textDelta) {
+      this.#appendAgentText(active, textDelta);
       return;
     }
     if (step.step_type !== "tool") return;

@@ -17,6 +17,42 @@ const TRANSCRIPT_CONTAINER_SELECTORS = [
   "main",
 ];
 
+export const RUNNING_TURN_SELECTORS = [
+  '[data-testid="composer-cancel-button"]',
+  '[data-testid="composer-stop-button"]',
+  '[data-testid="stop-button"]',
+  '[data-testid="cancel-button"]',
+  'button[aria-label*="Stop"]',
+  'button[aria-label*="Cancel"]',
+  'button[aria-label*="停止"]',
+  'button[aria-label*="取消"]',
+  '.composer-stop-button',
+  '[data-composer-state="running"]',
+  '[data-turn-state="inProgress"]',
+  '[data-status="inProgress"]',
+  '[data-turn-status="running"]',
+  '[data-testid="thinking-indicator"]',
+  '[data-testid="streaming-indicator"]',
+  '.in-progress',
+  '.turn-in-progress',
+] as const;
+
+export const FAILED_TURN_SELECTORS = [
+  '[data-testid="turn-error"]',
+  '[data-testid="transcript-error"]',
+  '[data-item-status="failed"]',
+  '[data-turn-status="failed"]',
+  '.turn-error',
+  '.transcript-error',
+] as const;
+
+export function detectTurnStatusFromDom(root: ParentNode): AdapterStatusState | null {
+  for (const selector of RUNNING_TURN_SELECTORS) {
+    if (root.querySelector(selector)) return "running";
+  }
+  return null;
+}
+
 export interface RendererTranscriptStatusInjectorOptions {
   root?: ParentNode;
   ownerDocument?: Document;
@@ -130,6 +166,43 @@ export function installRendererTranscriptStatusInjector(
     return true;
   };
 
+  let wasRunning = false;
+
+  const setStatus = (status: AdapterStatusState): void => {
+    if (disposed) return;
+    if (status === "running") wasRunning = true;
+    else if (status === "completed" || status === "failed" || status === "interrupted") {
+      wasRunning = false;
+    }
+    chip.setStatus(status);
+    if (status !== "completed") {
+      if (!chip.element.isConnected) {
+        container.append(chip.element);
+      }
+      place();
+    }
+  };
+
+  const syncTurnStatusFromDom = (): void => {
+    if (disposed) return;
+    const running = detectTurnStatusFromDom(root) === "running";
+    if (running) {
+      if (!wasRunning || chip.status !== "running") {
+        setStatus("running");
+      }
+    } else if (wasRunning) {
+      wasRunning = false;
+      let failed = false;
+      for (const selector of FAILED_TURN_SELECTORS) {
+        if (root.querySelector(selector)) {
+          failed = true;
+          break;
+        }
+      }
+      setStatus(failed ? "failed" : "completed");
+    }
+  };
+
   const handleStatusEvent = (event: Event | { detail?: unknown }): void => {
     if (disposed) return;
     const detail = "detail" in event ? event.detail : undefined;
@@ -152,17 +225,6 @@ export function installRendererTranscriptStatusInjector(
     }
   };
 
-  const setStatus = (status: AdapterStatusState): void => {
-    if (disposed) return;
-    chip.setStatus(status);
-    if (status !== "completed") {
-      if (!chip.element.isConnected) {
-        container.append(chip.element);
-      }
-      place();
-    }
-  };
-
   const setLocale = (locale: RendererSettingsLocale): void => {
     if (disposed) return;
     chip.setLocale(locale);
@@ -172,7 +234,7 @@ export function installRendererTranscriptStatusInjector(
     return chip.status;
   };
 
-  // Setup MutationObserver to anchor into transcript when turns/items change
+  // Setup MutationObserver to anchor into transcript and track live turn progress
   let observer: MutationObserver | null = null;
   const MutationObserverCtor =
     doc.defaultView?.MutationObserver ??
@@ -181,6 +243,7 @@ export function installRendererTranscriptStatusInjector(
   if (MutationObserverCtor) {
     observer = new MutationObserverCtor(() => {
       if (!disposed) {
+        syncTurnStatusFromDom();
         place();
       }
     });
@@ -207,6 +270,7 @@ export function installRendererTranscriptStatusInjector(
   win?.addEventListener("codexhost:transcript-status", handleStatusEvent);
   win?.addEventListener("codexhost:transcript-status-changed", handleStatusEvent);
 
+  syncTurnStatusFromDom();
   place();
 
   return {

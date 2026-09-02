@@ -162,6 +162,14 @@ class FakeDOMElement {
     }
     if (selector.startsWith("[") && selector.endsWith("]")) {
       const raw = selector.slice(1, -1);
+      if (raw.includes("*=")) {
+        const [attr, val] = raw.split("*=");
+        const cleanVal = val?.replace(/['"]/g, "");
+        if (attr && cleanVal) {
+          return (this.getAttribute(attr) ?? "").includes(cleanVal);
+        }
+        return false;
+      }
       if (raw.includes("=")) {
         const [attr, val] = raw.split("=");
         const cleanVal = val?.replace(/['"]/g, "");
@@ -196,12 +204,38 @@ class FakeDOMElement {
   }
 }
 
+class FakeMutationObserver {
+  public static instances: FakeMutationObserver[] = [];
+  public target: FakeDOMElement | null = null;
+  public callback: () => void;
+
+  constructor(callback: () => void) {
+    this.callback = callback;
+    FakeMutationObserver.instances.push(this);
+  }
+
+  observe(target: FakeDOMElement): void {
+    this.target = target;
+  }
+
+  disconnect(): void {
+    this.target = null;
+    FakeMutationObserver.instances = FakeMutationObserver.instances.filter((i) => i !== this);
+  }
+
+  static trigger(): void {
+    for (const inst of [...FakeMutationObserver.instances]) {
+      inst.callback();
+    }
+  }
+}
+
 class FakeDOMDocument {
   public head: FakeDOMElement;
   public body: FakeDOMElement;
   public documentElement: FakeDOMElement;
   public defaultView: {
-    MutationObserver: typeof MutationObserver;
+    MutationObserver: typeof FakeMutationObserver;
     addEventListener: (type: string, cb: (e: unknown) => void) => void;
     removeEventListener: (type: string, cb: (e: unknown) => void) => void;
     dispatchEvent: (event: unknown) => void;
@@ -215,7 +249,7 @@ class FakeDOMDocument {
     this.documentElement.append(this.head, this.body);
 
     this.defaultView = {
-      MutationObserver: globalThis.MutationObserver,
+      MutationObserver: FakeMutationObserver,
       addEventListener: (type: string, callback: (e: unknown) => void) => {
         this.globalListeners.push({ type, callback });
       },
@@ -519,6 +553,46 @@ describe("Transcript status injector", () => {
     expect(injector.getStatus()).toBe("interrupted");
     expect(injector.chip.locale).toBe("en");
     expect(injector.chip.element.textContent).toContain("Interrupted");
+
+    injector.dispose();
+  });
+
+  it("automatically tracks live turn running and completion based on DOM state", () => {
+    const transcriptRoot = doc.createElement("div");
+    transcriptRoot.setAttribute("data-transcript-root", "true");
+    doc.body.append(transcriptRoot);
+
+    const injector = installRendererTranscriptStatusInjector({
+      root: transcriptRoot as unknown as ParentNode,
+      ownerDocument: doc as unknown as Document,
+      getLocale: () => "zh-CN",
+    });
+
+    expect(injector.getStatus()).toBe("ready");
+
+    // Simulate user clicking send -> composer mounts stop button
+    const stopButton = doc.createElement("button");
+    stopButton.setAttribute("data-testid", "composer-stop-button");
+    transcriptRoot.append(stopButton);
+
+    // Trigger observer callback
+    doc.body.children = [...doc.body.children];
+    doc.defaultView.MutationObserver.trigger();
+
+    expect(injector.getStatus()).toBe("running");
+    expect(injector.chip.element.textContent).toContain("运行中...");
+
+    // Simulate turn finished -> stop button removed
+    stopButton.remove();
+    doc.defaultView.MutationObserver.trigger();
+
+    expect(injector.getStatus()).toBe("completed");
+    expect(injector.chip.element.textContent).toContain("已完成");
+
+    // Auto-dismisses after 3 seconds
+    vi.advanceTimersByTime(3000);
+    const container = transcriptRoot.querySelector(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`);
+    expect(container?.querySelector(`[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`)).toBeNull();
 
     injector.dispose();
   });

@@ -1,3 +1,4 @@
+import { AntigravityAdapter } from "@codexhost/adapter-antigravity";
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
@@ -15,6 +16,7 @@ export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
+export const ANTIGRAVITY_COMMAND_ENV = "CODEXHOST_ANTIGRAVITY_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -23,6 +25,16 @@ export async function prefetchClaudeCodeModelCatalog(
 ): Promise<void> {
   try {
     await adapters.get("claude-code")?.inspect();
+  } catch {
+    // Startup prefetch must not affect official Codex or another Harness.
+  }
+}
+
+export async function prefetchAntigravityModelCatalog(
+  adapters: ReadonlyMap<ExternalHarnessId, InspectableHarnessAdapter>,
+): Promise<void> {
+  try {
+    await adapters.get("antigravity")?.inspect();
   } catch {
     // Startup prefetch must not affect official Codex or another Harness.
   }
@@ -89,6 +101,15 @@ export function createExternalHarnessAdapters(
       "omp",
       new OmpAdapter({
         ...(environment[OMP_COMMAND_ENV] ? { command: environment[OMP_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "antigravity",
+      new AntigravityAdapter({
+        ...(environment[ANTIGRAVITY_COMMAND_ENV]
+          ? { command: environment[ANTIGRAVITY_COMMAND_ENV] }
+          : {}),
         environment,
       }),
     ],

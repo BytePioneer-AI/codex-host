@@ -7,6 +7,7 @@ import {
   GROK_COMMAND_ENV,
   OPENCODE_COMMAND_ENV,
   createExternalHarnessAdapters,
+  prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "../src/index.js";
 
@@ -37,6 +38,21 @@ describe("Host external Harness composition", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("starts Antigravity Catalog prefetch immediately without waiting for it", async () => {
+    let finish = (): void => undefined;
+    const inspection = new Promise<HarnessInspection>((resolve) => {
+      finish = () => resolve({} as HarnessInspection);
+    });
+    const inspect = vi.fn(() => inspection);
+    const adapters = new Map([["antigravity", { inspect }]] as const);
+
+    const prefetch = prefetchAntigravityModelCatalog(adapters);
+
+    expect(inspect).toHaveBeenCalledOnce();
+    finish();
+    await expect(prefetch).resolves.toBeUndefined();
+  });
+
   it("registers all external Harnesses by default without resolving executables", async () => {
     const adapters = createExternalHarnessAdapters({ PATH: "" });
 
@@ -47,12 +63,14 @@ describe("Host external Harness composition", () => {
       "opencode",
       "grok",
       "omp",
+      "antigravity",
     ]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
     expect(adapters.get("omp")?.harnessId).toBe("omp");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
     expect(adapters.get("opencode")?.harnessId).toBe("opencode");
+    expect(adapters.get("antigravity")?.harnessId).toBe("antigravity");
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });
 

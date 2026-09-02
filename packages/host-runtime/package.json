@@ -17,6 +17,7 @@
     "build:release": "node scripts/build-release.mjs"
   },
   "dependencies": {
+    "@codexhost/adapter-antigravity": "0.0.0",
     "@codexhost/adapter-claude-code": "0.0.0",
     "@codexhost/adapter-deepseek-harness": "0.0.0",
     "@codexhost/adapter-grok": "0.0.0",

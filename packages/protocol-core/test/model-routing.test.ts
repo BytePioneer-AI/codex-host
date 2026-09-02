@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   GROK_NATIVE_TRANSPORT_MODEL_ID,
@@ -14,6 +15,7 @@ import {
   OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
+  decodeAntigravityTransportSelection,
   decodeDeepSeekHarnessTransportSelection,
   decodeCreateRoute,
   decodeExternalTransportModel,
@@ -23,6 +25,7 @@ import {
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodeOpenCodeTransportModel,
@@ -39,6 +42,7 @@ describe("external Harness transport model routing", () => {
     ["opencode", OPENCODE_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
+    ["antigravity", ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -91,6 +95,71 @@ describe("external Harness transport model routing", () => {
       model,
       thinkingOptionId,
     });
+  });
+
+  it("round-trips an Antigravity Model and Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
+    const transportModelId = encodeAntigravityTransportModel(model, permissionModeId);
+
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+    });
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "antigravity", model, permissionModeId });
+  });
+
+  it("round-trips an Antigravity Model, Permission Mode and effort", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
+    const transportModelId = encodeAntigravityTransportModel(
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    );
+
+    expect(transportModelId).toBe(
+      `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    // The effort has to survive the Host-side decode, otherwise the first Turn
+    // runs without `--effort`.
+    expect(
+      decodeCreateRoute({ id: 13, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({ harnessId: "antigravity", model, permissionModeId, thinkingOptionId });
+  });
+
+  it("carries an Antigravity effort without a Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodeAntigravityTransportModel(model, undefined, thinkingOptionId);
+
+    expect(transportModelId).toBe(
+      `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+    );
+    expect(decodeAntigravityTransportSelection(transportModelId)).toEqual({
+      model,
+      thinkingOptionId,
+    });
+  });
+
+  it("still decodes Antigravity carriers written before efforts existed", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" });
+    expect(
+      decodeAntigravityTransportSelection(
+        `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@configured`,
+      ),
+    ).toEqual({ model, permissionModeId: "configured" });
+    expect(
+      decodeAntigravityTransportSelection(`${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`),
+    ).toEqual({ model });
   });
 
   it("round-trips a request-scoped Pi Model and Thinking pair", () => {

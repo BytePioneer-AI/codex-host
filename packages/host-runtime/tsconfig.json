@@ -20,7 +20,8 @@
     { "path": "../adapters/deepseek-harness/tsconfig.json" },
     { "path": "../adapters/opencode/tsconfig.json" },
     { "path": "../adapters/grok/tsconfig.json" },
-    { "path": "../adapters/omp/tsconfig.json" }
+    { "path": "../adapters/omp/tsconfig.json" },
+    { "path": "../adapters/antigravity/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

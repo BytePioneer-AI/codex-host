@@ -402,19 +402,22 @@ export function fileChangeFromTool(
   const displayedPath = normalizeDisplayPath(rawPath, cwd);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
-    const content =
-      nestedRawString(args, [
-        "content",
-        "new_string",
-        "newString",
-        "newText",
-        "file_text",
-        "text",
-        "new",
-        "CodeContent",
-        "codeContent",
-        "code_content",
-      ]) ?? "";
+    const rawContent = nestedRawString(args, [
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "file_text",
+      "text",
+      "new",
+      "CodeContent",
+      "codeContent",
+      "code_content",
+    ]);
+    // Do not turn a partial tool envelope into an empty diff. An explicit
+    // empty string remains a valid empty-file creation.
+    if (rawContent === undefined) return null;
+    const content = rawContent;
     const overwrite = extractBoolean(args, ["Overwrite", "overwrite", "overWrite"]) ?? false;
     const kind = overwrite ? "update" : "add";
     return [
@@ -425,6 +428,7 @@ export function fileChangeFromTool(
       },
     ];
   }
+  // ponytail: Antigravity CodeEdit omits old text; report additions only until native patch metadata exists.
   const oldText =
     nestedRawString(args, [
       "old_string",
@@ -436,18 +440,20 @@ export function fileChangeFromTool(
       "targetContent",
       "target_content",
     ]) ?? "";
-  const newText =
-    nestedRawString(args, [
-      "new_string",
-      "newString",
-      "newText",
-      "new_text",
-      "content",
-      "new",
-      "ReplacementContent",
-      "replacementContent",
-      "replacement_content",
-    ]) ?? "";
+  const rawNewText = nestedRawString(args, [
+    "new_string",
+    "newString",
+    "newText",
+    "new_text",
+    "content",
+    "new",
+    "ReplacementContent",
+    "replacementContent",
+    "replacement_content",
+    "CodeEdit",
+  ]);
+  if (rawNewText === undefined) return null;
+  const newText = rawNewText;
   return [
     {
       path: displayedPath,

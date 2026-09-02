@@ -1493,6 +1493,58 @@ describe("Codex UI projector", () => {
       ]);
     });
 
+    it("projects Antigravity edit_file CodeEdit content instead of an empty diff", () => {
+      const changes = fileChangeFromTool("edit_file", {
+        TargetFile: "demo.py",
+        CodeEdit: "print('edited')\n",
+      });
+      expect(changes?.[0]?.unifiedDiff).toContain("+print('edited')");
+      expect(changes?.[0]?.unifiedDiff).not.toContain("@@ -0,0 +0,0 @@");
+    });
+
+    it("defers edit_file until CodeEdit arrives so the turn summary is not empty", () => {
+      const value = projector();
+      const editId = itemId("edit-file-1");
+      value.project({ type: "turn.started", turnId });
+      expect(
+        value.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: editId,
+            toolName: "edit_file",
+            arguments: { TargetFile: "demo.py" },
+          },
+        }).messages,
+      ).toEqual([]);
+      const completed = value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: editId,
+            toolName: "edit_file",
+            arguments: { TargetFile: "demo.py", CodeEdit: "print('edited')\n" },
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(completed.messages).toMatchObject([
+        { method: "item/started", params: { item: { type: "fileChange" } } },
+        {
+          method: "item/fileChange/patchUpdated",
+          params: { changes: [{ diff: expect.stringContaining("+print('edited')") }] },
+        },
+        {
+          method: "turn/diff/updated",
+          params: { diff: expect.stringContaining("+print('edited')") },
+        },
+        { method: "item/completed", params: { item: { type: "fileChange" } } },
+      ]);
+    });
+
     it("reconstructs command line from run_command with CommandLine parameter", () => {
       expect(toolCommandLine("run_command", { CommandLine: "vitest run" })).toBe("vitest run");
       expect(toolCommandLine("runCommand", { commandLine: "pytest -v" })).toBe("pytest -v");
@@ -1631,6 +1683,59 @@ describe("Codex UI projector", () => {
             "diff --git a/src/empty.txt b/src/empty.txt\n--- /dev/null\n+++ b/src/empty.txt\n@@ -0,0 +0,0 @@\n",
         },
       ]);
+    });
+
+    it("defers write_to_file until CodeContent arrives", () => {
+      const value = projector();
+      const writeId = itemId("write-file-deferred");
+      value.project({ type: "turn.started", turnId });
+      expect(
+        value.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: writeId,
+            toolName: "write_to_file",
+            arguments: { TargetFile: "quicksort.py" },
+          },
+        }).messages,
+      ).toEqual([]);
+      const completed = value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: writeId,
+            toolName: "write_to_file",
+            arguments: {
+              TargetFile: "quicksort.py",
+              CodeContent: "line 1\nline 2\nline 3\nline 4\n",
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(completed.messages).toMatchObject([
+        { method: "item/started", params: { item: { type: "fileChange" } } },
+        {
+          method: "item/fileChange/patchUpdated",
+          params: { changes: [{ diff: expect.stringContaining("+line 4") }] },
+        },
+        {
+          method: "turn/diff/updated",
+          params: { diff: expect.stringContaining("+line 4") },
+        },
+        { method: "item/completed", params: { item: { type: "fileChange" } } },
+      ]);
+      expect(
+        completed.messages.some(
+          (message) =>
+            message.method === "turn/diff/updated" &&
+            (message.params as { diff?: string }).diff?.includes("@@ -0,0 +0,0 @@"),
+        ),
+      ).toBe(false);
     });
 
     it("projects tools with parameters wrapper correctly", () => {

@@ -154,6 +154,27 @@ describe("delegation Skill installation", () => {
     ]);
   });
 
+  it("uninstalls exact historical v2 Skill copies directly", async () => {
+    const root = await home();
+    const previous = await readFile(
+      new URL("./fixtures/delegation-skill-v2.md", import.meta.url),
+      "utf8",
+    );
+    const destinations = paths(root);
+    for (const destination of destinations) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, previous, "utf8");
+    }
+
+    expect(
+      (await uninstallDelegationSkills({ homeDirectory: root })).map(({ status }) => status),
+    ).toEqual(["removed", "removed"]);
+    await expect(inspectDelegationSkills({ homeDirectory: root })).resolves.toMatchObject([
+      { status: "missing" },
+      { status: "missing" },
+    ]);
+  });
+
   it("preserves a user-modified copy while independently installing the other destination", async () => {
     const root = await home();
     const [agents] = paths(root);

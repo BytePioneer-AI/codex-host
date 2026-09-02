@@ -1,10 +1,20 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
-import type { HostFrame, MuxFrame, RpcError, RpcRequest } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type {
+  HostFrame,
+  MuxFrame,
+  RequestPayload,
+  ResponseValue,
+  RpcError,
+  RpcMethodMap,
+  RpcRequest,
+  RpcResponse,
+} from "@deepseek-ai/dsh-host-apiproxy/api";
 import { hostFrameSchema, muxFrameSchema } from "@deepseek-ai/dsh-host-apiproxy/api/events.schema";
 import {
   serverRequestSchema,
@@ -120,6 +130,58 @@ function parseCommandExecution(value: unknown): DeepSeekCommandExecution | undef
   return value as DeepSeekCommandExecution;
 }
 
+/** `host.describe.version` stays `0.0.1` across this field addition; branch on payload shape. */
+function isMissingHomeDescribeError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("issues" in error)) return false;
+  const issues = error.issues;
+  return (
+    Array.isArray(issues) &&
+    issues.some((issue) => {
+      const pathValue = record(issue)?.path;
+      return Array.isArray(pathValue) && pathValue.length === 1 && pathValue[0] === "home";
+    })
+  );
+}
+
+function parseHostDescribeValue(value: unknown): {
+  version: string;
+  cwd: string;
+  provider: string;
+  model: string;
+  attachedSessions: number;
+  home: string;
+  canOpenPath: boolean;
+} {
+  const description = record(value);
+  if (
+    !description ||
+    typeof description.version !== "string" ||
+    typeof description.provider !== "string" ||
+    typeof description.model !== "string"
+  ) {
+    throw new DeepSeekHarnessTransportError(
+      "protocolError",
+      "DeepSeek Harness Host returned an invalid host.describe value",
+    );
+  }
+  return {
+    version: description.version,
+    cwd: typeof description.cwd === "string" ? description.cwd : "",
+    provider: description.provider,
+    model: description.model,
+    attachedSessions:
+      typeof description.attachedSessions === "number" &&
+      Number.isSafeInteger(description.attachedSessions) &&
+      description.attachedSessions >= 0
+        ? description.attachedSessions
+        : 0,
+    home: typeof description.home === "string" && description.home.length > 0
+      ? description.home
+      : homedir(),
+    canOpenPath: description.canOpenPath === true,
+  };
+}
+
 export class NodeDeepSeekHostClient extends AbstractApiClient {
   readonly commands: DeepSeekCommandClient;
   readonly #endpoint: URL;
@@ -136,6 +198,57 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
 
   protected doFetch(input: URL, init?: RequestInit): Promise<Response> {
     return globalThis.fetch(input, init);
+  }
+
+  protected override async callUnary<K extends keyof RpcMethodMap>(
+    method: K,
+    payload: RequestPayload<K>,
+    signal?: AbortSignal,
+    timeoutPolicy?: Parameters<AbstractApiClient["callUnary"]>[3],
+  ): Promise<RpcResponse<ResponseValue<K>>> {
+    try {
+      return await super.callUnary(method, payload, signal, timeoutPolicy);
+    } catch (error) {
+      if (method !== "host.describe" || !isMissingHomeDescribeError(error)) throw error;
+      const rpcId = this.mintRpcId();
+      const message = {
+        type: "client-request" as const,
+        rpcId,
+        method: "host.describe",
+        payload: {},
+      };
+      this.onEnvelope(message);
+      const response = await this.doFetch(new URL("/api/host.describe", this.#endpoint), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(message),
+        signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+      });
+      if (!response.ok) {
+        throw new DeepSeekHarnessTransportError(
+          "unavailable",
+          `DeepSeek Harness 'host.describe' transport failed with HTTP ${response.status}`,
+        );
+      }
+      const full = serverResponseSchema.parse(await response.json());
+      this.onEnvelope(full);
+      if (full.rpcId !== rpcId) {
+        throw new DeepSeekHarnessTransportError(
+          "protocolError",
+          "DeepSeek Harness 'host.describe' returned an unexpected RPC identity",
+        );
+      }
+      if (!full.result.ok) {
+        // K is host.describe here; the wire error envelope is method-independent.
+        const failed: RpcResponse<ResponseValue<K>> = full as RpcResponse<ResponseValue<K>>;
+        return failed;
+      }
+      const described: RpcResponse<ResponseValue<K>> = {
+        rpcId: full.rpcId,
+        result: { ok: true, value: parseHostDescribeValue(full.result.value) as ResponseValue<K> },
+      };
+      return described;
+    }
   }
 
   protected override openMux(
@@ -339,6 +452,7 @@ export interface DeepSeekHostConnectionDependencies {
     },
   ): ChildProcess;
   sleep(milliseconds: number): Promise<void>;
+  readWebHelp?(invocation: DeepSeekCommandInvocation, environment: NodeJS.ProcessEnv): string;
 }
 
 export interface DeepSeekHostSubscriber {
@@ -436,6 +550,43 @@ export function resolveDeepSeekCommand(
         kind: "npx",
       }
     : null;
+}
+
+export function dshWebHelpSupportsNoOpen(helpText: string): boolean {
+  return /(?:^|\s)--no-open(?:\s|$)/u.test(helpText);
+}
+
+export function deepSeekWebArguments(
+  endpoint: URL,
+  flags: { noOpen?: boolean } = {},
+): string[] {
+  return [
+    "web",
+    ...(flags.noOpen ? ["--no-open"] : []),
+    "--host",
+    endpoint.hostname,
+    "--port",
+    endpoint.port || "80",
+  ];
+}
+
+export function readDshWebHelp(
+  invocation: DeepSeekCommandInvocation,
+  environment: NodeJS.ProcessEnv,
+): string {
+  const processInvocation = deepSeekProcessInvocation(
+    invocation.command,
+    [...invocation.arguments, "web", "--help"],
+    environment,
+  );
+  const result = spawnSync(processInvocation.command, processInvocation.arguments, {
+    env: environment,
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+    windowsVerbatimArguments: processInvocation.windowsVerbatimArguments,
+  });
+  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }
 
 export function deepSeekProcessInvocation(
@@ -577,14 +728,13 @@ export class DeepSeekHostConnection {
         );
       }
       const endpoint = new URL(this.#endpoint);
+      const help = (this.#dependencies.readWebHelp ?? readDshWebHelp)(
+        invocation,
+        this.#environment,
+      );
       const args = [
         ...invocation.arguments,
-        "web",
-        "--no-open",
-        "--host",
-        endpoint.hostname,
-        "--port",
-        endpoint.port || "80",
+        ...deepSeekWebArguments(endpoint, { noOpen: dshWebHelpSupportsNoOpen(help) }),
       ];
       const processInvocation = deepSeekProcessInvocation(
         invocation.command,

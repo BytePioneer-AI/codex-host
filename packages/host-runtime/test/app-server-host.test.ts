@@ -5167,7 +5167,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     // Start turn
     await startPiTurn(fixture, threadId);
-    const cmd1 = session.startCommandExecution("hub start monitor-stream", "/synthetic", {
+    session.startCommandExecution("hub start monitor-stream", "/synthetic", {
       processId: "tool-call-1",
     });
     const cmd2 = session.startCommandExecution("hub start monitor-stream -- bash", "/synthetic", {

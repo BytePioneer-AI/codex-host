@@ -1386,6 +1386,7 @@ describe("OMP Adapter Subagents", () => {
           callId: "tool-bg-stream",
           toolName: "hub",
           result: { output: "Started stream-daemon", status: "running" },
+          isError: false,
         });
         return Promise.resolve({ text: "Started stream-daemon", cancelled: false });
       };

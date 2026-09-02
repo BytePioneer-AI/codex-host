@@ -27,8 +27,6 @@ import {
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
-import { installRendererTranscriptStatusInjector } from "./renderer-transcript-status-injector.js";
-import { resolveRendererSettingsLocale } from "./settings/localization.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
@@ -1033,14 +1031,6 @@ export function installCurrentRendererAdapter(): {
       );
     },
   });
-  const transcriptStatusInjector = installRendererTranscriptStatusInjector({
-    getLocale: () =>
-      resolveRendererSettingsLocale(
-        typeof window !== "undefined" && window.navigator?.languages
-          ? window.navigator.languages
-          : ["en"],
-      ),
-  });
 
   let routingPolicy: RendererDraftPrewarmPolicy | null = null;
   let policyTimer: number | null = null;
@@ -1172,7 +1162,6 @@ export function installCurrentRendererAdapter(): {
         () => syncActiveRoute(null),
         () => forkControl.dispose(),
         () => usageSubscription.dispose(),
-        () => transcriptStatusInjector.dispose(),
       ];
       for (const cleanup of cleanups) {
         try {

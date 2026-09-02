@@ -14,6 +14,31 @@ import {
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const LOOPBACK_PORT_MIN = 49_152;
+const LOOPBACK_PORT_COUNT = 16_384;
+const LOOPBACK_LISTEN_ATTEMPTS = 8;
+
+function listenLoopback(server: Server): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<undefined>();
+  let attempts = 0;
+  const listen = (): void => {
+    const port = LOOPBACK_PORT_MIN + Math.floor(Math.random() * LOOPBACK_PORT_COUNT);
+    const onError = (error: NodeJS.ErrnoException): void => {
+      if (error.code === "EADDRINUSE" && ++attempts < LOOPBACK_LISTEN_ATTEMPTS) {
+        listen();
+        return;
+      }
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve(undefined);
+    });
+  };
+  listen();
+  return promise;
+}
 
 function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
@@ -119,13 +144,7 @@ export async function startDelegationControlServer(input: {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
+  await listenLoopback(server);
   const address = server.address() as AddressInfo;
   return {
     endpoint: `http://127.0.0.1:${address.port}`,

@@ -50,7 +50,11 @@ export function displayPath(
     ? path.resolve(nativePath)
     : path.resolve(cwd, nativePath);
   const relative = path.relative(resolvedCwd, resolvedPath);
-  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+  const inside =
+    !path.isAbsolute(relative) &&
+    relative.length > 0 &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`);
   const selected = inside ? relative : resolvedPath;
   const normalized = selected.replaceAll("\\", "/");
   if (normalized.length === 0 || normalized === ".") return null;
@@ -130,6 +134,11 @@ const COMPACT_COMMAND_TOOLS = new Set([
   "powershell",
   "command",
 ]);
+
+export function isAntigravityFileMutatingTool(toolName: string): boolean {
+  const compact = compactToolName(toolName);
+  return COMPACT_WRITE_TOOLS.has(compact) || COMPACT_REPLACE_TOOLS.has(compact);
+}
 
 function formatUnifiedDiff(
   displayedPath: string,
@@ -308,6 +317,16 @@ export function startAntigravityToolItem(
     return item;
   }
 
+  const fileChanges = synthesizeAntigravityFileChange(toolName, parameters, cwd ?? "");
+  if (fileChanges && fileChanges.length > 0) {
+    const item: HostItem = {
+      type: "fileChange",
+      itemId: newItemId,
+      changes: fileChanges,
+    };
+    return item;
+  }
+
   const item: HostToolExecutionItem = {
     type: "toolExecution",
     itemId: newItemId,
@@ -341,6 +360,22 @@ export function completeAntigravityToolItem(
         : {}),
       exitCode: step.state === "ERROR" ? 1 : 0,
       ...(durationMs !== undefined ? { durationMs } : {}),
+    };
+    return completed;
+  }
+
+  if (item.type === "fileChange") {
+    const parameters = step.tool_info?.parameters;
+    const fileChanges = parameters
+      ? synthesizeAntigravityFileChange(
+          step.tool_name ?? step.tool_info?.name ?? "",
+          parameters,
+          cwd ?? "",
+        )
+      : undefined;
+    const completed: HostItem = {
+      ...item,
+      ...(fileChanges && fileChanges.length > 0 ? { changes: fileChanges } : {}),
     };
     return completed;
   }

@@ -281,7 +281,7 @@ describe("Antigravity Tool Projection", () => {
   });
 
   describe("startAntigravityToolItem", () => {
-    it("creates HostToolExecutionItem for write_to_file during start phase", () => {
+    it("creates HostFileChangeItem for write_to_file during start phase", () => {
       const item = startAntigravityToolItem(
         newItemId(),
         {
@@ -299,17 +299,14 @@ describe("Antigravity Tool Projection", () => {
         },
         CWD,
       );
-      expect(item.type).toBe("toolExecution");
-      if (item.type === "toolExecution") {
-        expect(item.toolName).toBe("write_to_file");
-        expect(item.arguments).toEqual({
-          TargetFile: "index.js",
-          CodeContent: "console.log('hi');",
-        });
+      expect(item.type).toBe("fileChange");
+      if (item.type === "fileChange") {
+        expect(item.changes[0]?.path).toBe("index.js");
+        expect(item.changes[0]?.kind).toBe("add");
       }
     });
 
-    it("creates HostToolExecutionItem for replace_file_content during start phase", () => {
+    it("creates HostFileChangeItem for replace_file_content during start phase", () => {
       const item = startAntigravityToolItem(
         newItemId(),
         {
@@ -328,9 +325,10 @@ describe("Antigravity Tool Projection", () => {
         },
         CWD,
       );
-      expect(item.type).toBe("toolExecution");
-      if (item.type === "toolExecution") {
-        expect(item.toolName).toBe("replace_file_content");
+      expect(item.type).toBe("fileChange");
+      if (item.type === "fileChange") {
+        expect(item.changes[0]?.path).toBe("index.js");
+        expect(item.changes[0]?.kind).toBe("update");
       }
     });
 
@@ -401,7 +399,7 @@ describe("Antigravity Tool Projection", () => {
   });
 
   describe("completeAntigravityToolItem", () => {
-    it("completes file tool with toolExecution item and output on DONE state", () => {
+    it("completes file tool with fileChange item on DONE state", () => {
       const started = startAntigravityToolItem(
         newItemId(),
         {
@@ -432,17 +430,13 @@ describe("Antigravity Tool Projection", () => {
         64_000,
         CWD,
       );
-      expect(completed.type).toBe("toolExecution");
-      if (completed.type === "toolExecution") {
-        expect(completed.toolName).toBe("write_to_file");
-        expect(completed.output?.content).toEqual([
-          { type: "text", text: "File written successfully." },
-        ]);
-        expect(completed.durationMs).toBe(150);
+      expect(completed.type).toBe("fileChange");
+      if (completed.type === "fileChange") {
+        expect(completed.changes[0]?.path).toBe("a.ts");
       }
     });
 
-    it("completes file tool with toolExecution on ERROR state", () => {
+    it("completes file tool with fileChange on ERROR state", () => {
       const started = startAntigravityToolItem(
         newItemId(),
         {
@@ -473,11 +467,9 @@ describe("Antigravity Tool Projection", () => {
         64_000,
         CWD,
       );
-      expect(completed.type).toBe("toolExecution");
-      if (completed.type === "toolExecution") {
-        expect(completed.output?.content).toEqual([
-          { type: "text", text: "EACCES: permission denied" },
-        ]);
+      expect(completed.type).toBe("fileChange");
+      if (completed.type === "fileChange") {
+        expect(completed.changes[0]?.path).toBe("a.ts");
       }
     });
 

@@ -546,31 +546,9 @@ for (const line of lines) {
         const stateChanged = await nextEvent(iterator);
         expect(stateChanged.type).toBe("session.state.changed");
 
-        // Event 3: item.started for write_to_file (toolExecution)
+        // Event 3: item.started for write_to_file (fileChange)
         const fileStarted = await nextEvent(iterator);
         expect(fileStarted).toMatchObject({
-          type: "item.started",
-          turnId,
-          item: {
-            type: "toolExecution",
-            toolName: "write_to_file",
-          },
-        });
-
-        // Event 4: item.completed for write_to_file
-        const fileCompleted = await nextEvent(iterator);
-        expect(fileCompleted).toMatchObject({
-          type: "item.completed",
-          turnId,
-          snapshot: {
-            item: { type: "toolExecution", toolName: "write_to_file" },
-            outcome: { status: "succeeded" },
-          },
-        });
-
-        // Event 5: item.started for synthesized fileChange
-        const changeStarted = await nextEvent(iterator);
-        expect(changeStarted).toMatchObject({
           type: "item.started",
           turnId,
           item: {
@@ -584,9 +562,9 @@ for (const line of lines) {
           },
         });
 
-        // Event 6: item.completed for synthesized fileChange
-        const changeCompleted = await nextEvent(iterator);
-        expect(changeCompleted).toMatchObject({
+        // Event 4: item.completed for write_to_file (fileChange)
+        const fileCompleted = await nextEvent(iterator);
+        expect(fileCompleted).toMatchObject({
           type: "item.completed",
           turnId,
           snapshot: {
@@ -595,7 +573,7 @@ for (const line of lines) {
           },
         });
 
-        // Event 7: item.started for run_command (commandExecution)
+        // Event 5: item.started for run_command (commandExecution)
         const cmdStarted = await nextEvent(iterator);
         expect(cmdStarted).toMatchObject({
           type: "item.started",
@@ -1056,13 +1034,7 @@ setTimeout(() => { process.exit(0); }, 50);
         expect((await nextEvent(iterator)).type).toBe("turn.started");
         expect((await nextEvent(iterator)).type).toBe("session.state.changed");
 
-        // Tool 1: write_to_file
-        const item1Started = await nextEvent(iterator);
-        expect(item1Started.type).toBe("item.started");
-        const item1Completed = await nextEvent(iterator);
-        expect(item1Completed.type).toBe("item.completed");
-
-        // FileChange 1
+        // Tool 1: write_to_file (fileChange)
         const fc1Started = await nextEvent(iterator);
         expect(fc1Started).toMatchObject({
           type: "item.started",
@@ -1079,15 +1051,16 @@ setTimeout(() => { process.exit(0); }, 50);
           },
         });
         const fc1Completed = await nextEvent(iterator);
-        expect(fc1Completed.type).toBe("item.completed");
+        expect(fc1Completed).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "fileChange" },
+            outcome: { status: "succeeded" },
+          },
+        });
 
-        // Tool 2: replace_file_content
-        const item2Started = await nextEvent(iterator);
-        expect(item2Started.type).toBe("item.started");
-        const item2Completed = await nextEvent(iterator);
-        expect(item2Completed.type).toBe("item.completed");
-
-        // FileChange 2
+        // Tool 2: replace_file_content (fileChange)
         const fc2Started = await nextEvent(iterator);
         expect(fc2Started).toMatchObject({
           type: "item.started",
@@ -1104,7 +1077,14 @@ setTimeout(() => { process.exit(0); }, 50);
           },
         });
         const fc2Completed = await nextEvent(iterator);
-        expect(fc2Completed.type).toBe("item.completed");
+        expect(fc2Completed).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "fileChange" },
+            outcome: { status: "succeeded" },
+          },
+        });
 
         await session.close();
       } finally {

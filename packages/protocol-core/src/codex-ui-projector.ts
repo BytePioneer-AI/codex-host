@@ -343,9 +343,50 @@ function simpleUnifiedDiff(
   ].join("\n");
 }
 
-export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
+export function normalizeDisplayPath(filePath: string, cwd?: string): string | null {
+  if (
+    typeof filePath !== "string" ||
+    filePath.trim().length === 0 ||
+    filePath.includes("\0") ||
+    filePath.includes("\n") ||
+    filePath.includes("\r")
+  ) {
+    return null;
+  }
+  const normalizedFile = filePath.trim().replaceAll("\\", "/");
+  if (!cwd) return normalizedFile.replace(/^\.\//, "");
+  const normalizedCwd = cwd.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  if (normalizedCwd.length === 0) return normalizedFile.replace(/^\.\//, "");
+
+  if (
+    normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() ||
+    normalizedFile === "."
+  ) {
+    return null;
+  }
+
+  const cwdPrefix = normalizedCwd.toLowerCase() + "/";
+  if (normalizedFile.toLowerCase().startsWith(cwdPrefix)) {
+    const rel = normalizedFile.slice(cwdPrefix.length);
+    return rel.length > 0 ? rel : null;
+  }
+
+  const isAbsolute =
+    normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
+  if (!isAbsolute) {
+    return normalizedFile.replace(/^\.\//, "");
+  }
+
+  return normalizedFile;
+}
+
+export function fileChangeFromTool(
+  toolName: string,
+  args: JsonValue,
+  cwd?: string,
+): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const displayedPath = nestedString(args, [
+  const rawPath = nestedString(args, [
     "path",
     "file_path",
     "filePath",
@@ -357,6 +398,8 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
     "absolutePath",
     "absolute_path",
   ]);
+  if (!rawPath) return null;
+  const displayedPath = normalizeDisplayPath(rawPath, cwd);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
     const content =
@@ -789,7 +832,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         if (item.type === "toolExecution") {
           if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
             return [];
-          const changes = fileChangeFromTool(item.toolName, item.arguments);
+          const changes = fileChangeFromTool(item.toolName, item.arguments, cwd);
           if (changes) {
             return [
               projectItem(
@@ -1064,7 +1107,7 @@ export class CodexTurnProjector {
         const plan = planFromTodoValue(event.item.arguments);
         return { messages: plan ? [this.#planUpdated(plan)] : [] };
       }
-      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
+      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments, this.#cwd);
       if (changes) {
         projected.wireFileChanges = changes;
         const fileItem = {
@@ -1251,7 +1294,11 @@ export class CodexTurnProjector {
             planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
           return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
         }
-        const changes = fileChangeFromTool(projected.item.toolName, projected.item.arguments);
+        const changes = fileChangeFromTool(
+          projected.item.toolName,
+          projected.item.arguments,
+          this.#cwd,
+        );
         if (changes) {
           projected.wireFileChanges = changes;
           const fileItem = {

@@ -85,7 +85,6 @@ import {
 import {
   completeAntigravityToolItem,
   startAntigravityToolItem,
-  synthesizeAntigravityFileChange,
 } from "./tool-projection.js";
 
 export interface AntigravityAdapterOptions {
@@ -773,21 +772,6 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
-
-    if (step.state !== "ERROR") {
-      const params =
-        step.tool_info?.parameters ?? (item.type === "toolExecution" ? item.arguments : undefined);
-      const fileChanges = synthesizeAntigravityFileChange(toolName, params, this.#cwd);
-      if (fileChanges && fileChanges.length > 0) {
-        const fileItem: HostItem = {
-          type: "fileChange",
-          itemId: this.#newItemId(),
-          changes: fileChanges,
-        };
-        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
-        this.#completeItem(active, fileItem, { status: "succeeded" });
-      }
-    }
   }
 
   #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {

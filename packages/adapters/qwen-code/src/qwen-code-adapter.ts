@@ -16,7 +16,6 @@ import {
   type HostApprovalInteraction,
   type HostCommand,
   type HostEvent,
-  type HostFileChangeItem,
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
@@ -62,7 +61,6 @@ import {
   type QwenCodeSdkTransportOptions,
   type QwenCodeTransportEvent,
 } from "./sdk-transport.js";
-import { projectQwenCodeFileChanges } from "./qwen-file-change.js";
 import {
   QWEN_CODE_DEFAULT_PERMISSION_MODE_ID,
   QWEN_CODE_PERMISSION_MODE_CATALOG,
@@ -112,7 +110,10 @@ export interface QwenCodeSdkTransportLike {
     text: string,
     onEvent: (event: QwenCodeTransportEvent) => void,
     onPermission: (request: QwenCodePermissionRequest) => Promise<QwenCodePermissionResponse>,
-  ): Promise<{ status: "succeeded" | "failed" | "cancelled" }>;
+  ): Promise<{
+    status: "succeeded" | "failed" | "cancelled";
+    error?: QwenCodeTransportError;
+  }>;
   setModel(nativeModelId: string): Promise<void>;
   setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void>;
   cancel(): Promise<void>;
@@ -178,7 +179,10 @@ function nativeRef(sessionId: string): NativeSessionRef {
 }
 
 function terminalOutcome(
-  response: { status: "succeeded" | "failed" | "cancelled" },
+  response: {
+    status: "succeeded" | "failed" | "cancelled";
+    error?: QwenCodeTransportError;
+  },
   cancelled: boolean,
 ): TurnOutcome {
   if (response.status === "cancelled" || cancelled) {
@@ -187,11 +191,13 @@ function terminalOutcome(
   if (response.status === "succeeded") return { status: "succeeded" };
   return {
     status: "failed",
-    error: {
-      code: "nativeFailure",
-      message: "Qwen Code SDK failed the Turn",
-      retryable: false,
-    },
+    error: response.error
+      ? normalizeError(response.error, "nativeFailure")
+      : {
+          code: "nativeFailure",
+          message: "Qwen Code SDK failed the Turn",
+          retryable: false,
+        },
   };
 }
 
@@ -696,16 +702,6 @@ class QwenCodeHarnessSession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
-    if (status !== "completed") return;
-    const changes = projectQwenCodeFileChanges(content, this.#cwd, tool.rawInput);
-    if (!changes) return;
-    const fileItem: HostFileChangeItem = {
-      type: "fileChange",
-      itemId: hostItemIdSchema.parse(this.#randomUUID()),
-      changes,
-    };
-    this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
-    this.#completeItem(active, fileItem, { status: "succeeded" });
   }
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
@@ -798,11 +794,19 @@ class QwenCodeHarnessSession implements HarnessSession {
     if (active) {
       active.cancellationRequested = true;
       for (const approval of active.approvals.values()) approval.resolve({ behavior: "deny" });
-      await this.#transport.cancel().catch(() => undefined);
-      await Promise.race([
-        active.completion,
-        new Promise((resolve) => setTimeout(resolve, this.#closeTimeoutMs)),
-      ]);
+      const { promise: deadline, resolve } = Promise.withResolvers<undefined>();
+      const timeout = setTimeout(() => resolve(undefined), this.#closeTimeoutMs);
+      try {
+        await Promise.race([
+          (async () => {
+            await this.#transport.cancel().catch(() => undefined);
+            await active.completion;
+          })(),
+          deadline,
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
     }
     await this.#transport.close();
     if (this.#active) {

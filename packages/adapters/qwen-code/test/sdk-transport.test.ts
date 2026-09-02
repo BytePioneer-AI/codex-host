@@ -23,6 +23,10 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
     if (waiter) waiter({ done: false, value: message });
     else this.#messages.push(message);
   }
+  end(): void {
+    this.#closed = true;
+    for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined });
+  }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
     return {
@@ -262,6 +266,62 @@ describe("QwenCodeSdkTransport", () => {
       permission_denials: [],
     });
     await expect(second).resolves.toEqual({ status: "succeeded" });
+    await transport.close();
+  });
+
+  it("faults an active Turn when the SDK stream ends without a result", async () => {
+    const query = new FakeQuery();
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    const turn = transport.runTurn(
+      "status",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    query.end();
+
+    await expect(turn).rejects.toMatchObject({
+      kind: "processExited",
+      message: "Qwen Code SDK stream ended unexpectedly",
+    });
+    await transport.close();
+  });
+
+  it("preserves the SDK result error message", async () => {
+    const query = new FakeQuery();
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    const turn = transport.runTurn(
+      "status",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      uuid: "result-error",
+      session_id: transport.sessionId,
+      is_error: true,
+      duration_ms: 1,
+      duration_api_ms: 1,
+      num_turns: 1,
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      permission_denials: [],
+      error: { message: "Qwen provider rejected the request" },
+    } as SDKMessage);
+
+    await expect(turn).resolves.toMatchObject({
+      status: "failed",
+      error: { kind: "unavailable", message: "Qwen provider rejected the request" },
+    });
     await transport.close();
   });
 

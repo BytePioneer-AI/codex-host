@@ -28,6 +28,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.8-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -173,7 +179,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -219,6 +225,7 @@ export function expectedPayloadPaths(target) {
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",

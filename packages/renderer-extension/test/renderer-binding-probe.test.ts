@@ -880,6 +880,22 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "qwen-code",
+        transportModelId: "codexhost/qwen-code-native@qwen-max@plan",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        effectiveModel: harnessModelRefSchema.parse({ id: "qwen-max" }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("plan"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "qwen-code",
+      model: { id: "qwen-max" },
+      permissionModeId: "plan",
+    });
+
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "claude-code",
         transportModelId: "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits@high",
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },

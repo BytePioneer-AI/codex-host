@@ -47,6 +47,7 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
+const MAX_WAIT_TIMEOUT_MS = 30_000;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -454,8 +455,15 @@ export class HarnessDelegationCoordinator {
   }
 
   async wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }> {
-    if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0) {
-      throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
+    if (
+      !Number.isSafeInteger(input.timeoutMs) ||
+      input.timeoutMs <= 0 ||
+      input.timeoutMs > MAX_WAIT_TIMEOUT_MS
+    ) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        `timeoutMs must be a positive integer no greater than ${MAX_WAIT_TIMEOUT_MS}`,
+      );
     }
     const deadline = Date.now() + input.timeoutMs;
     while (true) {

@@ -250,6 +250,28 @@ export function qwenCodeTransportModelId(
   return `${QWEN_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
+export function decodeQwenCodeTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === QWEN_CODE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(QWEN_CODE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  if (!modelId || (components.length === 2 && !permissionModeId)) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
 export function claudeTransportModelId(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,

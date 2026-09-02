@@ -329,7 +329,7 @@ export async function runDelegationCli(input: {
         ...(command === "wait"
           ? {
               timeoutMs: value(parsed, "--timeout-ms")
-                ? positiveInteger(value(parsed, "--timeout-ms"), "--timeout-ms")
+                ? positiveInteger(value(parsed, "--timeout-ms"), "--timeout-ms", 30_000)
                 : DEFAULT_WAIT_TIMEOUT_MS,
             }
           : {}),

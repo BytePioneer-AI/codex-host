@@ -30,7 +30,6 @@ export {
 } from "./qwen-models.js";
 export type { QwenCodeModelState } from "./qwen-models.js";
 export { qwenCodeTurnKey } from "./qwen-history.js";
-export { projectQwenCodeFileChanges } from "./qwen-file-change.js";
 export { combineUsage, usageFromMetadata } from "./qwen-usage.js";
 
 export const packageMetadata = {

@@ -93,7 +93,10 @@ interface ActiveTurn {
   onEvent(event: QwenCodeTransportEvent): void;
   onPermission(request: QwenCodePermissionRequest): Promise<QwenCodePermissionResponse>;
   reject(error: unknown): void;
-  resolve(result: { status: "succeeded" | "failed" | "cancelled" }): void;
+  resolve(result: {
+    status: "succeeded" | "failed" | "cancelled";
+    error?: QwenCodeTransportError;
+  }): void;
 }
 
 class PushableInput implements AsyncIterable<SDKUserMessage> {
@@ -385,6 +388,11 @@ export class QwenCodeSdkTransport {
   async #consume(session: Query): Promise<void> {
     try {
       for await (const message of session) this.#message(message);
+      if (!this.#closed) {
+        this.#fault(
+          new QwenCodeTransportError("processExited", "Qwen Code SDK stream ended unexpectedly"),
+        );
+      }
     } catch (error) {
       this.#fault(classifyError(error));
     }
@@ -433,6 +441,7 @@ export class QwenCodeSdkTransport {
           type: "tool.update",
           callId: block.tool_use_id,
           status: block.is_error ? "failed" : "completed",
+          ...(Array.isArray(block.content) ? { content: block.content } : {}),
           ...(rawToolOutput(block.content) ? { rawOutput: rawToolOutput(block.content) } : {}),
         });
       }
@@ -441,8 +450,15 @@ export class QwenCodeSdkTransport {
     if (isSDKResultMessage(message)) {
       active.onEvent({ type: "usage", metadata: { usage: message.usage } });
       this.#active = null;
+      const error = message.is_error
+        ? new QwenCodeTransportError(
+            "unavailable",
+            message.error?.message ?? `Qwen Code SDK returned ${message.subtype}`,
+          )
+        : undefined;
       active.resolve({
         status: message.is_error ? "failed" : "succeeded",
+        ...(error ? { error } : {}),
       });
     }
   }

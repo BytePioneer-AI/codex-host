@@ -33,6 +33,7 @@ class FakeTransport implements QwenCodeSdkTransportLike {
         onPermission: (request: QwenCodePermissionRequest) => Promise<QwenCodePermissionResponse>,
       ) => Promise<{ status: "succeeded" | "failed" | "cancelled" }>)
     | null = null;
+  cancelImplementation: (() => Promise<void>) | null = null;
 
   async inspect(): Promise<{ models: unknown }> {
     return { models: SESSION_MODELS };
@@ -60,7 +61,9 @@ class FakeTransport implements QwenCodeSdkTransportLike {
     this.setModeCalls.push(permissionModeId);
   }
 
-  async cancel(): Promise<void> {}
+  async cancel(): Promise<void> {
+    await this.cancelImplementation?.();
+  }
 
   async close(): Promise<void> {
     this.closed = true;
@@ -231,5 +234,32 @@ describe("QwenCodeAdapter", () => {
       ),
     ).toBe(true);
     await session.close();
+  });
+  it("bounds session close when SDK interrupt does not settle", async () => {
+    const transport = new FakeTransport();
+    const { promise: never } = Promise.withResolvers<undefined>();
+    transport.runTurnImplementation = () => never.then(() => ({ status: "succeeded" as const }));
+    transport.cancelImplementation = () => never;
+    const adapter = new QwenCodeAdapter(
+      { closeTimeoutMs: 1 },
+      { createTransport: () => transport, randomUUID: () => "item-1" },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+    if (!opened.ok) throw new Error("open failed");
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-close"),
+      input: [{ type: "text", text: "status" }],
+    });
+
+    vi.useFakeTimers();
+    try {
+      const closing = opened.value.close();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(closing).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(transport.closed).toBe(true);
   });
 });

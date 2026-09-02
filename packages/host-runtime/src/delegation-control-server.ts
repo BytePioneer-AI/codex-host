@@ -60,8 +60,12 @@ function errorBody(error: unknown): {
   };
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+function writeJson(response: ServerResponse, status: number, value: unknown, close = false): void {
+  if (close) response.shouldKeepAlive = false;
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    ...(close ? { connection: "close" } : {}),
+  });
   response.end(`${JSON.stringify(value)}\n`);
 }
 
@@ -103,15 +107,21 @@ export async function startDelegationControlServer(input: {
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST") {
-        writeJson(response, 405, {
-          error: { code: "INVALID_ARGUMENT", message: "POST is required" },
-        });
+        writeJson(
+          response,
+          405,
+          { error: { code: "INVALID_ARGUMENT", message: "POST is required" } },
+          true,
+        );
         return;
       }
       if (request.headers.authorization !== `Bearer ${input.token}`) {
-        writeJson(response, 401, {
-          error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
-        });
+        writeJson(
+          response,
+          401,
+          { error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" } },
+          true,
+        );
         return;
       }
       const body = await jsonBody(request);

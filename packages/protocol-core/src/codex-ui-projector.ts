@@ -711,12 +711,6 @@ function processIdFromCommand(command: string | undefined): string | null {
   return command.match(/\bhub\s+(?:start|spawn|restart)\s+([^\s]+)/i)?.[1] ?? null;
 }
 
-function commandLineOf(item: HostItem): string | undefined {
-  if (item.type === "commandExecution") return item.command;
-  if (item.type === "toolExecution") return toolCommandLine(item.toolName, item.arguments);
-  return undefined;
-}
-
 function wireProcessId(item: Extract<HostItem, { type: "commandExecution" }>): string | null {
   return item.processId ?? processIdFromCommand(item.command);
 }

@@ -180,6 +180,12 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    turnSteering: z
+      .object({
+        steer: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

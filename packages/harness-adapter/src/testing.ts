@@ -66,6 +66,8 @@ import type {
   ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnStartAccepted,
   TurnStartCommand,
 } from "./text-session.js";
@@ -158,6 +160,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialUsage: HostUsage | null;
   commands?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
+  readonly steered: Array<{ turnId: HostTurnId; text: string }> = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
   usageRefreshes = 0;
@@ -223,6 +226,7 @@ export class FakeHarnessSession implements HarnessSession {
         forkAcrossCwd: supportsForkAcrossCwd,
         rollbackLastTurn: supportsRollbackLastTurn,
       },
+      turnSteering: { steer: false },
       subagents: { observe: false, readTranscript: false },
     };
     this.cwd = cwd;
@@ -343,6 +347,7 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -355,6 +360,7 @@ export class FakeHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -364,6 +370,7 @@ export class FakeHarnessSession implements HarnessSession {
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
@@ -457,14 +464,31 @@ export class FakeHarnessSession implements HarnessSession {
     this.#updateItem(itemId, { type: "text.append", text });
   }
 
-  startCommandExecution(command: string, cwd?: string): HostItemId {
+  startCommandExecution(
+    command: string,
+    cwd?: string,
+    process?: { processId: string; osPid?: number | null },
+  ): HostItemId {
     const item: HostCommandExecutionItem = {
       type: "commandExecution",
       itemId: this.#nextItemId(),
       command,
       ...(cwd ? { cwd } : {}),
+      ...(process?.processId ? { processId: process.processId } : {}),
+      ...(process && process.osPid !== undefined ? { osPid: process.osPid } : {}),
     };
     this.#startItem(item);
+    if (item.processId) {
+      this.#event({
+        type: "process.state.changed",
+        processId: item.processId,
+        status: "running",
+        itemId: item.itemId,
+        command: item.command,
+        ...(item.cwd ? { cwd: item.cwd } : {}),
+        ...(item.osPid !== undefined ? { osPid: item.osPid } : {}),
+      });
+    }
     return item.itemId;
   }
 
@@ -643,7 +667,10 @@ export class FakeHarnessSession implements HarnessSession {
   succeedTurn(): void {
     const active = this.#requireActive();
     const unfinishedTools = [...active.items.values()].filter(
-      (item) => item.type !== "agentMessage" && item.type !== "reasoning",
+      (item) =>
+        item.type !== "agentMessage" &&
+        item.type !== "reasoning" &&
+        !(item.type === "commandExecution" && item.processId),
     );
     if (unfinishedTools.length > 0) {
       throw new Error("Fake Harness Session cannot succeed with active Tool Items");
@@ -855,6 +882,26 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: { completed: true } };
   }
 
+  #steer(command: TurnSteerCommand): HarnessResult<TurnSteerAccepted> {
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("Turn Steer must reference the active Turn") };
+    }
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Steer input must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    this.steered.push({ turnId: command.turnId, text });
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
   #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -893,6 +940,9 @@ export class FakeHarnessSession implements HarnessSession {
 
   #completeItems(active: ActiveFakeTurn, outcome: HostItemOutcome): void {
     for (const item of [...active.items.values()].reverse()) {
+      if (item.type === "commandExecution" && item.processId && outcome.status === "succeeded") {
+        continue;
+      }
       active.items.delete(item.itemId);
       const snapshot = { item, outcome };
       active.completedItems.push(snapshot);

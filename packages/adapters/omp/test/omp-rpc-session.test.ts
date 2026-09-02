@@ -21,6 +21,7 @@ class FakeOmpProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly commands: Record<string, unknown>[] = [];
+  extraPromptEvents: Record<string, unknown>[] = [];
   #buffer = "";
   #sessionId = "omp-session";
 
@@ -28,6 +29,7 @@ class FakeOmpProcess extends EventEmitter {
     readonly compactMode: "complete" | "stalled" = "complete",
     readonly sessionFile?: string,
     readonly terminalMessageMode: "none" | "replay" | "fallback" = "none",
+    readonly holdPrompt = false,
   ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
@@ -122,7 +124,9 @@ class FakeOmpProcess extends EventEmitter {
     }
     if (command.type === "prompt") {
       this.#response(command);
+      if (this.holdPrompt) return;
       queueMicrotask(() => {
+        for (const event of this.extraPromptEvents) this.#output(event);
         this.#output({
           type: "subagent_lifecycle",
           payload: {
@@ -263,6 +267,23 @@ describe("OMP RPC session", () => {
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
     await session.close();
+  });
+
+  it("sends a native steer command during an active Turn", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "none", true);
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    const pending = session.runTurn("hello", () => undefined);
+    await vi.waitFor(() => {
+      expect(process.commands.some((command) => command.type === "prompt")).toBe(true);
+    });
+    await session.steer("use uppercase words");
+    expect(process.commands).toContainEqual(
+      expect.objectContaining({ type: "steer", message: "use uppercase words" }),
+    );
+    await session.close();
+    await expect(pending).rejects.toThrow("Omp RPC Session closed");
   });
 
   it("does not replay Assistant messages from agent_end after message_end", async () => {
@@ -496,6 +517,134 @@ describe("OMP RPC session", () => {
         resultSummary: "still working",
       }),
     );
+    await session.close();
+  });
+
+  it("maps hyphenated terminal lifecycle frames as processes, not Subagents", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const events: OmpTurnEvent[] = [];
+    const session = new OmpRpcSession(
+      {
+        cwd: "/synthetic",
+        commandTimeoutMs: 2_000,
+        onSubagentEvent: (event) => events.push(event),
+      },
+      adapter,
+    );
+    await session.start();
+    process.stdout.write(
+      `${JSON.stringify({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "term-1",
+          status: "started",
+          command: "bash --norc --noprofile",
+          cwd: "/synthetic",
+          pid: 1416880,
+        },
+      })}\n`,
+    );
+    process.stdout.write(
+      `${JSON.stringify({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "terminal-3",
+          status: "started",
+          description: "counting loop",
+          pid: 1416881,
+        },
+      })}\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "term-1",
+        status: "running",
+        command: "bash --norc --noprofile",
+        osPid: 1416880,
+      }),
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "terminal-3",
+        status: "running",
+        osPid: 1416881,
+      }),
+    ]);
+    expect(events.some((event) => event.type.startsWith("subagent."))).toBe(false);
+    await session.close();
+  });
+
+  it("ignores orphan and empty Tool updates instead of faulting the Session", async () => {
+    const process = new FakeOmpProcess();
+    process.extraPromptEvents = [
+      {
+        type: "tool_execution_update",
+        toolCallId: "missing",
+        partialResult: { content: [{ type: "text", text: "orphan" }] },
+      },
+      {
+        type: "tool_execution_update",
+        toolCallId: "also-missing",
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "echo hi" },
+      },
+      {
+        type: "tool_execution_update",
+        toolCallId: "bash-1",
+      },
+      {
+        type: "tool_execution_update",
+        toolCallId: "bash-1",
+        partialResult: { content: [{ type: "text", text: "hi" }] },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "hi" }] },
+        isError: false,
+      },
+    ];
+    const onFault = vi.fn();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, onFault },
+      adapter,
+    );
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
+      text: "PONG",
+      cancelled: false,
+    });
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([
+      {
+        type: "tool.started",
+        callId: "bash-1",
+        toolName: "bash",
+        arguments: { command: "echo hi" },
+      },
+      {
+        type: "tool.updated",
+        callId: "bash-1",
+        output: { content: [{ type: "text", text: "hi" }] },
+      },
+      {
+        type: "tool.completed",
+        callId: "bash-1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "hi" }] },
+        isError: false,
+      },
+    ]);
     await session.close();
   });
 });

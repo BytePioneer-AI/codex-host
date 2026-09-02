@@ -313,6 +313,9 @@ const HOST_QUESTION_REQUEST_ID_MIN = -1_000_000;
 const HOST_QUESTION_REQUEST_ID_MAX = -1;
 const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/archive",
+  "thread/backgroundTerminals/clean",
+  "thread/backgroundTerminals/list",
+  "thread/backgroundTerminals/terminate",
   "thread/delete",
   "thread/fork",
   "thread/items/list",
@@ -899,6 +902,18 @@ export class AppServerHost {
           continue;
         }
       }
+      if (request.method === "turn/steer") {
+        const params = requestObject(request);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          await this.#steerExternalTurn(request, resolution.thread);
+          continue;
+        }
+      }
       if (request.method === "turn/interrupt") {
         const params = requestObject(request);
         const resolution =
@@ -929,7 +944,7 @@ export class AppServerHost {
           await this.#readExternalThreadMetadata(request, location);
           continue;
         }
-        if (location.record.historyMode === "paginated") {
+        if (location.record.historyMode === "paginated" && !location.record.subagent) {
           await this.#writer.json(
             rpcError(request, -32602, "Paginated External Threads require thread/turns/list"),
           );
@@ -995,6 +1010,38 @@ export class AppServerHost {
             await this.#deleteExternalThread(request, location);
           }
           continue;
+        }
+      }
+      if (
+        request.method === "thread/backgroundTerminals/list" ||
+        request.method === "thread/backgroundTerminals/terminate" ||
+        request.method === "thread/backgroundTerminals/clean"
+      ) {
+        const params = requestObject(request);
+        const threadId =
+          typeof params.threadId === "string"
+            ? params.threadId
+            : typeof params.thread_id === "string"
+              ? params.thread_id
+              : typeof params.conversationId === "string"
+                ? params.conversationId
+                : typeof params.conversation_id === "string"
+                  ? params.conversation_id
+                  : undefined;
+        const resolution = threadId
+          ? await this.#resolveExternalThread(threadId)
+          : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          await this.#handleBackgroundTerminals(request, resolution.thread);
+          continue;
+        }
+        if (!threadId) {
+          const fallbackThread = this.#externalRuntime.values()[0];
+          if (fallbackThread) {
+            await this.#handleBackgroundTerminals(request, fallbackThread);
+            continue;
+          }
         }
       }
       if (
@@ -1706,9 +1753,14 @@ export class AppServerHost {
       );
       return;
     }
-    await this.#writer.json(
-      rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
-    );
+    const resultData = jsonValueSchema.parse(validated.data);
+    if (isRecord(resultData) && isRecord(resultData.capabilities)) {
+      if (isRecord(resultData.capabilities.configuration)) {
+        delete resultData.capabilities.configuration.permissionModeScope;
+      }
+      delete resultData.capabilities.turnSteering;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: resultData }));
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {
@@ -2701,19 +2753,75 @@ export class AppServerHost {
     }
   }
 
+  async #handleBackgroundTerminals(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const params = isRecord(request.params) ? request.params : {};
+    if (request.method === "thread/backgroundTerminals/list") {
+      const seen = new Set<string>();
+      const data: Array<{
+        itemId: string;
+        processId: string;
+        command: string;
+        cwd: string;
+        osPid: number | null;
+        cpuPercent: null;
+        rssKb: null;
+      }> = [];
+      for (const [processId, process] of thread.runningProcesses.entries()) {
+        if (!processId || processId.startsWith("call-") || processId.startsWith("tool-")) {
+          continue;
+        }
+        if (seen.has(processId)) continue;
+        seen.add(processId);
+        data.push({
+          itemId: process.itemId,
+          processId,
+          command: process.command,
+          cwd: process.cwd,
+          osPid: process.osPid,
+          cpuPercent: null,
+          rssKb: null,
+        });
+      }
+      await this.#writer.json(
+        rpcEnvelope(request, {
+          result: {
+            data,
+            nextCursor: null,
+          },
+        }),
+      );
+      return;
+    }
+    if (request.method === "thread/backgroundTerminals/terminate") {
+      const processId =
+        typeof params.processId === "string"
+          ? params.processId
+          : typeof params.process_id === "string"
+            ? params.process_id
+            : typeof params.id === "string"
+              ? params.id
+              : "";
+      const terminated = processId.length > 0 && thread.runningProcesses.delete(processId);
+      await this.#writer.json(rpcEnvelope(request, { result: { terminated } }));
+      return;
+    }
+    thread.runningProcesses.clear();
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+  }
+
   async #readExternalThread(
     request: JsonRpcRequest,
     thread: ExternalThread,
     includeTurns: boolean,
     historyFresh: boolean,
   ): Promise<void> {
-    if (includeTurns && thread.record.historyMode === "paginated") {
+    if (includeTurns && thread.record.historyMode === "paginated" && !thread.record.subagent) {
       await this.#writer.json(
         rpcError(request, -32602, "Paginated External Threads require thread/turns/list"),
       );
       return;
     }
-    if (includeTurns && !thread.running && !historyFresh) {
+    if (includeTurns && !(thread.running && !thread.record.subagent) && !historyFresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -2743,7 +2851,8 @@ export class AppServerHost {
     const requiresRefresh =
       request.method === "thread/turns/list" ||
       (request.method === "thread/items/list" && !thread.historyHydrated);
-    if (!thread.running && !historyFresh && headPage && requiresRefresh) {
+    const skipRefresh = thread.running && !thread.record.subagent;
+    if (!skipRefresh && !historyFresh && headPage && requiresRefresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -2752,9 +2861,15 @@ export class AppServerHost {
     }
     try {
       const turns = this.#externalHistoryTurns(thread);
+      const listParams =
+        request.method === "thread/turns/list" &&
+        thread.record.subagent &&
+        (params.itemsView === undefined || params.itemsView === null)
+          ? { ...params, itemsView: "full" }
+          : params;
       const result =
         request.method === "thread/turns/list"
-          ? listExternalTurns(turns, params)
+          ? listExternalTurns(turns, listParams)
           : listExternalItems(turns, params);
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
@@ -2985,6 +3100,49 @@ export class AppServerHost {
     }
   }
 
+  async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const params = requestObject(request);
+    const requestedTurnId =
+      typeof params.expectedTurnId === "string"
+        ? params.expectedTurnId
+        : typeof params.turnId === "string"
+          ? params.turnId
+          : thread.activeTurnId;
+    if (
+      typeof requestedTurnId !== "string" ||
+      !thread.running ||
+      thread.activeTurnId !== requestedTurnId
+    ) {
+      await this.#writer.json(
+        rpcError(request, -32074, "External turn/steer must reference the active Turn"),
+      );
+      return;
+    }
+    if (thread.session.capabilities.turnSteering?.steer !== true) {
+      await this.#writer.json(
+        rpcError(request, -32078, "External Harness does not support Turn steering"),
+      );
+      return;
+    }
+    let text: string;
+    try {
+      text = requestText(params);
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    const result = await thread.session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse(requestedTurnId),
+      input: [{ type: "text", text }],
+    });
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32073, result.error.message));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: { turnId: requestedTurnId } }));
+  }
+
   async #interruptExternalTurn(
     request: JsonRpcRequest,
     thread: ExternalThread,
@@ -3151,6 +3309,26 @@ export class AppServerHost {
       }
       return;
     }
+    if (event.type === "process.state.changed") {
+      if (event.status === "running") {
+        const existing = thread.runningProcesses.get(event.processId);
+        if (event.itemId && event.itemId !== event.processId) {
+          thread.runningProcesses.delete(event.itemId);
+        }
+        thread.runningProcesses.set(event.processId, {
+          itemId: event.itemId ?? existing?.itemId ?? event.processId,
+          command: event.command ?? existing?.command ?? event.processId,
+          cwd: event.cwd ?? existing?.cwd ?? thread.cwd,
+          osPid: event.osPid ?? existing?.osPid ?? null,
+        });
+      } else {
+        thread.runningProcesses.delete(event.processId);
+        if (event.itemId) {
+          thread.runningProcesses.delete(event.itemId);
+        }
+      }
+      return;
+    }
     if (event.type === "session.faulted") {
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
@@ -3211,6 +3389,7 @@ export class AppServerHost {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    this.#trackProjectedProcesses(thread, result.messages);
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
@@ -3248,6 +3427,23 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
+    }
+  }
+
+  #trackProjectedProcesses(thread: ExternalThread, messages: JsonObject[]): void {
+    for (const message of messages) {
+      if (message.method !== "item/started" || !isRecord(message.params)) continue;
+      const item = message.params.item;
+      if (!isRecord(item) || item.type !== "commandExecution") continue;
+      const processId = typeof item.processId === "string" ? item.processId : "";
+      if (processId.length === 0) continue;
+      const existing = thread.runningProcesses.get(processId);
+      thread.runningProcesses.set(processId, {
+        itemId: typeof item.id === "string" ? item.id : (existing?.itemId ?? processId),
+        command: typeof item.command === "string" ? item.command : (existing?.command ?? processId),
+        cwd: typeof item.cwd === "string" ? item.cwd : (existing?.cwd ?? thread.cwd),
+        osPid: typeof item.osPid === "number" ? item.osPid : (existing?.osPid ?? null),
+      });
     }
   }
 

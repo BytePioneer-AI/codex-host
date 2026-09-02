@@ -128,6 +128,12 @@ export interface TurnCancelCommand {
   turnId: HostTurnId;
 }
 
+export interface TurnSteerCommand {
+  type: "turn.steer";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+}
+
 export interface HostChoiceQuestion {
   id: string;
   type: "choice";
@@ -237,6 +243,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -249,6 +256,10 @@ export interface TurnStartAccepted {
 
 export interface TurnCancelAccepted {
   cancellationRequested: true;
+}
+
+export interface TurnSteerAccepted {
+  turnId: HostTurnId;
 }
 
 export interface InteractionRespondAccepted {
@@ -289,6 +300,8 @@ export interface HostCommandExecutionItem {
   itemId: HostItemId;
   command: string;
   cwd?: string;
+  processId?: string;
+  osPid?: number | null;
   output?: string;
   outputTruncated?: boolean;
   exitCode?: number | null;
@@ -331,6 +344,8 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
+  model?: string;
+  reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
   resultSummary?: string;
@@ -383,6 +398,9 @@ export interface HostTurnSnapshot {
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
 }
 
 export interface HostThreadSnapshot {
@@ -412,6 +430,16 @@ export interface SubagentStateChangedEvent {
   nativeSubagentId: string;
   status: HostSubagentStatus;
   resultSummary?: string;
+}
+
+export interface ProcessStateChangedEvent {
+  type: "process.state.changed";
+  processId: string;
+  status: "running" | "exited";
+  itemId?: HostItemId;
+  command?: string;
+  cwd?: string;
+  osPid?: number | null;
 }
 
 export interface SubagentTranscriptChangedEvent {
@@ -473,6 +501,7 @@ export type HostEvent =
   | SessionUsageChangedEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
+  | ProcessStateChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
   | ItemStartedEvent
@@ -496,6 +525,7 @@ export interface HarnessSession {
   refreshUsage?(): Promise<void>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;

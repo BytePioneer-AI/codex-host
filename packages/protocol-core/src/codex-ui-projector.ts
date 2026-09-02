@@ -302,12 +302,14 @@ function simpleUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
+  const normalized = displayedPath.replaceAll("\\", "/");
+  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
   const oldLines = oldText === "" ? [] : oldText.replaceAll("\r\n", "\n").split("\n");
   const newLines = newText === "" ? [] : newText.replaceAll("\r\n", "\n").split("\n");
   if (oldLines.at(-1) === "") oldLines.pop();
   if (newLines.at(-1) === "") newLines.pop();
-  const oldHeader = kind === "add" ? "/dev/null" : `a/${displayedPath}`;
-  const newHeader = `b/${displayedPath}`;
+  const oldHeader = kind === "add" ? "/dev/null" : isAbsolute ? normalized : `a/${normalized}`;
+  const newHeader = isAbsolute ? normalized : `b/${normalized}`;
   const oldRange = kind === "add" ? "0,0" : oldLines.length === 0 ? "0,0" : `1,${oldLines.length}`;
   const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
   return [

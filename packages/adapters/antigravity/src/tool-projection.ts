@@ -131,6 +131,36 @@ const COMPACT_COMMAND_TOOLS = new Set([
   "command",
 ]);
 
+function formatUnifiedDiff(
+  displayedPath: string,
+  isAbsolute: boolean,
+  oldText: string,
+  newText: string,
+  kind: "add" | "update",
+): string {
+  const oldHeader = kind === "add" ? "/dev/null" : isAbsolute ? displayedPath : `a/${displayedPath}`;
+  const newHeader = isAbsolute ? displayedPath : `b/${displayedPath}`;
+  const rawPatch = createTwoFilesPatch(
+    oldHeader,
+    newHeader,
+    normalizeNewlines(oldText),
+    normalizeNewlines(newText),
+    "",
+    "",
+    { context: 3 },
+  );
+  const lines = rawPatch.replaceAll("\r\n", "\n").split("\n");
+  const headerIdx = lines.findIndex((l) => l.startsWith("--- "));
+  const slice = headerIdx !== -1 ? lines.slice(headerIdx) : lines;
+  const cleaned = slice.map((line) => {
+    if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+      return line.replace(/\t+$/, "");
+    }
+    return line;
+  });
+  return cleaned.join("\n");
+}
+
 export function synthesizeAntigravityFileChange(
   toolName: string,
   params: unknown,
@@ -165,17 +195,12 @@ export function synthesizeAntigravityFileChange(
     if (!displayed) return null;
     const overwrite = extractBoolean(record, ["Overwrite", "overwrite", "overWrite"]) ?? false;
     const kind = overwrite ? "update" : "add";
-    const oldHeader =
-      kind === "add" ? "/dev/null" : displayed.absolute ? displayed.path : `a/${displayed.path}`;
-    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-    const unifiedDiff = createTwoFilesPatch(
-      oldHeader,
-      newHeader,
+    const unifiedDiff = formatUnifiedDiff(
+      displayed.path,
+      displayed.absolute,
       "",
-      normalizeNewlines(rawContent),
-      "",
-      "",
-      { context: 3 },
+      rawContent,
+      kind,
     );
     return [{ path: displayed.path, kind, unifiedDiff }];
   }
@@ -215,16 +240,12 @@ export function synthesizeAntigravityFileChange(
     const displayed = displayPath(rawPath, cwd);
     if (!displayed) return null;
     const kind = "update";
-    const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-    const unifiedDiff = createTwoFilesPatch(
-      oldHeader,
-      newHeader,
-      normalizeNewlines(rawTarget),
-      normalizeNewlines(rawReplacement),
-      "",
-      "",
-      { context: 3 },
+    const unifiedDiff = formatUnifiedDiff(
+      displayed.path,
+      displayed.absolute,
+      rawTarget,
+      rawReplacement,
+      kind,
     );
     return [{ path: displayed.path, kind, unifiedDiff }];
   }

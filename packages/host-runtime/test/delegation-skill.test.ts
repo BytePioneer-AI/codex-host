@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -112,6 +113,45 @@ describe("delegation Skill installation", () => {
     });
     expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+  });
+
+  it("recognizes the historical v2 Skill as managed for status, update, and uninstall", async () => {
+    const root = await home();
+    const previous = await readFile(
+      new URL("./fixtures/delegation-skill-v2.md", import.meta.url),
+      "utf8",
+    );
+    expect(createHash("sha256").update(previous).digest("hex")).toBe(
+      "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
+    );
+    const destinations = paths(root);
+    for (const destination of destinations) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, previous, "utf8");
+    }
+
+    expect(await inspectDelegationSkills({ homeDirectory: root })).toMatchObject([
+      {
+        status: "managed-legacy",
+        version: 2,
+        digest: "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
+      },
+      {
+        status: "managed-legacy",
+        version: 2,
+        digest: "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
+      },
+    ]);
+    expect(
+      (await installDelegationSkills({ homeDirectory: root })).map(({ status }) => status),
+    ).toEqual(["updated", "updated"]);
+    expect(
+      (await uninstallDelegationSkills({ homeDirectory: root })).map(({ status }) => status),
+    ).toEqual(["removed", "removed"]);
+    expect(await inspectDelegationSkills({ homeDirectory: root })).toMatchObject([
+      { status: "missing" },
+      { status: "missing" },
+    ]);
   });
 
   it("preserves a user-modified copy while independently installing the other destination", async () => {
@@ -497,4 +537,3 @@ describe("delegation Skill installation", () => {
     await expect(stat(quarantine)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
-import { createHash } from "node:crypto";

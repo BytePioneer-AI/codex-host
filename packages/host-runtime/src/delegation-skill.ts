@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 const SKILL_VERSION = 4;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
 ];
 

@@ -127,9 +127,10 @@ describe("Codex UI projector", () => {
         },
         expect.objectContaining({
           id: "historical-tool",
-          type: "dynamicToolCall",
+          type: "commandExecution",
+          command: "read a.txt",
+          aggregatedOutput: "contents",
           status: "completed",
-          success: true,
         }),
         expect.objectContaining({
           id: "historical-subagent",
@@ -374,7 +375,11 @@ describe("Codex UI projector", () => {
         params: {
           startedAtMs: 9_000,
           completedAtMs: 10_250,
-          item: { type: "dynamicToolCall", durationMs: 1_250, success: true },
+          item: {
+            type: "commandExecution",
+            command: "read a.ts",
+            durationMs: 1_250,
+          },
         },
       },
     ]);
@@ -868,6 +873,321 @@ describe("Codex UI projector", () => {
     expect(JSON.stringify(completed)).not.toContain("mcpToolCall");
   });
 
+  it("lifts Read/Glob/Grep Generic Tools into Command Execution cards with paths", () => {
+    const value = projector();
+    const readId = itemId("read-1");
+    const globId = itemId("glob-1");
+    const grepId = itemId("grep-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: readId,
+          toolName: "read",
+          arguments: { path: "src/app.ts" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { id: readId, type: "commandExecution", command: "read src/app.ts" },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: globId,
+          toolName: "Glob",
+          arguments: { pattern: "**/*.mjs" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "glob **/*.mjs" } },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: grepId,
+          toolName: "grep",
+          arguments: { pattern: "toolCommandLine", path: "packages" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { type: "commandExecution", command: "grep toolCommandLine packages" },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: readId,
+        update: {
+          type: "output.replace",
+          output: { content: [{ type: "text", text: "export const app = 1;\n" }] },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/commandExecution/outputDelta",
+        params: { itemId: readId, delta: "export const app = 1;\n" },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: readId,
+            toolName: "read",
+            arguments: { path: "src/app.ts" },
+            output: { content: [{ type: "text", text: "export const app = 1;\n" }] },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "read src/app.ts",
+            status: "completed",
+            aggregatedOutput: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
+    const value = projector();
+    const todoId = itemId("todo-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: todoId,
+          toolName: "Todo",
+          arguments: {
+            todos: [
+              { content: "Fix edit cards", status: "in_progress" },
+              { content: "Show the plan", status: "pending" },
+            ],
+          },
+        },
+      }).messages,
+    ).toEqual([
+      {
+        method: "turn/plan/updated",
+        emittedAtMs: 1_000,
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          explanation: null,
+          plan: [
+            { step: "Fix edit cards", status: "inProgress" },
+            { step: "Show the plan", status: "pending" },
+          ],
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: todoId,
+            toolName: "Todo",
+            arguments: {
+              todos: [
+                { content: "Fix edit cards", status: "completed" },
+                { content: "Show the plan", status: "in_progress" },
+              ],
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: {
+          plan: [
+            { step: "Fix edit cards", status: "completed" },
+            { step: "Show the plan", status: "inProgress" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("hides Todo name cards even before arguments arrive and parses Grok todo_write shapes", () => {
+    const value = projector();
+    const emptyId = itemId("todo-empty");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId: emptyId, toolName: "Todo", arguments: {} },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: emptyId,
+            toolName: "todo_write",
+            arguments: {
+              merge: false,
+              todos: JSON.stringify([
+                { id: "1", content: "Fix the dock", status: "in_progress" },
+                { id: "2", content: "Keep statuses live", status: "pending" },
+              ]),
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: {
+          plan: [
+            { step: "Fix the dock", status: "inProgress" },
+            { step: "Keep statuses live", status: "pending" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("renders Claude Task snapshots after the adapter normalizes them to Todo", () => {
+    const value = projector();
+    const taskId = itemId("claude-task-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId: taskId, toolName: "Todo", arguments: {} },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: taskId,
+            toolName: "Todo",
+            arguments: {
+              todos: [{ id: "1", content: "Run tests", status: "in_progress" }],
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: { plan: [{ step: "Run tests", status: "inProgress" }] },
+      },
+    ]);
+  });
+
+  it("projects Edit/Write tools as File Change cards with a native kind object", () => {
+    const value = projector();
+    const editId = itemId("edit-1");
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: editId,
+        toolName: "Edit",
+        arguments: { path: "src/app.ts", old_string: "a", new_string: "b" },
+      },
+    });
+    expect(started.messages.map(({ method }) => method)).toEqual([
+      "item/started",
+      "item/fileChange/patchUpdated",
+      "turn/diff/updated",
+    ]);
+    expect(started.messages[0]).toMatchObject({
+      params: {
+        item: {
+          id: "edit-1",
+          type: "fileChange",
+          changes: [
+            {
+              path: "src/app.ts",
+              kind: { type: "update", move_path: null },
+              diff: expect.stringContaining("-a"),
+            },
+          ],
+          status: "inProgress",
+        },
+      },
+    });
+    expect(started.messages[1]).toMatchObject({
+      params: {
+        changes: [{ path: "src/app.ts", kind: { type: "update", move_path: null } }],
+      },
+    });
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: editId,
+            toolName: "Edit",
+            arguments: { path: "src/app.ts", old_string: "a", new_string: "b" },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: { item: { type: "fileChange", status: "completed" } },
+      },
+    ]);
+  });
+
   it("projects reliable File Changes and the current Turn Diff", () => {
     const value = projector();
     const fileId = itemId("file-1");
@@ -924,7 +1244,12 @@ describe("Codex UI projector", () => {
       turnId,
       outcome: { status: "succeeded" },
     });
-    expect(completed.completedTurn).toMatchObject({ items: [] });
+    expect(completed.completedTurn).toMatchObject({
+      items: [
+        { type: "fileChange", id: "file-1", status: "completed" },
+        { type: "fileChange", id: "file-2", status: "completed" },
+      ],
+    });
   });
 
   it("projects standalone Questions through a synthetic Generic Tool lifecycle", () => {

@@ -1001,10 +1001,19 @@ export function installRendererBindingProbe(
     if (state.agent === "codex") return;
     const agent = state.agent;
     const requestModelControl = modelControl;
-    const requestHostId = mounted.hostId;
-    const availability = requestHostId
-      ? hostHarnessAvailabilityState(requestHostId).availability[agent]
-      : undefined;
+    const isDraft = !threadIdFromComposerModelTarget(mounted.modelTarget);
+    const requestHostId = isDraft ? activeModelHostId() : mounted.hostId;
+    if (!requestHostId) {
+      mounted.modelView = {
+        status: "waitingForAdapter",
+        thinkingSelectionSupported: false,
+      };
+      mounted.permissionModeView = { status: "idle" };
+      renderMounted(mounted);
+      return;
+    }
+    if (isDraft) mounted.hostId = requestHostId;
+    const availability = hostHarnessAvailabilityState(requestHostId).availability[agent];
     if (availability !== "ready") {
       mounted.modelView = {
         status:
@@ -2297,6 +2306,16 @@ export function installRendererBindingProbe(
   const onHostRouteChange = (): void => {
     reconcileHarnessAvailabilityHost();
     void refreshHarnessAvailability();
+    for (const mounted of mountedByComposer.values()) {
+      const state = controller.get(mounted.composer);
+      if (
+        state.agent !== "codex" &&
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
+      ) {
+        void loadExternalCatalog(mounted);
+      }
+    }
   };
   const onAdapterStatus = () => {
     publishConnectionStatus();
@@ -2305,11 +2324,8 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailabilityForHost("local");
       void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {
-        if (
-          mounted.modelView.status === "waitingForAdapter" &&
-          mounted.composer.isConnected &&
-          applyComposerAgent(mounted.composer)
-        ) {
+        if (mounted.modelView.status === "waitingForAdapter" && mounted.composer.isConnected) {
+          applyComposerAgent(mounted.composer);
           void loadExternalCatalog(mounted);
         }
       }

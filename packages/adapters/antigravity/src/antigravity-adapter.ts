@@ -128,6 +128,7 @@ const CAPABILITIES: HarnessSessionCapabilities = {
     selectModel: true,
     selectThinkingOption: true,
     selectPermissionMode: true,
+    permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
   subagents: { observe: false, readTranscript: false },

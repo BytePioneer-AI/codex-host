@@ -120,13 +120,20 @@ describe("macOS Aqua Harness broker", () => {
     const nativeServer = createServer.mock.results.at(-1)?.value as Server | undefined;
     if (!nativeServer) throw new Error("fixture did not observe the native broker server");
     let peer: Socket | undefined;
-    let client: Socket | undefined;
+    let firstAdapter: BrokeredHarnessAdapter | undefined;
+    let secondAdapter: BrokeredHarnessAdapter | undefined;
 
     try {
       const accepted = new Promise<Socket>((resolve) => nativeServer.once("connection", resolve));
-      client = net.createConnection(socketPath);
-      client.on("error", () => undefined);
+      firstAdapter = new BrokeredHarnessAdapter({ descriptorPath });
+      const opened = await firstAdapter.open({ kind: "create", cwd: root });
       peer = await accepted;
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) throw new Error(opened.error.message);
+      const nativeSession = native.sessions[0];
+      const nativeRef = opened.value.initialState.nativeRef;
+      if (!nativeSession || !nativeRef) throw new Error("fixture failed to open a native Session");
+      const nativeClose = vi.spyOn(nativeSession, "close");
       const peerClosed = new Promise<void>((resolve) => peer?.once("close", resolve));
 
       expect(() =>
@@ -136,12 +143,18 @@ describe("macOS Aqua Harness broker", () => {
         ),
       ).not.toThrow();
       await peerClosed;
+      await vi.waitFor(() => expect(nativeClose).toHaveBeenCalledOnce());
 
-      const adapter = new BrokeredHarnessAdapter({ descriptorPath });
-      await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({ status: "ready" });
-      await adapter.close();
+      secondAdapter = new BrokeredHarnessAdapter({ descriptorPath });
+      await expect(secondAdapter.inspect({ cwd: root })).resolves.toMatchObject({
+        status: "ready",
+      });
+      const resumed = await secondAdapter.open({ kind: "resume", cwd: root, nativeRef });
+      expect(resumed.ok).toBe(true);
+      if (resumed.ok) await resumed.value.close();
     } finally {
-      client?.destroy();
+      await firstAdapter?.close();
+      await secondAdapter?.close();
       peer?.destroy();
       await broker.close();
       createServer.mockRestore();

@@ -28,6 +28,8 @@ export type OmpNotification =
   | { type: "subagent_lifecycle"; payload: OmpJsonObject }
   | { type: "subagent_progress"; payload: OmpJsonObject }
   | { type: "subagent_event"; payload: OmpJsonObject }
+  | { type: "process_lifecycle"; payload: OmpJsonObject }
+  | { type: "process_event"; payload: OmpJsonObject }
   | { type: "unknown"; payload: OmpJsonObject; parseError?: string };
 
 const MAX_FRAME_BYTES = 1024 * 1024;
@@ -226,6 +228,8 @@ export function parseOmpNotification(payload: OmpJsonObject): OmpNotification {
     case "subagent_lifecycle":
     case "subagent_progress":
     case "subagent_event":
+    case "process_lifecycle":
+    case "process_event":
       return {
         type: payload.type,
         payload: isObject(payload.payload) ? payload.payload : {},

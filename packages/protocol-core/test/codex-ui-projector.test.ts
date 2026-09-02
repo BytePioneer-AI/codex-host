@@ -8,6 +8,7 @@ import type {
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
 import {
+  harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
@@ -15,7 +16,7 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { CodexTurnProjector, projectHistoricalTurn, toolCommandLine } from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -147,6 +148,40 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("projects historical Turn timing when timestamps and duration are present", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: {
+        harnessId: harnessIdSchema.parse("omp"),
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-key-1",
+        formatVersion: 1,
+      },
+      input: [{ type: "text", text: "question" }],
+      items: [
+        {
+          item: {
+            type: "agentMessage",
+            itemId: itemId("agent-1"),
+            text: "answer",
+          },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+      startedAt: 1_700_000_000_000,
+      completedAt: 1_700_000_005_250,
+      durationMs: 5_250,
+    };
+
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      id: "turn-1",
+      status: "completed",
+      startedAt: 1_700_000_000,
+      completedAt: 1_700_000_005,
+      durationMs: 5_250,
+    });
+  });
+
   it("projects Agent Message and Command Execution lifecycles", () => {
     const value = projector();
     const agentId = itemId("agent-1");
@@ -186,6 +221,8 @@ describe("Codex UI projector", () => {
       type: "commandExecution",
       itemId: commandId,
       command: "printf done",
+      processId: "sleep-600",
+      osPid: 535357,
     };
     expect(value.project({ type: "item.started", turnId, item: command }).messages).toMatchObject([
       {
@@ -195,7 +232,8 @@ describe("Codex UI projector", () => {
             type: "commandExecution",
             cwd: "/workspace",
             status: "inProgress",
-            source: "agent",
+            source: "unifiedExecStartup",
+            processId: "sleep-600",
           },
         },
       },
@@ -207,7 +245,17 @@ describe("Codex UI projector", () => {
         itemId: commandId,
         update: { type: "output.append", text: "done\n" },
       }).messages,
-    ).toMatchObject([{ method: "item/commandExecution/outputDelta", params: { delta: "done\n" } }]);
+    ).toMatchObject([
+      { method: "item/commandExecution/outputDelta", params: { delta: "done\n" } },
+      {
+        method: "process/outputDelta",
+        params: {
+          processId: "sleep-600",
+          stream: "stdout",
+          deltaBase64: Buffer.from("done\n").toString("base64"),
+        },
+      },
+    ]);
     const commandCompleted = value.project({
       type: "item.completed",
       turnId,
@@ -240,6 +288,141 @@ describe("Codex UI projector", () => {
       durationMs: 1_500,
       items: [{ type: "agentMessage", text: "done" }],
     });
+  });
+
+  it("keeps a launched background terminal inProgress after the Turn completes", () => {
+    const value = projector();
+    const commandId = itemId("term-1");
+    value.project({ type: "turn.started", turnId });
+    value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "commandExecution",
+        itemId: commandId,
+        command: "hub start term-1 -- bash --norc --noprofile",
+        processId: "term-1",
+      },
+    });
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "commandExecution",
+          processId: "term-1",
+          source: "unifiedExecStartup",
+          status: "inProgress",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps hub start cards inProgress even without an explicit processId", () => {
+    const value = projector();
+    const commandId = itemId("hub-start");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: commandId,
+          command: "hub start terminal-2 -- bash",
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "commandExecution",
+            processId: "terminal-2",
+            source: "unifiedExecStartup",
+            status: "inProgress",
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "commandExecution",
+            itemId: commandId,
+            command: "hub start terminal-2 -- bash",
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toEqual([]);
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "commandExecution",
+          processId: "terminal-2",
+          status: "inProgress",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps numeric official PTY session ids inProgress after the Turn completes", () => {
+    const value = projector();
+    const commandId = itemId("counter-1");
+    value.project({ type: "turn.started", turnId });
+    value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "commandExecution",
+        itemId: commandId,
+        command: "i=0; while true; do i=$((i+1)); date; sleep 1; done",
+        processId: "3495",
+      },
+    });
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "commandExecution",
+            itemId: commandId,
+            command: "i=0; while true; do i=$((i+1)); date; sleep 1; done",
+            processId: "3495",
+            output: "[counter-1] count=1\n",
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toEqual([]);
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "commandExecution",
+          processId: "3495",
+          source: "unifiedExecStartup",
+          status: "inProgress",
+        }),
+      ]),
+    );
   });
 
   it("fills completed Command, Tool, and Reasoning duration from Item start time", () => {
@@ -421,19 +604,6 @@ describe("Codex UI projector", () => {
           item: { id: `${reasoningId}-summary`, type: "reasoning" },
         },
       },
-      {
-        method: "item/completed",
-        params: {
-          startedAtMs: 11_500,
-          completedAtMs: 13_000,
-          item: {
-            id: reasoningId,
-            type: "commandExecution",
-            command: "thinking",
-            durationMs: 1_500,
-          },
-        },
-      },
     ]);
   });
 
@@ -449,6 +619,8 @@ describe("Codex UI projector", () => {
           subagentId: "claude-agent-1",
           description: "Inspect implementation",
           role: "Explore",
+          model: "Grok 4.6",
+          reasoningEffort: "high",
           background: true,
           status: "pending",
         },
@@ -469,6 +641,8 @@ describe("Codex UI projector", () => {
             status: "inProgress",
             senderThreadId: "thread-1",
             receiverThreadIds: ["claude-agent-1"],
+            model: "Grok 4.6 · High",
+            reasoningEffort: "high",
             agentsStates: {
               "claude-agent-1": { status: "pendingInit", message: null },
             },
@@ -639,16 +813,6 @@ describe("Codex UI projector", () => {
         },
       },
       {
-        method: "item/started",
-        params: {
-          item: { id: reasoningId, type: "commandExecution", command: "thinking" },
-        },
-      },
-      {
-        method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "visible " },
-      },
-      {
         method: "item/reasoning/summaryPartAdded",
         params: { itemId: `${reasoningId}-summary`, summaryIndex: 0 },
       },
@@ -665,10 +829,6 @@ describe("Codex UI projector", () => {
         update: { type: "text.append", text: "analysis" },
       }).messages,
     ).toMatchObject([
-      {
-        method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "analysis" },
-      },
       {
         method: "item/reasoning/summaryTextDelta",
         params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "analysis" },
@@ -691,17 +851,6 @@ describe("Codex UI projector", () => {
             type: "reasoning",
             summary: ["visible analysis"],
             content: [],
-          },
-        },
-      },
-      {
-        method: "item/completed",
-        params: {
-          item: {
-            id: reasoningId,
-            type: "commandExecution",
-            command: "thinking",
-            aggregatedOutput: "visible analysis",
           },
         },
       },
@@ -739,12 +888,6 @@ describe("Codex UI projector", () => {
           type: "reasoning",
           summary: ["visible analysis"],
           content: [],
-        },
-        {
-          id: reasoningId,
-          type: "commandExecution",
-          command: "thinking",
-          aggregatedOutput: "visible analysis",
         },
         { id: agentId, type: "agentMessage", text: "answer" },
       ],
@@ -979,6 +1122,174 @@ describe("Codex UI projector", () => {
       },
     ]);
   });
+  it("lifts Hub, Task, Eval, and Search tools into Command Execution cards", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+
+    const hubStart = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("hub-1"),
+        toolName: "hub",
+        arguments: { op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+      },
+    });
+    expect(hubStart.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "hub start web -- bun run dev" } },
+      },
+    ]);
+
+    const hubSend = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("hub-2"),
+        toolName: "hub",
+        arguments: { op: "send", to: "worker", message: "process ready" },
+      },
+    });
+    expect(hubSend.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "hub send worker: process ready" } },
+      },
+    ]);
+
+    const hubWait = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("hub-3"),
+        toolName: "hub",
+        arguments: { op: "wait" },
+      },
+    });
+    expect(hubWait.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "hub wait" } },
+      },
+    ]);
+
+    const taskTool = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("task-1"),
+        toolName: "task",
+        arguments: { task: "Run integration tests" },
+      },
+    });
+    expect(taskTool.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "task: Run integration tests" } },
+      },
+    ]);
+
+    const evalTool = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("eval-1"),
+        toolName: "eval",
+        arguments: { language: "py", title: "load config" },
+      },
+    });
+    expect(evalTool.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "eval py: load config" } },
+      },
+    ]);
+
+    const searchTool = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("search-1"),
+        toolName: "web_search",
+        arguments: { query: "vitest documentation" },
+      },
+    });
+    expect(searchTool.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { type: "commandExecution", command: 'web_search "vitest documentation"' },
+        },
+      },
+    ]);
+  });
+
+  it("reconstructs descriptive command lines across harness tools", () => {
+    expect(
+      toolCommandLine("hub", {
+        op: "start",
+        name: "ticker",
+        application: "bun",
+        args: ["run", "ticker.js"],
+      }),
+    ).toBe("hub start ticker -- bun run ticker.js");
+    expect(toolCommandLine("hub", { op: "stop", name: "ticker" })).toBe("hub stop ticker");
+    expect(toolCommandLine("hub", { op: "restart", name: "ticker" })).toBe("hub restart ticker");
+    expect(toolCommandLine("hub", { op: "send", to: "worker", message: "ready" })).toBe(
+      "hub send worker: ready",
+    );
+    expect(toolCommandLine("hub", { op: "wait" })).toBe("hub wait");
+    expect(toolCommandLine("hub", { op: "wait", name: "ticker" })).toBe("hub wait ticker");
+    expect(toolCommandLine("hub", { op: "jobs" })).toBe("hub jobs");
+    expect(toolCommandLine("hub", { op: "ps" })).toBe("hub ps");
+    expect(toolCommandLine("hub", { op: "list", status: "parked" })).toBe(
+      "hub list --status parked",
+    );
+    expect(toolCommandLine("hub", { op: "logs", name: "web" })).toBe("hub logs web");
+    expect(toolCommandLine("hub", { op: "cancel", ids: ["job-1", "job-2"] })).toBe(
+      "hub cancel job-1 job-2",
+    );
+    expect(toolCommandLine("hub", { op: "describe", name: "web" })).toBe("hub describe web");
+
+    expect(toolCommandLine("task", { task: "Refactor auth" })).toBe("task: Refactor auth");
+    expect(
+      toolCommandLine("task", {
+        tasks: [{ name: "Scout", task: "Find files" }, { name: "Writer" }],
+      }),
+    ).toBe("task (2 tasks): Scout");
+
+    expect(toolCommandLine("eval", { language: "py", title: "data prep" })).toBe(
+      "eval py: data prep",
+    );
+    expect(toolCommandLine("eval", { language: "js" })).toBe("eval js");
+
+    expect(toolCommandLine("todo", { op: "done", task: "Fix tests" })).toBe(
+      'todo done "Fix tests"',
+    );
+    expect(toolCommandLine("todo", { op: "init" })).toBe("todo init");
+
+    expect(
+      toolCommandLine("edit", { input: "[packages/server.ts#A1B2]\nPUT 1.=2:\n+test\n" }),
+    ).toBe("edit packages/server.ts");
+    expect(toolCommandLine("write", { path: "docs/readme.md" })).toBe("write docs/readme.md");
+
+    expect(toolCommandLine("lsp", { action: "definition", symbol: "toolCommandLine" })).toBe(
+      "lsp definition toolCommandLine",
+    );
+    expect(toolCommandLine("browser", { action: "open", url: "http://localhost:3000" })).toBe(
+      "browser open http://localhost:3000",
+    );
+    expect(toolCommandLine("debug", { action: "launch", program: "src/index.ts" })).toBe(
+      "debug launch src/index.ts",
+    );
+  });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
     const value = projector();
@@ -1125,7 +1436,6 @@ describe("Codex UI projector", () => {
       },
     ]);
   });
-
   it("projects Edit/Write tools as File Change cards with a native kind object", () => {
     const value = projector();
     const editId = itemId("edit-1");

@@ -67,6 +67,10 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
+  runningProcesses: Map<
+    string,
+    { itemId: string; command: string; cwd: string; osPid: number | null }
+  >;
 }
 
 export type ExternalThreadLocation =
@@ -77,6 +81,40 @@ export type ExternalThreadLocation =
       thread: ExternalThread | null;
     }
   | { kind: "error"; error: ExternalThreadRpcError };
+
+function runningProcessesFromTurns(
+  turns: JsonObject[],
+  cwd: string,
+): Map<string, { itemId: string; command: string; cwd: string; osPid: number | null }> {
+  const processes = new Map<
+    string,
+    { itemId: string; command: string; cwd: string; osPid: number | null }
+  >();
+  for (const turn of turns) {
+    const items = Array.isArray(turn.items) ? turn.items : [];
+    for (const item of items) {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+      const record = item as JsonObject;
+      if (record.type !== "commandExecution") continue;
+      const processId = typeof record.processId === "string" ? record.processId : "";
+      if (
+        processId.length === 0 ||
+        processId.startsWith("call-") ||
+        processId.startsWith("tool-")
+      ) {
+        continue;
+      }
+      if (record.status !== "inProgress") continue;
+      processes.set(processId, {
+        itemId: typeof record.id === "string" ? record.id : processId,
+        command: typeof record.command === "string" ? record.command : processId,
+        cwd: typeof record.cwd === "string" ? record.cwd : cwd,
+        osPid: typeof record.osPid === "number" ? record.osPid : null,
+      });
+    }
+  }
+  return processes;
+}
 
 export type ExternalThreadResolution =
   | { kind: "official" }
@@ -282,6 +320,7 @@ export class ExternalThreadRuntime {
       ephemeralTurnIds: new Set(),
       persistenceError: null,
       ignoredInteractionIds: new Set(),
+      runningProcesses: runningProcessesFromTurns(input.turns, input.record.cwd),
     };
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
@@ -375,6 +414,9 @@ export class ExternalThreadRuntime {
       thread.record = aligned.record;
       thread.turns = aligned.turns;
       thread.historyHydrated = true;
+      const restored = runningProcessesFromTurns(aligned.turns, thread.cwd);
+      for (const [processId, process] of thread.runningProcesses) restored.set(processId, process);
+      thread.runningProcesses = restored;
       thread.thread = externalThreadValue({
         record: aligned.record,
         turns: aligned.turns,

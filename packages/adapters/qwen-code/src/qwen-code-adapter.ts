@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   HarnessOutputChannel,
   validateHostApprovalResponse,
+  validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessError,
   type HarnessInspection,
@@ -14,8 +15,9 @@ import {
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostApprovalInteraction,
-  type HostCommand,
   type HostEvent,
+  type HostCommand,
+  type HostQuestionInteraction,
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
@@ -126,8 +128,8 @@ interface ActiveTool {
   status?: string;
 }
 
-interface ActiveApproval {
-  interaction: HostApprovalInteraction;
+interface ActiveInteraction {
+  interaction: HostApprovalInteraction | HostQuestionInteraction;
   request: QwenCodePermissionRequest;
   resolve(response: QwenCodePermissionResponse): void;
 }
@@ -138,7 +140,7 @@ interface ActiveTurn {
   reasoning: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   completedItems: HostItemSnapshot[];
-  approvals: Map<HostInteractionId, ActiveApproval>;
+  approvals: Map<HostInteractionId, ActiveInteraction>;
   cancellationRequested: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -168,6 +170,43 @@ function normalizeError(error: unknown, fallback: HarnessError["code"]): Harness
     message: error instanceof Error ? error.message : String(error),
     retryable: fallback === "unavailable" || fallback === "nativeFailure",
   };
+}
+function qwenQuestions(input: Record<string, unknown>): Array<{
+  header?: string;
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  multiple: boolean;
+}> | null {
+  const questions = input.questions;
+  if (!Array.isArray(questions)) return null;
+  const parsed = questions.flatMap((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return [];
+    const value = candidate as Record<string, unknown>;
+    if (typeof value.question !== "string" || !Array.isArray(value.options)) return [];
+    const options = value.options.flatMap((option) => {
+      if (typeof option !== "object" || option === null || Array.isArray(option)) return [];
+      const entry = option as Record<string, unknown>;
+      return typeof entry.label === "string"
+        ? [
+            {
+              label: entry.label,
+              ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+            },
+          ]
+        : [];
+    });
+    return options.length > 0
+      ? [
+          {
+            question: value.question,
+            ...(typeof value.header === "string" ? { header: value.header } : {}),
+            options,
+            multiple: value.multiSelect === true,
+          },
+        ]
+      : [];
+  });
+  return parsed.length === questions.length && parsed.length > 0 ? parsed : null;
 }
 
 function nativeRef(sessionId: string): NativeSessionRef {
@@ -489,35 +528,40 @@ class QwenCodeHarnessSession implements HarnessSession {
     const active = this.#active;
     const pending = active?.approvals.get(command.interactionId);
     if (!active || !pending)
-      return { ok: false, error: invalidState("Qwen Code Approval is not pending") };
-    if (command.response.type !== "approval") {
-      return {
-        ok: false,
-        error: {
-          code: "invalidRequest",
-          message: "Qwen Code Approval requires an Approval Response",
-          retryable: false,
-        },
-      };
+      return { ok: false, error: invalidState("Qwen Code interaction is not pending") };
+    if (pending.interaction.type === "question") {
+      if (command.response.type !== "question")
+        return {
+          ok: false,
+          error: invalidState("Qwen Code Question requires a Question Response"),
+        };
+      const validation = validateHostQuestionResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      active.approvals.delete(command.interactionId);
+      if (command.response.cancelled) pending.resolve({ behavior: "deny" });
+      else {
+        const answers: Record<string, string> = {};
+        for (const [index, question] of pending.interaction.questions.entries())
+          answers[String(index)] = command.response.answers[question.id]?.join(", ") ?? "";
+        pending.resolve({ behavior: "allow", updatedInput: { ...pending.request.input, answers } });
+      }
+    } else {
+      if (command.response.type !== "approval")
+        return {
+          ok: false,
+          error: invalidState("Qwen Code Approval requires an Approval Response"),
+        };
+      const validation = validateHostApprovalResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      if (command.response.actionId !== "allow" && command.response.actionId !== "deny")
+        return { ok: false, error: invalidState("Qwen Code Approval action is unavailable") };
+      active.approvals.delete(command.interactionId);
+      const behavior = command.response.actionId;
+      pending.resolve({
+        behavior,
+        ...(behavior === "allow" ? { updatedInput: pending.request.input } : {}),
+      });
     }
-    const validation = validateHostApprovalResponse(pending.interaction, command.response);
-    if (validation) return { ok: false, error: validation };
-    if (command.response.actionId !== "allow" && command.response.actionId !== "deny") {
-      return {
-        ok: false,
-        error: {
-          code: "invalidRequest",
-          message: "Qwen Code Approval action is unavailable",
-          retryable: false,
-        },
-      };
-    }
-    active.approvals.delete(command.interactionId);
-    const behavior = command.response.actionId;
-    pending.resolve({
-      behavior,
-      ...(behavior === "allow" ? { updatedInput: pending.request.input } : {}),
-    });
     this.#event({
       type: "interaction.closed",
       interactionId: command.interactionId,
@@ -531,21 +575,44 @@ class QwenCodeHarnessSession implements HarnessSession {
     active: ActiveTurn,
     request: QwenCodePermissionRequest,
   ): Promise<QwenCodePermissionResponse> {
-    if (this.#active !== active || active.cancellationRequested) {
+    if (this.#active !== active || active.cancellationRequested)
       return Promise.resolve({ behavior: "deny" });
-    }
     const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
-    const interaction: HostApprovalInteraction = {
-      type: "approval",
-      interactionId,
-      turnId: active.command.turnId,
-      title: request.toolName,
-      subject: { type: "nativeAction" },
-      actions: [
-        { id: "allow", label: "Allow", effect: "allowOnce" },
-        { id: "deny", label: "Deny", effect: "deny" },
-      ],
-    };
+    const questions =
+      request.toolName === "ask_user_question" ? qwenQuestions(request.input) : null;
+    const interaction: HostApprovalInteraction | HostQuestionInteraction = questions
+      ? {
+          type: "question" as const,
+          interactionId,
+          turnId: active.command.turnId,
+          ...(questions.length === 1 && questions[0]?.header
+            ? { title: questions[0].header }
+            : { title: "Qwen Code" }),
+          questions: questions.map((question, index) => ({
+            id: `question-${index}`,
+            type: "choice" as const,
+            prompt: question.question,
+            options: question.options.map((option) => ({
+              value: option.label,
+              label: option.label,
+              ...(option.description ? { description: option.description } : {}),
+            })),
+            multiple: question.multiple,
+            allowOther: true,
+            optional: false,
+          })),
+        }
+      : {
+          type: "approval",
+          interactionId,
+          turnId: active.command.turnId,
+          title: request.toolName,
+          subject: { type: "nativeAction" },
+          actions: [
+            { id: "allow", label: "Allow", effect: "allowOnce" },
+            { id: "deny", label: "Deny", effect: "deny" },
+          ],
+        };
     return new Promise<QwenCodePermissionResponse>((resolve) => {
       active.approvals.set(interactionId, { interaction, request, resolve });
       this.#channel.emit({ kind: "interaction", interaction });

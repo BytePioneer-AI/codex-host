@@ -235,6 +235,65 @@ describe("QwenCodeAdapter", () => {
     ).toBe(true);
     await session.close();
   });
+  it("maps ask_user_question answers back into the Qwen SDK input", async () => {
+    const transport = new FakeTransport();
+    transport.runTurnImplementation = async (_onEvent, onPermission) => {
+      const answer = onPermission({
+        toolName: "ask_user_question",
+        input: {
+          questions: [
+            {
+              header: "Mode",
+              question: "Which modes?",
+              options: [
+                { label: "Safe", description: "Read only" },
+                { label: "Fast", description: "Execute immediately" },
+              ],
+              multiSelect: true,
+            },
+          ],
+        },
+      });
+      await vi.waitFor(() =>
+        expect(events.some((output) => (output as { kind?: string }).kind === "interaction")).toBe(
+          true,
+        ),
+      );
+      const interaction = events.find(
+        (output) => (output as { kind?: string }).kind === "interaction",
+      ) as {
+        interaction: {
+          interactionId: string;
+          type: string;
+          questions: Array<{ multiple: boolean }>;
+        };
+      };
+      expect(interaction.interaction.type).toBe("question");
+      expect(interaction.interaction.questions[0]?.multiple).toBe(true);
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: hostInteractionIdSchema.parse(interaction.interaction.interactionId),
+        response: { type: "question", answers: { "question-0": ["Safe", "Fast"] } },
+      });
+      expect(await answer).toEqual({
+        behavior: "allow",
+        updatedInput: expect.objectContaining({ answers: { "0": "Safe, Fast" } }),
+      });
+      return { status: "succeeded" };
+    };
+    const { adapter } = adapterFor(transport);
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+    if (!opened.ok) throw new Error("open failed");
+    const session = opened.value;
+    const events = await collect(session);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-question"),
+      input: [{ type: "text", text: "ask" }],
+    });
+    await vi.waitFor(async () => expect((await session.readSnapshot()).ok).toBe(true));
+    await session.close();
+  });
   it("bounds session close when SDK interrupt does not settle", async () => {
     const transport = new FakeTransport();
     const { promise: never } = Promise.withResolvers<undefined>();

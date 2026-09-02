@@ -24,6 +24,27 @@ describe("Renderer Agent icons", () => {
     expect(image.style.width).toBe("16px");
     expect(image.style.height).toBe("16px");
   });
+  it("renders Qwen with the bundled Lobe SVG mark", () => {
+    const image = {
+      src: "",
+      alt: "unset",
+      draggable: true,
+      style: {},
+    } as unknown as HTMLImageElement;
+    const ownerDocument = {
+      createElement(tagName: string) {
+        expect(tagName).toBe("img");
+        return image;
+      },
+    } as unknown as Document;
+
+    expect(createRendererAgentIcon("qwen-code", 16, ownerDocument)).toBe(image);
+    expect(image.src).toMatch(/^data:image\/svg\+xml,/);
+    expect(image.alt).toBe("");
+    expect(image.draggable).toBe(false);
+    expect(image.style.width).toBe("16px");
+    expect(image.style.height).toBe("16px");
+  });
 
   it("renders OMP with the bundled image asset", () => {
     const image = {

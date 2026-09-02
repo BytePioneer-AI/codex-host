@@ -209,6 +209,7 @@ describe("QwenCodeSdkTransport", () => {
     let input: AsyncIterable<SDKUserMessage> | undefined;
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
+      command: process.execPath,
       queryFactory: (({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
         input = prompt as AsyncIterable<SDKUserMessage>;
         return query as unknown as Query;
@@ -273,6 +274,7 @@ describe("QwenCodeSdkTransport", () => {
     const query = new FakeQuery();
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
+      command: process.execPath,
       queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
     });
     await transport.open({ kind: "create", permissionMode: "default" as never });
@@ -295,6 +297,7 @@ describe("QwenCodeSdkTransport", () => {
     const query = new FakeQuery();
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
+      command: process.execPath,
       queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
     });
     await transport.open({ kind: "create", permissionMode: "default" as never });
@@ -325,11 +328,27 @@ describe("QwenCodeSdkTransport", () => {
     await transport.close();
   });
 
-  it("uses the Qwen command name by default instead of resolving a Windows CMD shim", async () => {
+  it("reports an unresolved Qwen command as not installed", async () => {
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: "missing-qwen-code-command",
+      environment: { PATH: "", PATHEXT: ".CMD" },
+      queryFactory: vi.fn() as unknown as typeof sdkQuery,
+    });
+
+    await expect(
+      transport.open({ kind: "create", permissionMode: "default" as never }),
+    ).rejects.toMatchObject({
+      kind: "notInstalled",
+    });
+  });
+
+  it("passes an explicit SDK-compatible Qwen entrypoint to the official SDK", async () => {
     const query = new FakeQuery();
     let options: Record<string, unknown> | undefined;
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
+      command: process.execPath,
       queryFactory: (({ options: received }: { options: Record<string, unknown> }) => {
         options = received;
         return query as unknown as Query;
@@ -338,7 +357,7 @@ describe("QwenCodeSdkTransport", () => {
 
     await transport.open({ kind: "create", permissionMode: "default" as never });
 
-    expect(options).toHaveProperty("pathToQwenExecutable", "qwen");
+    expect(options).toHaveProperty("pathToQwenExecutable", process.execPath);
     await transport.close();
   });
 });

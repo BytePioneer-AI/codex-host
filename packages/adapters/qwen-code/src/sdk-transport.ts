@@ -16,6 +16,7 @@ import {
 import type { HarnessPermissionModeId } from "@codexhost/shared-contracts";
 
 import { decodeQwenCodePermissionModeId } from "./permission-modes.js";
+import { resolveQwenCodeExecutable } from "./command.js";
 
 export type QwenCodeTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -72,6 +73,7 @@ export interface QwenCodeSdkTransportOptions {
   cwd: string;
   command?: string;
   environment?: NodeJS.ProcessEnv;
+  commandTimeoutMs?: number;
   onFault?: (error: QwenCodeTransportError) => void;
   queryFactory?: typeof query;
 }
@@ -266,11 +268,14 @@ export class QwenCodeSdkTransport {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#input?.close();
+    const query = this.#query;
+    this.#query = null;
     const active = this.#active;
     this.#active = null;
     active?.resolve({ status: "cancelled" });
-    await this.#query?.close().catch(() => undefined);
+    await query?.close().catch(() => undefined);
+    this.#input?.close();
+    this.#input = null;
   }
 
   async #start(input: QwenCodeOpenInput): Promise<void> {
@@ -283,20 +288,24 @@ export class QwenCodeSdkTransport {
         "Qwen Code resume requires a Session identity",
       );
     }
-    // The SDK accepts a command name and resolves it with PATH. Passing the
-    // absolute Windows npm `.cmd` shim makes Node spawn fail with EINVAL.
-    const executable = this.#options.command ?? "qwen";
     const inputStream = new PushableInput();
     const queryFactory = this.#options.queryFactory ?? query;
     const sessionId = resumeSessionId ?? randomUUID();
     const permissionMode = decodeQwenCodePermissionModeId(input.permissionMode);
     const environment = this.#environment();
     try {
+      const executable = resolveQwenCodeExecutable({
+        ...(this.#options.command ? { command: this.#options.command } : {}),
+        ...(this.#options.environment ? { environment: this.#options.environment } : {}),
+      });
       const session = queryFactory({
         prompt: inputStream,
         options: {
           cwd: this.#options.cwd,
           ...(input.model ? { model: input.model } : {}),
+          ...(this.#options.commandTimeoutMs
+            ? { timeout: { controlRequest: this.#options.commandTimeoutMs } }
+            : {}),
           ...(environment ? { env: environment } : {}),
           includePartialMessages: true,
           pathToQwenExecutable: executable,

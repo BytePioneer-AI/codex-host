@@ -89,7 +89,9 @@ describe("external Harness transport model routing", () => {
     const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
     const transportModelId = encodeQwenCodeTransportModel(model, permissionModeId);
     expect(decodeQwenCodeTransportSelection(transportModelId)).toEqual({ model, permissionModeId });
-    expect(decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } })).toMatchObject({
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({
       harnessId: "qwen-code",
       model,
       permissionModeId,

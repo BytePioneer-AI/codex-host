@@ -515,7 +515,9 @@ describe("current Codex Renderer Agent adapter", () => {
     const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
     const carrier = qwenCodeTransportModelId(model, permissionModeId);
     expect(carrier).toBe(`${QWEN_CODE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}`);
-    expect(modelSelectionForAgent(null, null, "qwen-code", model, undefined, permissionModeId)?.model).toBe(carrier);
+    expect(
+      modelSelectionForAgent(null, null, "qwen-code", model, undefined, permissionModeId)?.model,
+    ).toBe(carrier);
   });
 
   it("encodes Grok Model, Permission Mode, and Thinking in the transport carrier", () => {

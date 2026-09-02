@@ -1,9 +1,4 @@
-import {
-  query as sdkQuery,
-  type Query,
-  type SDKMessage,
-  type SDKUserMessage,
-} from "@qwen-code/sdk";
+import type { query as sdkQuery, Query, SDKMessage, SDKUserMessage } from "@qwen-code/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import { QwenCodeSdkTransport } from "../src/sdk-transport.js";
@@ -83,7 +78,7 @@ describe("QwenCodeSdkTransport", () => {
     const turn = transport.runTurn(
       "status",
       vi.fn(),
-      vi.fn(async () => ({ behavior: "allow" })),
+      vi.fn(async () => ({ behavior: "allow" as const })),
     );
     const sent = await input?.[Symbol.asyncIterator]().next();
     expect(sent?.value).toMatchObject({
@@ -101,7 +96,7 @@ describe("QwenCodeSdkTransport", () => {
       duration_api_ms: 1,
       num_turns: 1,
       result: "ok",
-      usage: {},
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
       permission_denials: [],
     });
     await expect(turn).resolves.toEqual({ status: "succeeded" });
@@ -114,7 +109,7 @@ describe("QwenCodeSdkTransport", () => {
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
       command: process.execPath,
-      queryFactory: (({ options: received }) => {
+      queryFactory: (({ options: received }: { options: Record<string, unknown> }) => {
         options = received;
         return query as unknown as Query;
       }) as unknown as typeof sdkQuery,
@@ -205,12 +200,77 @@ describe("QwenCodeSdkTransport", () => {
     await transport.close();
   });
 
+  it("accepts consecutive turns on one official SDK Query", async () => {
+    const query = new FakeQuery();
+    let input: AsyncIterable<SDKUserMessage> | undefined;
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      queryFactory: (({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        input = prompt as AsyncIterable<SDKUserMessage>;
+        return query as unknown as Query;
+      }) as unknown as typeof sdkQuery,
+    });
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+    const messages = input?.[Symbol.asyncIterator]();
+    if (!messages) throw new Error("Qwen SDK query did not receive an input stream");
+
+    const first = transport.runTurn(
+      "first",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    expect((await messages.next()).value).toMatchObject({
+      session_id: sessionId,
+      message: { content: "first" },
+    });
+    query.emit({
+      type: "result",
+      subtype: "success",
+      uuid: "result-1",
+      session_id: sessionId,
+      is_error: false,
+      duration_ms: 1,
+      duration_api_ms: 1,
+      num_turns: 1,
+      result: "first",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      permission_denials: [],
+    });
+    await expect(first).resolves.toEqual({ status: "succeeded" });
+
+    const second = transport.runTurn(
+      "second",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    expect((await messages.next()).value).toMatchObject({
+      session_id: sessionId,
+      message: { content: "second" },
+    });
+    query.emit({
+      type: "result",
+      subtype: "success",
+      uuid: "result-2",
+      session_id: sessionId,
+      is_error: false,
+      duration_ms: 1,
+      duration_api_ms: 1,
+      num_turns: 2,
+      result: "second",
+      usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+      permission_denials: [],
+    });
+    await expect(second).resolves.toEqual({ status: "succeeded" });
+    await transport.close();
+  });
+
   it("uses the Qwen command name by default instead of resolving a Windows CMD shim", async () => {
     const query = new FakeQuery();
     let options: Record<string, unknown> | undefined;
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),
-      queryFactory: (({ options: received }) => {
+      queryFactory: (({ options: received }: { options: Record<string, unknown> }) => {
         options = received;
         return query as unknown as Query;
       }) as unknown as typeof sdkQuery,

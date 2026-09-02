@@ -289,6 +289,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "pi") state.piModel = model;
     else if (agent === "claude-code") state.claudeModel = model;
     else if (agent === "deepseek-harness") state.deepSeekHarnessModel = model;
+    else if (agent === "qwen-code") state.qwenCodeModel = model;
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
     else state.ompModel = model;

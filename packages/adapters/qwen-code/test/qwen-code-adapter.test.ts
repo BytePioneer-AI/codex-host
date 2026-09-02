@@ -1,4 +1,9 @@
-import { harnessIdSchema, hostInteractionIdSchema, hostTurnIdSchema, type HarnessPermissionModeId } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostInteractionIdSchema,
+  hostTurnIdSchema,
+  type HarnessPermissionModeId,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -158,29 +163,54 @@ describe("QwenCodeAdapter", () => {
 
   it("maps SDK permissions and streamed output into a completed Host Turn", async () => {
     const transport = new FakeTransport();
+    let respondToInteraction: ((interactionId: string) => Promise<unknown>) | null = null;
     transport.runTurnImplementation = async (onEvent, onPermission) => {
-      const approval = onPermission({ toolName: "run_shell_command", input: { command: "git status" } });
-      await vi.waitFor(() => expect(events.some((output) => (output as { kind?: string }).kind === "interaction")).toBe(true));
-      const interaction = events.find((output) => (output as { kind?: string }).kind === "interaction") as {
+      const approval = onPermission({
+        toolName: "run_shell_command",
+        input: { command: "git status" },
+      });
+      await vi.waitFor(() =>
+        expect(events.some((output) => (output as { kind?: string }).kind === "interaction")).toBe(
+          true,
+        ),
+      );
+      const interaction = events.find(
+        (output) => (output as { kind?: string }).kind === "interaction",
+      ) as {
         interaction: { interactionId: string };
       };
-      const responded = await session!.execute({
-        type: "interaction.respond",
-        interactionId: hostInteractionIdSchema.parse(interaction.interaction.interactionId),
-        response: { type: "approval", actionId: "allow" },
-      });
+      if (!respondToInteraction) throw new Error("Session interaction handler is unavailable");
+      const responded = await respondToInteraction(interaction.interaction.interactionId);
       expect(responded).toEqual({ ok: true, value: { accepted: true } });
-      expect(await approval).toEqual({ behavior: "allow", updatedInput: { command: "git status" } });
+      expect(await approval).toEqual({
+        behavior: "allow",
+        updatedInput: { command: "git status" },
+      });
       onEvent({ type: "agent.text", text: "done" });
-      onEvent({ type: "tool.call", callId: "tool-1", title: "run_shell_command", kind: "execute", rawInput: { command: "git status" } });
+      onEvent({
+        type: "tool.call",
+        callId: "tool-1",
+        title: "run_shell_command",
+        kind: "execute",
+        rawInput: { command: "git status" },
+      });
       onEvent({ type: "tool.update", callId: "tool-1", status: "completed", rawOutput: "clean" });
-      onEvent({ type: "usage", metadata: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } });
+      onEvent({
+        type: "usage",
+        metadata: { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+      });
       return { status: "succeeded" };
     };
     const { adapter } = adapterFor(transport);
     const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
     if (!opened.ok) throw new Error("open failed");
     const session = opened.value;
+    respondToInteraction = (interactionId) =>
+      session.execute({
+        type: "interaction.respond",
+        interactionId: hostInteractionIdSchema.parse(interactionId),
+        response: { type: "approval", actionId: "allow" },
+      });
     const events = await collect(session);
     await session.execute({
       type: "turn.start",
@@ -194,7 +224,12 @@ describe("QwenCodeAdapter", () => {
     const snapshot = await session.readSnapshot();
     if (!snapshot.ok) throw new Error("snapshot failed");
     expect(snapshot.value.turns[0]?.outcome).toEqual({ status: "succeeded" });
-    expect(events.some((output) => (output as { event?: { type?: string } }).event?.type === "session.usage.changed")).toBe(true);
+    expect(
+      events.some(
+        (output) =>
+          (output as { event?: { type?: string } }).event?.type === "session.usage.changed",
+      ),
+    ).toBe(true);
     await session.close();
   });
 });

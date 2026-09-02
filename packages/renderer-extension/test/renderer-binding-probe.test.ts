@@ -100,6 +100,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": {
             code: "notInstalled",
             message: "DeepSeek Harness is not installed",
@@ -125,6 +126,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": {
             code: "internalError",
             message: "Remote request manager is temporarily unavailable",
@@ -150,6 +152,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": {
             code: "unavailable",
             message: "DeepSeek Harness is temporarily unavailable",
@@ -177,6 +180,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": undefined,
           opencode: undefined,
           grok: undefined,
@@ -198,6 +202,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": {
             code: "notInstalled",
             message: "DeepSeek Harness is not installed",
@@ -223,6 +228,7 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
+          "qwen-code": undefined,
           "deepseek-harness": {
             code: "unavailable",
             message: "DeepSeek Harness is temporarily unavailable",

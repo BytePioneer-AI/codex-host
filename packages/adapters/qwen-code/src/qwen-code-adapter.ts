@@ -66,7 +66,6 @@ import { projectQwenCodeFileChanges } from "./qwen-file-change.js";
 import {
   QWEN_CODE_DEFAULT_PERMISSION_MODE_ID,
   QWEN_CODE_PERMISSION_MODE_CATALOG,
-  currentQwenCodePermissionModeId,
   decodeQwenCodePermissionModeId,
 } from "./permission-modes.js";
 import {
@@ -497,10 +496,7 @@ class QwenCodeHarnessSession implements HarnessSession {
     }
     const validation = validateHostApprovalResponse(pending.interaction, command.response);
     if (validation) return { ok: false, error: validation };
-    if (
-      command.response.actionId !== "allow" &&
-      command.response.actionId !== "deny"
-    ) {
+    if (command.response.actionId !== "allow" && command.response.actionId !== "deny") {
       return {
         ok: false,
         error: {
@@ -801,8 +797,7 @@ class QwenCodeHarnessSession implements HarnessSession {
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
-      for (const approval of active.approvals.values())
-        approval.resolve({ behavior: "deny" });
+      for (const approval of active.approvals.values()) approval.resolve({ behavior: "deny" });
       await this.#transport.cancel().catch(() => undefined);
       await Promise.race([
         active.completion,

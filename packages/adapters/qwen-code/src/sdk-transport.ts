@@ -273,7 +273,7 @@ export class QwenCodeSdkTransport {
   async #start(input: QwenCodeOpenInput): Promise<void> {
     if (this.#query || this.#closed)
       throw new Error("Qwen Code SDK Transport cannot be opened twice");
-    const resumeSessionId = input.sessionId;
+    const resumeSessionId = input.kind === "resume" ? input.sessionId : undefined;
     if (input.kind === "resume" && !resumeSessionId) {
       throw new QwenCodeTransportError(
         "protocolError",
@@ -285,7 +285,7 @@ export class QwenCodeSdkTransport {
     const executable = this.#options.command ?? "qwen";
     const inputStream = new PushableInput();
     const queryFactory = this.#options.queryFactory ?? query;
-    const sessionId = input.kind === "resume" ? resumeSessionId! : randomUUID();
+    const sessionId = resumeSessionId ?? randomUUID();
     const permissionMode = decodeQwenCodePermissionModeId(input.permissionMode);
     const environment = this.#environment();
     try {
@@ -298,7 +298,7 @@ export class QwenCodeSdkTransport {
           includePartialMessages: true,
           pathToQwenExecutable: executable,
           permissionMode,
-          ...(input.kind === "resume" ? { resume: resumeSessionId! } : { sessionId }),
+          ...(resumeSessionId ? { resume: resumeSessionId } : { sessionId }),
           canUseTool: this.#canUseTool,
         },
       });

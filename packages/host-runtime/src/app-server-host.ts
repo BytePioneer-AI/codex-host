@@ -2884,6 +2884,9 @@ export class AppServerHost {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
+    // Live/pending projection gets the user message from projector.initialInput.
+    // Keep projection.input empty so turn.completed persistence does not prepend a
+    // second identical `${turnId}-user` via addProjectedTurnInput.
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
@@ -2892,7 +2895,7 @@ export class AppServerHost {
         startedAtMs: Date.now(),
         initialInput: [{ type: "text", text }],
       }),
-      input: [{ type: "text", text }],
+      input: [],
     };
     thread.running = true;
     thread.activeTurnId = turnId;

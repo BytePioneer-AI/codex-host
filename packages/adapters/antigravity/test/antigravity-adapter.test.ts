@@ -563,7 +563,7 @@ for (const line of lines) {
           type: "item.completed",
           turnId,
           snapshot: {
-            item: { type: "fileChange" },
+            item: { type: "toolExecution", toolName: "write_to_file" },
             outcome: { status: "succeeded" },
           },
         });

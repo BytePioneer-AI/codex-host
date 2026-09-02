@@ -1513,5 +1513,51 @@ describe("Codex UI projector", () => {
         toolCommandLine("find_by_name", { Pattern: "*.ts" }),
       ).toBe("glob *.ts");
     });
+
+    it("projects successful write_to_file toolExecution lifecycle into fileChange messages without type mismatch", () => {
+      const p = projector();
+      p.project({
+        type: "turn.started",
+        turnId,
+      });
+      p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: itemId("item-write-1"),
+          toolName: "write_to_file",
+          arguments: {
+            TargetFile: "src/hello.ts",
+            CodeContent: "console.log('hello');\n",
+          },
+        },
+      });
+      const completed = p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: itemId("item-write-1"),
+            toolName: "write_to_file",
+            arguments: {
+              TargetFile: "src/hello.ts",
+              CodeContent: "console.log('hello');\n",
+            },
+            output: { content: [{ type: "text", text: "File written successfully." }] },
+            durationMs: 120,
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(completed.messages.length).toBeGreaterThanOrEqual(1);
+      const fileCompleted = completed.messages.find((m) => {
+        if (m.method !== "item/completed") return false;
+        const item = (m.params as { item?: { type?: string } } | undefined)?.item;
+        return item?.type === "fileChange";
+      });
+      expect(fileCompleted).toBeDefined();
+    });
   });
 });

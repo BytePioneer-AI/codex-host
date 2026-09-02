@@ -5,7 +5,6 @@ import { createTwoFilesPatch } from "diff";
 import type {
   HostCommandExecutionItem,
   HostFileChange,
-  HostFileChangeItem,
   HostItem,
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
@@ -293,27 +292,7 @@ export function completeAntigravityToolItem(
   toolOutputLimit: number,
   cwd?: string,
 ): HostItem {
-  const toolName =
-    step.tool_name ??
-    step.tool_info?.name ??
-    (item.type === "toolExecution" ? item.toolName : "");
-  const parameters =
-    step.tool_info?.parameters ??
-    (item.type === "toolExecution" ? item.arguments : undefined);
-
-  // Only project fileChange when the tool succeeded with DONE state and valid diff evidence
-  if (step.state === "DONE" && cwd) {
-    const fileChanges = synthesizeAntigravityFileChange(toolName, parameters, cwd);
-    if (fileChanges && fileChanges.length > 0) {
-      const completed: HostFileChangeItem = {
-        type: "fileChange",
-        itemId: item.itemId,
-        changes: fileChanges,
-      };
-      return completed;
-    }
-  }
-
+  void cwd;
   const output = boundedText(
     step.tool_info?.output ?? step.tool_info?.error,
     toolOutputLimit,
@@ -338,12 +317,9 @@ export function completeAntigravityToolItem(
     return completed;
   }
 
-  if (item.type === "toolExecution" || item.type === "fileChange") {
+  if (item.type === "toolExecution") {
     const completed: HostToolExecutionItem = {
-      type: "toolExecution",
-      itemId: item.itemId,
-      toolName: item.type === "toolExecution" ? item.toolName : toolName || "antigravity.tool",
-      arguments: item.type === "toolExecution" ? item.arguments : jsonValue(parameters),
+      ...item,
       ...(output
         ? {
             output: {

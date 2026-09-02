@@ -397,7 +397,7 @@ describe("Antigravity Tool Projection", () => {
   });
 
   describe("completeAntigravityToolItem", () => {
-    it("completes file tool with fileChange on DONE state and valid parameters", () => {
+    it("completes file tool with toolExecution item and output on DONE state", () => {
       const started = startAntigravityToolItem(
         newItemId(),
         {
@@ -428,14 +428,17 @@ describe("Antigravity Tool Projection", () => {
         64_000,
         CWD,
       );
-      expect(completed.type).toBe("fileChange");
-      if (completed.type === "fileChange") {
-        expect(completed.changes).toHaveLength(1);
-        expect(completed.changes[0]?.path).toBe("a.ts");
+      expect(completed.type).toBe("toolExecution");
+      if (completed.type === "toolExecution") {
+        expect(completed.toolName).toBe("write_to_file");
+        expect(completed.output?.content).toEqual([
+          { type: "text", text: "File written successfully." },
+        ]);
+        expect(completed.durationMs).toBe(150);
       }
     });
 
-    it("completes file tool with toolExecution (not fileChange) on ERROR state", () => {
+    it("completes file tool with toolExecution on ERROR state", () => {
       const started = startAntigravityToolItem(
         newItemId(),
         {

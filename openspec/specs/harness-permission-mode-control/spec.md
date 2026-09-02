@@ -37,7 +37,8 @@ A capable Adapter SHALL report `configuration.permissionModeScope`. `live` means
 - **THEN** it SHALL report `selectPermissionMode=true` and `permissionModeScope=atCreate`
 - **AND** `permissionMode.select` on an already-open Session SHALL return a non-retryable invalid request
 - **AND** Host SHALL NOT persist `transportModelId` or `requestedPermissionModeId` for that rejected selection
-- **AND** resume SHALL NOT replay a stored Permission Mode onto that Session
+- **AND** resume SHALL restore the stored Permission Mode while loading that Session
+- **AND** restoring the mode SHALL NOT enable `permissionMode.select` on the already-open Session
 
 ### Requirement: Session state carries the current native mode
 

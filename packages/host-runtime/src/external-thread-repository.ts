@@ -52,7 +52,6 @@ export interface ExternalThreadStore {
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
-  setHistory(hostThreadId: HostThreadId, history: JsonObject[]): Promise<StoredThreadRecordV1>;
   reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -213,13 +212,6 @@ export class ExternalThreadRepository {
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
       },
     ]);
-  }
-
-  persistHistory(
-    record: StoredThreadRecordV1,
-    history: JsonObject[],
-  ): Promise<StoredThreadRecordV1> {
-    return this.store.setHistory(record.hostThreadId, history);
   }
 
   async commitDerivedSnapshot(

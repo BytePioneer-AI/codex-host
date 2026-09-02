@@ -1099,12 +1099,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
-    const completed = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "turn/completed") &&
-        (message.params as JsonObject).threadId === started.threadId,
-    );
-    expect(completed).toMatchObject({
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") &&
+          (message.params as JsonObject).threadId === started.threadId,
+      ),
+    ).resolves.toMatchObject({
       params: {
         turn: {
           items: [
@@ -1150,7 +1151,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
         .result.data[0]?.items ?? [];
     expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
     expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
-
     await stopFixture(fixture);
   });
 

@@ -61,6 +61,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { resolveAntigravityExecutable } from "./command.js";
+import { AntigravityHistory } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
@@ -384,7 +385,7 @@ class AntigravitySession implements HarnessSession {
   readonly #onClosed: () => void;
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
-  readonly #turns: HostThreadSnapshot["turns"];
+  readonly #history: AntigravityHistory;
   #active: ActiveTurn | null = null;
   #closed = false;
   #model: HarnessModelRef | undefined;
@@ -400,7 +401,7 @@ class AntigravitySession implements HarnessSession {
     executable: string;
     model?: HarnessModelRef;
     nativeRef?: NativeSessionRef;
-    knownTurnRefs?: NativeTurnRef[];
+    history: AntigravityHistory;
     permissionMode: AntigravityPermissionMode;
     printTimeout: string;
     thinkingOptionId?: HarnessThinkingOptionId;
@@ -411,22 +412,14 @@ class AntigravitySession implements HarnessSession {
     this.#cwd = input.cwd;
     this.#environment = input.environment;
     this.#executable = input.executable;
-    this.#model = input.model;
+    this.#history = input.history;
+    this.#model = input.model ?? input.history.model;
     this.#nativeRef = input.nativeRef;
     this.#permissionMode = input.permissionMode;
     this.#printTimeout = input.printTimeout;
-    this.#thinkingOptionId = input.thinkingOptionId;
+    this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#onClosed = input.onClosed;
-    this.#turns = (input.knownTurnRefs ?? []).map((nativeTurnRef) => ({
-      nativeTurnRef,
-      input: [],
-      items: [],
-      outcome: {
-        status: "unknown",
-        reason: "Antigravity CLI does not expose persisted assistant history to headless clients",
-      },
-    }));
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
   }
@@ -435,7 +428,7 @@ class AntigravitySession implements HarnessSession {
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Session is closed") };
-    return { ok: true, value: { turns: [...this.#turns], state: this.#state() } };
+    return { ok: true, value: { turns: this.#history.snapshot(), state: this.#state() } };
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -595,6 +588,7 @@ class AntigravitySession implements HarnessSession {
       this.#active.process.kill();
       this.#completeTurn(this.#active, { status: "cancelled", reason: "Session closed" });
     }
+    await this.#history.flush().catch(() => undefined);
     this.#channel.end();
     this.#onClosed();
   }
@@ -620,6 +614,7 @@ class AntigravitySession implements HarnessSession {
         nativeSessionId: event.conversation_id,
         formatVersion: 1,
       });
+      this.#history.bindNativeSession(event.conversation_id);
       this.#event({ type: "session.state.changed", state: this.#state() });
       this.#ensureContextUsage(active, event.conversation_id);
       return;
@@ -659,6 +654,7 @@ class AntigravitySession implements HarnessSession {
         nativeSessionId: event.result.conversation_id,
         formatVersion: 1,
       });
+      this.#history.bindNativeSession(event.result.conversation_id);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
     if (event.result.response) {
@@ -819,9 +815,9 @@ class AntigravitySession implements HarnessSession {
     for (const item of active.tools.values()) this.#completeItem(active, item, itemOutcome);
     active.tools.clear();
     if (nativeTurnRef) {
-      this.#turns.push({
+      this.#history.append({
         nativeTurnRef,
-        input: active.command.input,
+        turnInput: active.command.input,
         items: active.completedItems,
         outcome:
           outcome.status === "failed"
@@ -876,6 +872,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#thinkingOptionId && !available?.some(({ id }) => id === this.#thinkingOptionId)) {
       this.#thinkingOptionId = undefined;
     }
+    this.#history.setSelection(this.#model, this.#thinkingOptionId);
     this.#event({ type: "session.state.changed", state: this.#state() });
     return { ok: true, value: { completed: true } };
   }
@@ -910,6 +907,7 @@ class AntigravitySession implements HarnessSession {
       };
     }
     this.#thinkingOptionId = requested.data;
+    this.#history.setSelection(this.#model, this.#thinkingOptionId);
     this.#event({ type: "session.state.changed", state: this.#state() });
     return { ok: true, value: { completed: true } };
   }
@@ -1144,35 +1142,45 @@ export class AntigravityAdapter implements HarnessAdapter {
       const inspection = await this.inspect({ cwd: input.cwd });
       if (inspection.status === "ready") catalog = inspection.catalog;
     }
+    const sessionEnvironment = input.environment ?? this.#environment;
+    const history = await AntigravityHistory.open({
+      environment: sessionEnvironment,
+      ...(nativeRef ? { nativeSessionId: nativeRef.nativeSessionId } : {}),
+      ...(input.kind === "resume" && input.knownTurnRefs
+        ? { knownTurnRefs: input.knownTurnRefs }
+        : {}),
+    });
+    const model = (input.kind === "create" ? input.model : undefined) ?? history.model;
+    const thinkingOptionId =
+      (input.kind === "create" ? input.thinkingOptionId : undefined) ?? history.thinkingOptionId;
     // `thread/start` reaches open() directly, so an effort the Model does not
     // accept has to be refused here; otherwise the CLI only rejects the
     // resulting `--effort` once the first Turn runs.
-    if (input.thinkingOptionId) {
-      const available = antigravityAvailableThinkingOptions(catalog, input.model);
-      if (!available?.some(({ id }) => id === input.thinkingOptionId)) {
+    if (thinkingOptionId) {
+      const available = antigravityAvailableThinkingOptions(catalog, model);
+      if (!available?.some(({ id }) => id === thinkingOptionId)) {
         return {
           ok: false,
           error: {
             code: "invalidRequest",
-            message: `Antigravity Model does not accept effort "${input.thinkingOptionId}"`,
+            message: `Antigravity Model does not accept effort "${thinkingOptionId}"`,
             retryable: false,
           },
         };
       }
     }
+    if (model || thinkingOptionId) history.setSelection(model, thinkingOptionId);
     const session = new AntigravitySession({
       ...(catalog ? { catalog } : {}),
       cwd: input.cwd,
-      environment: this.#environment,
+      environment: sessionEnvironment,
       executable,
-      ...(input.model ? { model: input.model } : {}),
+      history,
+      ...(model ? { model } : {}),
       ...(nativeRef ? { nativeRef } : {}),
-      ...(input.kind === "resume" && input.knownTurnRefs
-        ? { knownTurnRefs: input.knownTurnRefs }
-        : {}),
       permissionMode,
       printTimeout: this.#printTimeout,
-      ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
       onClosed: () => this.#sessions.delete(session),
     });

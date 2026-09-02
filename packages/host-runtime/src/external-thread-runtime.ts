@@ -5,7 +5,6 @@ import type {
   HarnessSession,
   HarnessSessionState,
   HostThreadSnapshot,
-  HostTextInput,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -63,7 +62,7 @@ export interface ExternalThread {
   activeTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector; input: HostTextInput[] }>;
+  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
@@ -87,25 +86,6 @@ export type ExternalThreadResolution =
 function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
   const ref = turn.nativeTurnRef;
   return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
-}
-
-function restoredTurns(
-  record: StoredThreadRecordV1,
-  snapshot: HostThreadSnapshot,
-  alignedTurns: JsonObject[],
-): JsonObject[] {
-  if (record.harnessId !== "antigravity" || !record.history) return alignedTurns;
-  if (snapshot.turns.length === 0) return record.history;
-  const localById = new Map(
-    record.history.flatMap((turn) =>
-      typeof turn.id === "string" ? [[turn.id, turn] as const] : [],
-    ),
-  );
-  return alignedTurns.map((turn, index) => {
-    const native = snapshot.turns[index];
-    if (native?.input.length) return turn;
-    return localById.get(typeof turn.id === "string" ? turn.id : "") ?? turn;
-  });
 }
 
 function mergeReadonlySnapshot(
@@ -393,11 +373,11 @@ export class ExternalThreadRuntime {
     try {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       thread.record = aligned.record;
-      thread.turns = restoredTurns(thread.record, snapshot.value, aligned.turns);
+      thread.turns = aligned.turns;
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
-        turns: thread.turns,
+        turns: aligned.turns,
         sessionId: thread.sessionId,
         running: thread.running,
       });
@@ -430,18 +410,6 @@ export class ExternalThreadRuntime {
       thread.persistenceError = failure;
       thread.stateObserver.fault(failure);
       this.#diagnose("External Turn identity could not be persisted");
-      return failure;
-    }
-  }
-
-  async persistHistory(thread: ExternalThread): Promise<Error | null> {
-    if (thread.harnessId !== "antigravity") return null;
-    try {
-      thread.record = await this.#repository.persistHistory(thread.record, thread.turns);
-      return null;
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error(errorMessage(error));
-      this.#diagnose("External Thread history could not be persisted");
       return failure;
     }
   }
@@ -486,13 +454,12 @@ export class ExternalThreadRuntime {
       );
       const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
-      const turns = restoredTurns(aligned.record, snapshot.value, aligned.turns);
       return this.register({
         record: aligned.record,
         session,
         sessionId,
-        thread: externalThreadValue({ record: aligned.record, turns, sessionId }),
-        turns,
+        thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
+        turns: aligned.turns,
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
@@ -502,20 +469,16 @@ export class ExternalThreadRuntime {
       cwd: record.cwd,
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
-      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
-      ...(restoredSelection?.thinkingOptionId
-        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
-        : {}),
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      ...(harnessId === "grok" && restoredSelection?.permissionModeId
+        ? { permissionModeId: restoredSelection.permissionModeId }
+        : {}),
     });
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
     }
     const session = opened.value;
     try {
-      // Decode happens before open so resume can pass thinkingOptionId (e.g. Antigravity).
-      // Skip re-select when the harness fixes Permission Mode at create, or OpenCode whose
-      // additive Permission API should not replay a stale transport mode on resume.
       if (
         restoredSelection?.permissionModeId &&
         harnessId !== "opencode" &&
@@ -560,7 +523,7 @@ export class ExternalThreadRuntime {
         const liveSelection: ExternalConfigurationSelection = {
           model: effectiveModel,
           ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
-          ...(harnessId === "opencode" && effectivePermissionModeId
+          ...((harnessId === "omp" || harnessId === "opencode") && effectivePermissionModeId
             ? { permissionModeId: effectivePermissionModeId }
             : {}),
         };
@@ -580,17 +543,16 @@ export class ExternalThreadRuntime {
         }
       }
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
-      const turns = restoredTurns(aligned.record, snapshot.value, aligned.turns);
       return this.register({
         record: aligned.record,
         session,
         sessionId,
         thread: externalThreadValue({
           record: aligned.record,
-          turns,
+          turns: aligned.turns,
           sessionId,
         }),
-        turns,
+        turns: aligned.turns,
         ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
         ...(effectiveThinkingOptionId
           ? { requestedThinkingOptionId: effectiveThinkingOptionId }

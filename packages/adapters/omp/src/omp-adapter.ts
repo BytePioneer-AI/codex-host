@@ -4,6 +4,8 @@ import path from "node:path";
 
 import {
   HarnessOutputChannel,
+  validateHostApprovalResponse,
+  validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessCommandAccepted,
   type HarnessCommandCapability,
@@ -20,6 +22,7 @@ import {
   type HarnessThinkingOptionId,
   type InspectHarnessInput,
   type HostAgentMessageItem,
+  type HostApprovalInteraction,
   type HostCommand,
   type HostCommandExecutionItem,
   type HostContextCompactionItem,
@@ -27,6 +30,7 @@ import {
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
+  type HostQuestionInteraction,
   type HostReasoningItem,
   type HostSubagentDelegationItem,
   type HostSubagentState,
@@ -54,12 +58,14 @@ import {
   harnessIdSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
   type HarnessPermissionModeId,
+  type HostInteractionId,
   type HostItemId,
   type HostTurnId,
   type JsonValue,
@@ -74,6 +80,8 @@ import {
   OmpRpcFaultError,
   OmpRpcSession,
   OmpRpcUnsupportedCommandError,
+  type OmpInteractionRequest,
+  type OmpInteractionResponse,
   type OmpRpcSessionOptions,
   type OmpSessionState,
   type OmpCompactResult,
@@ -132,6 +140,7 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -147,6 +156,11 @@ interface ActiveTool {
   startedAtMs: number;
 }
 
+interface ActiveInteraction {
+  interaction: HostApprovalInteraction | HostQuestionInteraction;
+  nativeRequest: OmpInteractionRequest;
+}
+
 interface ActiveTurn {
   command: TurnStartCommand;
   agentItem: HostAgentMessageItem | null;
@@ -155,6 +169,8 @@ interface ActiveTurn {
   sawAssistantMessage: boolean;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
+  interactions: Map<HostInteractionId, ActiveInteraction>;
+  interactionByNativeId: Map<string, HostInteractionId>;
   subagents: OmpSubagentLifecycle;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
@@ -864,16 +880,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "interaction.respond") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Omp does not expose Host Interactions",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
@@ -948,6 +955,8 @@ class OmpHarnessSession implements HarnessSession {
         sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
         subagents: new OmpSubagentLifecycle({
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
@@ -1253,6 +1262,82 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  async #respond(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const active = this.#active;
+    const pending = active?.interactions.get(command.interactionId);
+    if (!active || !pending) {
+      return {
+        ok: false,
+        error: invalidState("Omp Interaction Response must reference a pending Interaction"),
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Omp transport is unavailable") };
+
+    let response: OmpInteractionResponse;
+    if (pending.interaction.type === "approval") {
+      if (command.response.type !== "approval") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Omp Approval requires an Approval Response",
+            retryable: false,
+          },
+        };
+      }
+      const validation = validateHostApprovalResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      response = {
+        requestId: pending.nativeRequest.requestId,
+        value: command.response.actionId === "allow-once" ? "Approve" : "Deny",
+      };
+    } else {
+      if (command.response.type !== "question") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Omp Question requires a Question Response",
+            retryable: false,
+          },
+        };
+      }
+      const validation = validateHostQuestionResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      const answers = command.response.answers.answer ?? [];
+      if (command.response.cancelled) {
+        response = { requestId: pending.nativeRequest.requestId, cancelled: true };
+      } else if (pending.nativeRequest.method === "confirm") {
+        response = {
+          requestId: pending.nativeRequest.requestId,
+          confirmed: answers[0] === "yes",
+        };
+      } else {
+        const value = answers[0];
+        if (value === undefined) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "Omp Question Response has no answer",
+              retryable: false,
+            },
+          };
+        }
+        response = { requestId: pending.nativeRequest.requestId, value };
+      }
+    }
+    try {
+      await transport.respondToInteraction(response);
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1351,6 +1436,8 @@ class OmpHarnessSession implements HarnessSession {
         sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
         subagents: new OmpSubagentLifecycle({
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
@@ -1522,6 +1609,12 @@ class OmpHarnessSession implements HarnessSession {
       case "compaction.completed":
         this.#completeCompaction(active, event);
         return;
+      case "interaction.requested":
+        this.#startInteraction(active, event.request);
+        return;
+      case "interaction.closed":
+        this.#closeInteraction(active, event.requestId, event.reason);
+        return;
       case "tool.started":
         this.#completeReasoning(active, { status: "succeeded" });
         this.#completeAgentItem(active, { status: "succeeded" }, false);
@@ -1577,6 +1670,106 @@ class OmpHarnessSession implements HarnessSession {
           nativeSubagentId: event.nativeSubagentId,
         });
     }
+  }
+
+  #startInteraction(active: ActiveTurn, request: OmpInteractionRequest): void {
+    if (active.interactionByNativeId.has(request.requestId)) {
+      throw new Error("Omp Interaction started more than once");
+    }
+    const interactionId = hostInteractionIdSchema.parse(randomUUID());
+    let interaction: HostApprovalInteraction | HostQuestionInteraction;
+    if (
+      request.method === "select" &&
+      request.options.length === 2 &&
+      request.options[0] === "Approve" &&
+      request.options[1] === "Deny"
+    ) {
+      interaction = {
+        type: "approval",
+        interactionId,
+        turnId: active.command.turnId,
+        title: request.title,
+        subject: { type: "nativeAction" },
+        actions: [
+          { id: "allow-once", label: "Approve", effect: "allowOnce" },
+          { id: "deny", label: "Deny", effect: "deny" },
+        ],
+        ...(request.timeoutMs !== undefined
+          ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+          : {}),
+      };
+    } else {
+      const question =
+        request.method === "select"
+          ? {
+              id: "answer",
+              type: "choice" as const,
+              prompt: request.title,
+              options: request.options.map((option) => ({ value: option, label: option })),
+              multiple: false,
+              allowOther: false,
+              optional: false,
+            }
+          : request.method === "confirm"
+            ? {
+                id: "answer",
+                type: "choice" as const,
+                prompt: request.message || request.title,
+                options: [
+                  { value: "yes", label: "Yes" },
+                  { value: "no", label: "No" },
+                ],
+                multiple: false,
+                allowOther: false,
+                optional: false,
+              }
+            : {
+                id: "answer",
+                type: "text" as const,
+                prompt: request.title,
+                multiline: request.method === "editor",
+                secret: false,
+                optional: false,
+                ...(request.method === "input" && request.placeholder
+                  ? { placeholder: request.placeholder }
+                  : {}),
+                ...(request.method === "editor" && request.prefill
+                  ? { prefill: request.prefill }
+                  : {}),
+              };
+      const associatedTool = active.tools.size === 1 ? [...active.tools.values()][0] : undefined;
+      interaction = {
+        type: "question",
+        interactionId,
+        turnId: active.command.turnId,
+        ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
+        title: "OMP",
+        questions: [question],
+        ...(request.timeoutMs !== undefined
+          ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+          : {}),
+      };
+    }
+    active.interactions.set(interactionId, { interaction, nativeRequest: request });
+    active.interactionByNativeId.set(request.requestId, interactionId);
+    this.#channel.emit({ kind: "interaction", interaction });
+  }
+
+  #closeInteraction(
+    active: ActiveTurn,
+    nativeRequestId: string,
+    reason: "responded" | "cancelled" | "expired" | "superseded",
+  ): void {
+    const interactionId = active.interactionByNativeId.get(nativeRequestId);
+    if (!interactionId) throw new Error("Omp Interaction close references an unknown request");
+    active.interactionByNativeId.delete(nativeRequestId);
+    active.interactions.delete(interactionId);
+    this.#event({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
   }
 
   #startCompaction(active: ActiveTurn): void {
@@ -1829,6 +2022,16 @@ class OmpHarnessSession implements HarnessSession {
       this.#completeItem(active, active.compactionItem, itemOutcome);
       active.compactionItem = null;
     }
+    for (const interactionId of active.interactions.keys()) {
+      this.#event({
+        type: "interaction.closed",
+        interactionId,
+        turnId: active.command.turnId,
+        reason: outcome.status === "cancelled" ? "cancelled" : "superseded",
+      });
+    }
+    active.interactions.clear();
+    active.interactionByNativeId.clear();
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
     active.subagents.finalize(active.command.turnId, itemOutcome);

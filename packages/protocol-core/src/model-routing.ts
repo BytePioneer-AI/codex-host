@@ -95,15 +95,24 @@ export function encodePiTransportModel(
 export function encodeOmpTransportModel(
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OMP transport configuration requires a Model Ref");
+    }
     return OMP_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
+  if (parsedPermissionMode) {
+    return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
+  }
   return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
 }
 
@@ -175,17 +184,34 @@ export function decodeOmpTransportSelection(value: unknown): ExternalConfigurati
   if (typeof value !== "string" || !value.startsWith(OMP_NATIVE_TRANSPORT_MODEL_PREFIX))
     return null;
   const components = value.slice(OMP_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2)
+  if (components.length < 1 || components.length > 3)
     throw new Error("OMP transport configuration has an invalid component count");
-  const [modelId, thinkingOptionId] = components;
+  const [modelId, permissionOrThinkingId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionOrThinkingId)
+    throw new Error("OMP transport configuration has an empty Thinking option");
+  if (components.length === 3 && !permissionOrThinkingId)
+    throw new Error("OMP transport configuration has an empty Permission Mode");
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("OMP transport Model contains an invalid Model Ref");
-  const thinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
-    : null;
+  const permissionMode =
+    components.length === 3
+      ? harnessPermissionModeIdSchema.safeParse(permissionOrThinkingId)
+      : null;
+  if (permissionMode && !permissionMode.success)
+    throw new Error("OMP transport configuration contains an invalid Permission Mode");
+  const thinking =
+    components.length === 2
+      ? harnessThinkingOptionIdSchema.safeParse(permissionOrThinkingId)
+      : thinkingOptionId
+        ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+        : null;
   if (thinking && !thinking.success)
     throw new Error("OMP transport configuration contains an invalid Thinking option");
-  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null | undefined {
@@ -493,7 +519,11 @@ export function encodeExternalTransportSelection(
         selection.thinkingOptionId,
       );
     case "omp":
-      return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+      return encodeOmpTransportModel(
+        selection.model,
+        selection.thinkingOptionId,
+        selection.permissionModeId,
+      );
     case "antigravity":
       return encodeAntigravityTransportModel(
         selection.model,

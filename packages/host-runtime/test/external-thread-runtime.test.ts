@@ -1,19 +1,19 @@
+import type {
+  HarnessAdapter,
+  HarnessInspection,
+  OpenSessionInput,
+} from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
-import type { HarnessResult, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
-  hostItemIdSchema,
   hostThreadIdSchema,
-  hostTurnIdSchema,
   nativeSessionRefSchema,
-  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
-  encodeAntigravityTransportModel,
   encodeGrokTransportModel,
   encodeOmpTransportModel,
   encodeOpenCodeTransportModel,
@@ -26,7 +26,6 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 const hostThreadId = hostThreadIdSchema.parse("thread-1");
-const hostTurnId = hostTurnIdSchema.parse("thread-1");
 
 function record(): StoredThreadRecordV1 {
   return {
@@ -54,73 +53,6 @@ function record(): StoredThreadRecordV1 {
 }
 
 describe("ExternalThreadRuntime register", () => {
-  it("restores Antigravity history from the local transcript when the CLI returns placeholders", async () => {
-    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
-    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
-    const model = adapter.catalog.defaultModel;
-    if (!model) throw new Error("Fake Antigravity catalog has no default Model");
-    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
-    if (!opened.ok || !opened.value.initialState.nativeRef) {
-      throw new Error("Fake Antigravity Session did not open");
-    }
-    const session = opened.value;
-    const nativeSessionRef = opened.value.initialState.nativeRef;
-    const nativeTurnRef = nativeTurnRefSchema.parse({
-      harnessId: antigravityHarnessId,
-      nativeSessionId: nativeSessionRef.nativeSessionId,
-      nativeTurnKey: "turn:1",
-      formatVersion: 1,
-    });
-    const stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: antigravityHarnessId,
-      nativeSessionRef,
-      turnMappings: [{ hostTurnId, nativeTurnRef }],
-      history: [{ id: hostThreadId, items: [{ type: "userMessage" }] }],
-    } as StoredThreadRecordV1;
-    session.readSnapshot = vi.fn(async (): Promise<HarnessResult<HostThreadSnapshot>> => ({
-      ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef,
-            input: [],
-            items: [
-              {
-                item: {
-                  itemId: hostItemIdSchema.parse("assistant"),
-                  type: "agentMessage",
-                  text: "output only",
-                },
-                outcome: { status: "succeeded" },
-              },
-            ],
-            outcome: { status: "unknown", reason: "placeholder" },
-          },
-        ],
-      },
-    }));
-    vi.spyOn(adapter, "open").mockResolvedValue({ ok: true, value: session });
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async () => ({ record: stored, turns: [{ id: hostThreadId }] }),
-      sessionTreeId: async () => hostThreadId,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map([["antigravity", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
-
-    const resolved = await runtime.resolve(hostThreadId);
-
-    expect(resolved.kind).toBe("external");
-    if (resolved.kind !== "external") throw new Error("Antigravity Thread did not restore");
-    expect(resolved.thread.turns).toEqual(stored.history);
-    await adapter.close();
-  });
-
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;
@@ -157,10 +89,31 @@ describe("ExternalThreadRuntime register", () => {
     });
   });
 
-  it("uses live OMP state instead of stale persisted model and Thinking selections", async () => {
+  it("uses live OMP state instead of stale persisted configuration", async () => {
     const ompHarnessId = harnessIdSchema.parse("omp");
-    const adapter = new FakeHarnessAdapter(ompHarnessId);
-    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "always-ask", label: "Always ask" },
+        { id: "write", label: "Write" },
+        { id: "yolo", label: "Full access" },
+      ],
+      defaultModeId: "yolo",
+    });
+    const catalog = new FakeHarnessAdapter(ompHarnessId).catalog;
+    const adapter = new FakeHarnessAdapter(
+      ompHarnessId,
+      catalog,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const writeMode = harnessPermissionModeIdSchema.parse("write");
+    const created = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      permissionModeId: writeMode,
+    });
     if (!created.ok) throw new Error(created.error.message);
 
     const nativeRef = created.value.initialState.nativeRef;
@@ -208,57 +161,14 @@ describe("ExternalThreadRuntime register", () => {
       effectiveModel: actualModel,
       effectiveThinkingOptionId: actualThinking,
     });
-    expect(resolved.thread.record.transportModelId).toBe(
-      encodeOmpTransportModel(actualModel, actualThinking),
+    const effectiveTransportModelId = encodeOmpTransportModel(
+      actualModel,
+      actualThinking,
+      writeMode,
     );
-    expect(setTransportModelId).toHaveBeenCalledWith(
-      hostThreadId,
-      encodeOmpTransportModel(actualModel, actualThinking),
-    );
+    expect(resolved.thread.record.transportModelId).toBe(effectiveTransportModelId);
+    expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, effectiveTransportModelId);
 
-    await adapter.close();
-  });
-
-  it("hands the persisted Antigravity effort back to the Adapter on restore", async () => {
-    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
-    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
-    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
-    if (!created.ok) throw new Error(created.error.message);
-    const nativeRef = created.value.initialState.nativeRef;
-    const model = adapter.catalog.defaultModel;
-    if (!nativeRef || !model) throw new Error("Fake Antigravity Session is missing state");
-
-    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
-    const stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: antigravityHarnessId,
-      nativeSessionRef: nativeRef,
-      transportModelId: encodeAntigravityTransportModel(model, undefined, thinkingOptionId),
-      historyMode: "legacy",
-    };
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
-      sessionTreeId: async () => hostThreadId,
-      setTransportModelId: async () => stored,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["antigravity", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
-    const open = vi.spyOn(adapter, "open");
-
-    await runtime.resolve(hostThreadId);
-
-    // The Antigravity CLI keeps no server-side effort, so a restore that drops
-    // the persisted value would silently run the next Turn without --effort.
-    expect(open).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "resume", model, thinkingOptionId }),
-    );
-
-    open.mockRestore();
     await adapter.close();
   });
 
@@ -459,87 +369,108 @@ describe("ExternalThreadRuntime register", () => {
     await adapter.close();
   });
 
-  it("opens a Grok Thread whose mapping stores a stale Permission Mode", async () => {
-    const grokHarnessId = harnessIdSchema.parse("grok");
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "default", label: "Default" },
-        { id: "auto", label: "Auto" },
-        { id: "always-approve", label: "Always approve", dangerous: true },
-      ],
-      defaultModeId: "default",
-    });
-    const defaultMode = harnessPermissionModeIdSchema.parse("default");
-    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
-    const adapter = new FakeHarnessAdapter(
-      grokHarnessId,
-      undefined,
-      true,
-      true,
-      null,
-      permissionModes,
-      false,
-      "atCreate",
-    );
-    const model = adapter.catalog.defaultModel;
-    if (!model) throw new Error("Fake Grok catalog has no default Model");
-    const created = await adapter.open({
-      kind: "create",
-      cwd: "/synthetic",
-      model,
-      permissionModeId: defaultMode,
-    });
-    if (!created.ok || !created.value.initialState.nativeRef) {
-      throw new Error("Fake Grok Session did not open");
-    }
-    const session = created.value;
-    const stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: grokHarnessId,
-      nativeSessionRef: created.value.initialState.nativeRef,
-      title: "Grok Thread",
-      transportModelId: encodeGrokTransportModel(model, alwaysApprove),
-    } as StoredThreadRecordV1;
-    const execute = vi.spyOn(session, "execute");
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async () => ({ record: stored, turns: [] }),
-      sessionTreeId: async () => hostThreadId,
-    } as unknown as ExternalThreadRepository;
-    const open = vi.spyOn(adapter, "open");
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map([["grok", adapter]]),
-      environment: {
-        CODEXHOST_CLI_PATH: "/opt/codexhost",
-        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
-      },
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
-
-    const resolved = await runtime.resolve(hostThreadId);
-
-    expect(resolved.kind).toBe("external");
-    if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
-    expect(execute).not.toHaveBeenCalled();
-    expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
-    expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(defaultMode);
-    expect(resolved.thread.record.transportModelId).toBe(
-      encodeGrokTransportModel(model, alwaysApprove),
-    );
-    expect(open).toHaveBeenCalledWith(
-      expect.objectContaining({
-        environment: expect.objectContaining({
+  it.each(["auto", "always-approve"] as const)(
+    "restores a Grok Thread whose mapping stores %s Permission Mode",
+    async (storedModeId) => {
+      const grokHarnessId = harnessIdSchema.parse("grok");
+      const permissionModes = harnessPermissionModeCatalogSchema.parse({
+        modes: [
+          { id: "ask", label: "Ask" },
+          { id: "auto", label: "Auto" },
+          { id: "always-approve", label: "Always approve", dangerous: true },
+        ],
+        defaultModeId: "ask",
+      });
+      const defaultMode = harnessPermissionModeIdSchema.parse("ask");
+      const storedMode = harnessPermissionModeIdSchema.parse(storedModeId);
+      const adapter = new FakeHarnessAdapter(
+        grokHarnessId,
+        undefined,
+        true,
+        true,
+        null,
+        permissionModes,
+        false,
+        "atCreate",
+      );
+      const model = adapter.catalog.defaultModel;
+      if (!model) throw new Error("Fake Grok catalog has no default Model");
+      const created = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        model,
+        permissionModeId: defaultMode,
+      });
+      if (!created.ok || !created.value.initialState.nativeRef) {
+        throw new Error("Fake Grok Session did not open");
+      }
+      const session = created.value;
+      if (!(session instanceof FakeHarnessSession)) {
+        throw new Error("Fake Grok Session did not expose snapshot state");
+      }
+      const stored: StoredThreadRecordV1 = {
+        ...record(),
+        harnessId: grokHarnessId,
+        nativeSessionRef: created.value.initialState.nativeRef,
+        title: "Grok Thread",
+        transportModelId: encodeGrokTransportModel(model, storedMode),
+      } as StoredThreadRecordV1;
+      const execute = vi.spyOn(session, "execute");
+      const repository = {
+        find: async () => stored,
+        alignSnapshot: async () => ({ record: stored, turns: [] }),
+        sessionTreeId: async () => hostThreadId,
+      } as unknown as ExternalThreadRepository;
+      const open = vi.fn(async (input: OpenSessionInput) => {
+        if (input.kind === "resume" && input.permissionModeId) {
+          session.setStateForSnapshot({
+            ...session.state,
+            effectivePermissionModeId: input.permissionModeId,
+          });
+        }
+        return adapter.open(input);
+      });
+      const restoringAdapter: HarnessAdapter = {
+        harnessId: adapter.harnessId,
+        inspect: (input): Promise<HarnessInspection> => adapter.inspect(input),
+        open,
+        close: () => adapter.close(),
+      };
+      const runtime = new ExternalThreadRuntime({
+        adapters: new Map([["grok", restoringAdapter]]),
+        environment: {
           CODEXHOST_CLI_PATH: "/opt/codexhost",
           CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
           CODEXHOST_RUNTIME_TOKEN: "token",
-          CODEXHOST_THREAD_ID: hostThreadId,
-        }),
-      }),
-    );
+        },
+        repository,
+        consumeOutputs: async () => undefined,
+        diagnose: () => undefined,
+      });
 
-    await adapter.close();
-  });
+      const resolved = await runtime.resolve(hostThreadId);
+
+      expect(resolved.kind).toBe("external");
+      if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
+      expect(execute).not.toHaveBeenCalled();
+      expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+      expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
+      expect(resolved.thread.record.transportModelId).toBe(
+        encodeGrokTransportModel(model, storedMode),
+      );
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionModeId: storedMode,
+          environment: expect.objectContaining({
+            CODEXHOST_CLI_PATH: "/opt/codexhost",
+            CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+            CODEXHOST_RUNTIME_TOKEN: "token",
+            CODEXHOST_THREAD_ID: hostThreadId,
+          }),
+        }),
+      );
+
+      await adapter.close();
+    },
+  );
 });

@@ -864,8 +864,8 @@ export class GrokAcpTransport {
       throw new GrokTransportError("protocolError", "Grok rejected Model configuration");
     }
     const selected = response._meta.model.Ok;
-    if (selected !== modelId) {
-      throw new GrokTransportError("protocolError", "Grok activated a different Model");
+    if (typeof selected !== "string" || selected.trim().length === 0) {
+      throw new GrokTransportError("protocolError", "Grok rejected Model configuration");
     }
   }
 

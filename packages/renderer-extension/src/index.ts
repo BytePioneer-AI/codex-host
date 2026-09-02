@@ -102,6 +102,8 @@ export type {
   RestoredThreadOwnership,
 } from "./renderer-binding-probe.js";
 export {
+  ANTIGRAVITY_TRANSPORT_MODEL_ID,
+  ANTIGRAVITY_TRANSPORT_MODEL_PREFIX,
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_TRANSPORT_MODEL_PREFIX,
   GROK_TRANSPORT_MODEL_ID,
@@ -110,8 +112,10 @@ export {
   QWEN_CODE_TRANSPORT_MODEL_PREFIX,
   OPENCODE_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_PREFIX,
+  antigravityTransportModelId,
   claudeTransportModelId,
   activeRendererDraftPrewarmPolicy,
+  decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   deepSeekHarnessTransportModelId,
@@ -122,6 +126,7 @@ export {
   findComposerModelTarget,
   inspectComposerModelContract,
   installCurrentRendererAdapter,
+  isAntigravityTransportModelId,
   isClaudeTransportModelId,
   isDeepSeekHarnessTransportModelId,
   isDraftPrewarmPolicyReady,

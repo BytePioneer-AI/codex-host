@@ -484,6 +484,27 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.thinkingOptionForAgent(newDefault, "claude-code")).toBeUndefined();
   });
 
+  it("keeps an Antigravity effort selection so the carrier can encode it", () => {
+    const draft = {};
+    const agents = controller();
+    const effort = harnessThinkingOptionIdSchema.parse("low");
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    agents.mount(draft, ["default"]);
+    agents.setExternalModel(draft, "antigravity", model);
+    agents.setExternalThinkingOption(draft, "antigravity", effort);
+
+    // Without this the composer builds a carrier with no effort and the first
+    // Turn runs without --effort.
+    expect(agents.thinkingOptionForAgent(draft, "antigravity")).toBe(effort);
+    expect(agents.get(draft)).toMatchObject({
+      antigravityModel: model,
+      antigravityThinkingOptionId: effort,
+    });
+
+    agents.setExternalThinkingOption(draft, "antigravity", undefined);
+    expect(agents.thinkingOptionForAgent(draft, "antigravity")).toBeUndefined();
+  });
+
   it("applies the target Agent before clearing stale prewarm", async () => {
     const composer = {};
     const agents = controller();

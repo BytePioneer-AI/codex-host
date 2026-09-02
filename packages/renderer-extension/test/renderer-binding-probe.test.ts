@@ -96,6 +96,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -109,6 +110,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual([]);
@@ -122,6 +124,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -135,6 +138,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -148,6 +152,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -161,6 +166,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -176,6 +182,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "checking",
           grok: "checking",
           omp: "checking",
+          antigravity: "checking",
         },
         {
           pi: undefined,
@@ -185,9 +192,10 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -198,6 +206,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -211,6 +220,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual([]);
@@ -224,6 +234,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -237,6 +248,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -996,6 +1008,20 @@ describe("Renderer Composer DOM behavior", () => {
       agent: "deepseek-harness",
       model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
       permissionModeId: "trusted-run",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "antigravity",
+        transportModelId: "codexhost/antigravity-native@gpt-5.6-sol@configured@high",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "antigravity",
+      model: { id: "gpt-5.6-sol" },
+      thinkingOptionId: "high",
+      permissionModeId: "configured",
     });
     expect(() =>
       restoredThreadOwnership({

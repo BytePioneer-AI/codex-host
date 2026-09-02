@@ -16,6 +16,7 @@
     { "path": "./packages/adapters/grok/tsconfig.json" },
     { "path": "./packages/adapters/omp/tsconfig.json" },
     { "path": "./packages/adapters/qwen-code/tsconfig.json" },
+    { "path": "./packages/adapters/antigravity/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

@@ -405,6 +405,9 @@ describe("ExternalThreadRuntime register", () => {
         throw new Error("Fake Grok Session did not open");
       }
       const session = created.value;
+      if (!(session instanceof FakeHarnessSession)) {
+        throw new Error("Fake Grok Session did not expose snapshot state");
+      }
       const stored: StoredThreadRecordV1 = {
         ...record(),
         harnessId: grokHarnessId,

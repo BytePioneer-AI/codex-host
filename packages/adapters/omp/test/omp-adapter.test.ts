@@ -245,7 +245,7 @@ describe("OMP Adapter Session environment", () => {
   it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
     const opened = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -266,7 +266,7 @@ describe("OMP Adapter Session environment", () => {
   it("defers a cold OMP Permission Mode selection until startup", async () => {
     const transport = new RestartableOmpTransport();
     const createTransport = vi.fn(() => transport);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
     const opened = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -306,7 +306,7 @@ describe("OMP Adapter Session environment", () => {
       .mockImplementationOnce(() => inspection)
       .mockImplementationOnce(() => initial)
       .mockImplementationOnce(() => replacement);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
 
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
@@ -364,7 +364,7 @@ describe("OMP Adapter Session environment", () => {
       .mockImplementationOnce(() => initial)
       .mockImplementationOnce(() => failedReplacement)
       .mockImplementationOnce(() => recovery);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
     const opened = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -394,7 +394,7 @@ describe("OMP Adapter Session environment", () => {
   it("passes per-Session delegation environment to the native transport", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
     const opened = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
@@ -433,7 +433,10 @@ describe("OMP Adapter inspection", () => {
       Object.assign(new Error("spawn omp ENOENT"), { code: "ENOENT" }),
     );
     const close = vi.spyOn(transport, "close");
-    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const adapter = new OmpAdapter(
+      {},
+      { fetchCredits: async () => null, createTransport: () => transport },
+    );
 
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "notInstalled",
@@ -481,7 +484,7 @@ describe("OMP Adapter Fork", () => {
     const verifySessionCwd = vi.fn(async () => undefined);
     transport.verifySessionCwd = verifySessionCwd;
     const createTransport = vi.fn(() => transport);
-    const adapter = new OmpAdapter({}, { createTransport });
+    const adapter = new OmpAdapter({}, { fetchCredits: async () => null, createTransport });
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "omp",
       nativeSessionId: "source-session",
@@ -553,6 +556,7 @@ describe("OMP Adapter Subagents", () => {
   it("projects native Subagent lifecycle into a Host delegation Item", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
+      fetchCredits: async () => null,
       createTransport: (options: OmpRpcSessionOptions) => {
         transport.onSubagentEvent = options.onSubagentEvent ?? null;
         return transport;
@@ -626,6 +630,7 @@ describe("OMP Adapter Subagents", () => {
   it("exposes only OMP compact as a Harness command", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
+      fetchCredits: async () => null,
       createTransport: () => transport,
     };
     const adapter = new OmpAdapter({}, dependencies);
@@ -655,6 +660,7 @@ describe("OMP Adapter Subagents", () => {
   it("reads a stable OMP Subagent transcript as a Child Host Thread", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
+      fetchCredits: async () => null,
       createTransport: () => transport,
     };
     const adapter = new OmpAdapter({}, dependencies);
@@ -686,6 +692,7 @@ describe("OMP Adapter Subagents", () => {
   it("materializes a background Subagent that starts after the parent Turn is idle", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
+      fetchCredits: async () => null,
       createTransport: (options: OmpRpcSessionOptions) => {
         transport.onSubagentEvent = options.onSubagentEvent ?? null;
         return transport;
@@ -768,6 +775,7 @@ describe("OMP Adapter Subagents", () => {
   it("keeps an autonomous Turn open until all background Subagents settle", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
+      fetchCredits: async () => null,
       createTransport: (options: OmpRpcSessionOptions) => {
         transport.onSubagentEvent = options.onSubagentEvent ?? null;
         return transport;
@@ -847,7 +855,10 @@ describe("OMP Adapter Subagents", () => {
   it("projects a native Edit File Change from numbered details.diff without faulting the Session", async () => {
     const transport = new FakeOmpTransport();
     transport.autoCompleteTurn = false;
-    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const adapter = new OmpAdapter(
+      {},
+      { fetchCredits: async () => null, createTransport: () => transport },
+    );
     const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
@@ -930,6 +941,70 @@ describe("OMP Adapter Subagents", () => {
       outcome: { status: "succeeded" },
     });
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("caches OMP OmniRoute account credits on the Adapter without changing Session Usage", async () => {
+    const snapshot = {
+      usedPercent: 15,
+      resetsAt: "2026-08-31T16:00:00.000Z",
+      periodType: "five_hour" as const,
+      productUsage: [
+        {
+          product: "Gemini Flash (5h)",
+          usagePercent: 15,
+          resetsAt: "2026-08-31T16:00:00.000Z",
+        },
+      ],
+    };
+    const transport = new FakeOmpTransport();
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        fetchCredits: async () => snapshot,
+      },
+    );
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(adapter.refreshCredits()).resolves.toEqual(snapshot);
+    expect(adapter.credits()).toEqual(snapshot);
+    await adapter.close();
+  });
+
+  it("refreshes OMP OmniRoute account credits after a Turn settles", async () => {
+    let fetches = 0;
+    const transport = new FakeOmpTransport();
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        fetchCredits: async () => {
+          fetches += 1;
+          return {
+            usedPercent: Math.min(fetches * 10, 100),
+            periodType: "five_hour" as const,
+          };
+        },
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    await adapter.refreshCredits();
+    const fetchesAfterOpen = fetches;
+    expect(fetchesAfterOpen).toBeGreaterThan(0);
+
+    const session = opened.value;
+    const turnId = "turn-omp-credits" as HostTurnId;
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "hello" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetches).toBeGreaterThan(fetchesAfterOpen);
+    expect(adapter.credits()?.usedPercent).toBe(Math.min(fetches * 10, 100));
+    await session.close();
     await adapter.close();
   });
 });

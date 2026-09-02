@@ -66,8 +66,10 @@ import {
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
+  type AccountCreditsSnapshot,
 } from "@codexhost/shared-contracts";
 
+import { fetchOmpCredits, type FetchOmpCreditsInput } from "./omp-credits.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
@@ -138,6 +140,7 @@ export interface OmpTurnTransport {
 
 export interface OmpAdapterDependencies {
   createTransport(options: OmpRpcSessionOptions): OmpTurnTransport;
+  fetchCredits?(input: FetchOmpCreditsInput): Promise<AccountCreditsSnapshot | null>;
 }
 
 interface ActiveTool {
@@ -556,6 +559,7 @@ class OmpHarnessSession implements HarnessSession {
   readonly #createTransport: OmpAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #onClosed: () => void;
+  readonly #onTurnSettled: (() => void) | undefined;
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
@@ -591,11 +595,13 @@ class OmpHarnessSession implements HarnessSession {
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      onTurnSettled?: () => void;
     },
   ) {
     this.#cwd = cwd;
     this.#createTransport = createTransport;
     this.#onClosed = onClosed;
+    this.#onTurnSettled = options.onTurnSettled;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#requestedModel = options.model;
     this.#requestedThinkingOptionId = options.thinkingOptionId;
@@ -1843,6 +1849,7 @@ class OmpHarnessSession implements HarnessSession {
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
     active.resolveCompletion();
+    this.#onTurnSettled?.();
     queueMicrotask(() => {
       if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
     });
@@ -1944,12 +1951,16 @@ export class OmpAdapter implements HarnessAdapter {
   };
   readonly #closeTimeoutMs: number;
   readonly #createTransport: OmpAdapterDependencies["createTransport"];
+  readonly #environment: NodeJS.ProcessEnv | undefined;
+  readonly #fetchCredits: (input: FetchOmpCreditsInput) => Promise<AccountCreditsSnapshot | null>;
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<OmpTurnTransport>();
   readonly #sessions = new Set<OmpHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
+  #credits: AccountCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
   #thinkingSelectionSupported: boolean | null = null;
 
   constructor(
@@ -1960,7 +1971,47 @@ export class OmpAdapter implements HarnessAdapter {
   ) {
     this.#createTransport = dependencies.createTransport;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
+    this.#environment = options.environment;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+    this.#fetchCredits =
+      dependencies.fetchCredits ??
+      ((input) =>
+        fetchOmpCredits(
+          input.environment
+            ? { environment: input.environment }
+            : this.#environment
+              ? { environment: this.#environment }
+              : {},
+        ));
+  }
+
+  credits(): AccountCreditsSnapshot | null {
+    return this.#credits;
+  }
+
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    if (this.#closePromise) return Promise.resolve(this.#credits);
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#loadCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  #scheduleCreditsRefresh(): void {
+    void this.refreshCredits();
+  }
+
+  async #loadCredits(): Promise<AccountCreditsSnapshot | null> {
+    try {
+      const snapshot = await this.#fetchCredits(
+        this.#environment ? { environment: this.#environment } : {},
+      );
+      if (snapshot) this.#credits = snapshot;
+    } catch {
+      // Credits are optional account telemetry; preserve last snapshot.
+    }
+    return this.#credits;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1974,6 +2025,7 @@ export class OmpAdapter implements HarnessAdapter {
         },
       };
     }
+    this.#scheduleCreditsRefresh();
     const cwd = input.cwd ?? process.cwd();
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
@@ -2271,9 +2323,11 @@ export class OmpAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        onTurnSettled: () => this.#scheduleCreditsRefresh(),
       },
     );
     this.#sessions.add(session);
+    this.#scheduleCreditsRefresh();
     return session;
   }
 

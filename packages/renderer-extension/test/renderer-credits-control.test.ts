@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  creditsFamilyFromSelection,
+  creditsHeaderEntries,
   creditsPeriodLabel,
+  creditsPopoverRows,
+  creditsProviderShortLabel,
+  creditsSelectionHint,
   formatRendererCreditsReset,
   rendererCreditsTone,
 } from "../src/renderer-credits-control.js";
@@ -24,6 +29,133 @@ describe("Renderer credits control", () => {
     expect(creditsPeriodLabel("seven_day")).toBe("7-day limit");
     expect(creditsPeriodLabel("unknown")).toBe("Account limit");
     expect(formatRendererCreditsReset("not-a-date")).toBe("not-a-date");
+  });
+
+  it("shortens provider product labels for the header chips", () => {
+    expect(creditsProviderShortLabel("Gemini Flash (5h)")).toBe("Gemini");
+    expect(creditsProviderShortLabel("Grok Build")).toBe("Grok");
+    expect(creditsProviderShortLabel("Codex (5h)")).toBe("Codex");
+    expect(creditsProviderShortLabel("Claude (7d)")).toBe("Claude");
+  });
+
+  it("builds one header chip per provider family, keeping the hotter window", () => {
+    expect(
+      creditsHeaderEntries({
+        usedPercent: 35,
+        periodType: "weekly",
+        productUsage: [
+          { product: "Grok Build", usagePercent: 35 },
+          { product: "Codex (5h)", usagePercent: 10 },
+          { product: "Codex (7d)", usagePercent: 55 },
+        ],
+      }),
+    ).toEqual([
+      {
+        label: "Grok",
+        usedPercent: 35,
+        products: [{ product: "Grok Build", usagePercent: 35 }],
+      },
+      {
+        label: "Codex",
+        usedPercent: 55,
+        products: [
+          { product: "Codex (5h)", usagePercent: 10 },
+          { product: "Codex (7d)", usagePercent: 55 },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps the native 5-hour primary window when productUsage only has the 7-day bucket", () => {
+    expect(
+      creditsHeaderEntries({
+        usedPercent: 62,
+        periodType: "five_hour",
+        resetsAt: "2026-08-31T16:00:00.000Z",
+        productUsage: [
+          {
+            product: "7-day window",
+            usagePercent: 18,
+            resetsAt: "2026-09-07T11:00:00.000Z",
+          },
+        ],
+      }).map((entry) => ({ label: entry.label, usedPercent: entry.usedPercent })),
+    ).toEqual([
+      { label: "5-hour", usedPercent: 62 },
+      { label: "7-day", usedPercent: 18 },
+    ]);
+  });
+
+  it("maps the selected Model onto a quota family", () => {
+    expect(creditsFamilyFromSelection("grok-cli / grok-4")).toBe("Grok");
+    expect(creditsFamilyFromSelection("agy / gemini-3.7-flash-tiered")).toBe("Gemini");
+    expect(creditsFamilyFromSelection("codex / gpt-5.4")).toBe("Codex");
+    expect(creditsFamilyFromSelection("agy / claude-sonnet-4-6")).toBe("Claude");
+    expect(creditsFamilyFromSelection("omp-model-v1.abc")).toBeNull();
+    expect(
+      creditsSelectionHint({
+        modelLabel: "grok-cli / grok-4",
+        agent: "omp",
+      }),
+    ).toContain("grok-cli");
+  });
+
+  it("lists per-account rows instead of a duplicated family summary", () => {
+    expect(
+      creditsPopoverRows({
+        label: "Gemini",
+        usedPercent: 50,
+        resetsAt: "2026-09-02T22:43:00.000Z",
+        products: [
+          {
+            product: "Gemini Flash (5h)",
+            usagePercent: 50,
+            resetsAt: "2026-09-02T22:43:00.000Z",
+            accounts: [
+              {
+                accountName: "user1@example.com",
+                usagePercent: 80,
+                resetsAt: "2026-09-02T22:43:00.000Z",
+              },
+              {
+                accountName: "user2@example.com",
+                usagePercent: 20,
+                resetsAt: "2026-09-02T21:10:00.000Z",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        label: "user1@example.com",
+        usagePercent: 80,
+        resetsAt: "2026-09-02T22:43:00.000Z",
+      },
+      {
+        label: "user2@example.com",
+        usagePercent: 20,
+        resetsAt: "2026-09-02T21:10:00.000Z",
+      },
+    ]);
+  });
+
+  it("puts the selected family first and keeps other model families for expand", () => {
+    expect(
+      creditsHeaderEntries(
+        {
+          usedPercent: 32.6,
+          periodType: "weekly",
+          productUsage: [
+            { product: "Gemini Flash (5h)", usagePercent: 32.6 },
+            { product: "Grok Build", usagePercent: 64 },
+            { product: "Codex (5h)", usagePercent: 14 },
+            { product: "Firecrawl (monthly)", usagePercent: 0 },
+          ],
+        },
+        "grok-cli / grok-4",
+      ).map((entry) => entry.label),
+    ).toEqual(["Grok", "Gemini", "Codex"]);
   });
 
   it("formats a same-day reset as a precise time and every other reset as a dated time", () => {

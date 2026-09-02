@@ -96,6 +96,7 @@ import { ClaudeSubagentLifecycle } from "./subagent-lifecycle.js";
 import { ClaudeTaskTracker } from "./task-tracker.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
+import { fetchClaudeCredits, type FetchClaudeCreditsInput } from "./claude-credits.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -495,6 +496,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
   readonly #onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null;
+  readonly #onTurnSettled: (() => void) | undefined;
   #openMode: "create" | "resume";
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
@@ -547,6 +549,7 @@ class ClaudeHarnessSession implements HarnessSession {
       toolOutputLimit: number;
       cancelTimeoutMs: number;
       continuationQuiescenceMs: number;
+      onTurnSettled?: () => void;
     },
   ) {
     this.#cwd = cwd;
@@ -560,6 +563,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#closeTimeoutMs = closeTimeoutMs;
     this.#onClosed = onClosed;
     this.#onPlanLimitObserved = onPlanLimitObserved;
+    this.#onTurnSettled = options.onTurnSettled;
     this.#openMode = options.openMode;
     this.#requestedModel = options.requestedModel;
     this.#requestedPermissionModeId = options.requestedPermissionModeId;
@@ -2130,6 +2134,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#occupancy.clear();
     this.#transport?.setIdleLive(false);
     active.resolveCompletion();
+    this.#onTurnSettled?.();
   }
 
   #handleTurnTransportFailure(active: ActiveTurn): void {
@@ -2246,6 +2251,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv | undefined;
+  readonly #fetchCredits: (
+    input: FetchClaudeCreditsInput,
+  ) => Promise<AccountCreditsSnapshot | null>;
   readonly #toolOutputLimit: number;
   readonly #continuationQuiescenceMs: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
@@ -2254,9 +2263,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
+  #omniRouteCredits: AccountCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#environment = options.environment;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
       throw new RangeError("Claude Code cancel timeout must be a positive safe integer");
@@ -2315,6 +2327,46 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
     };
+    this.#fetchCredits =
+      dependencies?.fetchCredits ??
+      ((input) =>
+        fetchClaudeCredits(
+          input.environment
+            ? { environment: input.environment }
+            : this.#environment
+              ? { environment: this.#environment }
+              : {},
+        ));
+  }
+
+  credits(): AccountCreditsSnapshot | null {
+    return projectClaudePlanLimitToCredits(this.#latestPlanLimit) ?? this.#omniRouteCredits;
+  }
+
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    if (this.#closePromise) return Promise.resolve(this.credits());
+    if (this.#latestPlanLimit) return Promise.resolve(this.credits());
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#loadCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  #scheduleCreditsRefresh(): void {
+    void this.refreshCredits();
+  }
+
+  async #loadCredits(): Promise<AccountCreditsSnapshot | null> {
+    try {
+      const snapshot = await this.#fetchCredits(
+        this.#environment ? { environment: this.#environment } : {},
+      );
+      if (snapshot) this.#omniRouteCredits = snapshot;
+    } catch {
+      // Credits are optional account telemetry; preserve last snapshot.
+    }
+    return this.credits();
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -2324,6 +2376,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         error: invalidState("Claude Code Adapter is closing"),
       };
     }
+    this.#scheduleCreditsRefresh();
     const cwd = path.resolve(input.cwd ?? process.cwd());
     if (!input.refresh) {
       const cached = this.#inspectionCache.get(cwd);
@@ -2600,9 +2653,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         toolOutputLimit: this.#toolOutputLimit,
         cancelTimeoutMs: this.#cancelTimeoutMs,
         continuationQuiescenceMs: this.#continuationQuiescenceMs,
+        onTurnSettled: () => this.#scheduleCreditsRefresh(),
       },
     );
     this.#sessions.add(session);
+    this.#scheduleCreditsRefresh();
     return { ok: true, value: session };
   }
 
@@ -2621,10 +2676,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       }
     }
     return this.#latestPlanLimit;
-  }
-
-  credits(): AccountCreditsSnapshot | null {
-    return projectClaudePlanLimitToCredits(this.#latestPlanLimit);
   }
 
   close(): Promise<void> {

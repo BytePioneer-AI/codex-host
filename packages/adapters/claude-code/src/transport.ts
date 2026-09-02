@@ -1,4 +1,10 @@
-import type { HarnessThinkingOptionId, JsonValue } from "@codexhost/shared-contracts";
+import type {
+  AccountCreditsSnapshot,
+  HarnessThinkingOptionId,
+  JsonValue,
+} from "@codexhost/shared-contracts";
+
+import type { FetchClaudeCreditsInput } from "./claude-credits.js";
 
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -240,4 +246,5 @@ export interface ClaudeAdapterDependencies {
     nativeSubagentId: string;
   }): Promise<unknown[]>;
   randomUUID(): string;
+  fetchCredits?(input: FetchClaudeCreditsInput): Promise<AccountCreditsSnapshot | null>;
 }

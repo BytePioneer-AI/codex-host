@@ -72,11 +72,19 @@ export function parseModelCatalogFromHelp(helpText: string): HarnessModelCatalog
       label: labelForModelId(id),
     }));
   if (models.length === 0) return null;
-  return { models, thinkingOptions: [] };
+  return {
+    models,
+    defaultModel: models[0]?.ref,
+    thinkingOptions: [],
+  };
 }
 
 export function staticModelCatalog(): HarnessModelCatalog {
-  return { models: [...STATIC_MODELS], thinkingOptions: [] };
+  return {
+    models: [...STATIC_MODELS],
+    defaultModel: STATIC_MODELS[0]?.ref,
+    thinkingOptions: [],
+  };
 }
 
 export function resolveCodeBuddyModelRef(id: string): HarnessModelRef {
@@ -103,7 +111,61 @@ export async function resolveModelCatalogFromCli(
 ): Promise<HarnessModelCatalog> {
   const spawnFn = options.spawn ?? spawn;
   const helpText = await readHelpText(executable, cwd, options.timeoutMs, spawnFn);
-  return parseModelCatalogFromHelp(helpText) ?? options.fallback ?? staticModelCatalog();
+  const catalog = parseModelCatalogFromHelp(helpText) ?? options.fallback ?? staticModelCatalog();
+  const configuredModelId = await readConfiguredModel(executable, cwd, options.timeoutMs, spawnFn);
+  const configuredModel = configuredModelId
+    ? catalog.models.find(({ ref }) => ref.id === configuredModelId)?.ref
+    : undefined;
+  return {
+    ...catalog,
+    defaultModel: configuredModel ?? catalog.defaultModel ?? catalog.models[0]?.ref,
+  };
+}
+
+function readConfiguredModel(
+  executable: string,
+  cwd: string,
+  timeoutMs: number,
+  spawnFn: typeof spawn,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawnFn(executable, ["config", "get", "model"], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let settled = false;
+    const finish = (model: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(model);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(null);
+    }, timeoutMs);
+    timer.unref();
+    child.stdout?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    // Drain stderr so a verbose CLI cannot block this inspection subprocess.
+    child.stderr?.resume();
+    child.on("error", () => finish(null));
+    child.on("close", (code: number | null) => {
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      const model = stdout
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => TRANSPORT_SAFE_MODEL_ID.test(line))
+        .at(-1);
+      finish(model ?? null);
+    });
+  });
 }
 
 function readHelpText(

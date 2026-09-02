@@ -5,9 +5,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { spawn as nodeSpawn } from "node:child_process";
 
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessInspectionSchema,
+  harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import { CodeBuddyAdapter } from "../src/codebuddy-adapter.js";
+import { staticModelCatalog } from "../src/model-catalog.js";
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -71,6 +77,36 @@ function eventType(event: unknown): string | undefined {
   return (event as { event?: { type?: string } }).event?.type;
 }
 
+describe("CodeBuddyAdapter.inspect", () => {
+  it("returns a schema-valid inspection with Model and Permission Mode capabilities", async () => {
+    const spawn = vi.fn(() => {
+      const child = new FakeChild();
+      queueMicrotask(() => child.close(0, null));
+      return child;
+    });
+    const adapter = new CodeBuddyAdapter({
+      command: "codebuddy-fake",
+      environment: { PATH: "/usr/bin" },
+      modelCatalog: staticModelCatalog(),
+      spawn: spawn as unknown as typeof nodeSpawn,
+    });
+
+    const inspection = await adapter.inspect({ cwd: "/tmp/demo", refresh: true });
+
+    expect(harnessInspectionSchema.safeParse(inspection).success).toBe(true);
+    expect(inspection).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectModel: true, selectPermissionMode: true } },
+      permissionModes: { defaultModeId: "default" },
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      "codebuddy-fake",
+      ["--help"],
+      expect.objectContaining({ cwd: "/tmp/demo", stdio: ["ignore", "pipe", "pipe"] }),
+    );
+  });
+});
+
 describe("CodeBuddyAdapter.open", () => {
   it("rejects fork as unsupported", async () => {
     const { adapter } = makeAdapter({ current: null });
@@ -98,6 +134,47 @@ describe("CodeBuddyAdapter.open", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("invalidRequest");
+  });
+
+  it("changes Permission Mode while idle and reports the new state", async () => {
+    const { adapter } = makeAdapter({ current: null });
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp/demo" });
+    if (!opened.ok) throw new Error("open failed");
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+
+    const result = await opened.value.execute({
+      type: "permissionMode.select",
+      permissionModeId: harnessPermissionModeIdSchema.parse("plan"),
+    });
+    const output = await iterator.next();
+
+    expect(result).toEqual({ ok: true, value: { completed: true } });
+    expect(output.value).toMatchObject({
+      kind: "event",
+      event: { type: "session.state.changed", state: { effectivePermissionModeId: "plan" } },
+    });
+  });
+
+  it("changes Model while idle and reports the new state", async () => {
+    const { adapter } = makeAdapter({ current: null });
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp/demo" });
+    if (!opened.ok) throw new Error("open failed");
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+
+    const result = await opened.value.execute({
+      type: "model.select",
+      model: harnessModelRefSchema.parse({ id: "gpt-5.6-luna" }),
+    });
+    const output = await iterator.next();
+
+    expect(result).toEqual({ ok: true, value: { completed: true } });
+    expect(output.value).toMatchObject({
+      kind: "event",
+      event: {
+        type: "session.state.changed",
+        state: { effectiveModel: { id: "gpt-5.6-luna" }, resolvedModelLabel: "gpt-5.6-luna" },
+      },
+    });
   });
 
   it("rejects resume when the native ref belongs to another harness", async () => {
@@ -160,6 +237,20 @@ describe("CodeBuddySession turn lifecycle", () => {
     expect(types).toContain("item.completed");
     expect(types).toContain("session.usage.changed");
     expect(types).toContain("turn.completed");
+    const startedTextItems = events
+      .filter((event) => eventType(event) === "item.started")
+      .map((event) => (event as { event?: { item?: { text?: unknown } } }).event?.item?.text)
+      .filter((text): text is string => typeof text === "string");
+    expect(startedTextItems).toEqual(startedTextItems.map(() => ""));
+    const completedItemIds = events
+      .filter((event) => eventType(event) === "item.completed")
+      .map(
+        (event) =>
+          (event as { event?: { snapshot?: { item?: { itemId?: string } } } }).event?.snapshot?.item
+            ?.itemId,
+      )
+      .filter((itemId): itemId is string => typeof itemId === "string");
+    expect(new Set(completedItemIds).size).toBe(completedItemIds.length);
 
     const completed = events.find((event) => eventType(event) === "turn.completed") as {
       event?: { outcome?: { status: string } };

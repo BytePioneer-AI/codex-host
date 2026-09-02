@@ -78,9 +78,9 @@ const TOOL_OUTPUT_LIMIT = 16_000;
 
 const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
-    selectModel: false,
+    selectModel: true,
     selectThinkingOption: false,
-    selectPermissionMode: false,
+    selectPermissionMode: true,
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
 };
@@ -121,6 +121,7 @@ interface ActiveTurn {
   agentItem: HostAgentMessageItem | null;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, HostItemSnapshot>;
+  completedItemIds: Set<string>;
   cancellationRequested: boolean;
 }
 
@@ -140,8 +141,8 @@ class CodeBuddySession implements HarnessSession {
   readonly #cwd: string;
   readonly #dependencies: CodeBuddyAdapterDependencies;
   readonly #onClosed: () => void;
-  readonly #requestedModelId: string | null;
-  readonly #requestedPermissionModeId: HarnessPermissionModeId | null;
+  #requestedModelId: string | null;
+  #requestedPermissionModeId: HarnessPermissionModeId | null;
   readonly #resumeSessionId: string | null;
   readonly #sessionEnvironment: Record<string, string | undefined> | null;
   readonly #toolOutputLimit: number;
@@ -154,6 +155,7 @@ class CodeBuddySession implements HarnessSession {
   #initialUsage: HostUsage | null = null;
   #phase: "open" | "closed" | "faulted" = "open";
   #process: CodeBuddyStreamProcess | null = null;
+  #suppressProcessExit = false;
   #state: HarnessSessionState;
   #turnCounter = 0;
   #usage: HostUsage | null = null;
@@ -267,17 +269,19 @@ class CodeBuddySession implements HarnessSession {
             retryable: false,
           }),
         };
-      case "model.select":
       case "thinking.select":
-      case "permissionMode.select":
         return {
           ok: false,
           error: errorOf(
             "unsupported",
-            "CodeBuddy CLI fixes Model and Permission Mode at Session start",
+            "CodeBuddy CLI does not support Thinking selection on an open Session",
             { retryable: false },
           ),
         };
+      case "model.select":
+        return this.#selectModel(command);
+      case "permissionMode.select":
+        return this.#selectPermissionMode(command);
     }
   }
 
@@ -350,6 +354,7 @@ class CodeBuddySession implements HarnessSession {
       agentItem: null,
       reasoningItem: null,
       tools: new Map(),
+      completedItemIds: new Set(),
       cancellationRequested: false,
     };
     this.#event({ type: "turn.started", turnId: command.turnId });
@@ -369,6 +374,62 @@ class CodeBuddySession implements HarnessSession {
     active.cancellationRequested = true;
     this.#killProcess();
     return { ok: true, value: { cancellationRequested: true } };
+  }
+
+  #selectPermissionMode(
+    command: PermissionModeSelectCommand,
+  ): HarnessResult<PermissionModeSelectCompleted> {
+    if (!isKnownCodeBuddyPermissionModeId(command.permissionModeId)) {
+      return {
+        ok: false,
+        error: errorOf("invalidRequest", "Unknown CodeBuddy Permission Mode", {
+          retryable: false,
+        }),
+      };
+    }
+    if (this.#active) {
+      return {
+        ok: false,
+        error: errorOf("sessionBusy", "CodeBuddy cannot change Permission Mode during a Turn", {
+          retryable: true,
+        }),
+      };
+    }
+    this.#requestedPermissionModeId = command.permissionModeId;
+    // CodeBuddy applies Permission Mode when the CLI process starts. Stop an
+    // idle process so the next Turn resumes the same native Session with the
+    // newly selected mode.
+    this.#restartProcessForConfiguration();
+    this.#state = {
+      ...this.#state,
+      effectivePermissionModeId: command.permissionModeId,
+    };
+    this.#event({ type: "session.state.changed", state: this.#state });
+    return { ok: true, value: { completed: true } };
+  }
+
+  #selectModel(command: ModelSelectCommand): HarnessResult<ModelSelectCompleted> {
+    if (this.#active) {
+      return {
+        ok: false,
+        error: errorOf("sessionBusy", "CodeBuddy cannot change Model during a Turn", {
+          retryable: true,
+        }),
+      };
+    }
+    const model = harnessModelRefSchema.parse(command.model);
+    this.#requestedModelId = model.id;
+    // CodeBuddy applies Model when the CLI process starts. Stop an idle
+    // process so the next Turn resumes the same native Session with the new
+    // Model.
+    this.#restartProcessForConfiguration();
+    this.#state = {
+      ...this.#state,
+      effectiveModel: model,
+      resolvedModelLabel: model.id,
+    };
+    this.#event({ type: "session.state.changed", state: this.#state });
+    return { ok: true, value: { completed: true } };
   }
 
   // ---- Process lifecycle ---------------------------------------------------
@@ -419,12 +480,23 @@ class CodeBuddySession implements HarnessSession {
     this.#process = null;
   }
 
+  #restartProcessForConfiguration(): void {
+    if (!this.#process) return;
+    this.#suppressProcessExit = true;
+    this.#process.kill();
+    this.#process = null;
+  }
+
   #handleExit(exit: {
     code: number | null;
     signal: NodeJS.Signals | null;
     stderrTail: string;
   }): void {
     this.#process = null;
+    if (this.#suppressProcessExit) {
+      this.#suppressProcessExit = false;
+      return;
+    }
     const active = this.#active;
     if (active) {
       const turnId = active.command.turnId;
@@ -546,7 +618,7 @@ class CodeBuddySession implements HarnessSession {
             itemId: hostItemIdSchema.parse(`agent-${turnId}-${active.tools.size}`),
             text: "",
           };
-          this.#event({ type: "item.started", turnId, item: active.agentItem });
+          this.#event({ type: "item.started", turnId, item: { ...active.agentItem } });
         }
         active.agentItem.text += projection.delta;
         this.#event({
@@ -564,7 +636,7 @@ class CodeBuddySession implements HarnessSession {
             itemId: hostItemIdSchema.parse(`reasoning-${turnId}-${active.tools.size}`),
             text: "",
           };
-          this.#event({ type: "item.started", turnId, item: active.reasoningItem });
+          this.#event({ type: "item.started", turnId, item: { ...active.reasoningItem } });
         }
         active.reasoningItem.text += projection.delta;
         this.#event({
@@ -594,7 +666,7 @@ class CodeBuddySession implements HarnessSession {
               };
         const snapshot: HostItemSnapshot = { item, outcome: { status: "succeeded" } };
         active.tools.set(projection.callId, snapshot);
-        this.#event({ type: "item.started", turnId, item });
+        this.#event({ type: "item.started", turnId, item: { ...item } });
         return;
       }
       case "tool.completed": {
@@ -638,6 +710,7 @@ class CodeBuddySession implements HarnessSession {
             }),
           };
         }
+        active.completedItemIds.add(snapshot.item.itemId);
         this.#event({ type: "item.completed", turnId, snapshot: { ...snapshot } });
         return;
       }
@@ -665,8 +738,10 @@ class CodeBuddySession implements HarnessSession {
     if (!active) return;
     const turnId = active.command.turnId;
     for (const snapshot of this.#recordedItems(active)) {
+      if (active.completedItemIds.has(snapshot.item.itemId)) continue;
       if (snapshot.outcome.status === "succeeded") {
         snapshot.outcome = outcome;
+        active.completedItemIds.add(snapshot.item.itemId);
         this.#event({ type: "item.completed", turnId, snapshot: { ...snapshot } });
       }
     }
@@ -680,16 +755,6 @@ class CodeBuddySession implements HarnessSession {
     if (sessionId && !this.#state.nativeRef) {
       this.#publishInitState(sessionId, null, null);
     }
-    this.#endActiveItems(
-      result.is_error
-        ? {
-            status: "failed",
-            error: errorOf("nativeFailure", result.resultText || "CodeBuddy Turn failed", {
-              retryable: false,
-            }),
-          }
-        : { status: "succeeded" },
-    );
     // Ensure the agent message item exists even when the Turn produced no
     // streamed text (e.g. a failed Turn with an empty result).
     if (!active.agentItem) {
@@ -698,33 +763,23 @@ class CodeBuddySession implements HarnessSession {
         itemId: hostItemIdSchema.parse(`agent-${turnId}-final`),
         text: "",
       };
-      this.#event({ type: "item.started", turnId, item: active.agentItem });
-      this.#event({
-        type: "item.completed",
-        turnId,
-        snapshot: { item: active.agentItem, outcome: { status: "succeeded" } },
-      });
-    } else {
-      this.#event({
-        type: "item.completed",
-        turnId,
-        snapshot: { item: { ...active.agentItem }, outcome: { status: "succeeded" } },
-      });
+      this.#event({ type: "item.started", turnId, item: { ...active.agentItem } });
     }
+    const turnOutcome = result.is_error
+      ? {
+          status: "failed" as const,
+          error: errorOf("nativeFailure", result.resultText || "CodeBuddy Turn failed", {
+            retryable: false,
+          }),
+        }
+      : ({ status: "succeeded" } as const);
+    this.#endActiveItems(turnOutcome);
     const usage = usageFromTurnResult(result, this.#state.effectiveModel?.id ?? null);
     if (usage) {
       this.#usage = usage;
       this.#event({ type: "session.usage.changed", usage, observedForTurnId: turnId });
     }
     const items = this.#recordedItems(active);
-    const outcome = result.is_error
-      ? ({
-          status: "failed",
-          error: errorOf("nativeFailure", result.resultText || "CodeBuddy Turn failed", {
-            retryable: false,
-          }),
-        } as const)
-      : ({ status: "succeeded" } as const);
     this.#active = null;
     this.#completedTurns.push({
       turnKey: this.#turnKeyFromTranscript(sessionId),
@@ -746,7 +801,7 @@ class CodeBuddySession implements HarnessSession {
             },
           }
         : {}),
-      outcome,
+      outcome: turnOutcome,
     });
   }
 
@@ -847,6 +902,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       const catalog = await resolveModelCatalogFromCli(executable, cwd, {
         timeoutMs: this.#options.inspectTimeoutMs ?? INSPECT_TIMEOUT_MS,
         fallback: this.#options.modelCatalog ?? null,
+        ...(this.#options.spawn ? { spawn: this.#options.spawn } : {}),
       });
       return {
         status: "ready",

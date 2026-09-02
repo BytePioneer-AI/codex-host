@@ -138,7 +138,7 @@ function makeProcess() {
       onExit: (exit) => exits.push(exit),
     },
   );
-  return { child, frames, exits, process };
+  return { child, frames, exits, process, spawn };
 }
 
 describe("CodeBuddyStreamProcess", () => {
@@ -186,5 +186,18 @@ describe("CodeBuddyStreamProcess", () => {
     process.kill();
     expect(exits).toHaveLength(1);
     expect(child.kill).toBeDefined();
+  });
+
+  it("starts the CLI in an isolated process group for tree cancellation", () => {
+    const { spawn } = makeProcess();
+    expect(spawn).toHaveBeenCalledWith(
+      "codebuddy",
+      ["-p"],
+      expect.objectContaining({
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      }),
+    );
   });
 });

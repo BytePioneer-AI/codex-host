@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 
@@ -159,6 +159,27 @@ export interface CodeBuddyTransportListener {
 
 const KILL_GRACE_MS = 1_000;
 
+function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+  if (!child.pid) {
+    child.kill(signal);
+    return;
+  }
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    if (code !== "ESRCH") child.kill(signal);
+  }
+}
+
 /**
  * Owns one CodeBuddy CLI child process running in stream-json print mode.
  * Frames are dispatched line-by-line to the listener; the process stays alive
@@ -176,7 +197,9 @@ export class CodeBuddyStreamProcess {
     this.#child = spawnFn(options.executable, options.args, {
       cwd: options.cwd,
       env: options.environment,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     this.#child.stdout.setEncoding("utf-8");
     this.#child.stdout.on("data", (chunk: string) => {
@@ -197,6 +220,10 @@ export class CodeBuddyStreamProcess {
     this.#child.on("error", (error: Error) => {
       if (this.#ended) return;
       this.#ended = true;
+      if (this.#killTimer) {
+        clearTimeout(this.#killTimer);
+        this.#killTimer = null;
+      }
       listener.onExit({
         code: null,
         signal: null,
@@ -206,6 +233,10 @@ export class CodeBuddyStreamProcess {
     this.#child.on("close", (code, signal) => {
       if (this.#ended) return;
       this.#ended = true;
+      if (this.#killTimer) {
+        clearTimeout(this.#killTimer);
+        this.#killTimer = null;
+      }
       listener.onExit({
         code,
         signal,
@@ -230,9 +261,9 @@ export class CodeBuddyStreamProcess {
   kill(): void {
     if (this.#ended) return;
     if (this.#killTimer) return;
-    this.#child.kill("SIGTERM");
+    signalProcessTree(this.#child, "SIGTERM");
     this.#killTimer = setTimeout(() => {
-      if (!this.#ended) this.#child.kill("SIGKILL");
+      if (!this.#ended) signalProcessTree(this.#child, "SIGKILL");
     }, KILL_GRACE_MS);
     this.#killTimer.unref();
   }

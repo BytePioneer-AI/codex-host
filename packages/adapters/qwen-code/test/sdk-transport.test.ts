@@ -321,9 +321,43 @@ describe("QwenCodeSdkTransport", () => {
       error: { message: "Qwen provider rejected the request" },
     } as SDKMessage);
 
+    const result = await turn;
+    expect(result).toMatchObject({ status: "failed", error: { kind: "unavailable" } });
+    expect((result as { error?: { message?: string } }).error?.message).toBe(
+      "Qwen provider rejected the request",
+    );
+    await transport.close();
+  });
+
+  it("classifies authentication failures from SDK result messages", async () => {
+    const query = new FakeQuery();
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+    const turn = transport.runTurn(
+      "status",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      uuid: "result-auth",
+      session_id: transport.sessionId,
+      is_error: true,
+      duration_ms: 1,
+      duration_api_ms: 1,
+      num_turns: 1,
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      permission_denials: [],
+      error: { message: "Authentication required: sign in to Qwen Code" },
+    } as SDKMessage);
     await expect(turn).resolves.toMatchObject({
       status: "failed",
-      error: { kind: "unavailable", message: "Qwen provider rejected the request" },
+      error: { kind: "authenticationRequired" },
     });
     await transport.close();
   });

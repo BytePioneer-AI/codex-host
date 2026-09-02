@@ -13,6 +13,7 @@ import type {
   QwenCodePermissionResponse,
   QwenCodeTransportEvent,
 } from "../src/sdk-transport.js";
+import { mapQwenCodeHistory } from "../src/qwen-history.js";
 import type { QwenCodeSdkTransportLike } from "../src/qwen-code-adapter.js";
 import { QwenCodeAdapter } from "../src/qwen-code-adapter.js";
 
@@ -320,5 +321,40 @@ describe("QwenCodeAdapter", () => {
       vi.useRealTimers();
     }
     expect(transport.closed).toBe(true);
+  });
+
+  it("reconstructs persisted Qwen turns and preserves known native identities", () => {
+    const snapshot = mapQwenCodeHistory(
+      [
+        { type: "user", message: { role: "user", content: "status" } },
+        { type: "assistant", message: { role: "model", parts: [{ text: "clean" }] } },
+        { type: "user", message: { role: "user", content: "again" } },
+        { type: "assistant", message: { role: "model", parts: [{ text: "done" }] } },
+      ],
+      harnessIdSchema.parse("qwen-code"),
+      "550e8400-e29b-41d4-a716-446655440000",
+      "/tmp",
+      [
+        {
+          harnessId: harnessIdSchema.parse("qwen-code"),
+          nativeSessionId: "550e8400-e29b-41d4-a716-446655440000",
+          nativeTurnKey: "qwen-turn-0",
+          formatVersion: 1,
+        },
+        {
+          harnessId: harnessIdSchema.parse("qwen-code"),
+          nativeSessionId: "550e8400-e29b-41d4-a716-446655440000",
+          nativeTurnKey: "qwen-turn-1",
+          formatVersion: 1,
+        },
+      ],
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns.map((turn) => turn.input)).toEqual([
+      [{ type: "text", text: "status" }],
+      [{ type: "text", text: "again" }],
+    ]);
+    expect(snapshot.turns[1]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-1");
+    expect(snapshot.turns[1]?.items[0]?.item).toMatchObject({ type: "agentMessage", text: "done" });
   });
 });

@@ -74,7 +74,7 @@ import {
   stateForQwenCodeModel,
   type QwenCodeModelState,
 } from "./qwen-models.js";
-import { qwenCodeTurnKey } from "./qwen-history.js";
+import { qwenCodeTurnKey, readQwenCodeHistory } from "./qwen-history.js";
 import {
   applyQwenCodeToolProjection,
   DEFAULT_QWEN_CODE_TOOL_OUTPUT_LIMIT,
@@ -1075,7 +1075,18 @@ export class QwenCodeAdapter implements HarnessAdapter {
           modelState.currentModel = selectedModel;
         }
       }
-      const history: HostTurnSnapshot[] = [];
+      const history: HostTurnSnapshot[] =
+        input.kind === "resume"
+          ? (
+              await readQwenCodeHistory(
+                cwd,
+                this.harnessId,
+                opened.sessionId,
+                input.knownTurnRefs,
+                this.#toolOutputLimit,
+              )
+            ).turns
+          : [];
       const initialUsage = null;
       const openedSession = new QwenCodeHarnessSession(
         cwd,

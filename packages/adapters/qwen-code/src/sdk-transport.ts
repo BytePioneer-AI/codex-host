@@ -160,7 +160,7 @@ function classifyError(error: unknown): QwenCodeTransportError {
       { cause: error },
     );
   }
-  return new QwenCodeTransportError("unavailable", `Qwen Code SDK failed: ${text}`, {
+  return new QwenCodeTransportError("unavailable", text, {
     cause: error,
   });
 }
@@ -459,12 +459,16 @@ export class QwenCodeSdkTransport {
     if (isSDKResultMessage(message)) {
       active.onEvent({ type: "usage", metadata: { usage: message.usage } });
       this.#active = null;
-      const error = message.is_error
-        ? new QwenCodeTransportError(
-            "unavailable",
-            message.error?.message ?? `Qwen Code SDK returned ${message.subtype}`,
-          )
-        : undefined;
+      const errorMessage =
+        typeof message.error === "string"
+          ? message.error
+          : typeof message.error === "object" &&
+              message.error !== null &&
+              "message" in message.error &&
+              typeof message.error.message === "string"
+            ? message.error.message
+            : `Qwen Code SDK returned ${message.subtype}`;
+      const error = message.is_error ? classifyError(errorMessage) : undefined;
       active.resolve({
         status: message.is_error ? "failed" : "succeeded",
         ...(error ? { error } : {}),

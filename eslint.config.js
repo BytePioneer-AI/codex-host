@@ -25,6 +25,7 @@ export default [
       "target/**",
       "test-results/**",
       "**/dist/**",
+      "**/._*",
     ],
   },
   {

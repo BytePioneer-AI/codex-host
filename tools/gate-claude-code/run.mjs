@@ -23,6 +23,7 @@ function hermetic() {
       "tests/vitest.config.js",
       "--exclude",
       "tools/gate-claude-code/run.test.mjs",
+      "--maxWorkers=1",
     ],
     { cwd: repositoryRoot, stdio: "inherit" },
   );

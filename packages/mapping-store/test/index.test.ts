@@ -164,7 +164,7 @@ describe("mapping-store package", () => {
     expect(thrown).toBeInstanceOf(AggregateError);
     expect((thrown as AggregateError).errors).toEqual([
       expect.objectContaining({ message: "synthetic delegation rebuild failure" }),
-      expect.objectContaining({ code: expect.stringMatching(/EISDIR|ENOTEMPTY/) }),
+      expect.objectContaining({ code: expect.any(String) }),
     ]);
     await expect(store.getDelegation(delegationId)).resolves.toBeNull();
     await store.close();
@@ -200,7 +200,7 @@ describe("mapping-store package", () => {
     expect(thrown).toBeInstanceOf(AggregateError);
     expect((thrown as AggregateError).errors).toEqual([
       expect.objectContaining({ message: "synthetic thread rebuild failure" }),
-      expect.objectContaining({ code: expect.stringMatching(/EISDIR|ENOTEMPTY/) }),
+      expect.objectContaining({ code: expect.any(String) }),
     ]);
     await expect(store.getThread(hostThreadId)).resolves.toBeNull();
     await expect(

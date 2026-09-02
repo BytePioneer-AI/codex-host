@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { defineConfig } from "vitest/config";
+import { defaultExclude, defineConfig } from "vitest/config";
 
 export default defineConfig({
   root: path.resolve(import.meta.dirname, ".."),
@@ -11,6 +11,7 @@ export default defineConfig({
       "tests/release/**/*.test.mjs",
       "tools/**/*.test.mjs",
     ],
+    exclude: [...defaultExclude, "**/._*"],
     maxWorkers: 4,
     passWithNoTests: false,
   },

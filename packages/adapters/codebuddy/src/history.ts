@@ -96,7 +96,10 @@ export function parseCodeBuddyTranscript(transcript: string): CodeBuddyTranscrip
     }
     if (!current) continue;
     if (entry.type === "reasoning") {
-      const text = entryText(entry.content, "text") || entryText(entry.rawContent, "text");
+      const text =
+        entryText(entry.content, "text") ||
+        entryText(entry.rawContent, "text") ||
+        entryText(entry.rawContent, "reasoning_text");
       if (text.length === 0) continue;
       current.items.push({
         item: {
@@ -106,6 +109,24 @@ export function parseCodeBuddyTranscript(transcript: string): CodeBuddyTranscrip
         },
         outcome: { status: "succeeded" },
       });
+      continue;
+    }
+    if (entry.type === "message" && entry.role === "assistant") {
+      const text = entryText(entry.content, "output_text") || entryText(entry.content, "text");
+      if (text.length === 0) continue;
+      const existing = current.items.find(({ item }) => item.type === "agentMessage");
+      if (existing?.item.type === "agentMessage") {
+        existing.item.text += text;
+      } else {
+        current.items.push({
+          item: {
+            type: "agentMessage",
+            itemId: hostItemIdSchema.parse(`agent-${entry.id ?? `seq-${current.items.length}`}`),
+            text,
+          },
+          outcome: { status: "succeeded" },
+        });
+      }
       continue;
     }
     if (entry.type === "function_call" && typeof entry.callId === "string" && entry.name) {

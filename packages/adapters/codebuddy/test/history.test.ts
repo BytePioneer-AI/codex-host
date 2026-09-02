@@ -54,6 +54,28 @@ const TRANSCRIPT = [
   }),
 ].join("\n");
 
+const REAL_CODEBUDDY_TRANSCRIPT = [
+  entry({
+    id: "real-user-1",
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "你好" }],
+  }),
+  entry({
+    id: "real-reasoning-1",
+    type: "reasoning",
+    content: [],
+    rawContent: [{ type: "reasoning_text", text: "先问候用户" }],
+  }),
+  entry({
+    id: "real-assistant-1",
+    type: "message",
+    role: "assistant",
+    content: [{ providerData: {}, type: "output_text", text: "你好！有什么可以帮你？" }],
+    status: "completed",
+  }),
+].join("\n");
+
 describe("parseCodeBuddyTranscript", () => {
   it("groups entries into turns keyed by user message ids", () => {
     const turns = parseCodeBuddyTranscript(TRANSCRIPT);
@@ -76,6 +98,29 @@ describe("parseCodeBuddyTranscript", () => {
       item: { type: "toolExecution", toolName: "read_file", arguments: { path: "a.txt" } },
       outcome: { status: "failed" },
     });
+  });
+
+  it("restores assistant output and CodeBuddy reasoning entries", () => {
+    const turns = parseCodeBuddyTranscript(REAL_CODEBUDDY_TRANSCRIPT);
+
+    expect(turns[0]?.items).toEqual([
+      {
+        item: {
+          type: "reasoning",
+          itemId: "reasoning-real-reasoning-1",
+          text: "先问候用户",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "agentMessage",
+          itemId: "agent-real-assistant-1",
+          text: "你好！有什么可以帮你？",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
   });
 
   it("ignores malformed lines and entries before the first user message", () => {

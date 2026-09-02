@@ -1504,13 +1504,22 @@ describe("Codex UI projector", () => {
 
     it("reconstructs command line for view_file, read_url_content, and find_by_name", () => {
       expect(
-        toolCommandLine("view_file", { TargetFile: "src/main.rs" }),
-      ).toBe("read src/main.rs");
+        toolCommandLine("view_file", { AbsolutePath: "D:/project/src/main.rs" }),
+      ).toBe("read D:/project/src/main.rs");
       expect(
-        toolCommandLine("read_url_content", { path: "https://example.com" }),
-      ).toBe("read https://example.com");
+        toolCommandLine("list_dir", { DirectoryPath: "D:/project/src" }),
+      ).toBe("ls D:/project/src");
       expect(
-        toolCommandLine("find_by_name", { Pattern: "*.ts" }),
+        toolCommandLine("grep_search", { SearchPath: "src", Query: "fn main" }),
+      ).toBe("grep fn main src");
+      expect(
+        toolCommandLine("search_web", { query: "vitest documentation" }),
+      ).toBe("search vitest documentation");
+      expect(
+        toolCommandLine("read_url_content", { Url: "https://example.com" }),
+      ).toBe("fetch https://example.com");
+      expect(
+        toolCommandLine("find_by_name", { Pattern: "*.ts", SearchDirectory: "src" }),
       ).toBe("glob *.ts");
     });
 

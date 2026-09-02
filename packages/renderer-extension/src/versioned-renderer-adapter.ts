@@ -935,7 +935,7 @@ export function installCurrentRendererAdapter(): {
           ? "ready"
           : state === "unsupported"
             ? "failed"
-            : "running";
+            : "ready";
       window.dispatchEvent(
         new CustomEvent("codexhost:renderer-adapter-status", {
           detail: { state, reason, hook, status: displayStatus },

@@ -169,6 +169,18 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
     "TargetFile",
     "targetFile",
     "target_file",
+    "AbsolutePath",
+    "absolutePath",
+    "absolute_path",
+    "DirectoryPath",
+    "directoryPath",
+    "directory_path",
+    "SearchPath",
+    "searchPath",
+    "search_path",
+    "SearchDirectory",
+    "searchDirectory",
+    "search_directory",
   ]);
   const pattern = nestedString(args, [
     "pattern",
@@ -179,8 +191,15 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
     "Pattern",
     "Query",
   ]);
-  if (["read", "readfile", "fileread", "view", "viewfile", "readurlcontent"].includes(lower)) {
+  const url = nestedString(args, ["url", "uri", "Url", "href"]);
+  if (["read", "readfile", "fileread", "view", "viewfile"].includes(lower)) {
     return filePath ? `read ${filePath}` : undefined;
+  }
+  if (["readurlcontent", "fetch", "fetchurl", "curl", "download"].includes(lower)) {
+    return url ? `fetch ${url}` : filePath ? `read ${filePath}` : undefined;
+  }
+  if (["listdir", "ls", "dir", "listdirectory"].includes(lower)) {
+    return filePath ? `ls ${filePath}` : "ls";
   }
   if (["glob", "find", "findfiles", "findbyname"].includes(lower)) {
     const target = pattern ?? filePath;
@@ -189,6 +208,9 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   if (["grep", "grepsearch"].includes(lower)) {
     if (!pattern) return undefined;
     return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+  }
+  if (["websearch", "searchweb", "search"].includes(lower)) {
+    return pattern ? `search ${pattern}` : undefined;
   }
   return undefined;
 }
@@ -262,6 +284,9 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
     "TargetFile",
     "targetFile",
     "target_file",
+    "AbsolutePath",
+    "absolutePath",
+    "absolute_path",
   ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {

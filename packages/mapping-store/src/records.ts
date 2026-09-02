@@ -5,7 +5,6 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
-  jsonObjectSchema,
   type HarnessId,
   type HostThreadId,
   type HostTurnId,
@@ -65,7 +64,6 @@ export const storedThreadRecordV1Schema = z
       .strict()
       .optional(),
     turnMappings: z.array(storedTurnMappingV1Schema),
-    history: z.array(jsonObjectSchema).optional(),
     createdAt: isoDateSchema,
     updatedAt: isoDateSchema,
   })

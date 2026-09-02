@@ -44,6 +44,7 @@ import {
 } from "./renderer-composer-dom.js";
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
 import {
+  decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
@@ -408,6 +409,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "opencode",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
+  if (inspection.harnessId === "antigravity") {
+    const transportSelection = decodeAntigravityTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Antigravity Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "antigravity",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),

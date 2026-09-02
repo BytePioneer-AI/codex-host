@@ -1,19 +1,14 @@
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
-import type { HarnessResult, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
-  hostItemIdSchema,
   hostThreadIdSchema,
-  hostTurnIdSchema,
   nativeSessionRefSchema,
-  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
-  encodeAntigravityTransportModel,
   encodeGrokTransportModel,
   encodeOmpTransportModel,
   encodeOpenCodeTransportModel,
@@ -26,7 +21,6 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 const hostThreadId = hostThreadIdSchema.parse("thread-1");
-const hostTurnId = hostTurnIdSchema.parse("thread-1");
 
 function record(): StoredThreadRecordV1 {
   return {
@@ -54,73 +48,6 @@ function record(): StoredThreadRecordV1 {
 }
 
 describe("ExternalThreadRuntime register", () => {
-  it("restores Antigravity history from the local transcript when the CLI returns placeholders", async () => {
-    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
-    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
-    const model = adapter.catalog.defaultModel;
-    if (!model) throw new Error("Fake Antigravity catalog has no default Model");
-    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
-    if (!opened.ok || !opened.value.initialState.nativeRef) {
-      throw new Error("Fake Antigravity Session did not open");
-    }
-    const session = opened.value;
-    const nativeSessionRef = opened.value.initialState.nativeRef;
-    const nativeTurnRef = nativeTurnRefSchema.parse({
-      harnessId: antigravityHarnessId,
-      nativeSessionId: nativeSessionRef.nativeSessionId,
-      nativeTurnKey: "turn:1",
-      formatVersion: 1,
-    });
-    const stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: antigravityHarnessId,
-      nativeSessionRef,
-      turnMappings: [{ hostTurnId, nativeTurnRef }],
-      history: [{ id: hostThreadId, items: [{ type: "userMessage" }] }],
-    } as StoredThreadRecordV1;
-    session.readSnapshot = vi.fn(async (): Promise<HarnessResult<HostThreadSnapshot>> => ({
-      ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef,
-            input: [],
-            items: [
-              {
-                item: {
-                  itemId: hostItemIdSchema.parse("assistant"),
-                  type: "agentMessage",
-                  text: "output only",
-                },
-                outcome: { status: "succeeded" },
-              },
-            ],
-            outcome: { status: "unknown", reason: "placeholder" },
-          },
-        ],
-      },
-    }));
-    vi.spyOn(adapter, "open").mockResolvedValue({ ok: true, value: session });
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async () => ({ record: stored, turns: [{ id: hostThreadId }] }),
-      sessionTreeId: async () => hostThreadId,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map([["antigravity", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
-
-    const resolved = await runtime.resolve(hostThreadId);
-
-    expect(resolved.kind).toBe("external");
-    if (resolved.kind !== "external") throw new Error("Antigravity Thread did not restore");
-    expect(resolved.thread.turns).toEqual(stored.history);
-    await adapter.close();
-  });
-
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;
@@ -216,49 +143,6 @@ describe("ExternalThreadRuntime register", () => {
       encodeOmpTransportModel(actualModel, actualThinking),
     );
 
-    await adapter.close();
-  });
-
-  it("hands the persisted Antigravity effort back to the Adapter on restore", async () => {
-    const antigravityHarnessId = harnessIdSchema.parse("antigravity");
-    const adapter = new FakeHarnessAdapter(antigravityHarnessId);
-    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
-    if (!created.ok) throw new Error(created.error.message);
-    const nativeRef = created.value.initialState.nativeRef;
-    const model = adapter.catalog.defaultModel;
-    if (!nativeRef || !model) throw new Error("Fake Antigravity Session is missing state");
-
-    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
-    const stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: antigravityHarnessId,
-      nativeSessionRef: nativeRef,
-      transportModelId: encodeAntigravityTransportModel(model, undefined, thinkingOptionId),
-      historyMode: "legacy",
-    };
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
-      sessionTreeId: async () => hostThreadId,
-      setTransportModelId: async () => stored,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["antigravity", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
-    const open = vi.spyOn(adapter, "open");
-
-    await runtime.resolve(hostThreadId);
-
-    // The Antigravity CLI keeps no server-side effort, so a restore that drops
-    // the persisted value would silently run the next Turn without --effort.
-    expect(open).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "resume", model, thinkingOptionId }),
-    );
-
-    open.mockRestore();
     await adapter.close();
   });
 

@@ -154,7 +154,7 @@ export interface GrokNativeSessionLocation {
 
 export type GrokOpenInput =
   | { kind: "create"; permissionModeId: HarnessPermissionModeId }
-  | { kind: "resume"; sessionId: string }
+  | { kind: "resume"; sessionId: string; permissionModeId: HarnessPermissionModeId }
   | GrokForkOpenInput
   | GrokRewindOpenInput;
 
@@ -605,11 +605,14 @@ export class GrokAcpTransport {
         }
         sessionId = forked.newSessionId;
       } else {
+        const permissionMode =
+          input.kind === "resume" ? decodeGrokPermissionModeId(input.permissionModeId) : undefined;
         session = await withTimeout(
           connection.loadSession({
             cwd: this.#options.cwd,
             mcpServers: [],
             sessionId: input.sessionId,
+            ...(permissionMode ? { _meta: grokPermissionModeSessionMeta(permissionMode) } : {}),
           }),
           this.#options.commandTimeoutMs,
           "Grok Session load",

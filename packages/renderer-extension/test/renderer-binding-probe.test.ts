@@ -173,7 +173,6 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "checking",
           grok: "checking",
           omp: "checking",
-          antigravity: "checking",
         },
         {
           pi: undefined,
@@ -182,10 +181,9 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: undefined,
           grok: undefined,
           omp: undefined,
-          antigravity: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -270,16 +268,6 @@ describe("Renderer Composer DOM behavior", () => {
       ),
     ).toBe(false);
     expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
-    // Antigravity reads plan quota from its own CLI, so Usage can land before
-    // the first quota refresh finishes.
-    expect(shouldRetryExternalThreadUsage("antigravity", { totalCostUsd: 0.168 })).toBe(true);
-    expect(
-      shouldRetryExternalThreadUsage(
-        "antigravity",
-        { totalCostUsd: 0.168 },
-        { usedPercent: 3.41, periodType: "weekly" },
-      ),
-    ).toBe(false);
     expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
@@ -408,21 +396,14 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerInputIntent(event("c", { ctrlKey: true }))).toBe(false);
   });
 
-  it("prefers the context-described native control when radial icons coexist", () => {
+  it("recognizes only a uniquely described native context control", () => {
     const native = {
       hasAttribute: vi.fn(() => false),
       matches: (selector: string) => selector === 'span[role="img"][aria-label]',
       querySelectorAll: () => [{}, {}],
-      getAttribute: () => "背景信息窗口：20%",
-    } as unknown as HTMLElement;
-    const other = {
-      hasAttribute: vi.fn(() => false),
-      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
-      querySelectorAll: () => [{}, {}],
-      getAttribute: () => "Claude Code Agent",
     } as unknown as HTMLElement;
     const composer = {
-      querySelectorAll: vi.fn(() => [native, other]),
+      querySelectorAll: vi.fn(() => [native]),
     } as unknown as Element;
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
@@ -435,46 +416,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
   });
 
-  it("prefers visible native radial controls when hidden duplicates coexist", () => {
-    const hidden = {
-      hidden: true,
-      hasAttribute: vi.fn(() => false),
-      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
-      querySelectorAll: () => [{}, {}],
-      getAttribute: () => "Context usage: 20%",
-    } as unknown as HTMLElement;
-    const visible = {
-      hidden: false,
-      hasAttribute: vi.fn(() => false),
-      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
-      querySelectorAll: () => [{}, {}],
-      getAttribute: () => "Context usage: 20%",
-    } as unknown as HTMLElement;
-    const composer = {
-      querySelectorAll: vi.fn(() => [hidden, visible]),
-    } as unknown as Element;
-
-    expect(isNativeContextUsageControlCandidate(hidden)).toBe(false);
-    expect(nativeContextUsageControlForComposer(composer)).toBe(visible);
-  });
-
-  it("captures a hidden native Context control when it is the only radial control", () => {
-    const hidden = {
-      hidden: true,
-      hasAttribute: vi.fn(() => false),
-      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
-      querySelectorAll: () => [{}, {}],
-      getAttribute: () => "Context usage: 20%",
-    } as unknown as HTMLElement;
-    const composer = {
-      querySelectorAll: vi.fn(() => [hidden]),
-    } as unknown as Element;
-
-    expect(isNativeContextUsageControlCandidate(hidden)).toBe(false);
-    expect(nativeContextUsageControlForComposer(composer)).toBe(hidden);
-  });
-
-  it("does not add a renderer Usage control beside the native Context control", () => {
+  it("places Usage beside the native context wrapper when it is present", () => {
     const modelRoot = {
       parentElement: { kind: "model" } as unknown as HTMLElement,
     } as HTMLElement;
@@ -482,7 +424,7 @@ describe("Renderer Composer DOM behavior", () => {
     const contextWrapper = { parentElement: footer } as HTMLElement;
     const nativeContext = {
       parentElement: contextWrapper,
-      hidden: true,
+      hidden: false,
       hasAttribute: () => false,
       matches: (selector: string) => selector === 'span[role="img"][aria-label]',
       getAttribute: () => "Context usage: 20%",
@@ -502,7 +444,7 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
-      nativeContextUsageControl: { element: nativeContext, hidden: true, ariaHidden: "true" },
+      nativeContextUsageControl: { element: nativeContext, hidden: false, ariaHidden: null },
       credits: {
         anchor: null,
         place: placeCredits,
@@ -517,13 +459,12 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, false, false);
 
-    expect(placeUsage).not.toHaveBeenCalled();
+    expect(placeUsage).toHaveBeenCalledWith(contextWrapper);
+    expect(placeUsage).not.toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
-    expect(nativeContext.hidden).toBe(false);
-    expect(nativeContext.removeAttribute).toHaveBeenCalledWith("aria-hidden");
   });
 
-  it("does not add a renderer Usage control when native Context is not ready", () => {
+  it("places Usage before the Model control when native Context is not ready", () => {
     const modelParent = {} as HTMLElement;
     const modelRoot = { parentElement: modelParent } as HTMLElement;
     const placeUsage = vi.fn();
@@ -549,7 +490,7 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeUsage).not.toHaveBeenCalled();
+    expect(placeUsage).toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
   });
 

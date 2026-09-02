@@ -130,6 +130,42 @@ describe("Codex Account routing persistence", () => {
     );
   });
 
+  it("deletes a non-default Account and restores the default when it was active", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-account-delete-test-"));
+    directories.push(directory);
+    const accounts = new AccountRepository({
+      directory,
+      defaultAccount: { accountId: "account-a", codexHome: path.join(directory, "home-a") },
+    });
+    await accounts.initialize();
+    await accounts.upsert({
+      accountId: "account-b",
+      codexHome: path.join(directory, "home-b"),
+    });
+    await accounts.setActiveAccountId("account-b");
+
+    await expect(accounts.remove("account-a")).rejects.toThrow(
+      "The default Codex Account cannot be deleted",
+    );
+    await expect(accounts.remove("account-b")).resolves.toMatchObject({ accountId: "account-b" });
+    await expect(accounts.getActiveAccountId()).resolves.toBe("account-a");
+    await expect(accounts.list()).resolves.toMatchObject([{ accountId: "account-a" }]);
+  });
+
+  it("removes Thread ownership bindings for a deleted Account", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-account-binding-delete-test-"));
+    directories.push(directory);
+    const threads = new ThreadAccountStore({ directory });
+    await threads.initialize();
+    await threads.bind("thread-a", "account-a");
+    await threads.bind("thread-b", "account-b");
+
+    await threads.removeByAccount("account-a");
+
+    await expect(threads.getAccountId("thread-a")).resolves.toBeNull();
+    await expect(threads.getAccountId("thread-b")).resolves.toBe("account-b");
+  });
+
   it("discovers a historical Thread in an unloaded non-active Account runtime", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
     directories.push(directory);

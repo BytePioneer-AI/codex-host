@@ -45,7 +45,15 @@ describe("Renderer Harness mention completion", () => {
     const close = vi.fn();
     const candidate = harnessMentionCandidates(
       ["codex"],
-      [{ accountId: "reviewer", label: "Reviewer", codexHome: "/tmp/reviewer", active: false }],
+      [
+        {
+          accountId: "reviewer",
+          label: "Reviewer",
+          codexHome: "/tmp/reviewer",
+          active: false,
+          isDefault: false,
+        },
+      ],
     )[0];
     if (!candidate) throw new Error("Codex Account candidate is missing");
 
@@ -92,6 +100,7 @@ describe("Renderer Harness mention completion", () => {
           label: "Current",
           codexHome: "/tmp/current",
           active: true,
+          isDefault: true,
         },
         {
           accountId: "reviewer",
@@ -99,6 +108,7 @@ describe("Renderer Harness mention completion", () => {
           email: "reviewer@example.com",
           codexHome: "/tmp/reviewer",
           active: false,
+          isDefault: false,
         },
       ],
     );

@@ -38,6 +38,7 @@ describe("Renderer Agent picker presentation", () => {
           email: "reviewer@example.com",
           codexHome: "/tmp/reviewer",
           active: true,
+          isDefault: false,
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");

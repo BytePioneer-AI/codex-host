@@ -54,8 +54,8 @@ import {
 describe("Renderer connection diagnostics", () => {
   it("adopts a newly active Codex Account unless the draft has an explicit override", () => {
     const accounts = [
-      { accountId: "old", label: "Old", codexHome: "/old", active: false },
-      { accountId: "new", label: "New", codexHome: "/new", active: true },
+      { accountId: "old", label: "Old", codexHome: "/old", active: false, isDefault: true },
+      { accountId: "new", label: "New", codexHome: "/new", active: true, isDefault: false },
     ];
     expect(resolveCodexAccountSelection(accounts, null)).toEqual({
       activeAccountId: "new",

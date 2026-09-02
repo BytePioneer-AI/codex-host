@@ -48,6 +48,7 @@ function clientWith(inspection: ThreadInspection): RendererModelClient {
     listCodexAccounts: vi.fn(),
     refreshCodexAccounts: vi.fn(),
     createCodexAccount: vi.fn(),
+    deleteCodexAccount: vi.fn(),
     activateCodexAccount: vi.fn(),
     startCodexAccountLogin: vi.fn(),
     cancelCodexAccountLogin: vi.fn(),

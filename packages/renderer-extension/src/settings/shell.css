@@ -1648,6 +1648,16 @@ button {
   border-color: var(--settings-border);
 }
 
+.settings-command-button--danger {
+  color: #f87171;
+}
+
+.settings-command-button--danger:hover:not(:disabled) {
+  color: #fecaca;
+  background: rgb(127 29 29 / 24%);
+  border-color: rgb(248 113 113 / 45%);
+}
+
 .settings-command-button:disabled {
   cursor: default;
   opacity: 0.45;

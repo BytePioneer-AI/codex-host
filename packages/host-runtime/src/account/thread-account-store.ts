@@ -12,6 +12,7 @@ export interface ThreadAccountStoreLike {
   getAccountId(threadId: string): Promise<string | null>;
   bind(threadId: string, accountId: string): Promise<void>;
   listByAccount(accountId: string): Promise<string[]>;
+  removeByAccount(accountId: string): Promise<void>;
   remove(threadId: string): Promise<void>;
 }
 
@@ -67,6 +68,17 @@ export class ThreadAccountStore implements ThreadAccountStoreLike {
     return [...this.#bindings]
       .filter(([, candidate]) => candidate === accountId)
       .map(([threadId]) => threadId);
+  }
+
+  async removeByAccount(accountId: string): Promise<void> {
+    this.#requireInitialized();
+    let changed = false;
+    for (const [threadId, candidate] of this.#bindings) {
+      if (candidate !== accountId) continue;
+      this.#bindings.delete(threadId);
+      changed = true;
+    }
+    if (changed) await this.#persist();
   }
 
   async remove(threadId: string): Promise<void> {

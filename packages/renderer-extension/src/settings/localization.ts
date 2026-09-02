@@ -33,6 +33,10 @@ export interface RendererSettingsMessages {
   readonly accountsDescription: string;
   readonly accountAdd: string;
   readonly accountCreateFailed: string;
+  readonly accountDelete: string;
+  readonly accountDeleteConfirm: string;
+  readonly accountDeleting: string;
+  readonly accountDeleteFailed: string;
   readonly accountActive: string;
   readonly accountUse: string;
   readonly accountSignIn: string;
@@ -157,6 +161,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "Choose the Codex Account used for new tasks. Existing tasks stay with their original Account.",
   accountAdd: "Add Account",
   accountCreateFailed: "Could not add the Account.",
+  accountDelete: "Delete",
+  accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
+  accountDeleting: "Deleting Account...",
+  accountDeleteFailed: "Could not delete the Account.",
   accountActive: "Active",
   accountUse: "Use for new tasks",
   accountSignIn: "Sign in",
@@ -296,6 +304,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountsDescription: "选择新建任务使用的 Codex 账号；已有任务始终继续使用创建时的账号。",
   accountAdd: "添加账号",
   accountCreateFailed: "添加账号失败。",
+  accountDelete: "删除",
+  accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",
+  accountDeleting: "正在删除账号...",
+  accountDeleteFailed: "删除账号失败。",
   accountActive: "当前账号",
   accountUse: "用于新建任务",
   accountSignIn: "登录",

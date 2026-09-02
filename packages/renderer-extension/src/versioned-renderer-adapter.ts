@@ -951,6 +951,8 @@ export function installCurrentRendererAdapter(): {
     },
     createCodexAccount: (input: Parameters<RendererModelClient["createCodexAccount"]>[0]) =>
       currentModelClient().createCodexAccount(input),
+    deleteCodexAccount: (input: Parameters<RendererModelClient["deleteCodexAccount"]>[0]) =>
+      currentModelClient().deleteCodexAccount(input),
     activateCodexAccount: (input: Parameters<RendererModelClient["activateCodexAccount"]>[0]) =>
       currentModelClient().activateCodexAccount(input),
     startCodexAccountLogin: (input: Parameters<RendererModelClient["startCodexAccountLogin"]>[0]) =>

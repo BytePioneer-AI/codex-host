@@ -1,6 +1,8 @@
 import {
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountDeleteResultSchema,
   codexAccountListResultSchema,
   codexAccountLoginCancelParamsSchema,
   codexAccountLoginCancelResultSchema,
@@ -36,6 +38,8 @@ import {
   type ExternalThreadForkResult,
   type CodexAccountActivateParams,
   type CodexAccountCreateParams,
+  type CodexAccountDeleteParams,
+  type CodexAccountDeleteResult,
   type CodexAccountListResult,
   type CodexAccountLoginCancelParams,
   type CodexAccountLoginCancelResult,
@@ -83,6 +87,7 @@ export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CREATE_METHOD = "codexhost/account/create";
+export const CODEX_ACCOUNT_DELETE_METHOD = "codexhost/account/delete";
 export const CODEX_ACCOUNT_ACTIVATE_METHOD = "codexhost/account/activate";
 export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
 export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
@@ -143,6 +148,7 @@ export interface RendererModelClient {
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
+  deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
   activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
   startCodexAccountLogin(
     input: CodexAccountLoginStartParams,
@@ -345,6 +351,13 @@ export function createRendererModelClient(
         codexAccountCreateParamsSchema.parse(input),
       );
       return codexAccountMutationResultSchema.parse(result);
+    },
+    async deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_DELETE_METHOD,
+        codexAccountDeleteParamsSchema.parse(input),
+      );
+      return codexAccountDeleteResultSchema.parse(result);
     },
     async activateCodexAccount(
       input: CodexAccountActivateParams,

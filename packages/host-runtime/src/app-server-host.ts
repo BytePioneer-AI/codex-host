@@ -1,5 +1,6 @@
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -19,6 +20,7 @@ import {
   accountCreditsSnapshotSchema,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
   codexAccountLoginCancelParamsSchema,
   codexAccountLoginStartParamsSchema,
   externalThreadForkParamsSchema,
@@ -463,6 +465,7 @@ export class AppServerHost {
     AppServerHostOptions;
   #codexRuntimePool: CodexRuntimePool;
   #accountRepository: AccountRepositoryLike;
+  #threadAccountStore: ThreadAccountStoreLike;
   #accountDataDirectory: string;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #externalRuntime: ExternalThreadRuntime;
@@ -525,6 +528,7 @@ export class AppServerHost {
       options.threadAccountStore ??
       new ThreadAccountStore({ directory: path.join(dataDirectory, "codex-accounts") });
     this.#accountRepository = accountRepository;
+    this.#threadAccountStore = threadAccountStore;
     this.#accountDataDirectory = dataDirectory;
     this.#codexRuntimePool = new CodexRuntimePool({
       accounts: accountRepository,
@@ -694,6 +698,7 @@ export class AppServerHost {
         request.method === "codexhost/account/list" ||
         request.method === "codexhost/account/refresh" ||
         request.method === "codexhost/account/create" ||
+        request.method === "codexhost/account/delete" ||
         request.method === "codexhost/account/activate" ||
         request.method === "codexhost/account/login/start" ||
         request.method === "codexhost/account/login/cancel"
@@ -1291,6 +1296,7 @@ export class AppServerHost {
                 ...(account.email ? { email: account.email } : {}),
                 codexHome: account.codexHome,
                 active: account.accountId === activeAccountId,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
               })),
             },
           }),
@@ -1315,6 +1321,7 @@ export class AppServerHost {
                 ...(account.email ? { email: account.email } : {}),
                 codexHome: account.codexHome,
                 active: account.accountId === activeAccountId,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
               },
             },
           }),
@@ -1336,9 +1343,41 @@ export class AppServerHost {
                 ...(account.email ? { email: account.email } : {}),
                 codexHome: account.codexHome,
                 active: true,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
               },
             },
           }),
+        );
+        return;
+      }
+      if (request.method === "codexhost/account/delete") {
+        const params = codexAccountDeleteParamsSchema.parse(requestObject(request));
+        if (this.#accountRepository.isDefaultAccount(params.accountId)) {
+          throw new Error("The default Codex Account cannot be deleted");
+        }
+        const account = await this.#accountRepository.get(params.accountId);
+        if (!account) throw new Error(`Unknown Codex Account '${params.accountId}'`);
+        await this.#codexRuntimePool.remove(params.accountId);
+        await this.#accountRepository.remove(params.accountId);
+        await this.#threadAccountStore.removeByAccount(params.accountId);
+        for (const [key, session] of this.#officialLoginSessions) {
+          if (session.accountId === params.accountId) this.#officialLoginSessions.delete(key);
+        }
+        const managedCodexHome = path.join(
+          this.#accountDataDirectory,
+          "codex-homes",
+          params.accountId,
+        );
+        if (path.resolve(account.codexHome) === path.resolve(managedCodexHome)) {
+          try {
+            await rm(managedCodexHome, { recursive: true, force: true });
+          } catch (error) {
+            this.#diagnose(error);
+          }
+        }
+        this.#resetOfficialUsageState();
+        await this.#writer.json(
+          rpcEnvelope(request, { result: { deletedAccountId: params.accountId } }),
         );
         return;
       }

@@ -5,6 +5,8 @@ export { codexhostErrorSchema } from "./errors.js";
 export {
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountDeleteResultSchema,
   codexAccountListResultSchema,
   codexAccountLoginCancelParamsSchema,
   codexAccountLoginCancelResultSchema,
@@ -17,6 +19,8 @@ export {
 export type {
   CodexAccountActivateParams,
   CodexAccountCreateParams,
+  CodexAccountDeleteParams,
+  CodexAccountDeleteResult,
   CodexAccountListResult,
   CodexAccountLoginCancelParams,
   CodexAccountLoginCancelResult,

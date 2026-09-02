@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CODEX_ACCOUNT_ACTIVATE_METHOD,
   CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_DELETE_METHOD,
   CODEX_ACCOUNT_LIST_METHOD,
   CODEX_ACCOUNT_REFRESH_METHOD,
   CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
@@ -82,12 +83,14 @@ describe("Renderer fixed Model request client", () => {
       label: "Work",
       codexHome: "/tmp/codex-work",
       active: true,
+      isDefault: false,
     };
     const sendRequest = vi
       .fn<(method: string, params: unknown) => Promise<unknown>>()
       .mockResolvedValueOnce({ accounts: [account] })
       .mockResolvedValueOnce({ accounts: [account] })
       .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({ deletedAccountId: "work" })
       .mockResolvedValueOnce({ account })
       .mockResolvedValueOnce({
         accountId: "work",
@@ -102,6 +105,9 @@ describe("Renderer fixed Model request client", () => {
     await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
     await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
     await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
+      deletedAccountId: "work",
+    });
     await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
     await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
       loginId: "login-1",
@@ -114,6 +120,7 @@ describe("Renderer fixed Model request client", () => {
       [CODEX_ACCOUNT_LIST_METHOD, {}],
       [CODEX_ACCOUNT_REFRESH_METHOD, {}],
       [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
+      [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
@@ -218,6 +225,7 @@ describe("Renderer fixed Model request client", () => {
       "cancelCodexAccountLogin",
       "checkUpdate",
       "createCodexAccount",
+      "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
       "inspectHarness",

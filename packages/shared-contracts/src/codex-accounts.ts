@@ -14,6 +14,7 @@ export const codexAccountSchema = z
     email: z.string().email().max(320).optional(),
     codexHome: nonBlankTextSchema.max(16_384),
     active: z.boolean(),
+    isDefault: z.boolean(),
   })
   .strict();
 export type CodexAccountSummary = z.infer<typeof codexAccountSchema>;
@@ -30,6 +31,14 @@ export type CodexAccountCreateParams = z.infer<typeof codexAccountCreateParamsSc
 
 export const codexAccountActivateParamsSchema = z.object({ accountId: accountIdSchema }).strict();
 export type CodexAccountActivateParams = z.infer<typeof codexAccountActivateParamsSchema>;
+
+export const codexAccountDeleteParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+export type CodexAccountDeleteParams = z.infer<typeof codexAccountDeleteParamsSchema>;
+
+export const codexAccountDeleteResultSchema = z
+  .object({ deletedAccountId: accountIdSchema })
+  .strict();
+export type CodexAccountDeleteResult = z.infer<typeof codexAccountDeleteResultSchema>;
 
 export const codexAccountMutationResultSchema = z.object({ account: codexAccountSchema }).strict();
 export type CodexAccountMutationResult = z.infer<typeof codexAccountMutationResultSchema>;

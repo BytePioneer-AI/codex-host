@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -527,8 +527,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ).resolves.toMatchObject({
         result: {
           accounts: [
-            { accountId: "account-a", active: true },
-            { accountId: "account-b", active: false },
+            { accountId: "account-a", active: true, isDefault: true },
+            { accountId: "account-b", active: false, isDefault: false },
           ],
         },
       });
@@ -544,7 +544,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       if (typeof createdAccount.accountId !== "string") {
         throw new Error("Created Account has no ID");
       }
+      if (typeof createdAccount.codexHome !== "string") {
+        throw new Error("Created Account has no CODEX_HOME");
+      }
       const createdAccountId = createdAccount.accountId;
+      const createdCodexHome = createdAccount.codexHome;
       expect(createOfficialConnection).toHaveBeenCalledTimes(1);
 
       writeRequest(fixture.desktopInput, {
@@ -940,6 +944,29 @@ describe("AppServerHost HarnessAdapter projection", () => {
             { accountId: createdAccountId, email: "account-c@example.com" },
           ],
         },
+      });
+
+      writeRequest(fixture.desktopInput, {
+        id: 25,
+        method: "codexhost/account/delete",
+        params: { accountId: createdAccountId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 25)),
+      ).resolves.toMatchObject({ result: { deletedAccountId: createdAccountId } });
+      await expect(accountRepository.get(createdAccountId)).resolves.toBeNull();
+      expect(createdAccountConnection.close).toHaveBeenCalled();
+      expect(existsSync(createdCodexHome)).toBe(false);
+
+      writeRequest(fixture.desktopInput, {
+        id: 26,
+        method: "codexhost/account/delete",
+        params: { accountId: "account-a" },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 26)),
+      ).resolves.toMatchObject({
+        error: { code: -32086, message: "The default Codex Account cannot be deleted" },
       });
     } finally {
       await closeFixture(fixture);

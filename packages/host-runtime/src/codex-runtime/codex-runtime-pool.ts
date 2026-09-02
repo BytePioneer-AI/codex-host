@@ -25,6 +25,7 @@ export class CodexRuntimePool {
   readonly #runtimes = new Map<string, CodexRuntime>();
   readonly #ownedRuntimes = new Set<CodexRuntime>();
   readonly #starting = new Map<string, Promise<CodexRuntime>>();
+  readonly #removedAccountIds = new Set<string>();
   readonly #initialized = new Map<string, JsonObject>();
   readonly #initializing = new Map<string, Promise<JsonObject>>();
   readonly #failure = Promise.withResolvers<Error>();
@@ -101,6 +102,18 @@ export class CodexRuntimePool {
 
   listAccounts(): Promise<CodexAccount[]> {
     return this.#accounts.list();
+  }
+
+  async remove(accountId: string): Promise<void> {
+    this.#removedAccountIds.add(accountId);
+    const starting = this.#starting.get(accountId);
+    if (starting) await starting;
+    const runtime = this.#runtimes.get(accountId);
+    runtime?.close();
+    if (runtime) this.#ownedRuntimes.delete(runtime);
+    this.#runtimes.delete(accountId);
+    this.#initialized.delete(accountId);
+    this.#initializing.delete(accountId);
   }
 
   async requestActive(method: string, params: JsonObject): Promise<JsonObject> {
@@ -182,7 +195,7 @@ export class CodexRuntimePool {
           this.#initialized.delete(accountId);
           this.#initializing.delete(accountId);
         }
-        if (error && !this.#closed) {
+        if (error && !this.#closed && !this.#removedAccountIds.has(accountId)) {
           this.#diagnose(error);
           this.#failure.resolve(error);
         }

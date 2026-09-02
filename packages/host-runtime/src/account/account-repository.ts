@@ -22,7 +22,9 @@ export interface AccountRepositoryLike {
   get(accountId: string): Promise<CodexAccount | null>;
   list(): Promise<CodexAccount[]>;
   getActiveAccountId(): Promise<string>;
+  isDefaultAccount(accountId: string): boolean;
   setActiveAccountId(accountId: string): Promise<void>;
+  remove(accountId: string): Promise<CodexAccount>;
   upsert(input: {
     accountId: string;
     codexHome: string;
@@ -111,12 +113,32 @@ export class AccountRepository implements AccountRepositoryLike {
     return this.#activeAccountId;
   }
 
+  isDefaultAccount(accountId: string): boolean {
+    return accountId === this.#defaultAccount.accountId;
+  }
+
   async setActiveAccountId(accountId: string): Promise<void> {
     this.#requireInitialized();
     await this.#mutate(async () => {
       if (!this.#accounts.has(accountId)) throw new Error(`Unknown Codex Account '${accountId}'`);
       this.#activeAccountId = accountId;
       await this.#persist();
+    });
+  }
+
+  async remove(accountId: string): Promise<CodexAccount> {
+    this.#requireInitialized();
+    if (this.isDefaultAccount(accountId))
+      throw new Error("The default Codex Account cannot be deleted");
+    return this.#mutate(async () => {
+      const account = this.#accounts.get(accountId);
+      if (!account) throw new Error(`Unknown Codex Account '${accountId}'`);
+      this.#accounts.delete(accountId);
+      if (this.#activeAccountId === accountId) {
+        this.#activeAccountId = this.#defaultAccount.accountId;
+      }
+      await this.#persist();
+      return cloneAccount(account);
     });
   }
 

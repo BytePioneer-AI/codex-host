@@ -23,9 +23,10 @@ function hermetic() {
       "tools/gate-claude-code",
       "--config",
       "tests/vitest.config.js",
-      ...[...defaultExclude, "**/._*", "tools/gate-claude-code/run.test.mjs"].flatMap(
-        (exclude) => ["--exclude", exclude],
-      ),
+      ...[...defaultExclude, "**/._*", "tools/gate-claude-code/run.test.mjs"].flatMap((exclude) => [
+        "--exclude",
+        exclude,
+      ]),
       "--maxWorkers=1",
     ],
     { cwd: repositoryRoot, stdio: "inherit" },

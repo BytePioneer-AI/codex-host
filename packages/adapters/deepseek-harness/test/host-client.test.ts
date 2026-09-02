@@ -134,6 +134,87 @@ describe("DeepSeek local Host connection", () => {
     }
   });
 
+  it("keeps the client timeout when host.describe fallback receives a caller signal", async () => {
+    const signals: AbortSignal[] = [];
+    const caller = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "server-response",
+              rpcId: body.rpcId,
+              result: {
+                ok: true,
+                value: {
+                  version: "0.0.1",
+                  cwd: "/workspace",
+                  provider: "deepseek-official",
+                  model: "deepseek-v4-flash",
+                  attachedSessions: 0,
+                  canOpenPath: true,
+                },
+              },
+            }),
+          ),
+        );
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekHostClient("http://127.0.0.1:43123");
+      await client.host.describe({}, caller.signal);
+      expect(signals.at(-1)).toBeDefined();
+      expect(signals.at(-1)).not.toBe(caller.signal);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("wraps invalid host.describe fallback envelopes as transport errors", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        calls += 1;
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (calls === 1) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                type: "server-response",
+                rpcId: body.rpcId,
+                result: {
+                  ok: true,
+                  value: {
+                    version: "0.0.1",
+                    cwd: "/workspace",
+                    provider: "deepseek-official",
+                    model: "deepseek-v4-flash",
+                    attachedSessions: 0,
+                    canOpenPath: true,
+                  },
+                },
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(new Response("not-json"));
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekHostClient("http://127.0.0.1:43123");
+      await expect(client.host.describe({})).rejects.toMatchObject({
+        name: "DeepSeekHarnessTransportError",
+        code: "protocolError",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("retries commands/execute with the newer empty images field only when requested", async () => {
     const payloads: Array<Record<string, unknown>> = [];
     vi.stubGlobal(

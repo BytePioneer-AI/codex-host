@@ -218,11 +218,18 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
         payload: {},
       };
       this.onEnvelope(message);
+      const timeout = AbortSignal.timeout(this.timeoutMs);
+      const requestSignal =
+        timeoutPolicy === "caller-signal-only"
+          ? signal
+          : signal
+            ? AbortSignal.any([signal, timeout])
+            : timeout;
       const response = await this.doFetch(new URL("/api/host.describe", this.#endpoint), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(message),
-        signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+        ...(requestSignal ? { signal: requestSignal } : {}),
       });
       if (!response.ok) {
         throw new DeepSeekHarnessTransportError(
@@ -230,7 +237,15 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
           `DeepSeek Harness 'host.describe' transport failed with HTTP ${response.status}`,
         );
       }
-      const full = serverResponseSchema.parse(await response.json());
+      let full: ReturnType<typeof serverResponseSchema.parse>;
+      try {
+        full = serverResponseSchema.parse(await response.json());
+      } catch (parseError) {
+        throw commandProtocolError(
+          "host.describe",
+          `an invalid response: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+        );
+      }
       this.onEnvelope(full);
       if (full.rpcId !== rpcId) {
         throw new DeepSeekHarnessTransportError(

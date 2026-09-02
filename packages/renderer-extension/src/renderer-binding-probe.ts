@@ -143,6 +143,25 @@ export function shouldRefreshCodexAccountsForAdapterState(
   return state === "ready";
 }
 
+export function resolveCodexAccountSelection(
+  accounts: readonly CodexAccountSummary[],
+  overrideAccountId: string | null,
+): {
+  activeAccountId: string | null;
+  overrideAccountId: string | null;
+  selectedAccountId: string | null;
+} {
+  const activeAccountId = accounts.find((account) => account.active)?.accountId ?? null;
+  const validOverrideAccountId = accounts.some((account) => account.accountId === overrideAccountId)
+    ? overrideAccountId
+    : null;
+  return {
+    activeAccountId,
+    overrideAccountId: validOverrideAccountId,
+    selectedAccountId: validOverrideAccountId ?? activeAccountId,
+  };
+}
+
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
   errors: HarnessAvailabilityErrors;
@@ -571,7 +590,8 @@ export function installRendererBindingProbe(
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
   let codexAccounts: readonly CodexAccountSummary[] = [];
-  let selectedCodexAccountId: string | null = null;
+  let activeCodexAccountId: string | null = null;
+  let codexAccountOverrideId: string | null = null;
   let codexAccountSwitching = false;
   let codexAccountRequestGeneration = 0;
   const activeModelHostId = (): string | null => {
@@ -677,6 +697,7 @@ export function installRendererBindingProbe(
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
     const state = controller.recordSubmission(composer);
+    if (state.agent === "codex") codexAccountOverrideId = null;
     writeNewThreadAgentPreference(state.agent);
     if (state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
@@ -701,6 +722,10 @@ export function installRendererBindingProbe(
   };
 
   const renderMounted = (mounted: MountedComposer): void => {
+    const selectedCodexAccountId = resolveCodexAccountSelection(
+      codexAccounts,
+      codexAccountOverrideId,
+    ).selectedAccountId;
     renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
@@ -1746,8 +1771,9 @@ export function installRendererBindingProbe(
         return;
       }
       codexAccounts = result.accounts;
-      selectedCodexAccountId ??=
-        result.accounts.find((account) => account.active)?.accountId ?? null;
+      const selection = resolveCodexAccountSelection(result.accounts, codexAccountOverrideId);
+      activeCodexAccountId = selection.activeAccountId;
+      codexAccountOverrideId = selection.overrideAccountId;
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     } catch {
       // Provider selection remains usable for other Harnesses when Accounts are unavailable.
@@ -1770,8 +1796,8 @@ export function installRendererBindingProbe(
       const policy = await waitForRendererDraftPrewarmPolicy(window);
       await policy.clear();
       if (!policy.selectAccount) throw new Error("Codex Account selection is unavailable");
-      policy.selectAccount(accountId);
-      selectedCodexAccountId = accountId;
+      codexAccountOverrideId = accountId === activeCodexAccountId ? null : accountId;
+      policy.selectAccount(codexAccountOverrideId);
     } catch {
       void loadCodexAccounts();
     } finally {
@@ -1793,8 +1819,8 @@ export function installRendererBindingProbe(
         const policy = await waitForRendererDraftPrewarmPolicy(window);
         await policy.clear();
         if (!policy.selectAccount) throw new Error("Codex Account selection is unavailable");
-        policy.selectAccount(accountId);
-        selectedCodexAccountId = accountId;
+        codexAccountOverrideId = accountId === activeCodexAccountId ? null : accountId;
+        policy.selectAccount(codexAccountOverrideId);
         return true;
       } catch {
         void loadCodexAccounts();
@@ -2524,6 +2550,8 @@ export function installRendererBindingProbe(
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
       codexAccounts = [];
+      activeCodexAccountId = null;
+      codexAccountOverrideId = null;
       codexAccountRequestGeneration += 1;
       try {
         usageNotificationDispose =

@@ -16,6 +16,7 @@ const MAX_PAGE_REQUESTS = 256;
 interface AccountCursorState {
   cursor: string | null;
   done: boolean;
+  backwardsCursor?: string | null;
 }
 
 interface MultiAccountCursor {
@@ -28,7 +29,8 @@ interface SourceState extends AccountCursorState {
   batch: OfficialThreadListPage | null;
   entries: ThreadListEntry[];
   index: number;
-  backwardsCursor: string | null | undefined;
+  backwardsCursor: string | null;
+  requestedThisPage: boolean;
 }
 
 function encodeCursor(accounts: Record<string, AccountCursorState>): string {
@@ -69,11 +71,27 @@ function decodeCursor(value: string): MultiAccountCursor {
     ) {
       throw new Error("Multi-Account official thread/list cursor is invalid");
     }
-    const { cursor, done } = candidate as { cursor?: unknown; done?: unknown };
-    if ((cursor !== null && typeof cursor !== "string") || typeof done !== "boolean") {
+    const { cursor, done, backwardsCursor } = candidate as {
+      cursor?: unknown;
+      done?: unknown;
+      backwardsCursor?: unknown;
+    };
+    if (
+      (cursor !== null && typeof cursor !== "string") ||
+      typeof done !== "boolean" ||
+      (backwardsCursor !== undefined &&
+        backwardsCursor !== null &&
+        typeof backwardsCursor !== "string")
+    ) {
       throw new Error("Multi-Account official thread/list cursor is invalid");
     }
-    result[accountId] = { cursor: cursor as string | null, done };
+    result[accountId] = {
+      cursor: cursor as string | null,
+      done,
+      ...(backwardsCursor === undefined
+        ? {}
+        : { backwardsCursor: backwardsCursor as string | null }),
+    };
   }
   return { accounts: result };
 }
@@ -110,7 +128,8 @@ export async function aggregateOfficialAccountThreadListPage(input: {
     batch: null,
     entries: [],
     index: 0,
-    backwardsCursor: undefined,
+    backwardsCursor: state.backwardsCursor ?? null,
+    requestedThisPage: false,
   }));
   let requestCount = 0;
   const request = async (source: SourceState, cursor: string | null, limit: number) => {
@@ -137,7 +156,10 @@ export async function aggregateOfficialAccountThreadListPage(input: {
       }
       source.batchStart = source.cursor;
       const page = await request(source, source.cursor, Math.max(1, input.query.limit));
-      source.backwardsCursor ??= page.backwardsCursor;
+      if (!source.requestedThisPage) {
+        source.backwardsCursor = page.backwardsCursor;
+        source.requestedThisPage = true;
+      }
       source.batch = page;
       source.entries = page.data.map((thread) =>
         officialThreadListEntry(thread, input.query.sortKey),
@@ -200,16 +222,20 @@ export async function aggregateOfficialAccountThreadListPage(input: {
         done = nextCursor === null;
       }
     }
-    nextAccounts[source.accountId] = { cursor: nextCursor, done };
+    nextAccounts[source.accountId] = {
+      cursor: nextCursor,
+      done,
+      backwardsCursor: source.backwardsCursor,
+    };
   }
   const hasMore = Object.values(nextAccounts).some((state) => !state.done);
   const backwardsAccounts = Object.fromEntries(
     sources.map((source) => [
       source.accountId,
-      { cursor: source.backwardsCursor ?? null, done: source.backwardsCursor == null },
+      { cursor: source.backwardsCursor, done: source.backwardsCursor === null },
     ]),
   );
-  const hasBackwards = sources.some((source) => source.backwardsCursor != null);
+  const hasBackwards = sources.some((source) => source.backwardsCursor !== null);
   return {
     data: output,
     nextCursor: hasMore ? encodeCursor(nextAccounts) : null,

@@ -86,4 +86,38 @@ describe("Multi-Account official Thread list", () => {
     });
     expect(second.data.map((thread) => thread.id)).not.toContain("new-account");
   });
+
+  it("preserves an exhausted Account when navigating back to the preceding merged page", async () => {
+    const requestAccountPage = source({
+      a: [{ id: "a-first", createdAt: 3, updatedAt: 3 }],
+      b: [
+        { id: "b-first", createdAt: 2, updatedAt: 2 },
+        { id: "b-second", createdAt: 1, updatedAt: 1 },
+      ],
+    });
+    const firstQuery = query();
+    const first = await aggregateOfficialAccountThreadListPage({
+      query: firstQuery,
+      accountIds: ["a", "b"],
+      params: firstQuery.params,
+      requestAccountPage,
+    });
+    expect(first.data.map((thread) => thread.id)).toEqual(["a-first", "b-first"]);
+    const secondQuery = query(first.nextCursor);
+    const second = await aggregateOfficialAccountThreadListPage({
+      query: secondQuery,
+      accountIds: ["a", "b"],
+      params: secondQuery.params,
+      requestAccountPage,
+    });
+    expect(second.data.map((thread) => thread.id)).toEqual(["b-second"]);
+    const backwardsQuery = query(second.backwardsCursor);
+    const backwards = await aggregateOfficialAccountThreadListPage({
+      query: backwardsQuery,
+      accountIds: ["a", "b"],
+      params: backwardsQuery.params,
+      requestAccountPage,
+    });
+    expect(backwards.data.map((thread) => thread.id)).toEqual(["a-first", "b-first"]);
+  });
 });

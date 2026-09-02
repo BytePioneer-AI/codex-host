@@ -661,14 +661,7 @@ class AntigravitySession implements HarnessSession {
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
     if (event.result.response) {
-      if (!active.agentItem) {
-        this.#appendAgentText(active, event.result.response);
-      } else if (
-        event.result.response.length > active.agentText.length &&
-        event.result.response.startsWith(active.agentText)
-      ) {
-        this.#appendAgentText(active, event.result.response.slice(active.agentText.length));
-      }
+      this.#appendOrSyncAgentText(active, event.result.response, false);
     }
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
@@ -733,13 +726,19 @@ class AntigravitySession implements HarnessSession {
   }
 
   #handleStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
-    const textDelta =
-      step.text_delta ??
-      step.text ??
-      (typeof step.content === "string" ? step.content : undefined) ??
-      (typeof step.message === "string" ? step.message : undefined);
-    if (step.step_type === "agent_response" && textDelta) {
-      this.#appendAgentText(active, textDelta);
+    if (step.step_type === "agent_response") {
+      if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
+        this.#appendOrSyncAgentText(active, step.text_delta, true);
+        return;
+      }
+      const fullOrDelta =
+        step.text ??
+        (typeof step.content === "string" ? step.content : undefined) ??
+        (typeof step.message === "string" ? step.message : undefined);
+      if (typeof fullOrDelta === "string" && fullOrDelta.length > 0) {
+        this.#appendOrSyncAgentText(active, fullOrDelta, false);
+        return;
+      }
       return;
     }
     if (step.step_type !== "tool") return;
@@ -776,6 +775,21 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" },
     );
+  }
+
+  #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {
+    if (!text) return;
+    if (isExplicitDelta || !active.agentItem) {
+      this.#appendAgentText(active, text);
+      return;
+    }
+    if (text === active.agentText) return;
+    if (text.startsWith(active.agentText)) {
+      const delta = text.slice(active.agentText.length);
+      if (delta.length > 0) this.#appendAgentText(active, delta);
+      return;
+    }
+    this.#appendAgentText(active, text);
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {

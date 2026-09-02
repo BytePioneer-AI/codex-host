@@ -753,5 +753,105 @@ for (const line of lines) {
         await cleanup();
       }
     });
+
+    it("correctly handles cumulative text snapshots without duplicating text", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-cumulative",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-cumulative",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text: "Hello",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-cumulative",
+            step_index: 2,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "Hello world",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-cumulative",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "Hello world!",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-cumul");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "hi" }],
+        });
+
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+
+        // Step 1: started with "Hello"
+        const started = await nextEvent(iterator);
+        expect(started).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: { type: "agentMessage", text: "Hello" },
+        });
+
+        // Step 2: updated with cumulative delta " world"
+        const updated1 = await nextEvent(iterator);
+        expect(updated1).toMatchObject({
+          type: "item.updated",
+          turnId,
+          update: { type: "text.append", text: " world" },
+        });
+
+        // Result: updated with cumulative delta "!"
+        const updated2 = await nextEvent(iterator);
+        expect(updated2).toMatchObject({
+          type: "item.updated",
+          turnId,
+          update: { type: "text.append", text: "!" },
+        });
+
+        // Completed item has final full text "Hello world!"
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "agentMessage", text: "Hello world!" },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
   });
 });

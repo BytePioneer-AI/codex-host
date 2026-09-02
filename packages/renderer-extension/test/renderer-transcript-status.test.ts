@@ -156,12 +156,13 @@ class FakeDOMElement {
       const parts = selector.split(",").map((s) => s.trim());
       return parts.some((part) => this.matches(part));
     }
-    if (selector.startsWith(".")) {
-      const className = selector.slice(1);
-      return this.className.split(/\s+/).includes(className);
-    }
-    if (selector.startsWith("[") && selector.endsWith("]")) {
-      const raw = selector.slice(1, -1);
+    const bracketIndex = selector.indexOf("[");
+    if (bracketIndex !== -1 && selector.endsWith("]")) {
+      const tag = selector.slice(0, bracketIndex).trim();
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) {
+        return false;
+      }
+      const raw = selector.slice(bracketIndex + 1, -1);
       if (raw.includes("*=")) {
         const [attr, val] = raw.split("*=");
         const cleanVal = val?.replace(/['"]/g, "");
@@ -179,6 +180,10 @@ class FakeDOMElement {
         return false;
       }
       return this.hasAttribute(raw);
+    }
+    if (selector.startsWith(".")) {
+      const className = selector.slice(1);
+      return this.className.split(/\s+/).includes(className);
     }
     return this.tagName.toLowerCase() === selector.toLowerCase();
   }
@@ -593,6 +598,108 @@ describe("Transcript status injector", () => {
     vi.advanceTimersByTime(3000);
     const container = transcriptRoot.querySelector(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`);
     expect(container?.querySelector(`[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`)).toBeNull();
+
+    injector.dispose();
+  });
+
+  it("handles attribute-only mutation on reused composer button", () => {
+    const transcriptRoot = doc.createElement("div");
+    transcriptRoot.setAttribute("data-transcript-root", "true");
+    doc.body.append(transcriptRoot);
+
+    const actionButton = doc.createElement("button");
+    actionButton.setAttribute("aria-label", "Send prompt");
+    transcriptRoot.append(actionButton);
+
+    const injector = installRendererTranscriptStatusInjector({
+      root: transcriptRoot as unknown as ParentNode,
+      ownerDocument: doc as unknown as Document,
+      getLocale: () => "en",
+    });
+
+    expect(injector.getStatus()).toBe("ready");
+
+    // Reused button switches aria-label to Stop without DOM insertion/deletion
+    actionButton.setAttribute("aria-label", "Stop generating");
+    FakeMutationObserver.trigger();
+
+    expect(injector.getStatus()).toBe("running");
+
+    // Reused button switches back to Send
+    actionButton.setAttribute("aria-label", "Send prompt");
+    FakeMutationObserver.trigger();
+
+    expect(injector.getStatus()).toBe("completed");
+    injector.dispose();
+  });
+
+  it("does not let historical failed turn pollute subsequent successful turn", () => {
+    const transcriptRoot = doc.createElement("div");
+    transcriptRoot.setAttribute("data-transcript-root", "true");
+    doc.body.append(transcriptRoot);
+
+    // Turn 1 (historical failure)
+    const turn1 = doc.createElement("div");
+    turn1.setAttribute("data-turn-key", "turn-1");
+    const errorNode = doc.createElement("div");
+    errorNode.setAttribute("data-testid", "turn-error");
+    turn1.append(errorNode);
+    transcriptRoot.append(turn1);
+
+    // Turn 2 (current turn)
+    const turn2 = doc.createElement("div");
+    turn2.setAttribute("data-turn-key", "turn-2");
+    const stopButton = doc.createElement("button");
+    stopButton.setAttribute("data-testid", "composer-stop-button");
+    turn2.append(stopButton);
+    transcriptRoot.append(turn2);
+
+    const injector = installRendererTranscriptStatusInjector({
+      root: transcriptRoot as unknown as ParentNode,
+      ownerDocument: doc as unknown as Document,
+      getLocale: () => "en",
+    });
+
+    FakeMutationObserver.trigger();
+    expect(injector.getStatus()).toBe("running");
+
+    // Turn 2 succeeds and unmounts stop button
+    stopButton.remove();
+    FakeMutationObserver.trigger();
+
+    // Turn 2 must be completed, NOT failed by Turn 1's errorNode
+    expect(injector.getStatus()).toBe("completed");
+    injector.dispose();
+  });
+
+  it("does not treat adapter installing state as turn running or fake completed on ready", () => {
+    const transcriptRoot = doc.createElement("div");
+    transcriptRoot.setAttribute("data-transcript-root", "true");
+    doc.body.append(transcriptRoot);
+
+    const injector = installRendererTranscriptStatusInjector({
+      root: transcriptRoot as unknown as ParentNode,
+      ownerDocument: doc as unknown as Document,
+      getLocale: () => "en",
+    });
+
+    // Adapter reports installing state
+    doc.defaultView.dispatchEvent({
+      type: "codexhost:renderer-adapter-status",
+      detail: { state: "installing" },
+    });
+    expect(injector.getStatus()).toBe("ready");
+
+    // Adapter reports ready state
+    doc.defaultView.dispatchEvent({
+      type: "codexhost:renderer-adapter-status",
+      detail: { state: "ready" },
+    });
+    expect(injector.getStatus()).toBe("ready");
+
+    // Arbitrary subsequent DOM mutation should keep status ready (not falsely trigger completed)
+    FakeMutationObserver.trigger();
+    expect(injector.getStatus()).toBe("ready");
 
     injector.dispose();
   });

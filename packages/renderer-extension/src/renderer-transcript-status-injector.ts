@@ -170,10 +170,7 @@ export function installRendererTranscriptStatusInjector(
 
   const setStatus = (status: AdapterStatusState): void => {
     if (disposed) return;
-    if (status === "running") wasRunning = true;
-    else if (status === "completed" || status === "failed" || status === "interrupted") {
-      wasRunning = false;
-    }
+    wasRunning = status === "running";
     chip.setStatus(status);
     if (status !== "completed") {
       if (!chip.element.isConnected) {
@@ -193,8 +190,13 @@ export function installRendererTranscriptStatusInjector(
     } else if (wasRunning) {
       wasRunning = false;
       let failed = false;
+      const target = findTranscriptTarget(root);
+      const searchScope = target ?? root;
       for (const selector of FAILED_TURN_SELECTORS) {
-        if (root.querySelector(selector)) {
+        if (
+          searchScope.querySelector(selector) ||
+          ("matches" in searchScope && typeof searchScope.matches === "function" && searchScope.matches(selector))
+        ) {
           failed = true;
           break;
         }
@@ -212,7 +214,7 @@ export function installRendererTranscriptStatusInjector(
       } else if (typeof detail.state === "string") {
         if (detail.state === "ready") setStatus("ready");
         else if (detail.state === "unsupported") setStatus("failed");
-        else if (detail.state === "installing") setStatus("running");
+        else if (detail.state === "installing") setStatus("ready");
       }
       if (
         typeof detail.locale === "string" &&
@@ -261,6 +263,7 @@ export function installRendererTranscriptStatusInjector(
       observer.observe(observeTarget, {
         childList: true,
         subtree: true,
+        attributes: true,
       });
     }
   }

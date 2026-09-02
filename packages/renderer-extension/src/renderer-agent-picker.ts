@@ -8,6 +8,7 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
+import type { CodexAccountSummary } from "@codexhost/shared-contracts";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
 import { requestConnectionsPageFocus } from "./settings/connections-page.js";
 import {
@@ -63,6 +64,7 @@ const AGENT_MENU_WIDTH = 200;
 const AGENT_GROUP_CTA_THRESHOLD = 5;
 
 interface AgentOptionControl {
+  row: HTMLElement;
   button: HTMLButtonElement;
   check: HTMLElement;
   // Shared 24x24 slot: renders as an Install ("+") action when the Agent is
@@ -82,6 +84,10 @@ export interface RendererAgentPickerControl {
   menu: HTMLElement;
   agents: readonly RendererAgent[];
   options: Partial<Record<RendererAgent, AgentOptionControl>>;
+  codexAccounts: readonly CodexAccountSummary[];
+  codexAccountOptions: Map<string, AgentOptionControl>;
+  codexAccountContainer: HTMLElement;
+  selectCodexAccount(accountId: string): void;
   close(): void;
   dispose(): void;
 }
@@ -114,12 +120,24 @@ export function rendererAgentMenuPlacement(
   };
 }
 
+export function rendererAgentPickerTooltip(
+  state: { agent: RendererAgent; phase: ComposerAgentPhase },
+  activeAccount: CodexAccountSummary | undefined,
+): string {
+  const account =
+    state.agent === "codex" && activeAccount
+      ? ` · ${activeAccount.email ?? activeAccount.label}`
+      : "";
+  return `Agent: ${RENDERER_AGENT_LABELS[state.agent]}${account}${state.phase === "locked" ? " (locked)" : ""}`;
+}
+
 export function rendererAgentPickerView(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   agents: readonly RendererAgent[],
   availability: AgentAvailability = {},
+  codexAccountCount = 0,
 ): RendererAgentPickerView {
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
@@ -141,7 +159,8 @@ export function rendererAgentPickerView(
   ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
     label: RENDERER_AGENT_LABELS[state.agent],
-    triggerDisabled: switching || state.phase === "locked" || agents.length < 2,
+    triggerDisabled:
+      switching || state.phase === "locked" || (agents.length < 2 && codexAccountCount < 2),
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
     downloadVisible,
@@ -176,6 +195,8 @@ export function mountRendererAgentPicker(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
+  onSelectCodexAccount: (accountId: string) => void,
+  onOpen?: () => void,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
@@ -257,6 +278,9 @@ export function mountRendererAgentPicker(
   const options: Partial<Record<RendererAgent, AgentOptionControl>> = {};
   const rowsByAgent = new Map<RendererAgent, HTMLDivElement>();
   const groupMessages = pickerGroupMessages();
+  const codexAccountOptions = new Map<string, AgentOptionControl>();
+  const codexAccountContainer = document.createElement("div");
+  codexAccountContainer.dataset.codexAccountOptions = "true";
 
   const close = (): void => {
     if (!popoverOpen(menu)) return;
@@ -264,12 +288,10 @@ export function mountRendererAgentPicker(
     else menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
   };
-  const visibleAgentOrder = (): readonly RendererAgent[] =>
-    moreOpen ? [...mainAgents, ...moreAgents] : mainAgents;
   const focusOption = (position: "first" | "last" | "selected"): void => {
-    const available = visibleAgentOrder()
-      .map((agent) => options[agent]?.button)
-      .filter((button): button is HTMLButtonElement => button !== undefined && !button.disabled);
+    const available = [
+      ...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+    ].filter((button) => !button.disabled && !button.closest<HTMLElement>("[hidden]"));
     const selected = available.find((button) => button.getAttribute("aria-checked") === "true");
     const target =
       position === "last" ? available.at(-1) : position === "selected" ? selected : available[0];
@@ -281,6 +303,7 @@ export function mountRendererAgentPicker(
     if (typeof menu.showPopover === "function") menu.showPopover();
     else menu.hidden = false;
     trigger.setAttribute("aria-expanded", "true");
+    onOpen?.();
     queueMicrotask(() => focusOption(focus));
   };
 
@@ -381,7 +404,6 @@ export function mountRendererAgentPicker(
             });
             return control;
           })();
-    options[agent] = { button, check, action };
     const row = document.createElement("div");
     row.style.display = "flex";
     row.style.alignItems = "center";
@@ -395,6 +417,7 @@ export function mountRendererAgentPicker(
     actionSlot.append(check);
     if (action) actionSlot.append(action);
     row.append(actionSlot, button);
+    options[agent] = { row, button, check, action };
     rowsByAgent.set(agent, row);
   }
 
@@ -526,11 +549,13 @@ export function mountRendererAgentPicker(
 
     mainAgents = nextMain;
     moreAgents = nextMore;
-    mainGroup.replaceChildren(
-      ...mainAgents
-        .map((agent) => rowsByAgent.get(agent))
-        .filter((el): el is HTMLDivElement => !!el),
-    );
+    const mainChildren: HTMLElement[] = [];
+    for (const agent of mainAgents) {
+      const row = rowsByAgent.get(agent);
+      if (row) mainChildren.push(row);
+      if (agent === "codex") mainChildren.push(codexAccountContainer);
+    }
+    mainGroup.replaceChildren(...mainChildren);
     moreRows.replaceChildren(
       ...moreAgents
         .map((agent) => rowsByAgent.get(agent))
@@ -564,9 +589,9 @@ export function mountRendererAgentPicker(
     open(event.key === "ArrowUp" ? "last" : "first");
   };
   const onMenuKeyDown = (event: KeyboardEvent): void => {
-    const buttons = visibleAgentOrder()
-      .map((agent) => options[agent]?.button)
-      .filter((button): button is HTMLButtonElement => button !== undefined && !button.disabled);
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].filter(
+      (button) => !button.disabled && !button.closest<HTMLElement>("[hidden]"),
+    );
     const current = event.target instanceof Element ? event.target.closest("button") : null;
     const index = buttons.indexOf(current as HTMLButtonElement);
     if (event.key === "Escape") {
@@ -611,6 +636,10 @@ export function mountRendererAgentPicker(
     menu,
     agents: [...enabledAgents],
     options,
+    codexAccounts: [],
+    codexAccountOptions,
+    codexAccountContainer,
+    selectCodexAccount: onSelectCodexAccount,
     close,
     dispose() {
       close();
@@ -633,13 +662,72 @@ export function renderRendererAgentPicker(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   availability: AgentAvailability = {},
+  codexAccounts: readonly CodexAccountSummary[] = [],
 ): RendererAgentPickerView {
+  const accountSignature = codexAccounts
+    .map(({ accountId, label }) => `${accountId}\u0000${label}`)
+    .join("\u0001");
+  const previousSignature = control.codexAccounts
+    .map(({ accountId, label }) => `${accountId}\u0000${label}`)
+    .join("\u0001");
+  if (accountSignature !== previousSignature) {
+    control.codexAccountContainer.replaceChildren();
+    control.codexAccountOptions.clear();
+    for (const account of codexAccounts) {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      const check = document.createElement("span");
+      check.textContent = "\u2713";
+      check.setAttribute("aria-hidden", "true");
+      check.style.width = "24px";
+      check.style.flex = "none";
+      check.style.textAlign = "center";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.codexAccountId = account.accountId;
+      button.setAttribute("role", "menuitemradio");
+      button.style.display = "flex";
+      button.style.alignItems = "center";
+      button.style.gap = "8px";
+      button.style.width = "100%";
+      button.style.height = "36px";
+      button.style.padding = "0 8px";
+      button.style.border = "0";
+      button.style.borderRadius = "4px";
+      button.style.background = "transparent";
+      button.style.color = "inherit";
+      button.style.font = "500 13px/1 system-ui, sans-serif";
+      button.style.textAlign = "left";
+      button.style.cursor = "pointer";
+      const label = document.createElement("span");
+      label.textContent = account.email ?? account.label;
+      label.style.overflow = "hidden";
+      label.style.textOverflow = "ellipsis";
+      label.style.whiteSpace = "nowrap";
+      button.append(createRendererAgentIcon("codex"), label);
+      button.addEventListener("click", () => {
+        control.close();
+        control.trigger.focus();
+        control.selectCodexAccount(account.accountId);
+      });
+      row.append(check, button);
+      control.codexAccountContainer.append(row);
+      control.codexAccountOptions.set(account.accountId, { row, button, check, action: null });
+    }
+    control.codexAccounts = [...codexAccounts];
+  } else {
+    control.codexAccounts = [...codexAccounts];
+  }
+  const codexOption = control.options.codex;
+  if (codexOption) codexOption.row.hidden = codexAccounts.length > 0;
   const view = rendererAgentPickerView(
     state,
     adapterState,
     switching,
     control.agents,
     availability,
+    codexAccounts.length,
   );
   if (control.iconSlot.dataset.agent !== state.agent) {
     control.iconSlot.replaceChildren(createRendererAgentIcon(state.agent));
@@ -651,8 +739,8 @@ export function renderRendererAgentPicker(
     "aria-label",
     state.phase === "locked" ? `Agent: ${view.label}` : `Select Agent, current ${view.label}`,
   );
-  control.trigger.title =
-    state.phase === "locked" ? `Agent: ${view.label} (locked)` : `Agent: ${view.label}`;
+  const activeAccount = codexAccounts.find(({ active }) => active);
+  control.trigger.title = rendererAgentPickerTooltip(state, activeAccount);
   control.trigger.style.cursor = control.trigger.disabled ? "not-allowed" : "pointer";
   control.trigger.style.opacity = control.trigger.disabled && !switching ? "0.72" : "1";
   control.iconSlot.style.display = switching ? "none" : "inline-flex";
@@ -701,6 +789,18 @@ export function renderRendererAgentPicker(
       }
       option.action.setAttribute("aria-hidden", String(!visible));
     }
+  }
+  for (const account of codexAccounts) {
+    const option = control.codexAccountOptions.get(account.accountId);
+    if (!option) continue;
+    const selected = state.agent === "codex" && account.active;
+    option.button.disabled = switching || state.phase === "locked";
+    option.button.setAttribute("aria-checked", String(selected));
+    option.button.setAttribute("aria-pressed", String(selected));
+    option.button.style.background = selected ? "rgba(127, 127, 127, 0.16)" : "transparent";
+    option.button.style.cursor = option.button.disabled ? "not-allowed" : "pointer";
+    option.button.style.opacity = option.button.disabled && !selected ? "0.5" : "1";
+    option.check.style.visibility = selected ? "visible" : "hidden";
   }
   return view;
 }

@@ -22,6 +22,7 @@ import {
   type RendererConnectionDiagnostics,
 } from "./connections-page.js";
 import { createReleaseNotesElement } from "./release-notes.js";
+import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
 
 export type {
   RendererConnectionAgentSnapshot,
@@ -63,7 +64,12 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
   return `https://github.com/BytePioneer-AI/codex-host/releases/download/v${version}/codexhost-${version}-windows-${architecture}.exe`;
 }
 
-export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates", "about"] as const;
+export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
+  "connections",
+  "accounts",
+  "updates",
+  "about",
+] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
@@ -566,9 +572,11 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getAccountClient: () => RendererCodexAccountClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
+    createAccountsSettingsPage(messages, getAccountClient),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);
@@ -578,8 +586,11 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getAccountClient: () => RendererCodexAccountClient | null = () => null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
+    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics, getAccountClient),
   );
 }
+
+export type { RendererCodexAccountClient } from "./accounts-page.js";

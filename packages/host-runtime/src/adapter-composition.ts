@@ -9,6 +9,8 @@ import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
 
+import { withUserShellEnvironment } from "./user-shell-environment.js";
+
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
@@ -48,17 +50,18 @@ export function createExternalHarnessAdapters(
     brokerDescriptorPath?: string;
   } = {},
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {
+  const claudeEnvironment = withUserShellEnvironment(environment);
   const claudeAdapter =
     (options.platform ?? process.platform) === "darwin" && options.managedRemoteHost === true
       ? new BrokeredHarnessAdapter({
-          environment,
+          environment: claudeEnvironment,
           ...(options.brokerDescriptorPath ? { descriptorPath: options.brokerDescriptorPath } : {}),
         })
       : new ClaudeCodeAdapter({
-          ...(environment[CLAUDE_CODE_COMMAND_ENV]
-            ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
+          ...(claudeEnvironment[CLAUDE_CODE_COMMAND_ENV]
+            ? { command: claudeEnvironment[CLAUDE_CODE_COMMAND_ENV] }
             : {}),
-          environment,
+          environment: claudeEnvironment,
         });
   return new Map<ExternalHarnessId, HarnessAdapter>([
     [

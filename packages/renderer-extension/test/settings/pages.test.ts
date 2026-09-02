@@ -333,6 +333,339 @@ describe("Renderer Connections page", () => {
   });
 });
 
+describe("Renderer Codex Accounts page", () => {
+  it("renders cached Accounts before live metadata refresh completes", async () => {
+    const refresh = Promise.withResolvers<{
+      accounts: Array<{
+        accountId: string;
+        label: string;
+        email: string;
+        codexHome: string;
+        active: boolean;
+        isDefault: boolean;
+      }>;
+    }>();
+    const cachedAccount = {
+      accountId: "default",
+      label: "Default",
+      codexHome: "/tmp/default",
+      active: true,
+      isDefault: true,
+    };
+    const client = {
+      listCodexAccounts: vi.fn(async () => ({ accounts: [cachedAccount] })),
+      refreshCodexAccounts: vi.fn(() => refresh.promise),
+      createCodexAccount: vi.fn(),
+      deleteCodexAccount: vi.fn(),
+      activateCodexAccount: vi.fn(),
+      startCodexAccountLogin: vi.fn(),
+      cancelCodexAccountLogin: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Default"));
+    expect(client.refreshCodexAccounts).toHaveBeenCalledOnce();
+
+    refresh.resolve({ accounts: [{ ...cachedAccount, email: "cached@example.com" }] });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("cached@example.com"));
+
+    scope.dispose();
+  });
+
+  it("creates an isolated Account and starts sign-in without asking for a name", async () => {
+    const createdAccount = {
+      accountId: "work",
+      label: "Codex Account",
+      codexHome: "/tmp/work",
+      active: false,
+      isDefault: false,
+    };
+    const client = {
+      listCodexAccounts: vi.fn(async () => ({ accounts: [] })),
+      createCodexAccount: vi.fn(async () => ({ account: createdAccount })),
+      deleteCodexAccount: vi.fn(),
+      activateCodexAccount: vi.fn(),
+      startCodexAccountLogin: vi.fn(async ({ accountId }: { accountId: string }) => ({
+        accountId,
+        loginId: "login-1",
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      })),
+      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(client.listCodexAccounts).toHaveBeenCalledTimes(1));
+
+    expect(descendants(content).some(({ tagName }) => tagName === "input")).toBe(false);
+    const add = descendants(content).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("Add Account"),
+    );
+    add?.dispatch("click");
+
+    await vi.waitFor(() => expect(client.createCodexAccount).toHaveBeenCalledWith({}));
+    await vi.waitFor(() =>
+      expect(client.startCodexAccountLogin).toHaveBeenCalledWith({ accountId: "work" }),
+    );
+    await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
+
+    scope.dispose();
+  });
+
+  it("allows deleting only non-default Accounts", async () => {
+    const deleteCodexAccount = vi.fn(async ({ accountId }: { accountId: string }) => ({
+      deletedAccountId: accountId,
+    }));
+    const client = {
+      listCodexAccounts: vi.fn(async () => ({
+        accounts: [
+          {
+            accountId: "default",
+            label: "Default",
+            codexHome: "/tmp/default",
+            active: true,
+            isDefault: true,
+          },
+          {
+            accountId: "work",
+            label: "Work",
+            codexHome: "/tmp/work",
+            active: false,
+            isDefault: false,
+          },
+        ],
+      })),
+      createCodexAccount: vi.fn(),
+      deleteCodexAccount,
+      activateCodexAccount: vi.fn(),
+      startCodexAccountLogin: vi.fn(),
+      cancelCodexAccountLogin: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    document.defaultView.confirm = vi.fn(() => true);
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Work"));
+
+    const deleteButtons = descendants(content).filter(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "Delete",
+    );
+    expect(deleteButtons).toHaveLength(1);
+    deleteButtons[0]?.dispatch("click");
+    expect(document.defaultView.confirm).toHaveBeenCalledWith(
+      "Delete this Account and its local data? This cannot be undone.",
+    );
+    await vi.waitFor(() => expect(deleteCodexAccount).toHaveBeenCalledWith({ accountId: "work" }));
+    await vi.waitFor(() => expect(visibleText(content)).not.toContain("Work"));
+    expect(visibleText(content)).toContain("Default");
+
+    scope.dispose();
+  });
+
+  it("hides login for valid Accounts and exposes device-code login for others", async () => {
+    let active = "personal";
+    const personal = { email: undefined as string | undefined };
+    let loginCompleted:
+      | ((result: {
+          accountId: string;
+          loginId: string;
+          success: boolean;
+          error: string | null;
+        }) => void)
+      | undefined;
+    const listCodexAccounts = vi.fn(async () => ({
+      accounts: [
+        {
+          accountId: "personal",
+          label: "Personal",
+          ...(personal.email ? { email: personal.email } : {}),
+          codexHome: "/tmp/personal",
+          active: active === "personal",
+          isDefault: true,
+        },
+        {
+          accountId: "work",
+          label: "Work",
+          email: "work@example.com",
+          codexHome: "/tmp/work",
+          active: active === "work",
+          isDefault: false,
+        },
+      ],
+    }));
+    const loginStart = Promise.withResolvers<{
+      accountId: string;
+      loginId: string;
+      verificationUrl: string;
+      userCode: string;
+    }>();
+    const client = {
+      listCodexAccounts,
+      refreshCodexAccounts: listCodexAccounts,
+      createCodexAccount: vi.fn(),
+      deleteCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => ({
+        deletedAccountId: accountId,
+      })),
+      activateCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => {
+        active = accountId;
+        return {
+          account: {
+            accountId,
+            label: "Work",
+            codexHome: "/tmp/work",
+            active: true,
+            isDefault: false,
+          },
+        };
+      }),
+      startCodexAccountLogin: vi.fn(() => loginStart.promise),
+      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
+      subscribeCodexAccountLogin: vi.fn((listener: typeof loginCompleted) => {
+        loginCompleted = listener;
+        return () => undefined;
+      }),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    const openInBrowser = vi.fn(async () => undefined);
+    (
+      document.defaultView as Window & {
+        electronBridge: { sendMessageFromView: typeof openInBrowser };
+      }
+    ).electronBridge = { sendMessageFromView: openInBrowser };
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
+    expect(visibleText(content)).toContain("Existing tasks stay with their original Account");
+    expect(visibleText(content)).toContain("Enable device code authorization for Codex");
+    expect(visibleText(content)).not.toContain("token");
+    expect(
+      descendants(content).filter(
+        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+      ),
+    ).toHaveLength(1);
+
+    const useWork = descendants(content).find(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "Use for new tasks",
+    );
+    useWork?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(client.activateCodexAccount).toHaveBeenCalledWith({ accountId: "work" }),
+    );
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Active"));
+
+    const signIn = descendants(content).find(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+    );
+    signIn?.dispatch("click");
+    const signInButtons = descendants(content).filter(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+    );
+    expect(signInButtons.every(({ disabled }) => disabled)).toBe(true);
+    signInButtons.at(-1)?.dispatch("click");
+    expect(client.startCodexAccountLogin).toHaveBeenCalledTimes(1);
+    loginStart.resolve({
+      accountId: "personal",
+      loginId: "login-1",
+      verificationUrl: "https://example.com/device",
+      userCode: "ABCD-EFGH",
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
+    expect(visibleText(content)).toContain("https://example.com/device");
+    const verificationLink = descendants(content).find(
+      ({ tagName, href }) => tagName === "a" && href === "https://example.com/device",
+    );
+    const preventDefault = vi.fn();
+    verificationLink?.dispatch("click", { preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(openInBrowser).toHaveBeenCalledWith({
+      type: "open-in-browser",
+      url: "https://example.com/device",
+      initiator: "open_in_browser_bridge",
+      openTarget: "external-browser",
+      source: "manual",
+    });
+    expect(
+      descendants(content).find(
+        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+      )?.disabled,
+    ).toBe(true);
+    personal.email = "personal@example.com";
+    const refreshAfterLogin = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
+    if (typeof refreshAfterLogin !== "function") {
+      throw new Error("Account login refresh was not scheduled");
+    }
+    refreshAfterLogin();
+    await vi.waitFor(() =>
+      expect(
+        descendants(content).some(
+          ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+        ),
+      ).toBe(false),
+    );
+    expect(visibleText(content)).toContain("Sign-in completed");
+    expect(visibleText(content)).not.toContain("ABCD-EFGH");
+    expect(loginCompleted).toBeTypeOf("function");
+
+    cleanup?.();
+    scope.dispose();
+  });
+});
+
 describe("Renderer Updates page", () => {
   it.each([
     [updateStatus("prepared"), "正在准备更新..."],

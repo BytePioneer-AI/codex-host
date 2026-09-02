@@ -23,6 +23,8 @@ import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
+import Users from "lucide/dist/esm/icons/users.mjs";
+import Plus from "lucide/dist/esm/icons/plus.mjs";
 import codexLogoUrl from "../assets/codex-logo-bright.png";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
@@ -31,6 +33,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "star",
   "language",
   "connections",
+  "accounts",
+  "add",
   "model-pool",
   "routes",
   "gateway",
@@ -60,6 +64,8 @@ const iconNodes = {
   star: Star,
   language: Languages,
   connections: PlugZap,
+  accounts: Users,
+  add: Plus,
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,

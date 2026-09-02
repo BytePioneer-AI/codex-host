@@ -72,6 +72,7 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
 
 vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
   installRendererSidebarAgentIcons: () => ({ refresh: vi.fn(), dispose: vi.fn() }),
+  installRendererSidebarExternalPinning: () => vi.fn(),
 }));
 
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({

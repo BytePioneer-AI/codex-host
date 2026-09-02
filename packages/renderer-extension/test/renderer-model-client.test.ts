@@ -14,6 +14,7 @@ import {
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_METADATA_UPDATE_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
@@ -150,6 +151,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadThinking",
       "startUpdate",
       "subscribeThreadUsage",
+      "updateThreadPinned",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -269,6 +271,23 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("sends External Thread pin state through the standard metadata method", async () => {
+    const sendRequest = vi.fn(async () => ({ thread: { id: "thread-1" } }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.updateThreadPinned) throw new Error("Synthetic pin client was not created");
+
+    await expect(
+      client.updateThreadPinned({
+        threadId: hostThreadIdSchema.parse("thread-1"),
+        isPinned: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(sendRequest).toHaveBeenCalledWith(THREAD_METADATA_UPDATE_METHOD, {
+      threadId: "thread-1",
+      isPinned: true,
+    });
   });
 
   it("defers Usage notification registration until a request manager is available", () => {

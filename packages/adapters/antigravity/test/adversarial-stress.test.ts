@@ -2,10 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {
-  HostCommandExecutionItem,
-  HostToolExecutionItem,
-} from "@codexhost/harness-adapter";
+import type { HostCommandExecutionItem, HostToolExecutionItem } from "@codexhost/harness-adapter";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -169,8 +166,10 @@ describe("Antigravity Adversarial & Stress Testing", () => {
     });
 
     it("safely handles multi-byte unicode, emojis, and right-to-left characters", () => {
-      const unicodeOld = "const greeting = 'Hello'; // 🌲 Initial\nconst cjk = '简体中文 繁體中文 日本語 한국어';\nconst rtl = 'مرحبا بالعالم';\n";
-      const unicodeNew = "const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated\nconst cjk = '简体中文 繁體中文 日本語 한국어 - 2026';\nconst rtl = 'مرحبا بالعالم - شغال';\n";
+      const unicodeOld =
+        "const greeting = 'Hello'; // 🌲 Initial\nconst cjk = '简体中文 繁體中文 日本語 한국어';\nconst rtl = 'مرحبا بالعالم';\n";
+      const unicodeNew =
+        "const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated\nconst cjk = '简体中文 繁體中文 日本語 한국어 - 2026';\nconst rtl = 'مرحبا بالعالم - شغال';\n";
 
       const changes = synthesizeAntigravityFileChange(
         "replace_file_content",
@@ -184,7 +183,9 @@ describe("Antigravity Adversarial & Stress Testing", () => {
       expect(changes).not.toBeNull();
       const [change] = changes ?? [];
       expect(change?.unifiedDiff).toContain("+const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated");
-      expect(change?.unifiedDiff).toContain("+const cjk = '简体中文 繁體中文 日本語 한국어 - 2026';");
+      expect(change?.unifiedDiff).toContain(
+        "+const cjk = '简体中文 繁體中文 日本語 한국어 - 2026';",
+      );
       expect(change?.unifiedDiff).toContain("+const rtl = 'مرحبا بالعالم - شغال';");
     });
 
@@ -492,14 +493,24 @@ for (const line of lines) {
         JSON.stringify({ event: "init", conversation_id: "conv-rapid" }),
         JSON.stringify({
           event: "result",
-          result: { conversation_id: "conv-rapid", status: "SUCCESS", num_turns: 1, response: "Turn 1 done" },
+          result: {
+            conversation_id: "conv-rapid",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "Turn 1 done",
+          },
         }),
       ];
       const turn2Lines = [
         JSON.stringify({ event: "init", conversation_id: "conv-rapid" }),
         JSON.stringify({
           event: "result",
-          result: { conversation_id: "conv-rapid", status: "SUCCESS", num_turns: 2, response: "Turn 2 done" },
+          result: {
+            conversation_id: "conv-rapid",
+            status: "SUCCESS",
+            num_turns: 2,
+            response: "Turn 2 done",
+          },
         }),
       ];
 
@@ -614,6 +625,37 @@ for (const line of lines) {
         await adapter.close();
         await cleanup();
       }
+    });
+  });
+
+  describe("8. Namespaced Tool Identifiers (default_api:*, functions.*)", () => {
+    it("synthesizes file change and command for namespaced tool identifiers", () => {
+      const fileChange = synthesizeAntigravityFileChange(
+        "default_api:write_to_file",
+        { TargetFile: "src/namespaced.ts", CodeContent: "const x = 42;" },
+        CWD,
+      );
+      expect(fileChange).not.toBeNull();
+      expect(fileChange?.[0]?.kind).toBe("add");
+      expect(fileChange?.[0]?.path).toBe("src/namespaced.ts");
+
+      const replaceChange = synthesizeAntigravityFileChange(
+        "default_api:replace_file_content",
+        {
+          TargetFile: "src/namespaced.ts",
+          TargetContent: "const x = 42;",
+          ReplacementContent: "const x = 100;",
+        },
+        CWD,
+      );
+      expect(replaceChange).not.toBeNull();
+      expect(replaceChange?.[0]?.kind).toBe("update");
+
+      const cmd = synthesizeAntigravityCommand("default_api:run_command", {
+        CommandLine: "node script.js",
+      });
+      expect(cmd).not.toBeNull();
+      expect(cmd?.command).toBe("node script.js");
     });
   });
 });

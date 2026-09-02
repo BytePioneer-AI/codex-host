@@ -56,10 +56,7 @@ class FakeDOMElement {
     }
     let parent: FakeDOMElement | null = this.parentElement;
     while (parent) {
-      if (
-        parent === this.ownerDocument.body ||
-        parent === this.ownerDocument.documentElement
-      ) {
+      if (parent === this.ownerDocument.body || parent === this.ownerDocument.documentElement) {
         return true;
       }
       parent = parent.parentElement;
@@ -78,9 +75,7 @@ class FakeDOMElement {
     }
     this.attributes.set(name, value);
     if (name.startsWith("data-")) {
-      const prop = name
-        .slice(5)
-        .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
       this.dataset[prop] = value;
     }
   }
@@ -88,9 +83,7 @@ class FakeDOMElement {
   removeAttribute(name: string): void {
     this.attributes.delete(name);
     if (name.startsWith("data-")) {
-      const prop = name
-        .slice(5)
-        .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
       Reflect.deleteProperty(this.dataset, prop);
     }
   }
@@ -193,9 +186,7 @@ class FakeDOMElement {
   }
 
   removeEventListener(type: string, callback: (event: unknown) => void): void {
-    this.listeners = this.listeners.filter(
-      (l) => l.type !== type || l.callback !== callback,
-    );
+    this.listeners = this.listeners.filter((l) => l.type !== type || l.callback !== callback);
   }
 
   dispatchEvent(event: unknown): boolean {
@@ -323,13 +314,7 @@ describe("Transcript status indicator & localization", () => {
   });
 
   it("renders status chip element with correct classes, attributes, and text for all states", () => {
-    const states: AdapterStatusState[] = [
-      "ready",
-      "running",
-      "completed",
-      "failed",
-      "interrupted",
-    ];
+    const states: AdapterStatusState[] = ["ready", "running", "completed", "failed", "interrupted"];
 
     for (const state of states) {
       const chip = mountRendererTranscriptStatusChip({
@@ -505,7 +490,9 @@ describe("Transcript status injector", () => {
     });
 
     expect(injector.getStatus()).toBe("ready");
-    const container = transcriptContainer.querySelector(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`);
+    const container = transcriptContainer.querySelector(
+      `[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`,
+    );
     expect(container).not.toBeNull();
     expect(container?.getAttribute(TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE)).toBe("true");
 
@@ -527,7 +514,9 @@ describe("Transcript status injector", () => {
     expect(container?.textContent).toContain("运行中...");
 
     injector.dispose();
-    expect(transcriptContainer.querySelector(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`)).toBeNull();
+    expect(
+      transcriptContainer.querySelector(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`),
+    ).toBeNull();
   });
 
   it("responds to window custom events for status and locale changes", () => {

@@ -1145,10 +1145,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
         ],
       },
     });
-    const storedItems = (
-      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } }).result
-        .data[0]?.items ?? []
-    );
+    const storedItems =
+      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } })
+        .result.data[0]?.items ?? [];
     expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
     expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
 

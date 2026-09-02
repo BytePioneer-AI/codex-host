@@ -110,7 +110,12 @@ function extractBoolean(
 }
 
 export function compactToolName(toolName: string): string {
-  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const baseName = toolName.includes(":")
+    ? toolName.slice(toolName.lastIndexOf(":") + 1)
+    : toolName.includes(".")
+      ? toolName.slice(toolName.lastIndexOf(".") + 1)
+      : toolName;
+  return baseName.toLowerCase().replaceAll(/[_-]/g, "");
 }
 
 const COMPACT_WRITE_TOOLS = new Set(["writetofile", "writefile", "write"]);
@@ -293,10 +298,7 @@ export function completeAntigravityToolItem(
   cwd?: string,
 ): HostItem {
   void cwd;
-  const output = boundedText(
-    step.tool_info?.output ?? step.tool_info?.error,
-    toolOutputLimit,
-  );
+  const output = boundedText(step.tool_info?.output ?? step.tool_info?.error, toolOutputLimit);
   const durationMs =
     typeof step.duration_seconds === "number"
       ? Math.max(0, Math.round(step.duration_seconds * 1_000))
@@ -318,8 +320,10 @@ export function completeAntigravityToolItem(
   }
 
   if (item.type === "toolExecution") {
+    const parameters = step.tool_info?.parameters;
     const completed: HostToolExecutionItem = {
       ...item,
+      ...(parameters !== undefined ? { arguments: jsonValue(parameters) } : {}),
       ...(output
         ? {
             output: {

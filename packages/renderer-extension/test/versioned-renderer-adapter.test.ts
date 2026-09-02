@@ -660,15 +660,11 @@ describe("current Codex Renderer Agent adapter", () => {
       expect(adapter).toBeDefined();
 
       // Verify that transcript status events were registered by status injector
-      expect(
-        globalListeners.some((l) => l.type === "codexhost:transcript-status"),
-      ).toBe(true);
+      expect(globalListeners.some((l) => l.type === "codexhost:transcript-status")).toBe(true);
 
       // Dispose adapter and verify clean unregistration
       adapter.dispose();
-      expect(
-        globalListeners.some((l) => l.type === "codexhost:transcript-status"),
-      ).toBe(false);
+      expect(globalListeners.some((l) => l.type === "codexhost:transcript-status")).toBe(false);
     } finally {
       (globalThis as unknown as { window: unknown }).window = originalWindow;
       (globalThis as unknown as { document: unknown }).document = originalDocument;

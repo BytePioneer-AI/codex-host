@@ -720,9 +720,7 @@ class AntigravitySession implements HarnessSession {
       conversationId,
       this.#model?.id,
       () =>
-        active.receivedResult ||
-        active.cancellationRequested ||
-        active.process.exitCode !== null,
+        active.receivedResult || active.cancellationRequested || active.process.exitCode !== null,
     );
   }
 
@@ -777,13 +775,8 @@ class AntigravitySession implements HarnessSession {
 
     if (step.state !== "ERROR") {
       const params =
-        step.tool_info?.parameters ??
-        (item.type === "toolExecution" ? item.arguments : undefined);
-      const fileChanges = synthesizeAntigravityFileChange(
-        toolName,
-        params,
-        this.#cwd,
-      );
+        step.tool_info?.parameters ?? (item.type === "toolExecution" ? item.arguments : undefined);
+      const fileChanges = synthesizeAntigravityFileChange(toolName, params, this.#cwd);
       if (fileChanges && fileChanges.length > 0) {
         const fileItem: HostItem = {
           type: "fileChange",

@@ -21,7 +21,7 @@ export const RUNNING_TURN_SELECTORS = [
   '[data-testid="composer-cancel-button"]',
   '[data-testid="composer-stop-button"]',
   '[data-testid="composer-abort-button"]',
-  '.composer-stop-button',
+  ".composer-stop-button",
   '[data-composer-state="running"]',
   '[data-composer-state="streaming"]',
   'button[aria-label="Stop"]',
@@ -42,8 +42,8 @@ export const FAILED_TURN_SELECTORS = [
   '[data-testid="transcript-error"]',
   '[data-item-status="failed"]',
   '[data-turn-status="failed"]',
-  '.turn-error',
-  '.transcript-error',
+  ".turn-error",
+  ".transcript-error",
 ] as const;
 
 export function detectTurnStatusFromDom(root: ParentNode): AdapterStatusState | null {
@@ -111,11 +111,16 @@ export function findTranscriptTarget(root: ParentNode): HTMLElement | null {
   if (typeof HTMLElement !== "undefined" && root instanceof HTMLElement) {
     return root;
   }
-  if (isRecord(root) && "tagName" in root && typeof (root as { append?: unknown }).append === "function") {
+  if (
+    isRecord(root) &&
+    "tagName" in root &&
+    typeof (root as { append?: unknown }).append === "function"
+  ) {
     return root as unknown as HTMLElement;
   }
 
-  const doc = "ownerDocument" in root && root.ownerDocument ? root.ownerDocument : (root as Document);
+  const doc =
+    "ownerDocument" in root && root.ownerDocument ? root.ownerDocument : (root as Document);
   return (doc.body ?? doc.documentElement ?? null) as unknown as HTMLElement | null;
 }
 
@@ -196,15 +201,22 @@ export function installRendererTranscriptStatusInjector(
     } else if (wasRunning) {
       wasRunning = false;
       let failed = false;
-      const target = findTranscriptTarget(root);
-      const searchScope = target ?? root;
-      for (const selector of FAILED_TURN_SELECTORS) {
-        if (
-          searchScope.querySelector(selector) ||
-          ("matches" in searchScope && typeof searchScope.matches === "function" && searchScope.matches(selector))
-        ) {
-          failed = true;
-          break;
+      const turns = [...root.querySelectorAll<HTMLElement>(TRANSCRIPT_TURN_SELECTOR)];
+      const activeTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+      const items = [...root.querySelectorAll<HTMLElement>(TRANSCRIPT_ITEM_SELECTOR)];
+      const activeItem = items.length > 0 ? items[items.length - 1] : null;
+      const searchScope = activeTurn ?? activeItem;
+      if (searchScope) {
+        for (const selector of FAILED_TURN_SELECTORS) {
+          if (
+            searchScope.querySelector(selector) ||
+            ("matches" in searchScope &&
+              typeof searchScope.matches === "function" &&
+              searchScope.matches(selector))
+          ) {
+            failed = true;
+            break;
+          }
         }
       }
       setStatus(failed ? "failed" : "completed");
@@ -257,11 +269,9 @@ export function installRendererTranscriptStatusInjector(
     });
 
     const ElementCtor =
-      doc.defaultView?.Element ??
-      (typeof Element !== "undefined" ? Element : null);
+      doc.defaultView?.Element ?? (typeof Element !== "undefined" ? Element : null);
     const isElementNode =
-      (ElementCtor && root instanceof ElementCtor) ||
-      (isRecord(root) && "tagName" in root);
+      (ElementCtor && root instanceof ElementCtor) || (isRecord(root) && "tagName" in root);
     const observeTarget = isElementNode
       ? (root as unknown as Node)
       : ((doc.body ?? doc.documentElement) as unknown as Node);

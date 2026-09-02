@@ -931,11 +931,7 @@ export function installCurrentRendererAdapter(): {
     liveStatus.modelUpdates = modelUpdates;
     transitionRendererAdapterStatus(liveStatus, { state, reason, hook }, () => {
       const displayStatus =
-        state === "ready"
-          ? "ready"
-          : state === "unsupported"
-            ? "failed"
-            : "ready";
+        state === "ready" ? "ready" : state === "unsupported" ? "failed" : "ready";
       window.dispatchEvent(
         new CustomEvent("codexhost:renderer-adapter-status", {
           detail: { state, reason, hook, status: displayStatus },

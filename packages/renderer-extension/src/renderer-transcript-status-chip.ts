@@ -4,12 +4,7 @@ import {
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
 
-export type AdapterStatusState =
-  | "ready"
-  | "running"
-  | "completed"
-  | "failed"
-  | "interrupted";
+export type AdapterStatusState = "ready" | "running" | "completed" | "failed" | "interrupted";
 
 export type TranscriptStatusState = AdapterStatusState;
 

@@ -57,10 +57,7 @@ class FakeDOMElement {
     }
     let parent: FakeDOMElement | null = this.parentElement;
     while (parent) {
-      if (
-        parent === this.ownerDocument.body ||
-        parent === this.ownerDocument.documentElement
-      ) {
+      if (parent === this.ownerDocument.body || parent === this.ownerDocument.documentElement) {
         return true;
       }
       parent = parent.parentElement;
@@ -79,9 +76,7 @@ class FakeDOMElement {
     }
     this.attributes.set(name, value);
     if (name.startsWith("data-")) {
-      const prop = name
-        .slice(5)
-        .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
       this.dataset[prop] = value;
     }
   }
@@ -89,9 +84,7 @@ class FakeDOMElement {
   removeAttribute(name: string): void {
     this.attributes.delete(name);
     if (name.startsWith("data-")) {
-      const prop = name
-        .slice(5)
-        .replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
       Reflect.deleteProperty(this.dataset, prop);
     }
   }
@@ -181,9 +174,7 @@ class FakeDOMElement {
   }
 
   removeEventListener(type: string, callback: (event: unknown) => void): void {
-    this.listeners = this.listeners.filter(
-      (l) => l.type !== type || l.callback !== callback,
-    );
+    this.listeners = this.listeners.filter((l) => l.type !== type || l.callback !== callback);
   }
 
   dispatchEvent(event: unknown): boolean {
@@ -418,15 +409,15 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
       const currentContainer = containers[0];
       expect(currentContainer).toBeDefined();
       if (!currentContainer) throw new Error("Expected container to exist");
-      const chips = currentContainer.querySelectorAll(
-        `[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`,
-      );
+      const chips = currentContainer.querySelectorAll(`[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`);
       expect(chips.length).toBe(1);
       expect(currentContainer.textContent).toContain("Interrupted");
       expect(chips[0]?.getAttribute(TRANSCRIPT_STATUS_STATE_ATTRIBUTE)).toBe("interrupted");
 
       injector.dispose();
-      expect(transcriptRoot.querySelectorAll(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`).length).toBe(0);
+      expect(
+        transcriptRoot.querySelectorAll(`[${TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE}]`).length,
+      ).toBe(0);
     });
 
     it("handles 100 rapid window custom events across alternating event names", () => {
@@ -441,9 +432,7 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
 
       for (let i = 0; i < 100; i++) {
         const eventName =
-          i % 2 === 0
-            ? "codexhost:transcript-status"
-            : "codexhost:transcript-status-changed";
+          i % 2 === 0 ? "codexhost:transcript-status" : "codexhost:transcript-status-changed";
         const status: AdapterStatusState = i % 2 === 0 ? "running" : "failed";
         const locale = i % 4 === 0 ? "zh-CN" : "en";
 
@@ -469,7 +458,11 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
       });
       doc.body.append(chip.element as unknown as FakeDOMElement);
 
-      const transitions: { status: AdapterStatusState; advanceMs: number; expectedConnected: boolean }[] = [
+      const transitions: {
+        status: AdapterStatusState;
+        advanceMs: number;
+        expectedConnected: boolean;
+      }[] = [
         { status: "running", advanceMs: 1000, expectedConnected: true },
         { status: "completed", advanceMs: 1000, expectedConnected: true },
         { status: "running", advanceMs: 2500, expectedConnected: true },
@@ -595,6 +588,48 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
       injector.dispose();
     });
 
+    it("does not pollute current turn status with error elements from historical turns", () => {
+      const transcriptRoot = doc.createElement("div");
+      transcriptRoot.setAttribute("data-testid", "conversation-turns");
+      doc.body.append(transcriptRoot);
+
+      // Turn 1 had an error in the past
+      const turn1 = doc.createElement("div");
+      turn1.setAttribute("data-turn-key", "turn-1");
+      const turn1Error = doc.createElement("div");
+      turn1Error.setAttribute("data-testid", "turn-error");
+      turn1Error.textContent = "Failed in turn 1";
+      turn1.append(turn1Error);
+      transcriptRoot.append(turn1);
+
+      // Turn 2 is created and starts running
+      const turn2 = doc.createElement("div");
+      turn2.setAttribute("data-turn-key", "turn-2");
+      transcriptRoot.append(turn2);
+
+      const stopBtn = doc.createElement("button");
+      stopBtn.setAttribute("data-testid", "composer-stop-button");
+      doc.body.append(stopBtn);
+
+      const injector = installRendererTranscriptStatusInjector({
+        root: doc.body as unknown as ParentNode,
+        ownerDocument: doc as unknown as Document,
+      });
+
+      const observer = FakeMutationObserver.instances[0];
+      observer?.trigger();
+      expect(injector.getStatus()).toBe("running");
+
+      // Turn 2 completes successfully without errors in turn 2
+      stopBtn.remove();
+      observer?.trigger();
+
+      // Must be "completed", NOT "failed", despite turn 1 having turn-error
+      expect(injector.getStatus()).toBe("completed");
+
+      injector.dispose();
+    });
+
     it("re-attaches dismissed completed chip to container when new status arrives", () => {
       const transcriptRoot = doc.createElement("div");
       transcriptRoot.setAttribute("data-testid", "conversation-turns");
@@ -606,7 +641,9 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
       });
 
       injector.setStatus("completed");
-      expect(injector.container.querySelector(`[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`)).not.toBeNull();
+      expect(
+        injector.container.querySelector(`[${TRANSCRIPT_STATUS_CHIP_ATTRIBUTE}]`),
+      ).not.toBeNull();
 
       // Advance 3000ms to trigger auto-dismissal
       vi.advanceTimersByTime(3000);

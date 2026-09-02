@@ -66,6 +66,7 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
+  wireItemType?: string;
   wireFileChanges: HostFileChange[] | null;
   startedAtMs?: number;
   durationMs?: number;
@@ -102,15 +103,63 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function parseJsonIfString(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return value;
+}
+
 function nestedString(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isRecord(value)) return undefined;
+  const unwrapped = parseJsonIfString(value);
+  if (!isRecord(unwrapped)) return undefined;
   for (const key of keys) {
-    const field = value[key];
+    const field = unwrapped[key];
     if (typeof field === "string" && field.trim().length > 0) return field.trim();
   }
-  for (const wrapper of ["input", "arguments", "params"] as const) {
-    const nested = nestedString(value[wrapper], keys);
-    if (nested) return nested;
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    const nested = nestedString(unwrapped[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedRawString(value: unknown, keys: readonly string[]): string | undefined {
+  const unwrapped = parseJsonIfString(value);
+  if (!isRecord(unwrapped)) return undefined;
+  for (const key of keys) {
+    const field = unwrapped[key];
+    if (typeof field === "string") return field;
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    const nested = nestedRawString(unwrapped[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function extractBoolean(value: unknown, keys: readonly string[]): boolean | undefined {
+  const unwrapped = parseJsonIfString(value);
+  if (!isRecord(unwrapped)) return undefined;
+  for (const key of keys) {
+    const val = unwrapped[key];
+    if (typeof val === "boolean") return val;
+    if (typeof val === "string") {
+      const lower = val.toLowerCase().trim();
+      if (lower === "true") return true;
+      if (lower === "false") return false;
+    }
+  }
+  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
+    const nested = extractBoolean(unwrapped[wrapper], keys);
+    if (nested !== undefined) return nested;
   }
   return undefined;
 }
@@ -134,7 +183,7 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
  * can be reconstructed from the native arguments.
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const lower = compactToolName(toolName);
   const command = nestedString(args, [
     "command",
     "cmd",
@@ -144,19 +193,11 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
     "CommandLine",
   ]);
   if (
-    command &&
-    [
-      "bash",
-      "exec",
-      "terminal",
-      "run",
-      "shell",
-      "powershell",
-      "command",
-      "runcommand",
-    ].includes(lower)
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "command", "runcommand"].includes(
+      lower,
+    )
   ) {
-    return command;
+    return command || "run";
   }
   const filePath = nestedString(args, [
     "path",
@@ -193,30 +234,40 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   ]);
   const url = nestedString(args, ["url", "uri", "Url", "href"]);
   if (["read", "readfile", "fileread", "view", "viewfile"].includes(lower)) {
-    return filePath ? `read ${filePath}` : undefined;
+    return filePath ? `read ${filePath}` : "read";
   }
   if (["readurlcontent", "fetch", "fetchurl", "curl", "download"].includes(lower)) {
-    return url ? `fetch ${url}` : filePath ? `read ${filePath}` : undefined;
+    return url ? `fetch ${url}` : filePath ? `read ${filePath}` : "fetch";
   }
   if (["listdir", "ls", "dir", "listdirectory"].includes(lower)) {
     return filePath ? `ls ${filePath}` : "ls";
   }
   if (["glob", "find", "findfiles", "findbyname"].includes(lower)) {
     const target = pattern ?? filePath;
-    return target ? `glob ${target}` : undefined;
+    return target ? `glob ${target}` : "glob";
   }
   if (["grep", "grepsearch"].includes(lower)) {
-    if (!pattern) return undefined;
-    return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+    return pattern
+      ? filePath
+        ? `grep ${pattern} ${filePath}`
+        : `grep ${pattern}`
+      : filePath
+        ? `grep ${filePath}`
+        : "grep";
   }
   if (["websearch", "searchweb", "search"].includes(lower)) {
-    return pattern ? `search ${pattern}` : undefined;
+    return pattern ? `search ${pattern}` : "search";
   }
   return undefined;
 }
 
 function compactToolName(toolName: string): string {
-  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const baseName = toolName.includes(":")
+    ? toolName.slice(toolName.lastIndexOf(":") + 1)
+    : toolName.includes(".")
+      ? toolName.slice(toolName.lastIndexOf(".") + 1)
+      : toolName;
+  return baseName.toLowerCase().replaceAll(/[_-]/g, "");
 }
 
 function isFileMutatingTool(toolName: string): boolean {
@@ -240,14 +291,9 @@ function isFileMutatingTool(toolName: string): boolean {
 }
 
 function isWriteTool(toolName: string): boolean {
-  return [
-    "write",
-    "writefile",
-    "filewrite",
-    "create",
-    "createfile",
-    "writetofile",
-  ].includes(compactToolName(toolName));
+  return ["write", "writefile", "filewrite", "create", "createfile", "writetofile"].includes(
+    compactToolName(toolName),
+  );
 }
 
 function simpleUnifiedDiff(
@@ -256,13 +302,13 @@ function simpleUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
-  const oldLines = oldText === "" ? [] : oldText.split("\n");
-  const newLines = newText === "" ? [] : newText.split("\n");
+  const oldLines = oldText === "" ? [] : oldText.replaceAll("\r\n", "\n").split("\n");
+  const newLines = newText === "" ? [] : newText.replaceAll("\r\n", "\n").split("\n");
   if (oldLines.at(-1) === "") oldLines.pop();
   if (newLines.at(-1) === "") newLines.pop();
   const oldHeader = kind === "add" ? "/dev/null" : `a/${displayedPath}`;
   const newHeader = `b/${displayedPath}`;
-  const oldRange = kind === "add" ? "0,0" : `1,${oldLines.length}`;
+  const oldRange = kind === "add" ? "0,0" : oldLines.length === 0 ? "0,0" : `1,${oldLines.length}`;
   const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
   return [
     `--- ${oldHeader}`,
@@ -290,49 +336,52 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
   ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
-    const content = nestedString(args, [
-      "content",
-      "new_string",
-      "newString",
-      "newText",
-      "file_text",
-      "text",
-      "new",
-      "CodeContent",
-      "codeContent",
-      "code_content",
-    ]);
-    if (content === undefined) return null;
+    const content =
+      nestedRawString(args, [
+        "content",
+        "new_string",
+        "newString",
+        "newText",
+        "file_text",
+        "text",
+        "new",
+        "CodeContent",
+        "codeContent",
+        "code_content",
+      ]) ?? "";
+    const overwrite = extractBoolean(args, ["Overwrite", "overwrite", "overWrite"]) ?? false;
+    const kind = overwrite ? "update" : "add";
     return [
       {
         path: displayedPath,
-        kind: "add",
-        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, "add"),
+        kind,
+        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, kind),
       },
     ];
   }
-  const oldText = nestedString(args, [
-    "old_string",
-    "oldString",
-    "oldText",
-    "old_text",
-    "old",
-    "TargetContent",
-    "targetContent",
-    "target_content",
-  ]);
-  const newText = nestedString(args, [
-    "new_string",
-    "newString",
-    "newText",
-    "new_text",
-    "content",
-    "new",
-    "ReplacementContent",
-    "replacementContent",
-    "replacement_content",
-  ]);
-  if (oldText === undefined || newText === undefined) return null;
+  const oldText =
+    nestedRawString(args, [
+      "old_string",
+      "oldString",
+      "oldText",
+      "old_text",
+      "old",
+      "TargetContent",
+      "targetContent",
+      "target_content",
+    ]) ?? "";
+  const newText =
+    nestedRawString(args, [
+      "new_string",
+      "newString",
+      "newText",
+      "new_text",
+      "content",
+      "new",
+      "ReplacementContent",
+      "replacementContent",
+      "replacement_content",
+    ]) ?? "";
   return [
     {
       path: displayedPath,
@@ -528,6 +577,7 @@ function projectItem(
   defaultCwd: string,
   includeCommandOutput = true,
   senderThreadId?: string,
+  forcedWireType?: string,
 ): JsonObject {
   switch (item.type) {
     case "agentMessage":
@@ -562,12 +612,26 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
+      if (forcedWireType === "dynamicToolCall") {
+        const status = itemStatus(outcome);
+        return {
+          id: item.itemId,
+          type: "dynamicToolCall",
+          namespace: item.namespace ?? null,
+          tool: item.toolName,
+          arguments: item.arguments,
+          status,
+          contentItems: toolContentItems(item),
+          success: outcome ? outcome.status === "succeeded" : null,
+          durationMs: item.durationMs ?? null,
+        };
+      }
       const command = toolCommandLine(item.toolName, item.arguments);
-      if (command) {
+      if (command || forcedWireType === "commandExecution") {
         return {
           id: item.itemId,
           type: "commandExecution",
-          command,
+          command: command ?? item.toolName,
           cwd: defaultCwd,
           processId: null,
           source: "agent",
@@ -742,11 +806,37 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
   if (item.type === "commandExecution" && update.type === "output.append") {
     return { ...item, output: (item.output ?? "") + update.text };
   }
+  if (item.type === "commandExecution" && update.type === "output.replace") {
+    const text =
+      typeof update.output === "string"
+        ? update.output
+        : (toolOutputText({
+            type: "toolExecution",
+            itemId: item.itemId,
+            toolName: "",
+            arguments: null,
+            output: update.output,
+          }) ?? "");
+    return { ...item, output: text };
+  }
   if (item.type === "toolExecution" && update.type === "output.replace") {
     return { ...item, output: update.output };
   }
+  if (item.type === "toolExecution" && update.type === "output.append") {
+    const current = toolOutputText(item) ?? "";
+    return {
+      ...item,
+      output: { content: [{ type: "text", text: current + update.text }] },
+    };
+  }
   if (item.type === "fileChange" && update.type === "fileChanges.replace") {
     return { ...item, changes: update.changes };
+  }
+  if (
+    item.type === "fileChange" &&
+    (update.type === "output.append" || update.type === "output.replace")
+  ) {
+    return item;
   }
   if (item.type === "subagentDelegation" && update.type === "subagents.replace") {
     return { ...item, subagents: update.subagents };
@@ -1014,23 +1104,46 @@ export class CodexTurnProjector {
         );
       }
     } else if (event.update.type === "output.append") {
-      projected.streamedCommandOutput = true;
-      messages.push({
-        method: "item/commandExecution/outputDelta",
-        emittedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          itemId: event.itemId,
-          delta: event.update.text,
-        },
-      });
+      const command =
+        next.type === "commandExecution"
+          ? next.command
+          : next.type === "toolExecution"
+            ? toolCommandLine(next.toolName, next.arguments)
+            : undefined;
+      if (command || projected.wireItemType === "commandExecution") {
+        projected.streamedCommandOutput = true;
+        messages.push({
+          method: "item/commandExecution/outputDelta",
+          emittedAtMs,
+          params: {
+            threadId: this.#threadId,
+            turnId: this.#turnId,
+            itemId: event.itemId,
+            delta: event.update.text,
+          },
+        });
+      }
     } else if (event.update.type === "output.replace") {
-      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
-        const text = toolOutputText(next);
+      const command =
+        next.type === "commandExecution"
+          ? next.command
+          : next.type === "toolExecution"
+            ? toolCommandLine(next.toolName, next.arguments)
+            : undefined;
+      if (command || projected.wireItemType === "commandExecution") {
+        const text =
+          next.type === "commandExecution"
+            ? (next.output ?? "")
+            : next.type === "toolExecution"
+              ? (toolOutputText(next) ?? "")
+              : "";
         if (text) {
           const previousText =
-            previous.type === "toolExecution" ? (toolOutputText(previous) ?? "") : "";
+            previous.type === "commandExecution"
+              ? (previous.output ?? "")
+              : previous.type === "toolExecution"
+                ? (toolOutputText(previous) ?? "")
+                : "";
           const delta = text.startsWith(previousText) ? text.slice(previousText.length) : text;
           if (delta.length > 0) {
             projected.streamedCommandOutput = true;
@@ -1141,6 +1254,7 @@ export class CodexTurnProjector {
           this.#cwd,
           !projected.streamedCommandOutput,
           this.#threadId,
+          projected.wireItemType,
         ),
       ),
     ];
@@ -1265,6 +1379,8 @@ export class CodexTurnProjector {
     projected.wireStarted = true;
     projected.startedAtMs = startedAtMs;
     this.#wireItemOrder.push(item.itemId);
+    const wireItem = projectItem(item, null, this.#cwd, true, this.#threadId);
+    projected.wireItemType = wireItem.type as string;
     return {
       method: "item/started",
       emittedAtMs: startedAtMs,
@@ -1272,7 +1388,7 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: projectItem(item, null, this.#cwd, true, this.#threadId),
+        item: wireItem,
       },
     };
   }

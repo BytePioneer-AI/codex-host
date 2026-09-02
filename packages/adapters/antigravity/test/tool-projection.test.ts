@@ -234,7 +234,9 @@ describe("Antigravity Tool Projection", () => {
       expect(
         synthesizeAntigravityFileChange("run_command", { CommandLine: "npm test" }, CWD),
       ).toBeNull();
-      expect(synthesizeAntigravityFileChange("view_file", { AbsolutePath: "/a/b" }, CWD)).toBeNull();
+      expect(
+        synthesizeAntigravityFileChange("view_file", { AbsolutePath: "/a/b" }, CWD),
+      ).toBeNull();
       expect(synthesizeAntigravityFileChange("list_dir", { DirectoryPath: "/a" }, CWD)).toBeNull();
     });
   });
@@ -252,15 +254,15 @@ describe("Antigravity Tool Projection", () => {
     });
 
     it("supports camelCase and alternate tool names", () => {
-      expect(
-        synthesizeAntigravityCommand("runCommand", { commandLine: "pytest" }),
-      ).toEqual({ command: "pytest" });
-      expect(
-        synthesizeAntigravityCommand("bash", { command: "cargo build" }),
-      ).toEqual({ command: "cargo build" });
-      expect(
-        synthesizeAntigravityCommand("terminal", { cmd: "echo 1" }),
-      ).toEqual({ command: "echo 1" });
+      expect(synthesizeAntigravityCommand("runCommand", { commandLine: "pytest" })).toEqual({
+        command: "pytest",
+      });
+      expect(synthesizeAntigravityCommand("bash", { command: "cargo build" })).toEqual({
+        command: "cargo build",
+      });
+      expect(synthesizeAntigravityCommand("terminal", { cmd: "echo 1" })).toEqual({
+        command: "echo 1",
+      });
     });
 
     it("returns null when command line is empty or missing", () => {

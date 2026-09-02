@@ -1494,33 +1494,29 @@ describe("Codex UI projector", () => {
     });
 
     it("reconstructs command line from run_command with CommandLine parameter", () => {
-      expect(
-        toolCommandLine("run_command", { CommandLine: "vitest run" }),
-      ).toBe("vitest run");
-      expect(
-        toolCommandLine("runCommand", { commandLine: "pytest -v" }),
-      ).toBe("pytest -v");
+      expect(toolCommandLine("run_command", { CommandLine: "vitest run" })).toBe("vitest run");
+      expect(toolCommandLine("runCommand", { commandLine: "pytest -v" })).toBe("pytest -v");
     });
 
     it("reconstructs command line for view_file, read_url_content, and find_by_name", () => {
-      expect(
-        toolCommandLine("view_file", { AbsolutePath: "D:/project/src/main.rs" }),
-      ).toBe("read D:/project/src/main.rs");
-      expect(
-        toolCommandLine("list_dir", { DirectoryPath: "D:/project/src" }),
-      ).toBe("ls D:/project/src");
-      expect(
-        toolCommandLine("grep_search", { SearchPath: "src", Query: "fn main" }),
-      ).toBe("grep fn main src");
-      expect(
-        toolCommandLine("search_web", { query: "vitest documentation" }),
-      ).toBe("search vitest documentation");
-      expect(
-        toolCommandLine("read_url_content", { Url: "https://example.com" }),
-      ).toBe("fetch https://example.com");
-      expect(
-        toolCommandLine("find_by_name", { Pattern: "*.ts", SearchDirectory: "src" }),
-      ).toBe("glob *.ts");
+      expect(toolCommandLine("view_file", { AbsolutePath: "D:/project/src/main.rs" })).toBe(
+        "read D:/project/src/main.rs",
+      );
+      expect(toolCommandLine("list_dir", { DirectoryPath: "D:/project/src" })).toBe(
+        "ls D:/project/src",
+      );
+      expect(toolCommandLine("grep_search", { SearchPath: "src", Query: "fn main" })).toBe(
+        "grep fn main src",
+      );
+      expect(toolCommandLine("search_web", { query: "vitest documentation" })).toBe(
+        "search vitest documentation",
+      );
+      expect(toolCommandLine("read_url_content", { Url: "https://example.com" })).toBe(
+        "fetch https://example.com",
+      );
+      expect(toolCommandLine("find_by_name", { Pattern: "*.ts", SearchDirectory: "src" })).toBe(
+        "glob *.ts",
+      );
     });
 
     it("projects successful write_to_file toolExecution lifecycle into fileChange messages without type mismatch", () => {
@@ -1567,6 +1563,254 @@ describe("Codex UI projector", () => {
         return item?.type === "fileChange";
       });
       expect(fileCompleted).toBeDefined();
+    });
+
+    it("maintains wire type invariance for view_file started with empty arguments", () => {
+      const p = projector();
+      p.project({ type: "turn.started", turnId });
+      const started = p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: itemId("item-view-1"),
+          toolName: "view_file",
+          arguments: {},
+        },
+      });
+      const startedItem = (started.messages[0]?.params as { item?: { type?: string } } | undefined)
+        ?.item;
+      expect(startedItem?.type).toBe("commandExecution");
+
+      const completed = p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: itemId("item-view-1"),
+            toolName: "view_file",
+            arguments: { AbsolutePath: "src/main.ts" },
+            output: { content: [{ type: "text", text: "const x = 1;" }] },
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      const completedItem = (
+        completed.messages[0]?.params as { item?: { type?: string } } | undefined
+      )?.item;
+      expect(completedItem?.type).toBe("commandExecution");
+    });
+
+    it("projects write_to_file with Overwrite: true as update diff", () => {
+      const changes = fileChangeFromTool("write_to_file", {
+        TargetFile: "src/config.json",
+        CodeContent: "{}",
+        Overwrite: true,
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/config.json",
+          kind: "update",
+          unifiedDiff: "--- a/src/config.json\n+++ b/src/config.json\n@@ -0,0 +1,1 @@\n+{}\n",
+        },
+      ]);
+    });
+
+    it("projects write_to_file with empty string content as add diff", () => {
+      const changes = fileChangeFromTool("write_to_file", {
+        TargetFile: "src/empty.txt",
+        CodeContent: "",
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/empty.txt",
+          kind: "add",
+          unifiedDiff: "--- /dev/null\n+++ b/src/empty.txt\n@@ -0,0 +0,0 @@\n",
+        },
+      ]);
+    });
+
+    it("projects tools with parameters wrapper correctly", () => {
+      const changes = fileChangeFromTool("replace_file_content", {
+        parameters: {
+          TargetFile: "src/math.ts",
+          TargetContent: "return a + b;",
+          ReplacementContent: "return a * b;",
+        },
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/math.ts",
+          kind: "update",
+          unifiedDiff:
+            "--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1,1 +1,1 @@\n-return a + b;\n+return a * b;\n",
+        },
+      ]);
+    });
+
+    it("handles output.replace and output.append on command execution and tool execution", () => {
+      const p = projector();
+      p.project({ type: "turn.started", turnId });
+      p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: itemId("cmd-1"),
+          command: "npm test",
+        },
+      });
+      const update1 = p.project({
+        type: "item.updated",
+        turnId,
+        itemId: itemId("cmd-1"),
+        update: {
+          type: "output.replace",
+          output: { content: [{ type: "text", text: "PASS" }] },
+        },
+      });
+      expect(update1.messages.length).toBe(1);
+      expect(update1.messages[0]?.method).toBe("item/commandExecution/outputDelta");
+
+      const update2 = p.project({
+        type: "item.updated",
+        turnId,
+        itemId: itemId("cmd-1"),
+        update: {
+          type: "output.append",
+          text: "\nAll tests passed",
+        },
+      });
+      expect(update2.messages.length).toBe(1);
+      expect(update2.messages[0]?.method).toBe("item/commandExecution/outputDelta");
+    });
+
+    it("projects namespaced tools (e.g. default_api:run_command, default_api:view_file, default_api:write_to_file)", () => {
+      expect(toolCommandLine("default_api:run_command", { CommandLine: "cargo test" })).toBe(
+        "cargo test",
+      );
+      expect(toolCommandLine("default_api:view_file", { AbsolutePath: "src/main.rs" })).toBe(
+        "read src/main.rs",
+      );
+      expect(toolCommandLine("default_api:list_dir", { DirectoryPath: "src" })).toBe("ls src");
+      expect(
+        toolCommandLine("default_api:grep_search", { Query: "test", SearchPath: "tests" }),
+      ).toBe("grep test tests");
+      expect(toolCommandLine("default_api:find_by_name", { Pattern: "*.rs" })).toBe("glob *.rs");
+      expect(toolCommandLine("default_api:read_url_content", { Url: "https://example.org" })).toBe(
+        "fetch https://example.org",
+      );
+      expect(toolCommandLine("default_api:search_web", { query: "typescript" })).toBe(
+        "search typescript",
+      );
+
+      const writeChanges = fileChangeFromTool("default_api:write_to_file", {
+        TargetFile: "src/app.ts",
+        CodeContent: "export const x = 1;",
+      });
+      expect(writeChanges).toEqual([
+        {
+          path: "src/app.ts",
+          kind: "add",
+          unifiedDiff: "--- /dev/null\n+++ b/src/app.ts\n@@ -0,0 +1,1 @@\n+export const x = 1;\n",
+        },
+      ]);
+
+      const replaceChanges = fileChangeFromTool("default_api:replace_file_content", {
+        TargetFile: "src/app.ts",
+        TargetContent: "export const x = 1;",
+        ReplacementContent: "export const x = 2;",
+      });
+      expect(replaceChanges).toEqual([
+        {
+          path: "src/app.ts",
+          kind: "update",
+          unifiedDiff:
+            "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,1 @@\n-export const x = 1;\n+export const x = 2;\n",
+        },
+      ]);
+    });
+
+    it("parses JSON stringified arguments for tools and file changes", () => {
+      const jsonArgs = JSON.stringify({
+        CommandLine: "git diff",
+      });
+      expect(toolCommandLine("run_command", jsonArgs)).toBe("git diff");
+
+      const jsonFileArgs = JSON.stringify({
+        TargetFile: "test.txt",
+        CodeContent: "hello",
+      });
+      const changes = fileChangeFromTool("write_to_file", jsonFileArgs);
+      expect(changes).toEqual([
+        {
+          path: "test.txt",
+          kind: "add",
+          unifiedDiff: "--- /dev/null\n+++ b/test.txt\n@@ -0,0 +1,1 @@\n+hello\n",
+        },
+      ]);
+    });
+
+    it("safely handles output.append and output.replace on fileChange without crashing or emitting invalid command deltas", () => {
+      const p = projector();
+      p.project({ type: "turn.started", turnId });
+      p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "fileChange",
+          itemId: itemId("fc-1"),
+          changes: [
+            {
+              path: "a.txt",
+              kind: "add",
+              unifiedDiff: "--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1,1 @@\n+hello\n",
+            },
+          ],
+        },
+      });
+
+      // output.append on fileChange should not crash and should not emit command output delta
+      const appendResult = p.project({
+        type: "item.updated",
+        turnId,
+        itemId: itemId("fc-1"),
+        update: { type: "output.append", text: "extra" },
+      });
+      expect(appendResult.messages).toEqual([]);
+
+      // output.replace on fileChange should not crash and should not emit command output delta
+      const replaceResult = p.project({
+        type: "item.updated",
+        turnId,
+        itemId: itemId("fc-1"),
+        update: {
+          type: "output.replace",
+          output: { content: [{ type: "text", text: "done" }] },
+        },
+      });
+      expect(replaceResult.messages).toEqual([]);
+
+      const completed = p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "fileChange",
+            itemId: itemId("fc-1"),
+            changes: [
+              {
+                path: "a.txt",
+                kind: "add",
+                unifiedDiff: "--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1,1 @@\n+hello\n",
+              },
+            ],
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(completed.messages[0]?.method).toBe("item/completed");
     });
   });
 });

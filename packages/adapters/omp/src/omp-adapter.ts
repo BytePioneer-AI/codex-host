@@ -1,5 +1,6 @@
-import { parsePatch } from "diff";
+import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import {
   HarnessOutputChannel,
@@ -142,6 +143,7 @@ export interface OmpAdapterDependencies {
 interface ActiveTool {
   item: HostCommandExecutionItem;
   nativeName: string;
+  arguments: JsonValue;
   startedAtMs: number;
 }
 
@@ -359,7 +361,18 @@ function outputText(output: HostToolOutput | undefined): string {
 }
 
 function stringField(value: JsonValue, key: string): string | undefined {
-  return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
+  if (!isRecord(value)) return undefined;
+  const field = value[key];
+  if (typeof field === "string" && field.length > 0) return field;
+  if (isRecord(value.input)) {
+    const nested = value.input[key];
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  if (isRecord(value.arguments)) {
+    const nested = value.arguments[key];
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  return undefined;
 }
 
 function numberField(value: JsonValue, key: string): number | null | undefined {
@@ -368,15 +381,74 @@ function numberField(value: JsonValue, key: string): number | null | undefined {
   return typeof field === "number" || field === null ? field : undefined;
 }
 
-function stripDiffPrefix(path: string): string {
-  return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
+function stripDiffPrefix(pathString: string | undefined): string {
+  if (typeof pathString !== "string" || pathString.length === 0) return "";
+  return pathString.startsWith("a/") || pathString.startsWith("b/")
+    ? pathString.slice(2)
+    : pathString;
 }
 
-function reliableFileChange(result: JsonValue): HostFileChange[] | null {
-  if (!isRecord(result) || !isRecord(result.details) || typeof result.details.patch !== "string") {
-    return null;
+function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
+  const resolvedCwd = path.resolve(cwd);
+  const resolvedPath = path.isAbsolute(nativePath)
+    ? path.resolve(nativePath)
+    : path.resolve(cwd, nativePath);
+  const relative = path.relative(resolvedCwd, resolvedPath);
+  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+  const selected = inside ? relative : resolvedPath;
+  const normalized = selected.replaceAll("\\", "/");
+  if (normalized.length === 0 || normalized === ".") return null;
+  return { path: normalized, absolute: !inside };
+}
+
+function fileMutatingKind(toolName: string): "edit" | "write" | null {
+  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  if (
+    [
+      "edit",
+      "editfile",
+      "fileedit",
+      "strreplace",
+      "searchreplace",
+      "applypatch",
+      "replace",
+    ].includes(lower)
+  ) {
+    return "edit";
   }
-  const patch = result.details.patch;
+  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) return "write";
+  return null;
+}
+
+function nestedToolString(value: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string" && field.length > 0) return field;
+  }
+  for (const wrapper of ["input", "arguments", "params", "details"] as const) {
+    const nested = nestedToolString(value[wrapper], keys);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function patchFromResult(result: JsonValue): string | undefined {
+  if (!isRecord(result)) return undefined;
+  for (const key of ["patch", "diff", "unifiedDiff"] as const) {
+    const field = result[key];
+    if (typeof field === "string" && field.length > 0) return field;
+  }
+  if (isRecord(result.details)) {
+    for (const key of ["patch", "diff", "unifiedDiff"] as const) {
+      const field = result.details[key];
+      if (typeof field === "string" && field.length > 0) return field;
+    }
+  }
+  return undefined;
+}
+
+function fileChangeFromPatch(patch: string, cwd: string): HostFileChange[] | null {
   let parsed: ReturnType<typeof parsePatch>;
   try {
     parsed = parsePatch(patch);
@@ -385,12 +457,87 @@ function reliableFileChange(result: JsonValue): HostFileChange[] | null {
   }
   const file = parsed[0];
   if (parsed.length !== 1 || !file) return null;
-  const oldFile = file.oldFileName;
-  const newFile = file.newFileName;
-  const kind = oldFile === "/dev/null" ? "add" : newFile === "/dev/null" ? "delete" : "update";
-  const path = stripDiffPrefix(kind === "delete" ? oldFile : newFile);
-  if (!path || path === "/dev/null") return null;
-  return [{ path, kind, unifiedDiff: patch }];
+  const oldFile = typeof file.oldFileName === "string" ? file.oldFileName : undefined;
+  const newFile = typeof file.newFileName === "string" ? file.newFileName : undefined;
+  if (!oldFile && !newFile) return null;
+  const kind =
+    oldFile === "/dev/null" || !oldFile
+      ? "add"
+      : newFile === "/dev/null" || !newFile
+        ? "delete"
+        : "update";
+  const candidate = kind === "delete" ? oldFile : (newFile ?? oldFile);
+  const rawPath = stripDiffPrefix(candidate);
+  if (!rawPath || rawPath === "/dev/null") return null;
+  const displayed = displayPath(rawPath, cwd);
+  if (!displayed) return null;
+  return [{ path: displayed.path, kind, unifiedDiff: patch }];
+}
+
+function synthesizeFileChange(
+  kind: "edit" | "write",
+  args: unknown,
+  cwd: string,
+): HostFileChange[] | null {
+  const filePath = nestedToolString(args, ["path", "file_path", "filePath", "file"]);
+  if (!filePath) return null;
+  const displayed = displayPath(filePath, cwd);
+  if (!displayed) return null;
+  if (kind === "write") {
+    const content = nestedToolString(args, [
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "text",
+    ]);
+    if (content === undefined) return null;
+    const oldHeader = "/dev/null";
+    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+    return [
+      {
+        path: displayed.path,
+        kind: "add",
+        unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, "", content, "", "", { context: 3 }),
+      },
+    ];
+  }
+  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"]);
+  const newText = nestedToolString(args, [
+    "new_string",
+    "newString",
+    "newText",
+    "new_text",
+    "content",
+  ]);
+  if (oldText === undefined || newText === undefined) return null;
+  const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
+  const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+  return [
+    {
+      path: displayed.path,
+      kind: "update",
+      unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, oldText, newText, "", "", {
+        context: 3,
+      }),
+    },
+  ];
+}
+
+function reliableFileChange(
+  toolName: string,
+  args: unknown,
+  result: JsonValue,
+  cwd: string,
+): HostFileChange[] | null {
+  const kind = fileMutatingKind(toolName);
+  if (!kind) return null;
+  const patch = patchFromResult(result);
+  if (patch) {
+    const fromPatch = fileChangeFromPatch(patch, cwd);
+    if (fromPatch) return fromPatch;
+  }
+  return synthesizeFileChange(kind, args, cwd) ?? synthesizeFileChange(kind, result, cwd);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -460,6 +607,7 @@ class OmpHarnessSession implements HarnessSession {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
@@ -1552,6 +1700,7 @@ class OmpHarnessSession implements HarnessSession {
     active.tools.set(event.callId, {
       item,
       nativeName: event.toolName,
+      arguments: event.arguments,
       startedAtMs: Date.now(),
     });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
@@ -1612,12 +1761,22 @@ class OmpHarnessSession implements HarnessSession {
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
 
-    if (!event.isError && event.toolName === "edit") {
-      const changes = reliableFileChange(event.result);
-      if (changes) {
-        const fileItem: HostItem = { type: "fileChange", itemId: this.#newItemId(), changes };
-        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
-        this.#completeItem(active, fileItem, { status: "succeeded" });
+    if (!event.isError) {
+      try {
+        const kind = fileMutatingKind(event.toolName);
+        const args = tool.arguments;
+        if (kind && synthesizeFileChange(kind, args, this.#cwd)) {
+          return;
+        }
+        const changes = reliableFileChange(event.toolName, args, event.result, this.#cwd);
+        if (changes) {
+          const fileItem: HostItem = { type: "fileChange", itemId: this.#newItemId(), changes };
+          this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+          this.#completeItem(active, fileItem, { status: "succeeded" });
+        }
+      } catch {
+        // Native Edit/Write results are often numbered snippets, not unified diffs.
+        // Never let file-change projection fault the live Session.
       }
     }
   }
@@ -1864,6 +2023,7 @@ export class OmpAdapter implements HarnessAdapter {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: true,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },

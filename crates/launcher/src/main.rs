@@ -4,6 +4,7 @@ mod active_update;
 mod compatibility;
 mod desktop_attachment;
 mod installation_layout;
+mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
@@ -50,6 +51,7 @@ use desktop_attachment::{
     endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
+use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::{
     StartupObservation, StartupState, classify_startup, default_descriptor_path, read_descriptor,
     remove_matching_descriptor,
@@ -120,7 +122,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -1158,6 +1160,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             inspect(custom_install_root.as_deref())
         }
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
             usage();

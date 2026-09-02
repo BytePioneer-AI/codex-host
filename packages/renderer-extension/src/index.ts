@@ -90,6 +90,7 @@ export {
   draftPermissionMode,
   installRendererBindingProbe,
   isOwnershipSubmissionBlocked,
+  permissionModeSelectionLocked,
   restoredThreadOwnership,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";

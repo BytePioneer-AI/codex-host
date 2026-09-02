@@ -135,18 +135,20 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
         .find(|process| process.id == process_id)
         .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
         .parent_id;
-    let executable = windows_process::process_image_path(process_id).map_err(|error| {
-        PlatformError::Io(std::io::Error::new(
-            error.kind(),
-            format!("read executable while inspecting PID {process_id}: {error}"),
-        ))
+    let executable = windows_process::process_image_path(process_id).map_err(|source| {
+        PlatformError::ProcessInspection {
+            process_id,
+            operation: "read executable",
+            source,
+        }
     })?;
     let started_at_micros =
-        windows_process::process_started_at_micros(process_id).map_err(|error| {
-            PlatformError::Io(std::io::Error::new(
-                error.kind(),
-                format!("read start time while inspecting PID {process_id}: {error}"),
-            ))
+        windows_process::process_started_at_micros(process_id).map_err(|source| {
+            PlatformError::ProcessInspection {
+                process_id,
+                operation: "read start time",
+                source,
+            }
         })?;
     Ok(ProcessSnapshot {
         id: process_id,
@@ -774,6 +776,17 @@ pub fn parent_process_id(_process_id: u32) -> Result<Option<u32>, PlatformError>
 #[cfg(target_os = "windows")]
 pub fn process_executable_path(process_id: u32) -> Result<PathBuf, PlatformError> {
     windows_process::process_image_path(process_id).map_err(PlatformError::Io)
+}
+
+#[cfg(target_os = "windows")]
+pub fn process_started_at_micros(process_id: u32) -> Result<u64, PlatformError> {
+    windows_process::process_started_at_micros(process_id).map_err(|source| {
+        PlatformError::ProcessInspection {
+            process_id,
+            operation: "read start time",
+            source,
+        }
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

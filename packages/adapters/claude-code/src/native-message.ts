@@ -807,6 +807,10 @@ export class ClaudeNativeTurnAccumulator {
       const nativeResult =
         resultBlocks.length === 1 ? (message.tool_use_result ?? message.toolUseResult) : undefined;
       const outputText = resultText(block.content, nativeResult);
+      const structuredResult =
+        tool.name === "TaskCreate" || tool.name === "TaskUpdate" || tool.name === "TaskList"
+          ? jsonValueSchema.safeParse(nativeResult)
+          : null;
       if (tool.subagent) {
         const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
         const agentId = nativeSubagentId(nativeResult, outputText);
@@ -828,6 +832,7 @@ export class ClaudeNativeTurnAccumulator {
         callId,
         toolName: tool.name,
         ...(outputText ? { outputText } : {}),
+        ...(structuredResult?.success ? { structuredResult: structuredResult.data } : {}),
         isError,
         ...(fileChange ? { fileChange } : {}),
       });

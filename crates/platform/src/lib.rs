@@ -14,6 +14,7 @@ mod desktop_launch;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
+mod macos_native_harness_broker;
 mod process;
 mod process_supervision;
 mod process_termination;
@@ -42,6 +43,18 @@ pub use installation::discover_codex_desktop;
 pub use installation::discover_codex_desktop_from_root;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
+pub use macos_native_harness_broker::{
+    NATIVE_HARNESS_BROKER_LABEL, NativeHarnessBrokerCommand, NativeHarnessBrokerInstallStep,
+    NativeHarnessBrokerLaunchAgentPlan, NativeHarnessBrokerLaunchctlPlan,
+    NativeHarnessBrokerObservedState, NativeHarnessBrokerPaths, plan_native_harness_broker_install,
+    plan_native_harness_broker_launch_agent,
+    plan_native_harness_broker_launch_agent_with_environment, plan_native_harness_broker_launchctl,
+};
+#[cfg(target_os = "macos")]
+pub use macos_native_harness_broker::{
+    NativeHarnessBrokerInstallOutcome, NativeHarnessBrokerStatus, inspect_native_harness_broker,
+    install_native_harness_broker, stop_native_harness_broker, uninstall_native_harness_broker,
+};
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
@@ -50,7 +63,7 @@ pub use process::{
     process_exists, process_snapshot, terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
-pub use process::{desktop_process_ids, desktop_root_process_ids};
+pub use process::{desktop_process_ids, desktop_root_process_ids, process_started_at_micros};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
@@ -145,6 +158,11 @@ pub enum PlatformError {
     NotFound(String),
     UnmanagedDesktopConflict,
     Invalid(String),
+    ProcessInspection {
+        process_id: u32,
+        operation: &'static str,
+        source: io::Error,
+    },
     Io(io::Error),
 }
 
@@ -157,12 +175,27 @@ impl Display for PlatformError {
                 "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost",
             ),
             Self::Invalid(message) => write!(formatter, "{message}"),
+            Self::ProcessInspection {
+                process_id,
+                operation,
+                source,
+            } => write!(
+                formatter,
+                "{operation} while inspecting PID {process_id}: {source}"
+            ),
             Self::Io(error) => Display::fmt(error, formatter),
         }
     }
 }
 
-impl Error for PlatformError {}
+impl Error for PlatformError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ProcessInspection { source, .. } | Self::Io(source) => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for PlatformError {
     fn from(error: io::Error) -> Self {

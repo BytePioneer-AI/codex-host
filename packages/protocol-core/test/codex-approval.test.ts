@@ -133,10 +133,35 @@ describe("Codex native Approval wire projection", () => {
     expect(() =>
       projectCodexApprovalRequest({
         threadId: "thread-1",
-        interaction: interaction({ title: "x".repeat(121) }),
+        interaction: interaction({ title: "   " }),
         serverName: "Claude Code",
       }),
-    ).toThrow("title must contain 1 to 120 characters");
+    ).toThrow("title must contain at least 1 character");
+  });
+
+  it("truncates long display text instead of rejecting the Approval", () => {
+    const command = `Execute \`${"x".repeat(200)}\``;
+    const projected = projectCodexApprovalRequest({
+      threadId: "thread-1",
+      interaction: interaction({ title: command, description: "y".repeat(600) }),
+      serverName: "Claude Code",
+    });
+    const params = projected.request.params as { message: string; _meta: { reason: string } };
+    expect(params.message).toHaveLength(150);
+    expect(params.message.endsWith("…")).toBe(true);
+    expect(params.message.startsWith("Execute `xxx")).toBe(true);
+    expect(params._meta.reason).toHaveLength(500);
+    expect(params._meta.reason.endsWith("…")).toBe(true);
+  });
+
+  it("keeps display text at the limit unchanged", () => {
+    const projected = projectCodexApprovalRequest({
+      threadId: "thread-1",
+      interaction: interaction({ title: "x".repeat(150) }),
+      serverName: "Claude Code",
+    });
+    const params = projected.request.params as { message: string };
+    expect(params.message).toBe("x".repeat(150));
   });
 
   it("tracks Approval lifecycle without fabricating a Tool or File Change Item", () => {

@@ -24,6 +24,7 @@ const { outputFiles } = await build({
             selectModel: true,
             selectThinkingOption: false,
             selectPermissionMode: false,
+            permissionModeScope: "live" as const,
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },

@@ -795,7 +795,8 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{
-        PROCESS_TREE_REFRESH_INTERVAL, PROCESS_TREE_SETTLE_WINDOW, process_tree_refresh_due,
+        PROCESS_TREE_REFRESH_INTERVAL, PROCESS_TREE_SETTLE_WINDOW, ShutdownSignals,
+        process_tree_refresh_due,
     };
     use super::{
         app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,

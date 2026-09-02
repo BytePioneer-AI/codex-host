@@ -733,7 +733,7 @@ class AntigravitySession implements HarnessSession {
     if (step.step_type !== "tool") return;
     let item = active.tools.get(step.step_index);
     if (!item) {
-      item = startAntigravityToolItem(this.#newItemId(), step, this.#cwd);
+      item = startAntigravityToolItem(this.#newItemId(), step);
       active.tools.set(step.step_index, item);
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
@@ -742,7 +742,7 @@ class AntigravitySession implements HarnessSession {
     if (toolError !== null && active.permissionDenial === null) {
       if (isAntigravityPermissionDenial(toolError)) active.permissionDenial = toolError;
     }
-    const completed = completeAntigravityToolItem(item, step, this.#toolOutputLimit);
+    const completed = completeAntigravityToolItem(item, step, this.#toolOutputLimit, this.#cwd);
     active.tools.delete(step.step_index);
     const toolName =
       step.tool_name ??

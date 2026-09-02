@@ -136,6 +136,10 @@ export function installRendererTranscriptStatusInjector(
     if (isRecord(detail)) {
       if (isAdapterStatusState(detail.status)) {
         setStatus(detail.status);
+      } else if (typeof detail.state === "string") {
+        if (detail.state === "ready") setStatus("ready");
+        else if (detail.state === "unsupported") setStatus("failed");
+        else if (detail.state === "installing") setStatus("running");
       }
       if (
         typeof detail.locale === "string" &&
@@ -143,6 +147,8 @@ export function installRendererTranscriptStatusInjector(
       ) {
         setLocale(detail.locale);
       }
+    } else {
+      setStatus("ready");
     }
   };
 
@@ -197,6 +203,7 @@ export function installRendererTranscriptStatusInjector(
   }
 
   const win = doc.defaultView ?? (typeof window !== "undefined" ? window : null);
+  win?.addEventListener("codexhost:renderer-adapter-status", handleStatusEvent);
   win?.addEventListener("codexhost:transcript-status", handleStatusEvent);
   win?.addEventListener("codexhost:transcript-status-changed", handleStatusEvent);
 
@@ -218,6 +225,7 @@ export function installRendererTranscriptStatusInjector(
       disposed = true;
       observer?.disconnect();
       observer = null;
+      win?.removeEventListener("codexhost:renderer-adapter-status", handleStatusEvent);
       win?.removeEventListener("codexhost:transcript-status", handleStatusEvent);
       win?.removeEventListener("codexhost:transcript-status-changed", handleStatusEvent);
       chip.dispose();

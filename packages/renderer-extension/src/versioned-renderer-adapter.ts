@@ -930,7 +930,22 @@ export function installCurrentRendererAdapter(): {
   ): void => {
     liveStatus.modelUpdates = modelUpdates;
     transitionRendererAdapterStatus(liveStatus, { state, reason, hook }, () => {
-      window.dispatchEvent(new CustomEvent("codexhost:renderer-adapter-status"));
+      const displayStatus =
+        state === "ready"
+          ? "ready"
+          : state === "unsupported"
+            ? "failed"
+            : "running";
+      window.dispatchEvent(
+        new CustomEvent("codexhost:renderer-adapter-status", {
+          detail: { state, reason, hook, status: displayStatus },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("codexhost:transcript-status", {
+          detail: { status: displayStatus, reason },
+        }),
+      );
     });
   };
 

@@ -261,20 +261,11 @@ export function synthesizeAntigravityCommand(
 export function startAntigravityToolItem(
   newItemId: HostItemId,
   step: AntigravityStepUpdateEvent["step_update"],
-  cwd: string,
+  cwd?: string,
 ): HostItem {
+  void cwd;
   const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
   const parameters = step.tool_info?.parameters;
-
-  const fileChanges = synthesizeAntigravityFileChange(toolName, parameters, cwd);
-  if (fileChanges) {
-    const item: HostFileChangeItem = {
-      type: "fileChange",
-      itemId: newItemId,
-      changes: fileChanges,
-    };
-    return item;
-  }
 
   const command = synthesizeAntigravityCommand(toolName, parameters);
   if (command) {
@@ -300,9 +291,27 @@ export function completeAntigravityToolItem(
   item: HostItem,
   step: AntigravityStepUpdateEvent["step_update"],
   toolOutputLimit: number,
+  cwd?: string,
 ): HostItem {
-  if (item.type === "fileChange") {
-    return item;
+  const toolName =
+    step.tool_name ??
+    step.tool_info?.name ??
+    (item.type === "toolExecution" ? item.toolName : "");
+  const parameters =
+    step.tool_info?.parameters ??
+    (item.type === "toolExecution" ? item.arguments : undefined);
+
+  // Only project fileChange when the tool succeeded with DONE state and valid diff evidence
+  if (step.state === "DONE" && cwd) {
+    const fileChanges = synthesizeAntigravityFileChange(toolName, parameters, cwd);
+    if (fileChanges && fileChanges.length > 0) {
+      const completed: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: item.itemId,
+        changes: fileChanges,
+      };
+      return completed;
+    }
   }
 
   const output = boundedText(
@@ -329,9 +338,12 @@ export function completeAntigravityToolItem(
     return completed;
   }
 
-  if (item.type === "toolExecution") {
+  if (item.type === "toolExecution" || item.type === "fileChange") {
     const completed: HostToolExecutionItem = {
-      ...item,
+      type: "toolExecution",
+      itemId: item.itemId,
+      toolName: item.type === "toolExecution" ? item.toolName : toolName || "antigravity.tool",
+      arguments: item.type === "toolExecution" ? item.arguments : jsonValue(parameters),
       ...(output
         ? {
             output: {

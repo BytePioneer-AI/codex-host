@@ -636,8 +636,8 @@ describe("Adversarial Stress Verification: Renderer Transcript Status Indicator"
         ownerDocument: doc as unknown as Document,
       });
 
-      // Added 2 event listeners
-      expect(doc.defaultView.listenerCount()).toBe(initialListeners + 2);
+      // Added 3 event listeners (renderer-adapter-status, transcript-status, transcript-status-changed)
+      expect(doc.defaultView.listenerCount()).toBe(initialListeners + 3);
 
       // Call dispose multiple times consecutively
       expect(() => {

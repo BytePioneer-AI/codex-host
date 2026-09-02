@@ -277,7 +277,7 @@ describe("Antigravity Tool Projection", () => {
   });
 
   describe("startAntigravityToolItem", () => {
-    it("creates HostFileChangeItem for write_to_file", () => {
+    it("creates HostToolExecutionItem for write_to_file during start phase", () => {
       const item = startAntigravityToolItem(
         newItemId(),
         {
@@ -295,17 +295,17 @@ describe("Antigravity Tool Projection", () => {
         },
         CWD,
       );
-      expect(item.type).toBe("fileChange");
-      if (item.type === "fileChange") {
-        expect(item.changes).toHaveLength(1);
-        const change = item.changes[0];
-        if (!change) throw new Error("Expected change");
-        expect(change.path).toBe("index.js");
-        expect(change.kind).toBe("add");
+      expect(item.type).toBe("toolExecution");
+      if (item.type === "toolExecution") {
+        expect(item.toolName).toBe("write_to_file");
+        expect(item.arguments).toEqual({
+          TargetFile: "index.js",
+          CodeContent: "console.log('hi');",
+        });
       }
     });
 
-    it("creates HostFileChangeItem for replace_file_content", () => {
+    it("creates HostToolExecutionItem for replace_file_content during start phase", () => {
       const item = startAntigravityToolItem(
         newItemId(),
         {
@@ -324,12 +324,9 @@ describe("Antigravity Tool Projection", () => {
         },
         CWD,
       );
-      expect(item.type).toBe("fileChange");
-      if (item.type === "fileChange") {
-        expect(item.changes).toHaveLength(1);
-        const change = item.changes[0];
-        if (!change) throw new Error("Expected change");
-        expect(change.kind).toBe("update");
+      expect(item.type).toBe("toolExecution");
+      if (item.type === "toolExecution") {
+        expect(item.toolName).toBe("replace_file_content");
       }
     });
 
@@ -400,7 +397,7 @@ describe("Antigravity Tool Projection", () => {
   });
 
   describe("completeAntigravityToolItem", () => {
-    it("completes fileChange item without modifying diff", () => {
+    it("completes file tool with fileChange on DONE state and valid parameters", () => {
       const started = startAntigravityToolItem(
         newItemId(),
         {
@@ -423,11 +420,58 @@ describe("Antigravity Tool Projection", () => {
           state: "DONE",
           step_type: "tool",
           duration_seconds: 0.15,
-          tool_info: { output: "File written successfully." },
+          tool_info: {
+            parameters: { TargetFile: "a.ts", CodeContent: "const x = 1;" },
+            output: "File written successfully.",
+          },
         },
         64_000,
+        CWD,
       );
       expect(completed.type).toBe("fileChange");
+      if (completed.type === "fileChange") {
+        expect(completed.changes).toHaveLength(1);
+        expect(completed.changes[0]?.path).toBe("a.ts");
+      }
+    });
+
+    it("completes file tool with toolExecution (not fileChange) on ERROR state", () => {
+      const started = startAntigravityToolItem(
+        newItemId(),
+        {
+          conversation_id: "c1",
+          step_index: 1,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "write_to_file",
+          tool_info: {
+            parameters: { TargetFile: "a.ts", CodeContent: "const x = 1;" },
+          },
+        },
+        CWD,
+      );
+      const completed = completeAntigravityToolItem(
+        started,
+        {
+          conversation_id: "c1",
+          step_index: 1,
+          state: "ERROR",
+          step_type: "tool",
+          duration_seconds: 0.15,
+          tool_info: {
+            parameters: { TargetFile: "a.ts", CodeContent: "const x = 1;" },
+            error: "EACCES: permission denied",
+          },
+        },
+        64_000,
+        CWD,
+      );
+      expect(completed.type).toBe("toolExecution");
+      if (completed.type === "toolExecution") {
+        expect(completed.output?.content).toEqual([
+          { type: "text", text: "EACCES: permission denied" },
+        ]);
+      }
     });
 
     it("completes commandExecution item with output, exitCode, and durationMs", () => {

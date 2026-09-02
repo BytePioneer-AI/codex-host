@@ -546,19 +546,14 @@ for (const line of lines) {
         const stateChanged = await nextEvent(iterator);
         expect(stateChanged.type).toBe("session.state.changed");
 
-        // Event 3: item.started for write_to_file (fileChange)
+        // Event 3: item.started for write_to_file (toolExecution)
         const fileStarted = await nextEvent(iterator);
         expect(fileStarted).toMatchObject({
           type: "item.started",
           turnId,
           item: {
-            type: "fileChange",
-            changes: [
-              {
-                path: "test.ts",
-                kind: "add",
-              },
-            ],
+            type: "toolExecution",
+            toolName: "write_to_file",
           },
         });
 

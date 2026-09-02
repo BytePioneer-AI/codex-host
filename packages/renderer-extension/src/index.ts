@@ -51,6 +51,31 @@ export {
 } from "./renderer-transcript-dom.js";
 export type { RendererTranscriptContractInspection } from "./renderer-transcript-dom.js";
 export {
+  CHINESE_STATUS_MESSAGES,
+  DEFAULT_STATUS_AUTO_DISMISS_DELAY_MS,
+  ENGLISH_STATUS_MESSAGES,
+  TRANSCRIPT_STATUS_CHIP_ATTRIBUTE,
+  TRANSCRIPT_STATUS_STATE_ATTRIBUTE,
+  mountRendererTranscriptStatusChip,
+  transcriptStatusMessages,
+} from "./renderer-transcript-status-chip.js";
+export type {
+  AdapterStatusState,
+  RendererTranscriptStatusChip,
+  RendererTranscriptStatusChipOptions,
+  TranscriptStatusMessages,
+  TranscriptStatusState,
+} from "./renderer-transcript-status-chip.js";
+export {
+  TRANSCRIPT_STATUS_CONTAINER_ATTRIBUTE,
+  findTranscriptTarget,
+  installRendererTranscriptStatusInjector,
+} from "./renderer-transcript-status-injector.js";
+export type {
+  RendererTranscriptStatusInjector,
+  RendererTranscriptStatusInjectorOptions,
+} from "./renderer-transcript-status-injector.js";
+export {
   inspectRendererComposerContract,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,

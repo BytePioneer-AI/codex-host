@@ -16,6 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { fileChangeFromTool, toolCommandLine } from "../src/codex-ui-projector.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -1458,5 +1459,59 @@ describe("Codex UI projector", () => {
     expect(() =>
       value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
     ).toThrow("follows the Turn terminal");
+  });
+
+  describe("Antigravity tool support", () => {
+    it("projects write_to_file with PascalCase parameters via fileChangeFromTool", () => {
+      const changes = fileChangeFromTool("write_to_file", {
+        TargetFile: "src/server.ts",
+        CodeContent: "export const port = 3000;\n",
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/server.ts",
+          kind: "add",
+          unifiedDiff:
+            "--- /dev/null\n+++ b/src/server.ts\n@@ -0,0 +1,1 @@\n+export const port = 3000;\n",
+        },
+      ]);
+    });
+
+    it("projects replace_file_content with PascalCase parameters via fileChangeFromTool", () => {
+      const changes = fileChangeFromTool("replace_file_content", {
+        TargetFile: "src/server.ts",
+        TargetContent: "export const port = 3000;\n",
+        ReplacementContent: "export const port = 8080;\n",
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/server.ts",
+          kind: "update",
+          unifiedDiff:
+            "--- a/src/server.ts\n+++ b/src/server.ts\n@@ -1,1 +1,1 @@\n-export const port = 3000;\n+export const port = 8080;\n",
+        },
+      ]);
+    });
+
+    it("reconstructs command line from run_command with CommandLine parameter", () => {
+      expect(
+        toolCommandLine("run_command", { CommandLine: "vitest run" }),
+      ).toBe("vitest run");
+      expect(
+        toolCommandLine("runCommand", { commandLine: "pytest -v" }),
+      ).toBe("pytest -v");
+    });
+
+    it("reconstructs command line for view_file, read_url_content, and find_by_name", () => {
+      expect(
+        toolCommandLine("view_file", { TargetFile: "src/main.rs" }),
+      ).toBe("read src/main.rs");
+      expect(
+        toolCommandLine("read_url_content", { path: "https://example.com" }),
+      ).toBe("read https://example.com");
+      expect(
+        toolCommandLine("find_by_name", { Pattern: "*.ts" }),
+      ).toBe("glob *.ts");
+    });
   });
 });

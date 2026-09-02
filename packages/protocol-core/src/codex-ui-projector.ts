@@ -135,10 +135,26 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
   const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
+  const command = nestedString(args, [
+    "command",
+    "cmd",
+    "script",
+    "commandLine",
+    "command_line",
+    "CommandLine",
+  ]);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
+    [
+      "bash",
+      "exec",
+      "terminal",
+      "run",
+      "shell",
+      "powershell",
+      "command",
+      "runcommand",
+    ].includes(lower)
   ) {
     return command;
   }
@@ -150,12 +166,23 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
     "filename",
     "target",
     "uri",
+    "TargetFile",
+    "targetFile",
+    "target_file",
   ]);
-  const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
-  if (["read", "readfile", "fileread", "view"].includes(lower)) {
+  const pattern = nestedString(args, [
+    "pattern",
+    "glob",
+    "glob_pattern",
+    "query",
+    "regex",
+    "Pattern",
+    "Query",
+  ]);
+  if (["read", "readfile", "fileread", "view", "viewfile", "readurlcontent"].includes(lower)) {
     return filePath ? `read ${filePath}` : undefined;
   }
-  if (["glob", "find", "findfiles"].includes(lower)) {
+  if (["glob", "find", "findfiles", "findbyname"].includes(lower)) {
     const target = pattern ?? filePath;
     return target ? `glob ${target}` : undefined;
   }
@@ -185,13 +212,20 @@ function isFileMutatingTool(toolName: string): boolean {
     "filewrite",
     "create",
     "createfile",
+    "writetofile",
+    "replacefilecontent",
   ].includes(compactToolName(toolName));
 }
 
 function isWriteTool(toolName: string): boolean {
-  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
-    compactToolName(toolName),
-  );
+  return [
+    "write",
+    "writefile",
+    "filewrite",
+    "create",
+    "createfile",
+    "writetofile",
+  ].includes(compactToolName(toolName));
 }
 
 function simpleUnifiedDiff(
@@ -220,7 +254,15 @@ function simpleUnifiedDiff(
 
 export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
+  const displayedPath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "TargetFile",
+    "targetFile",
+    "target_file",
+  ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
     const content = nestedString(args, [
@@ -231,6 +273,9 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
       "file_text",
       "text",
       "new",
+      "CodeContent",
+      "codeContent",
+      "code_content",
     ]);
     if (content === undefined) return null;
     return [
@@ -241,7 +286,16 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
       },
     ];
   }
-  const oldText = nestedString(args, ["old_string", "oldString", "oldText", "old_text", "old"]);
+  const oldText = nestedString(args, [
+    "old_string",
+    "oldString",
+    "oldText",
+    "old_text",
+    "old",
+    "TargetContent",
+    "targetContent",
+    "target_content",
+  ]);
   const newText = nestedString(args, [
     "new_string",
     "newString",
@@ -249,6 +303,9 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
     "new_text",
     "content",
     "new",
+    "ReplacementContent",
+    "replacementContent",
+    "replacement_content",
   ]);
   if (oldText === undefined || newText === undefined) return null;
   return [

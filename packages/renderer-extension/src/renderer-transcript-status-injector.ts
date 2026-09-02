@@ -50,6 +50,12 @@ export function detectTurnStatusFromDom(root: ParentNode): AdapterStatusState | 
   for (const selector of RUNNING_TURN_SELECTORS) {
     if (root.querySelector(selector)) return "running";
   }
+  const target = findTranscriptTarget(root);
+  if (target && "matches" in target && typeof target.matches === "function") {
+    for (const selector of RUNNING_TURN_SELECTORS) {
+      if (target.matches(selector)) return "running";
+    }
+  }
   return null;
 }
 

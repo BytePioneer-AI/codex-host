@@ -568,7 +568,34 @@ for (const line of lines) {
           },
         });
 
-        // Event 5: item.started for run_command (commandExecution)
+        // Event 5: item.started for synthesized fileChange
+        const changeStarted = await nextEvent(iterator);
+        expect(changeStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "fileChange",
+            changes: expect.arrayContaining([
+              expect.objectContaining({
+                path: expect.stringContaining("test.ts"),
+                kind: "add",
+              }),
+            ]),
+          },
+        });
+
+        // Event 6: item.completed for synthesized fileChange
+        const changeCompleted = await nextEvent(iterator);
+        expect(changeCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "fileChange" },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        // Event 7: item.started for run_command (commandExecution)
         const cmdStarted = await nextEvent(iterator);
         expect(cmdStarted).toMatchObject({
           type: "item.started",

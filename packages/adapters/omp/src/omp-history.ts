@@ -1,9 +1,12 @@
 import type {
   HostAgentMessageItem,
+  HostCommandExecutionItem,
   HostItemOutcome,
   HostItemSnapshot,
   HostReasoningItem,
+  HostSubagentDelegationItem,
   HostThreadSnapshot,
+  HostToolExecutionItem,
   HostToolOutput,
   HistoricalTurnOutcome,
 } from "@codexhost/harness-adapter";
@@ -20,8 +23,17 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { encodeOmpModelRef, type OmpNativeModelRef } from "./omp-model-catalog.js";
-import { projectOmpToolItem } from "./omp-tool-presentation.js";
-
+import {
+  isOmpProcessId,
+  isOmpProcessTool,
+  ompNativeSubagentId,
+  ompProcessCommand,
+  ompProcessOsPid,
+  ompSubagentOperation,
+  ompSubagentResultSummary,
+  ompSubagentSpawnSpecs,
+} from "./omp-subagent.js";
+import { readOmpDaemonTail } from "./omp-daemon-logs.js";
 export interface OmpSessionHistory {
   entries: JsonObject[];
   leafId: string | null;
@@ -30,6 +42,7 @@ export interface OmpSessionHistory {
 export interface OmpHistoryState {
   sessionId: string;
   model: OmpNativeModelRef | null;
+  cwd?: string;
 }
 
 interface OmpEntry extends JsonObject {
@@ -100,6 +113,27 @@ export function activeOmpEntries(history: OmpSessionHistory): OmpEntry[] {
   }
   return reversed.reverse();
 }
+function parseEntryTimestamp(entry: OmpEntry | undefined): number | undefined {
+  if (!entry) return undefined;
+  if (typeof entry.timestamp === "string") {
+    const parsed = Date.parse(entry.timestamp);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)) {
+    return entry.timestamp;
+  }
+  const msg = message(entry);
+  if (msg) {
+    if (typeof msg.timestamp === "number" && Number.isFinite(msg.timestamp)) {
+      return msg.timestamp;
+    }
+    if (typeof msg.timestamp === "string") {
+      const parsed = Date.parse(msg.timestamp);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
 
 function message(entry: OmpEntry): Record<string, unknown> | null {
   return entry.type === "message" && isRecord(entry.message) ? entry.message : null;
@@ -140,9 +174,8 @@ function assistantOutcome(entries: OmpEntry[]): HistoricalTurnOutcome {
   if (typeof stopReason === "string" || textContent(final.content).length > 0) {
     return { status: "succeeded" };
   }
-  return { status: "unknown", reason: "Omp Assistant terminal is not classifiable" };
+  return { status: "unknown", reason: "Omp history terminal outcome is unspecified" };
 }
-
 function itemOutcome(outcome: HistoricalTurnOutcome): HostItemOutcome {
   if (outcome.status === "failed") return { status: "failed", error: outcome.error };
   if (outcome.status === "cancelled") {
@@ -159,11 +192,57 @@ function toolOutput(value: unknown): HostToolOutput | undefined {
   return text.length > 0 ? { content: [{ type: "text", text }] } : undefined;
 }
 
-function snapshotItems(entries: OmpEntry[], outcome: HistoricalTurnOutcome): HostItemSnapshot[] {
+function extractYieldText(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const result =
+    value.result !== undefined ? value.result : value.data !== undefined ? value.data : value;
+  if (typeof result === "string" && result.trim().length > 0) return result.trim();
+  if (isRecord(result)) {
+    const nested = isRecord(result.data) ? result.data : result;
+    const summary =
+      (typeof nested.summary === "string" && nested.summary.trim().length > 0
+        ? nested.summary.trim()
+        : undefined) ??
+      (typeof nested.message === "string" && nested.message.trim().length > 0
+        ? nested.message.trim()
+        : undefined) ??
+      (typeof nested.text === "string" && nested.text.trim().length > 0
+        ? nested.text.trim()
+        : undefined) ??
+      (typeof nested.output === "string" && nested.output.trim().length > 0
+        ? nested.output.trim()
+        : undefined);
+    if (summary) return summary;
+    return JSON.stringify(result, null, 2);
+  }
+  return null;
+}
+function snapshotItems(
+  entries: OmpEntry[],
+  outcome: HistoricalTurnOutcome,
+  cwd?: string,
+): HostItemSnapshot[] {
   const snapshots: HostItemSnapshot[] = [];
+  const toolStarts = new Map<string, number>();
+  for (const entry of entries) {
+    if (
+      entry.type === "custom" &&
+      entry.customType === "tool_execution_start" &&
+      isRecord(entry.data)
+    ) {
+      const toolCallId =
+        typeof entry.data.toolCallId === "string" ? entry.data.toolCallId : undefined;
+      const startedAtStr =
+        typeof entry.data.startedAt === "string" ? entry.data.startedAt : undefined;
+      const startedAt = startedAtStr ? Date.parse(startedAtStr) : parseEntryTimestamp(entry);
+      if (toolCallId && startedAt !== undefined && Number.isFinite(startedAt)) {
+        toolStarts.set(toolCallId, startedAt);
+      }
+    }
+  }
   const toolCalls = new Map<
     string,
-    { entryId: string; ordinal: number; name: string; arguments: JsonValue }
+    { entry: OmpEntry; entryId: string; ordinal: number; name: string; arguments: JsonValue }
   >();
   for (const entry of entries) {
     const nativeMessage = message(entry);
@@ -205,7 +284,21 @@ function snapshotItems(entries: OmpEntry[], outcome: HistoricalTurnOutcome): Hos
         }
         const parsedArguments = jsonValueSchema.safeParse(part.arguments);
         if (!parsedArguments.success) continue;
+        if (part.name === "yield") {
+          const yieldText = extractYieldText(parsedArguments.data);
+          if (yieldText && !projectedText) {
+            const item: HostAgentMessageItem = {
+              type: "agentMessage",
+              itemId: itemId(entry.id, "assistant", 0),
+              text: yieldText,
+            };
+            snapshots.push({ item, outcome: itemOutcome(outcome) });
+            projectedText = true;
+            continue;
+          }
+        }
         toolCalls.set(part.id, {
+          entry,
           entryId: entry.id,
           ordinal,
           name: part.name,
@@ -222,17 +315,135 @@ function snapshotItems(entries: OmpEntry[], outcome: HistoricalTurnOutcome): Hos
       continue;
     }
     const call = toolCalls.get(nativeMessage.toolCallId);
-    if (!call || call.name !== nativeMessage.toolName) continue;
+    if (!call || call.name !== nativeMessage.toolName) {
+      if (
+        nativeMessage.toolName === "yield" &&
+        !snapshots.some((s) => s.item.type === "agentMessage")
+      ) {
+        const yieldText =
+          extractYieldText(nativeMessage.details) ?? textContent(nativeMessage.content);
+        if (yieldText) {
+          const item: HostAgentMessageItem = {
+            type: "agentMessage",
+            itemId: itemId(entry.id, "assistant", 0),
+            text: yieldText,
+          };
+          snapshots.push({ item, outcome: itemOutcome(outcome) });
+        }
+      }
+      continue;
+    }
+    if (call.name === "yield") {
+      if (!snapshots.some((s) => s.item.type === "agentMessage")) {
+        const yieldText =
+          extractYieldText(nativeMessage.details) ??
+          extractYieldText(call.arguments) ??
+          textContent(nativeMessage.content);
+        if (yieldText) {
+          const item: HostAgentMessageItem = {
+            type: "agentMessage",
+            itemId: itemId(entry.id, "assistant", 0),
+            text: yieldText,
+          };
+          snapshots.push({ item, outcome: itemOutcome(outcome) });
+        }
+      }
+      continue;
+    }
     const output = toolOutput(nativeMessage.content);
-    const item = {
-      ...projectOmpToolItem({
-        itemId: itemId(call.entryId, "tool", call.ordinal),
-        toolName: call.name,
-        arguments: call.arguments,
-      }),
-      ...(output ? { output: textContent(output.content) } : {}),
-    };
+    const startMs = toolStarts.get(nativeMessage.toolCallId) ?? parseEntryTimestamp(call.entry);
+    const endMs = parseEntryTimestamp(entry);
+    const durationMs =
+      startMs !== undefined && endMs !== undefined ? Math.max(0, endMs - startMs) : undefined;
     const toolSucceeded = nativeMessage.isError === false;
+    const nativeId =
+      ompNativeSubagentId(nativeMessage.details) ??
+      ompNativeSubagentId(nativeMessage.content) ??
+      ompNativeSubagentId(call.arguments);
+    const isProcess = isOmpProcessTool(call.name, call.arguments) || isOmpProcessId(nativeId);
+    if (!isProcess && ompSubagentOperation(call.name, call.arguments) === "spawn") {
+      const specs = ompSubagentSpawnSpecs(call.arguments, call.name);
+      const primary = specs[0];
+      const resultSummary = ompSubagentResultSummary(nativeMessage.details, nativeMessage.content);
+      const item: HostSubagentDelegationItem = {
+        type: "subagentDelegation",
+        itemId: itemId(call.entryId, "subagent", call.ordinal),
+        operation: "spawn",
+        ...(primary?.prompt ? { prompt: primary.prompt } : {}),
+        subagents: specs.map((spec, index) => {
+          const specId =
+            spec.nativeSubagentId ??
+            nativeId ??
+            (index === 0 ? call.entry.id : `${call.entry.id}:${index}`);
+          return {
+            subagentId: specId,
+            nativeSubagentId: specId,
+            description: spec.description,
+            ...(spec.role ? { role: spec.role } : {}),
+            ...(spec.model ? { model: spec.model } : {}),
+            ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
+            background: spec.background,
+            status: toolSucceeded ? "completed" : "failed",
+            ...(resultSummary ? { resultSummary } : {}),
+          };
+        }),
+      };
+      snapshots.push({
+        item,
+        outcome: toolSucceeded
+          ? { status: "succeeded" }
+          : {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: `Omp Subagent '${call.name}' failed`,
+                retryable: false,
+              },
+            },
+      });
+      continue;
+    }
+    if (isProcess) {
+      const processId = nativeId ?? call.entry.id;
+      const osPid =
+        ompProcessOsPid(nativeMessage.details) ??
+        ompProcessOsPid(nativeMessage.content) ??
+        ompProcessOsPid(call.arguments);
+      const rawOutput = output ? textContent(nativeMessage.content) : undefined;
+      const daemonLogOutput = processId && cwd ? readOmpDaemonTail(cwd, processId) : null;
+      const processOutput = daemonLogOutput ?? rawOutput;
+      const item: HostCommandExecutionItem = {
+        type: "commandExecution",
+        itemId: itemId(call.entryId, "process", call.ordinal),
+        command: ompProcessCommand(call.name, call.arguments),
+        processId,
+        ...(osPid !== undefined ? { osPid } : {}),
+        ...(processOutput ? { output: processOutput } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      };
+      snapshots.push({
+        item,
+        outcome: toolSucceeded
+          ? { status: "succeeded" }
+          : {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: `Omp Process '${call.name}' failed`,
+                retryable: false,
+              },
+            },
+      });
+      continue;
+    }
+    const item: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: itemId(call.entryId, "tool", call.ordinal),
+      toolName: call.name,
+      arguments: call.arguments,
+      ...(output ? { output } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    };
     snapshots.push({
       item,
       outcome: toolSucceeded
@@ -278,10 +489,21 @@ export function mapOmpSnapshot(
       continue;
     }
     let end = index + 1;
-    while (end < active.length && messageRole(active[end] as OmpEntry) !== "user") end += 1;
+    while (end < active.length) {
+      const next = active[end] as OmpEntry;
+      if (messageRole(next) === "user" && message(next)?.steering !== true) break;
+      end += 1;
+    }
     const entries = active.slice(index, end);
     const outcome = assistantOutcome(entries);
     const userText = textContent(message(user)?.content);
+    const startedAt = parseEntryTimestamp(user);
+    const lastEntry = entries[entries.length - 1];
+    const completedAt = parseEntryTimestamp(lastEntry);
+    const durationMs =
+      startedAt !== undefined && completedAt !== undefined
+        ? Math.max(0, completedAt - startedAt)
+        : undefined;
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: ompHarnessId,
       nativeSessionId: state.sessionId,
@@ -298,9 +520,12 @@ export function mapOmpSnapshot(
       nativeTurnRef,
       checkpoint,
       input: [{ type: "text", text: userText }],
-      items: snapshotItems(entries, outcome),
+      items: snapshotItems(entries, outcome, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodeOmpModelRef(effectiveModel) } : {}),
+      ...(startedAt !== undefined ? { startedAt } : {}),
+      ...(completedAt !== undefined ? { completedAt } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
     });
     for (const entry of entries) {
       const changed = modelChange(entry);

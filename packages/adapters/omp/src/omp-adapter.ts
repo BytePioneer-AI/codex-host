@@ -1,5 +1,6 @@
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -31,6 +32,7 @@ import {
   type HostSubagentDelegationItem,
   type HostSubagentState,
   type HostSubagentStatus,
+  type HostToolExecutionItem,
   type HostToolOutput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -48,6 +50,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -69,6 +73,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
+import { findOmpDaemonLogPath, readOmpDaemonSlice } from "./omp-daemon-logs.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
@@ -97,8 +102,27 @@ import {
   OMP_PERMISSION_MODE_CATALOG,
   type OmpPermissionMode,
 } from "./omp-permission-modes.js";
+import { readOmpSessionHistory } from "./omp-session-file.js";
 import { OmpSubagentLifecycle } from "./omp-subagent-lifecycle.js";
-import { projectOmpToolItem } from "./omp-tool-presentation.js";
+import {
+  isOmpProcessTool,
+  isOmpWaitTool,
+  ompNativeSubagentId,
+  ompNativeSubagentIds,
+  ompProcessCommand,
+  ompProcessOsPid,
+  ompSubagentBackground,
+  ompSubagentDescription,
+  ompSubagentModel,
+  ompSubagentOperation,
+  ompSubagentPrompt,
+  ompSubagentReasoningEffort,
+  ompSubagentResultSummary,
+  ompSubagentRole,
+  ompSubagentSpawnSpecs,
+  ompSubagentWaitSettlements,
+  type OmpSubagentWaitSettlement,
+} from "./omp-subagent.js";
 
 export interface OmpAdapterOptions {
   command?: string;
@@ -132,6 +156,7 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  steer(text: string): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -141,10 +166,12 @@ export interface OmpAdapterDependencies {
 }
 
 interface ActiveTool {
-  item: HostCommandExecutionItem;
+  item: HostCommandExecutionItem | HostToolExecutionItem;
   nativeName: string;
-  arguments: JsonValue;
   startedAtMs: number;
+  silent?: boolean;
+  isProcess?: boolean;
+  rawArguments?: unknown;
 }
 
 interface ActiveTurn {
@@ -401,6 +428,43 @@ function displayPath(nativePath: string, cwd: string): { path: string; absolute:
   return { path: normalized, absolute: !inside };
 }
 
+function normalizeToolName(name: string): string {
+  const lower = name.toLowerCase();
+  switch (lower) {
+    case "bash":
+    case "exec":
+    case "terminal":
+    case "run":
+      return "bash";
+    case "read":
+    case "read_file":
+    case "fileread":
+      return "Read";
+    case "edit":
+    case "edit_file":
+    case "fileedit":
+      return "Edit";
+    case "write":
+    case "write_file":
+    case "filewrite":
+      return "Write";
+    case "grep":
+    case "grep_search":
+      return "Grep";
+    case "find":
+    case "glob":
+    case "find_files":
+      return "Glob";
+    case "todo":
+      return "Todo";
+    case "web_search":
+    case "websearch":
+      return "WebSearch";
+    default:
+      return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
+  }
+}
+
 function fileMutatingKind(toolName: string): "edit" | "write" | null {
   const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
   if (
@@ -575,6 +639,18 @@ class OmpHarnessSession implements HarnessSession {
   #backgroundTurnId: HostTurnId | null = null;
   #backgroundSubagents = new Map<string, BackgroundSubagentDelegation>();
   #backgroundTurnFailed = false;
+  #runningProcesses = new Map<
+    string,
+    {
+      itemId: HostItemId;
+      command: string;
+      cwd?: string;
+      osPid?: number | null;
+      logOffset?: number;
+      logPath?: string | null;
+    }
+  >();
+  #processLogTimer: NodeJS.Timeout | null = null;
 
   constructor(
     cwd: string,
@@ -610,6 +686,7 @@ class OmpHarnessSession implements HarnessSession {
         permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      turnSteering: { steer: true },
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
@@ -636,6 +713,10 @@ class OmpHarnessSession implements HarnessSession {
 
   handleTransportEvent(event: OmpTurnEvent): void {
     if (this.#phase !== "open") return;
+    if (event.type === "process.state.changed") {
+      this.#forwardProcess(event);
+      return;
+    }
     if (this.#active) return;
     this.#handleBackgroundSubagentEvent(event);
   }
@@ -841,6 +922,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -853,6 +935,7 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -864,6 +947,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") {
       return {
         ok: false,
@@ -1253,6 +1337,34 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: invalidState("Omp Turn Steer must reference the active Turn"),
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Omp transport is unavailable") };
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Omp steer input must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      await transport.steer(text);
+      return { ok: true, value: { turnId: command.turnId } };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1507,7 +1619,6 @@ class OmpHarnessSession implements HarnessSession {
         this.#appendText(active, event.delta);
         return;
       case "reasoning.delta":
-        this.#activateAgentMessage(active, event.messageId);
         this.#appendReasoning(active, event.delta);
         return;
       case "reasoning.completed":
@@ -1534,48 +1645,41 @@ class OmpHarnessSession implements HarnessSession {
         this.#completeTool(active, event);
         return;
       case "subagent.started":
-        {
-          const subagent = active.subagents.start(active.command.turnId, event);
-          this.#event({
-            type: "subagent.state.changed",
-            nativeSubagentId: subagent.nativeSubagentId ?? subagent.subagentId,
-            status: subagent.status,
-          });
-        }
+        active.subagents.start(active.command.turnId, {
+          callId: event.callId,
+          operation: "spawn",
+          description: event.description,
+          ...(event.prompt ? { prompt: event.prompt } : {}),
+          ...(event.role ? { role: event.role } : {}),
+          background: event.background,
+          nativeSubagentId: event.nativeSubagentId,
+        });
         return;
       case "subagent.updated":
-        {
-          const subagent = active.subagents.update(active.command.turnId, event);
-          if (subagent) {
-            this.#event({
-              type: "subagent.state.changed",
-              nativeSubagentId: subagent.nativeSubagentId ?? subagent.subagentId,
-              status: subagent.status,
-              ...(subagent.resultSummary ? { resultSummary: subagent.resultSummary } : {}),
-            });
-          }
-        }
+        active.subagents.update(active.command.turnId, event.callId, {
+          ...(event.description ? { description: event.description } : {}),
+          ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
+          status: event.status,
+          nativeSubagentId: event.nativeSubagentId,
+        });
         return;
       case "subagent.completed":
-        {
-          const subagent = active.subagents.complete(
-            active.command.turnId,
-            event,
-            active.cancellationRequested,
-          );
-          this.#event({
-            type: "subagent.state.changed",
-            nativeSubagentId: subagent.nativeSubagentId ?? subagent.subagentId,
-            status: subagent.status,
-            ...(subagent.resultSummary ? { resultSummary: subagent.resultSummary } : {}),
-          });
-        }
+        active.subagents.complete(active.command.turnId, event.callId, {
+          failed: event.isError,
+          cancellationRequested: active.cancellationRequested,
+          ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
+          nativeSubagentId: event.nativeSubagentId,
+        });
         return;
       case "subagent.transcript.changed":
         this.#event({
           type: "subagent.transcript.changed",
           nativeSubagentId: event.nativeSubagentId,
         });
+        return;
+      case "process.state.changed":
+        this.#forwardProcess(event);
+        return;
     }
   }
 
@@ -1689,82 +1793,304 @@ class OmpHarnessSession implements HarnessSession {
     this.#completeItem(active, item, outcome);
   }
 
+  #subagentModelLabel(modelId?: string): string | undefined {
+    const id = modelId ?? this.#state.effectiveModel?.id;
+    return id ?? undefined;
+  }
+
   #startTool(active: ActiveTurn, event: Extract<OmpTurnEvent, { type: "tool.started" }>): void {
     if (active.tools.has(event.callId)) throw new Error("Omp Tool started more than once");
-    const item = projectOmpToolItem({
-      itemId: this.#newItemId(),
-      toolName: event.toolName,
-      arguments: event.arguments,
-      cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
-    });
+    if (isOmpWaitTool(event.toolName, event.arguments)) {
+      active.tools.set(event.callId, {
+        item: {
+          type: "toolExecution",
+          itemId: this.#newItemId(),
+          toolName: event.toolName,
+          arguments: event.arguments,
+        },
+        nativeName: event.toolName,
+        startedAtMs: Date.now(),
+        silent: true,
+      });
+      return;
+    }
+    if (isOmpProcessTool(event.toolName, event.arguments)) {
+      const processId = ompNativeSubagentId(event.arguments);
+      const osPid = ompProcessOsPid(event.arguments);
+      const item: HostCommandExecutionItem = {
+        type: "commandExecution",
+        itemId: this.#newItemId(),
+        command: ompProcessCommand(event.toolName, event.arguments),
+        cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+        ...(processId ? { processId } : {}),
+        ...(osPid !== undefined ? { osPid } : {}),
+      };
+      active.tools.set(event.callId, {
+        item,
+        nativeName: event.toolName,
+        startedAtMs: Date.now(),
+        isProcess: true,
+        rawArguments: event.arguments,
+      });
+      this.#event({ type: "item.started", turnId: active.command.turnId, item });
+      if (processId) {
+        this.#publishProcess(item, "running");
+      }
+      return;
+    }
+    const operation = ompSubagentOperation(event.toolName, event.arguments);
+    if (operation) {
+      const specs = ompSubagentSpawnSpecs(event.arguments, event.toolName);
+      const primary = specs[0];
+      const prompt = primary?.prompt ?? ompSubagentPrompt(event.arguments);
+      const role = primary?.role ?? ompSubagentRole(event.arguments);
+      const nativeSubagentId = primary?.nativeSubagentId ?? ompNativeSubagentId(event.arguments);
+      const model = this.#subagentModelLabel(primary?.model ?? ompSubagentModel(event.arguments));
+      const reasoningEffort =
+        primary?.reasoningEffort ??
+        ompSubagentReasoningEffort(event.arguments) ??
+        this.#state.effectiveThinkingOptionId;
+      active.subagents.start(active.command.turnId, {
+        callId: event.callId,
+        operation,
+        description:
+          primary?.description ?? ompSubagentDescription(event.arguments, event.toolName),
+        ...(prompt ? { prompt } : {}),
+        ...(role ? { role } : {}),
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        background: primary?.background ?? ompSubagentBackground(event.arguments),
+        ...(nativeSubagentId ? { nativeSubagentId } : {}),
+        agents: specs.map((spec) => {
+          const specModel = this.#subagentModelLabel(spec.model);
+          return {
+            description: spec.description,
+            ...(spec.prompt ? { prompt: spec.prompt } : {}),
+            ...(spec.role ? { role: spec.role } : {}),
+            ...(specModel ? { model: specModel } : {}),
+            ...(spec.reasoningEffort
+              ? { reasoningEffort: spec.reasoningEffort }
+              : reasoningEffort
+                ? { reasoningEffort }
+                : {}),
+            background: spec.background,
+            ...(spec.nativeSubagentId ? { nativeSubagentId: spec.nativeSubagentId } : {}),
+          };
+        }),
+      });
+      return;
+    }
+    const normalizedName = normalizeToolName(event.toolName);
+    const command =
+      normalizedName === "bash"
+        ? (stringField(event.arguments, "command") ??
+          stringField(event.arguments, "cmd") ??
+          stringField(event.arguments, "script") ??
+          stringField(event.arguments, "commandLine") ??
+          stringField(event.arguments, "command_line"))
+        : undefined;
+    const isAsync =
+      isRecord(event.arguments) &&
+      (event.arguments.async === true ||
+        event.arguments.background === true ||
+        event.arguments.detached === true ||
+        event.arguments.run_in_background === true);
+    const processId = isAsync ? ompNativeSubagentId(event.arguments, command) : undefined;
+    const item: HostCommandExecutionItem | HostToolExecutionItem = command
+      ? {
+          type: "commandExecution",
+          itemId: this.#newItemId(),
+          command,
+          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+          ...(processId ? { processId } : {}),
+        }
+      : {
+          type: "toolExecution",
+          itemId: this.#newItemId(),
+          toolName: event.toolName,
+          arguments: event.arguments,
+        };
     active.tools.set(event.callId, {
       item,
       nativeName: event.toolName,
-      arguments: event.arguments,
       startedAtMs: Date.now(),
     });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
   }
 
   #updateTool(active: ActiveTurn, event: Extract<OmpTurnEvent, { type: "tool.updated" }>): void {
+    if (active.subagents.has(event.callId)) {
+      const role = ompSubagentRole(event.output);
+      const nativeSubagentId = ompNativeSubagentId(event.output);
+      const resultSummary = ompSubagentResultSummary(event.output);
+      active.subagents.update(active.command.turnId, event.callId, {
+        ...(role ? { role } : {}),
+        ...(nativeSubagentId ? { nativeSubagentId } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+      return;
+    }
     const tool = active.tools.get(event.callId);
-    if (!tool) throw new Error("Omp Tool update references an unknown Tool Call");
+    if (!tool) return;
     const output = boundedOutput(event.output, this.#toolOutputLimit);
     if (!output) return;
-    const previous = tool.item.output ?? "";
-    const next = outputText(output);
-    tool.item = {
-      ...tool.item,
-      output: next,
-      outputTruncated: output.truncated === true,
-    };
-    if (next.startsWith(previous)) {
-      const delta = next.slice(previous.length);
-      if (delta.length > 0) {
-        this.#event({
-          type: "item.updated",
-          turnId: active.command.turnId,
-          itemId: tool.item.itemId,
-          update: { type: "output.append", text: delta },
-        });
+    if (tool.item.type === "commandExecution") {
+      const previous = tool.item.output ?? "";
+      const next = outputText(output);
+      tool.item = {
+        ...tool.item,
+        output: next,
+        outputTruncated: output.truncated === true,
+      };
+      if (next.startsWith(previous)) {
+        const delta = next.slice(previous.length);
+        if (delta.length > 0) {
+          this.#event({
+            type: "item.updated",
+            turnId: active.command.turnId,
+            itemId: tool.item.itemId,
+            update: { type: "output.append", text: delta },
+          });
+        }
       }
+      return;
     }
+    tool.item = { ...tool.item, output };
+    this.#event({
+      type: "item.updated",
+      turnId: active.command.turnId,
+      itemId: tool.item.itemId,
+      update: { type: "output.replace", output },
+    });
   }
-
   #completeTool(
     active: ActiveTurn,
     event: Extract<OmpTurnEvent, { type: "tool.completed" }>,
   ): void {
     const tool = active.tools.get(event.callId);
+    const settlements = ompSubagentWaitSettlements({
+      name: event.toolName,
+      rawInput: tool?.item.type === "toolExecution" ? tool.item.arguments : undefined,
+      rawOutput: event.result,
+    });
+    for (const settlement of settlements) {
+      if (settlement.status === "running") {
+        active.subagents.update(active.command.turnId, settlement.id, {
+          status: "running",
+          ...(settlement.resultSummary ? { resultSummary: settlement.resultSummary } : {}),
+        });
+      } else {
+        active.subagents.completeByNativeId(active.command.turnId, settlement.id, {
+          failed: settlement.status === "failed",
+          cancellationRequested:
+            active.cancellationRequested || settlement.status === "interrupted",
+          status: settlement.status,
+          ...(settlement.resultSummary ? { resultSummary: settlement.resultSummary } : {}),
+        });
+      }
+    }
+
+    if (active.subagents.has(event.callId)) {
+      const nativeSubagentIds = ompNativeSubagentIds(event.result);
+      const nativeSubagentId = nativeSubagentIds[0] ?? ompNativeSubagentId(event.result);
+      const resultSummary = ompSubagentResultSummary(event.result);
+      active.subagents.completeSpawn(active.command.turnId, event.callId, {
+        failed: event.isError,
+        cancellationRequested: active.cancellationRequested,
+        ...(nativeSubagentId ? { nativeSubagentId } : {}),
+        ...(nativeSubagentIds.length > 0 ? { nativeSubagentIds } : {}),
+        ...(resultSummary ? { resultSummary } : {}),
+      });
+      return;
+    }
+    if (tool?.silent) {
+      this.#settleProcesses(settlements);
+      active.tools.delete(event.callId);
+      return;
+    }
     if (!tool || tool.nativeName !== event.toolName) {
       throw new Error("Omp Tool completion references an unknown Tool Call");
     }
-    active.tools.delete(event.callId);
     const durationMs = Math.max(0, Date.now() - tool.startedAtMs);
     const output = boundedOutput(event.result, this.#toolOutputLimit);
     const exitCode = numberField(event.result, "exitCode");
-    tool.item = {
-      ...tool.item,
-      ...(output
-        ? {
-            output: outputText(output),
-            outputTruncated: output.truncated === true,
+    if (tool.item.type === "commandExecution") {
+      const isExplicitProcess =
+        tool.isProcess === true ||
+        Boolean(tool.item.processId) ||
+        isOmpProcessTool(event.toolName, tool.rawArguments);
+      const nativeId = isExplicitProcess ? ompNativeSubagentId(event.result) : undefined;
+      const startedProcessId =
+        tool.item.processId && tool.item.processId !== event.callId
+          ? tool.item.processId
+          : undefined;
+      const resultProcessId =
+        nativeId && nativeId.length > 0 && nativeId !== event.callId ? nativeId : undefined;
+      const processId = startedProcessId ?? resultProcessId;
+      const osPid = ompProcessOsPid(event.result) ?? tool.item.osPid;
+      const keepRunning =
+        isExplicitProcess && Boolean(processId) && !event.isError && !active.cancellationRequested;
+      tool.item = {
+        ...tool.item,
+        ...(processId ? { processId } : {}),
+        ...(osPid !== undefined ? { osPid } : {}),
+        ...(output
+          ? {
+              output: outputText(output),
+              outputTruncated: output.truncated === true,
+            }
+          : {}),
+        ...(!keepRunning ? { exitCode: exitCode ?? (event.isError ? 1 : 0) } : {}),
+        durationMs,
+      };
+      if (keepRunning && processId) {
+        if (tool.item.processId && tool.item.processId !== processId) {
+          this.#runningProcesses.delete(tool.item.processId);
+          this.#event({
+            type: "process.state.changed",
+            processId: tool.item.processId,
+            status: "exited",
+          });
+        }
+        if (output) {
+          const text = outputText(output);
+          if (text.length > 0) {
+            this.#event({
+              type: "item.updated",
+              turnId: active.command.turnId,
+              itemId: tool.item.itemId,
+              update: { type: "output.append", text },
+            });
           }
-        : {}),
-      ...(exitCode !== undefined ? { exitCode } : {}),
-      durationMs,
-    };
+        }
+        active.tools.delete(event.callId);
+        this.#publishProcess(tool.item, "running");
+        this.#settleProcesses(settlements);
+        return;
+      }
+    } else {
+      tool.item = {
+        ...tool.item,
+        ...(output ? { output } : {}),
+        durationMs,
+      };
+    }
     const outcome: HostItemOutcome = active.cancellationRequested
       ? { status: "cancelled", reason: "Cancelled by user" }
       : event.isError
         ? { status: "failed", error: toolFailure(event.toolName) }
         : { status: "succeeded" };
+    active.tools.delete(event.callId);
     this.#completeItem(active, tool.item, outcome);
+    if (tool.item.type === "commandExecution" && tool.item.processId) {
+      this.#publishProcess(tool.item, outcome.status === "succeeded" ? "running" : "exited");
+    }
+    this.#settleProcesses(settlements);
 
     if (!event.isError) {
       try {
         const kind = fileMutatingKind(event.toolName);
-        const args = tool.arguments;
+        const args = tool.item.type === "toolExecution" ? tool.item.arguments : {};
         if (kind && synthesizeFileChange(kind, args, this.#cwd)) {
           return;
         }
@@ -1800,10 +2126,8 @@ class OmpHarnessSession implements HarnessSession {
     const created = snapshot.turns.filter(
       (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
-    if (created.length !== 1) {
-      throw new Error(
-        `Omp Turn persisted ${created.length} new User Entries; exactly one is required`,
-      );
+    if (created.length === 0) {
+      throw new Error("Omp Turn persisted 0 new User Entries; at least one is required");
     }
     const turn = created[0];
     if (!turn?.checkpoint) throw new Error("Omp Turn has no terminal Checkpoint identity");
@@ -1829,8 +2153,19 @@ class OmpHarnessSession implements HarnessSession {
       this.#completeItem(active, active.compactionItem, itemOutcome);
       active.compactionItem = null;
     }
-    for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
-    active.tools.clear();
+    for (const [callId, tool] of [...active.tools.entries()]) {
+      if (
+        tool.item.type === "commandExecution" &&
+        tool.item.processId &&
+        itemOutcome.status === "succeeded"
+      ) {
+        this.#publishProcess(tool.item, "running");
+        active.tools.delete(callId);
+        continue;
+      }
+      if (!tool.silent) this.#completeItem(active, tool.item, itemOutcome);
+      active.tools.delete(callId);
+    }
     active.subagents.finalize(active.command.turnId, itemOutcome);
     if (!active.sawAssistantMessage && finalText !== undefined && active.agentItem) {
       active.agentItem = { ...active.agentItem, text: finalText };
@@ -1846,6 +2181,148 @@ class OmpHarnessSession implements HarnessSession {
     queueMicrotask(() => {
       if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
     });
+  }
+
+  #forwardProcess(event: Extract<OmpTurnEvent, { type: "process.state.changed" }>): void {
+    const known = this.#runningProcesses.get(event.processId);
+    const itemId = event.itemId ?? known?.itemId;
+    const command = event.command ?? known?.command ?? event.processId;
+    const cwd = event.cwd ?? known?.cwd;
+    const osPid = event.osPid !== undefined ? event.osPid : known?.osPid;
+    if (event.status === "running") {
+      const currentOffset = known?.logOffset ?? 0;
+      this.#runningProcesses.set(event.processId, {
+        itemId: itemId ?? hostItemIdSchema.parse(event.processId),
+        command,
+        ...(cwd ? { cwd } : {}),
+        ...(osPid !== undefined ? { osPid } : {}),
+        logOffset: currentOffset,
+        logPath: known?.logPath ?? null,
+      });
+      this.#ensureProcessLogPolling();
+      this.#pollRunningProcessLogs();
+    } else {
+      this.#runningProcesses.delete(event.processId);
+      if (this.#runningProcesses.size === 0) this.#stopProcessLogPolling();
+    }
+    this.#event({
+      ...event,
+      ...(itemId ? { itemId } : {}),
+      command,
+      ...(cwd ? { cwd } : {}),
+      ...(osPid !== undefined ? { osPid } : {}),
+    });
+  }
+
+  #publishProcess(item: HostCommandExecutionItem, status: "running" | "exited"): void {
+    const processId = item.processId;
+    if (!processId) return;
+    if (status === "running") {
+      const existing = this.#runningProcesses.get(processId);
+      this.#runningProcesses.set(processId, {
+        itemId: item.itemId,
+        command: item.command,
+        ...(item.cwd ? { cwd: item.cwd } : {}),
+        ...(item.osPid !== undefined ? { osPid: item.osPid } : {}),
+        logOffset: existing?.logOffset ?? 0,
+        logPath: existing?.logPath ?? null,
+      });
+      this.#ensureProcessLogPolling();
+      this.#pollRunningProcessLogs();
+    } else {
+      this.#runningProcesses.delete(processId);
+      if (this.#runningProcesses.size === 0) this.#stopProcessLogPolling();
+    }
+    this.#event({
+      type: "process.state.changed",
+      processId,
+      status,
+      itemId: item.itemId,
+      command: item.command,
+      ...(item.cwd ? { cwd: item.cwd } : {}),
+      ...(item.osPid !== undefined ? { osPid: item.osPid } : {}),
+    });
+  }
+
+  #settleProcesses(settlements: OmpSubagentWaitSettlement[]): void {
+    for (const settlement of settlements) {
+      const running = this.#runningProcesses.get(settlement.id);
+      if (!running) continue;
+      if (settlement.status === "running") {
+        this.#event({
+          type: "process.state.changed",
+          processId: settlement.id,
+          status: "running",
+          itemId: running.itemId,
+          command: running.command,
+          ...(running.cwd ? { cwd: running.cwd } : {}),
+          ...(running.osPid !== undefined ? { osPid: running.osPid } : {}),
+        });
+        continue;
+      }
+      this.#runningProcesses.delete(settlement.id);
+      this.#event({
+        type: "process.state.changed",
+        processId: settlement.id,
+        status: "exited",
+        itemId: running.itemId,
+        command: running.command,
+        ...(running.cwd ? { cwd: running.cwd } : {}),
+        ...(running.osPid !== undefined ? { osPid: running.osPid } : {}),
+      });
+    }
+  }
+
+  #ensureProcessLogPolling(): void {
+    if (this.#processLogTimer || this.#runningProcesses.size === 0 || this.#phase !== "open") {
+      return;
+    }
+    this.#processLogTimer = setInterval(() => {
+      this.#pollRunningProcessLogs();
+    }, 250);
+    this.#processLogTimer.unref?.();
+  }
+
+  #stopProcessLogPolling(): void {
+    if (this.#processLogTimer) {
+      clearInterval(this.#processLogTimer);
+      this.#processLogTimer = null;
+    }
+  }
+
+  #pollRunningProcessLogs(): void {
+    if (this.#phase !== "open" || this.#runningProcesses.size === 0) {
+      this.#stopProcessLogPolling();
+      return;
+    }
+    for (const [processId, proc] of this.#runningProcesses) {
+      const cwd = proc.cwd ?? this.#cwd;
+      const logPath = proc.logPath ?? findOmpDaemonLogPath(cwd, processId);
+      if (!logPath) continue;
+      proc.logPath = logPath;
+      const offset = proc.logOffset ?? 0;
+      const { text, nextOffset } = readOmpDaemonSlice(logPath, offset);
+      if (nextOffset > offset) {
+        proc.logOffset = nextOffset;
+        if (text.length > 0) {
+          const turnId = this.#active?.command.turnId ?? this.#ensureBackgroundTurn();
+          const matchingTool = this.#active
+            ? [...this.#active.tools.values()].find(
+                (t) => t.item.type === "commandExecution" && t.item.processId === processId,
+              )
+            : undefined;
+          if (matchingTool && matchingTool.item.type === "commandExecution") {
+            matchingTool.item.output = (matchingTool.item.output ?? "") + text;
+          }
+          this.#event({
+            type: "item.updated",
+            turnId,
+            itemId: proc.itemId,
+            update: { type: "output.append", text },
+          });
+        }
+      }
+    }
   }
 
   #fault(error: unknown): void {
@@ -1873,6 +2350,7 @@ class OmpHarnessSession implements HarnessSession {
     }
     try {
       if (transport) await transport.close();
+      this.#stopProcessLogPolling();
     } catch (error) {
       this.#fault(error);
       throw error;
@@ -1914,6 +2392,25 @@ export class OmpAdapter implements HarnessAdapter {
           },
         };
       }
+      const parentSessionFile = sessionFileFromRef(input.parent);
+      if (parentSessionFile) {
+        const directSubagentFile = path.join(
+          parentSessionFile.replace(/\.jsonl$/i, ""),
+          `${input.nativeSubagentId}.jsonl`,
+        );
+        try {
+          if (existsSync(directSubagentFile)) {
+            const history = await readOmpSessionHistory(directSubagentFile);
+            const snapshot = mapOmpSnapshot(history, {
+              sessionId: input.parent.nativeSessionId,
+              model: null,
+            });
+            return { ok: true, value: snapshot };
+          }
+        } catch {
+          // Fall back to transport RPC
+        }
+      }
       let transport: OmpTurnTransport | undefined;
       try {
         transport = this.#createTransport({
@@ -1935,8 +2432,8 @@ export class OmpAdapter implements HarnessAdapter {
           },
         );
         return { ok: true, value: snapshot };
-      } catch (error) {
-        return { ok: false, error: normalizedError(error, "protocolError") };
+      } catch {
+        return { ok: true, value: { turns: [] } };
       } finally {
         await transport?.close().catch(() => undefined);
       }
@@ -1944,6 +2441,7 @@ export class OmpAdapter implements HarnessAdapter {
   };
   readonly #closeTimeoutMs: number;
   readonly #createTransport: OmpAdapterDependencies["createTransport"];
+  readonly #environment: NodeJS.ProcessEnv | undefined;
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<OmpTurnTransport>();
@@ -1960,6 +2458,7 @@ export class OmpAdapter implements HarnessAdapter {
   ) {
     this.#createTransport = dependencies.createTransport;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
+    this.#environment = options.environment;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
@@ -2026,6 +2525,7 @@ export class OmpAdapter implements HarnessAdapter {
             permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          turnSteering: { steer: true },
           subagents: { observe: true, readTranscript: true },
         },
       };

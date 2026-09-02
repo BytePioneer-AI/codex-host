@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
@@ -39,6 +42,8 @@ class FakeOmpTransport implements OmpTurnTransport {
   readonly stderrTail = "";
   history: OmpSessionHistory = { entries: [], leafId: null };
   onEvent: ((event: OmpTurnEvent) => void) | null = null;
+  holdTurn = false;
+  steered: string[] = [];
   onSubagentEvent: ((event: OmpTurnEvent) => void) | null = null;
   autoCompleteTurn = true;
   #resolveTurn: ((result: OmpTurnResult) => void) | null = null;
@@ -103,7 +108,8 @@ class FakeOmpTransport implements OmpTurnTransport {
     return this.state;
   }
 
-  async selectThinkingOption(): Promise<OmpSessionState> {
+  async selectThinkingOption(thinkingLevel: HarnessThinkingOptionId): Promise<OmpSessionState> {
+    void thinkingLevel;
     return this.state;
   }
 
@@ -137,6 +143,10 @@ class FakeOmpTransport implements OmpTurnTransport {
       ],
       leafId: "assistant-1",
     };
+    this.finish(text);
+  }
+
+  finish(text: string): void {
     this.#resolveTurn?.({ text, cancelled: false });
   }
 
@@ -144,7 +154,7 @@ class FakeOmpTransport implements OmpTurnTransport {
     this.onEvent = onEvent;
     return new Promise((resolve) => {
       this.#resolveTurn = resolve;
-      if (!this.autoCompleteTurn) return;
+      if (!this.autoCompleteTurn || this.holdTurn) return;
       queueMicrotask(() => {
         onEvent({
           type: "subagent.started",
@@ -193,6 +203,10 @@ class FakeOmpTransport implements OmpTurnTransport {
     });
   }
 
+  async steer(text: string): Promise<void> {
+    this.steered.push(text);
+  }
+
   async respondToInteraction(): Promise<void> {}
 
   async abort(): Promise<void> {
@@ -214,6 +228,176 @@ class RestartableOmpTransport extends FakeOmpTransport {
     this.closed = true;
   }
 }
+
+describe("OMP Adapter startup", () => {
+  it("repairs an unavailable persisted Thinking level after model fallback", async () => {
+    const transport = new FakeOmpTransport();
+    const availableThinkingLevels = ["minimal", "low", "medium", "high"].map((level) =>
+      harnessThinkingOptionIdSchema.parse(level),
+    );
+    transport.state = {
+      ...transport.state,
+      thinkingLevel: harnessThinkingOptionIdSchema.parse("xhigh"),
+      availableThinkingLevels,
+    };
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockImplementation(async () => [
+      ...availableThinkingLevels,
+    ]);
+    const selectThinkingOption = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockImplementation(async (thinkingLevel) => {
+        transport.state = { ...transport.state, thinkingLevel };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef });
+
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(selectThinkingOption).toHaveBeenCalledWith("high");
+    expect(opened.value.initialState).toMatchObject({
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [
+        { id: "minimal" },
+        { id: "low" },
+        { id: "medium" },
+        { id: "high" },
+      ],
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
+
+describe("OMP Adapter Turn steering", () => {
+  it("forwards steer input to the active native Turn", async () => {
+    const transport = new FakeOmpTransport();
+    transport.holdTurn = true;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const turnId = "steer-turn" as HostTurnId;
+    await expect(
+      opened.value.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "write a numbered list" }],
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { turnId } });
+    await expect(
+      opened.value.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "use uppercase words" }],
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { turnId } });
+    expect(transport.steered).toEqual(["use uppercase words"]);
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("completes a steered Turn against the original User Entry", async () => {
+    const transport = new FakeOmpTransport();
+    transport.holdTurn = true;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    const turnId = "steer-complete-turn" as HostTurnId;
+    await expect(
+      opened.value.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "count to 200" }],
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { turnId } });
+    await expect(
+      opened.value.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "say only HELLO" }],
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { turnId } });
+    transport.history = {
+      entries: [
+        {
+          id: "user-1",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "count to 200" }] },
+        },
+        {
+          id: "assistant-1",
+          parentId: "user-1",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "one two three" }],
+            stopReason: "aborted",
+            errorMessage: "Request was aborted",
+          },
+        },
+        {
+          id: "user-steer",
+          parentId: "assistant-1",
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "say only HELLO" }],
+            steering: true,
+          },
+        },
+        {
+          id: "assistant-2",
+          parentId: "user-steer",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "HELLO" }],
+            stopReason: "stop",
+          },
+        },
+      ],
+      leafId: "assistant-2",
+    };
+    transport.finish("HELLO");
+    await vi.waitFor(() => {
+      expect(
+        observed.some(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "turn.completed" &&
+            output.event.outcome.status === "succeeded",
+        ),
+      ).toBe(true);
+    });
+    const completed = observed.find(
+      (output) => output.kind === "event" && output.event.type === "turn.completed",
+    );
+    expect(completed).toMatchObject({
+      kind: "event",
+      event: {
+        type: "turn.completed",
+        turnId,
+        outcome: {
+          status: "succeeded",
+          checkpoint: { checkpointId: "user-1" },
+        },
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
 
 function historyTurn(input: {
   assistantId: string;
@@ -622,6 +806,645 @@ describe("OMP Adapter Subagents", () => {
     await opened.value.close();
     await adapter.close();
   });
+  it("projects hub start background process as a running command execution", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-hub-1",
+        toolName: "hub",
+        arguments: {
+          op: "start",
+          name: "test-ticker",
+          application: "bun",
+          args: ["run", "ticker.js"],
+        },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-hub-1",
+        toolName: "hub",
+        result: { pid: 98560, status: "running" },
+        isError: false,
+      });
+      onEvent({
+        type: "text.delta",
+        messageId: "msg-1",
+        delta: "Started background process test-ticker.",
+      });
+      return Promise.resolve({ text: "Started background process test-ticker.", cancelled: false });
+    };
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-process" as HostTurnId,
+      input: [{ type: "text", text: "start test-ticker" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "commandExecution",
+    );
+    expect(started).toMatchObject({
+      item: {
+        type: "commandExecution",
+        command: "hub start test-ticker -- bun run ticker.js",
+        processId: "test-ticker",
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "test-ticker",
+        status: "running",
+        osPid: 98560,
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toBe(false);
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("keeps hub start running when the launcher reports exitCode 0 or null", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-hub-start",
+        toolName: "hub",
+        arguments: { op: "start", name: "terminal-2", application: "bash" },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-hub-start",
+        toolName: "hub",
+        result: {
+          output: "Daemon terminal-2 has unacknowledged completion notifications",
+          exitCode: 0,
+          pid: 4242,
+        },
+        isError: false,
+      });
+      onEvent({
+        type: "tool.started",
+        callId: "tool-hub-start-null",
+        toolName: "bash",
+        arguments: { command: "hub start terminal-3 -- bash" },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-hub-start-null",
+        toolName: "bash",
+        result: {
+          output: "Started terminal-3: running pid=4243 uptime=11ms restarts=0",
+          exitCode: null,
+        },
+        isError: false,
+      });
+      return Promise.resolve({ text: "started terminals", cancelled: false });
+    };
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-hub-exit" as HostTurnId,
+      input: [{ type: "text", text: "start terminals" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "commandExecution",
+      ),
+    ).toEqual([]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "terminal-2",
+        status: "running",
+        osPid: 4242,
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "terminal-3",
+        status: "running",
+        osPid: 4243,
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toBe(false);
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("projects bash hub start as a named background process", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-bash-hub",
+        toolName: "bash",
+        arguments: { command: "hub start term-1 -- bash --norc --noprofile" },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-bash-hub",
+        toolName: "bash",
+        result: { output: "Started term-1: running pid=1416880 uptime=11ms restarts=0" },
+        isError: false,
+      });
+      return Promise.resolve({
+        text: "Started term-1: running pid=1416880 uptime=11ms restarts=0",
+        cancelled: false,
+      });
+    };
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-bash-hub" as HostTurnId,
+      input: [{ type: "text", text: "start term-1" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "term-1",
+        status: "running",
+        osPid: 1416880,
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toBe(false);
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "commandExecution",
+    );
+    const completed = events.find(
+      (event) => event.type === "item.completed" && event.snapshot.item.type === "commandExecution",
+    );
+    expect(started).toMatchObject({
+      item: {
+        type: "commandExecution",
+        processId: "term-1",
+        command: "hub start term-1 -- bash --norc --noprofile",
+      },
+    });
+    expect(completed).toBeUndefined();
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("projects background bash async jobs as processes, not subagents", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-bash-async",
+        toolName: "bash",
+        arguments: { command: "bun test", async: true },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-bash-async",
+        toolName: "bash",
+        result: { jobId: "bash_fcf988", status: "running" },
+        isError: false,
+      });
+      onEvent({
+        type: "process.state.changed",
+        processId: "bash_fcf988",
+        status: "running",
+        command: "bun test",
+      });
+      return Promise.resolve({
+        text: "Started background job bash_fcf988",
+        cancelled: false,
+      });
+    };
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-bash-async" as HostTurnId,
+      input: [{ type: "text", text: "run bun test in background" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "bash_fcf988",
+        status: "running",
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toBe(false);
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("projects eval hub start as a named background process, not a subagent", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-eval-hub",
+        toolName: "eval",
+        arguments: {
+          language: "js",
+          title: "start ticker",
+          code: 'await tool.hub({ op: "start", name: "ticker", application: "bash" })',
+        },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-eval-hub",
+        toolName: "eval",
+        result: { output: "Started ticker: running pid=4242 uptime=11ms restarts=0" },
+        isError: false,
+      });
+      return Promise.resolve({ text: "started ticker", cancelled: false });
+    };
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-eval-hub" as HostTurnId,
+      input: [{ type: "text", text: "start ticker" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "commandExecution",
+    );
+    const completed = events.find(
+      (event) => event.type === "item.completed" && event.snapshot.item.type === "commandExecution",
+    );
+    expect(started).toMatchObject({
+      item: { type: "commandExecution", processId: "ticker" },
+    });
+    expect(completed).toBeUndefined();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "ticker",
+        status: "running",
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toBe(false);
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("keeps anonymous task subagents local until native IDs arrive", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-task-anon",
+        toolName: "task",
+        arguments: {
+          context: "Analyze code",
+          tasks: [
+            { task: "Search files", agent: "scout" },
+            { task: "Review changes", agent: "reviewer" },
+          ],
+        },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-task-anon",
+        toolName: "task",
+        result: { status: "completed" },
+        isError: false,
+      });
+      transport.history = {
+        entries: [
+          {
+            id: "user-anon",
+            parentId: null,
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text: "run tasks" }] },
+          },
+          {
+            id: "assistant-anon",
+            parentId: "user-anon",
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Delegation done." }],
+              stopReason: "stop",
+            },
+          },
+        ],
+        leafId: "assistant-anon",
+      };
+      return Promise.resolve({ text: "Delegation done.", cancelled: false });
+    };
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-anon" as HostTurnId,
+      input: [{ type: "text", text: "run tasks" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+    );
+    expect(started).toMatchObject({
+      item: {
+        type: "subagentDelegation",
+        subagents: [
+          { subagentId: "tool-task-anon", description: "Search files" },
+          { subagentId: "tool-task-anon:1", description: "Review changes" },
+        ],
+      },
+    });
+    const startedItem = started?.type === "item.started" ? started.item : undefined;
+    expect(startedItem?.type).toBe("subagentDelegation");
+    if (startedItem?.type === "subagentDelegation") {
+      expect(startedItem.subagents.map((agent) => agent.nativeSubagentId)).toEqual([
+        undefined,
+        undefined,
+      ]);
+    }
+    const stateChanges = events.filter((event) => event.type === "subagent.state.changed");
+    expect(stateChanges).toEqual([]);
+    await adapter.close();
+  });
+
+  it("runs subagents in conjunction with background bash process", async () => {
+    const transport = new FakeOmpTransport();
+    transport.runTurn = (_text, onEvent) => {
+      onEvent({
+        type: "tool.started",
+        callId: "tool-subagent-1",
+        toolName: "task",
+        arguments: {
+          tasks: [{ task: "Inspect repo", name: "inspector" }],
+        },
+      });
+      onEvent({
+        type: "tool.started",
+        callId: "tool-bash-async",
+        toolName: "bash",
+        arguments: {
+          command: "sleep 100",
+          async: true,
+        },
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-bash-async",
+        toolName: "bash",
+        result: { jobId: "job-bg-99", pid: 4421 },
+        isError: false,
+      });
+      onEvent({
+        type: "tool.completed",
+        callId: "tool-subagent-1",
+        toolName: "task",
+        result: { status: "completed" },
+        isError: false,
+      });
+      return Promise.resolve({ text: "Spawned both.", cancelled: false });
+    };
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-conjunction" as HostTurnId,
+      input: [{ type: "text", text: "run both" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "item.started" &&
+          event.item.type === "subagentDelegation" &&
+          event.item.subagents[0]?.nativeSubagentId === "inspector",
+      ),
+    ).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "process.state.changed" &&
+          event.processId === "job-bg-99" &&
+          event.status === "running",
+      ),
+    ).toBe(true);
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("forwards background process events when idle", async () => {
+    const transport = new FakeOmpTransport();
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const observed = outputs(opened.value);
+    (
+      opened.value as unknown as { handleTransportEvent(event: unknown): void }
+    ).handleTransportEvent({
+      type: "process.state.changed",
+      processId: "bg-daemon",
+      status: "running",
+      osPid: 1234,
+      command: "daemon run",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process.state.changed",
+        processId: "bg-daemon",
+        status: "running",
+        osPid: 1234,
+      }),
+    );
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("streams background process daemon logs as output updates", async () => {
+    const transport = new FakeOmpTransport();
+    const tmpDir = path.join(os.tmpdir(), `omp-test-daemons-${Date.now()}`);
+    const logDir = path.join(os.homedir(), ".omp", "run", "daemons", `test-${Date.now()}`);
+    const daemonLogDir = path.join(logDir, "daemons", "stream-daemon");
+    await fs.mkdir(daemonLogDir, { recursive: true });
+    await fs.writeFile(
+      path.join(logDir, "scope.json"),
+      JSON.stringify({ projectDir: tmpDir }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(daemonLogDir, "output.log"), "first line\n", "utf8");
+
+    try {
+      const dependencies: OmpAdapterDependencies = {
+        createTransport: () => transport,
+      };
+      const adapter = new OmpAdapter({}, dependencies);
+      const opened = await adapter.open({ kind: "create", cwd: tmpDir });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      const observed = outputs(opened.value);
+
+      transport.runTurn = (_text, onEvent) => {
+        onEvent({
+          type: "tool.started",
+          callId: "tool-bg-stream",
+          toolName: "hub",
+          arguments: { op: "start", name: "stream-daemon", application: "bash" },
+        });
+        onEvent({
+          type: "tool.completed",
+          callId: "tool-bg-stream",
+          toolName: "hub",
+          result: { output: "Started stream-daemon", status: "running" },
+        });
+        return Promise.resolve({ text: "Started stream-daemon", cancelled: false });
+      };
+
+      const turn = await opened.value.execute({
+        type: "turn.start",
+        turnId: "turn-bg-stream" as HostTurnId,
+        input: [{ type: "text", text: "start stream" }],
+      });
+      expect(turn.ok).toBe(true);
+
+      await vi.waitFor(
+        () => {
+          const updates = observed
+            .filter(
+              (output): output is Extract<HarnessOutput, { kind: "event" }> =>
+                output.kind === "event" && output.event.type === "item.updated",
+            )
+            .map((output) => output.event);
+          expect(
+            updates.some(
+              (u) =>
+                u.type === "item.updated" &&
+                u.update.type === "output.append" &&
+                u.update.text.includes("first line"),
+            ),
+          ).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      await fs.appendFile(path.join(daemonLogDir, "output.log"), "second line\n", "utf8");
+
+      await vi.waitFor(
+        () => {
+          const updates = observed
+            .filter(
+              (output): output is Extract<HarnessOutput, { kind: "event" }> =>
+                output.kind === "event" && output.event.type === "item.updated",
+            )
+            .map((output) => output.event);
+          expect(
+            updates.some(
+              (u) =>
+                u.type === "item.updated" &&
+                u.update.type === "output.append" &&
+                u.update.text.includes("second line"),
+            ),
+          ).toBe(true);
+        },
+        { timeout: 2000 },
+      );
+
+      await opened.value.close();
+      await adapter.close();
+    } finally {
+      await fs.rm(logDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 
   it("exposes only OMP compact as a Harness command", async () => {
     const transport = new FakeOmpTransport();
@@ -880,7 +1703,7 @@ describe("OMP Adapter Subagents", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
-      item: { type: "commandExecution", command: expect.stringContaining("edit") },
+      item: { type: "toolExecution", toolName: "edit" },
     });
 
     transport.event({
@@ -901,7 +1724,7 @@ describe("OMP Adapter Subagents", () => {
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.completed",
       snapshot: {
-        item: { type: "commandExecution", command: expect.stringContaining("edit") },
+        item: { type: "toolExecution", toolName: "edit" },
         outcome: { status: "succeeded" },
       },
     });
@@ -929,6 +1752,243 @@ describe("OMP Adapter Subagents", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    await opened.value.close();
+    await adapter.close();
+  });
+  it("projects task tool execution into a Host subagentDelegation Item", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const observed = outputs(opened.value);
+    const turnId = "turn-subagent-tool" as HostTurnId;
+    await opened.value.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "spawn subagent" }],
+    });
+
+    // Model executes `task` tool
+    transport.onEvent?.({
+      type: "tool.started",
+      callId: "tool-task-1",
+      toolName: "task",
+      arguments: {
+        task: "Verify system architecture",
+        agent: "task",
+        model: "grok-4.6",
+        effort: "hi",
+        background: true,
+        subagent_id: "child-grok-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+    );
+    expect(started).toMatchObject({
+      item: {
+        type: "subagentDelegation",
+        operation: "spawn",
+        subagents: [
+          {
+            subagentId: "child-grok-1",
+            nativeSubagentId: "child-grok-1",
+            description: "Verify system architecture",
+            role: "task",
+            model: "grok-4.6",
+            reasoningEffort: "high",
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    // Tool finishes
+    transport.onEvent?.({
+      type: "tool.completed",
+      callId: "tool-task-1",
+      toolName: "task",
+      result: "Verification completed successfully",
+      isError: false,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const allEvents = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+
+    const stateChanges = allEvents.filter((event) => event.type === "subagent.state.changed");
+    expect(stateChanges.length).toBeGreaterThan(0);
+
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects a batch task spawn as one collaboration Item with every Agent", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const observed = outputs(opened.value);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-batch-spawn" as HostTurnId,
+      input: [{ type: "text", text: "spawn two inspectors" }],
+    });
+    transport.onEvent?.({
+      type: "tool.started",
+      callId: "tool-task-batch",
+      toolName: "task",
+      arguments: {
+        tasks: [
+          {
+            name: "RepoInspector",
+            agent: "scout",
+            task: "Read package.json",
+          },
+          {
+            name: "DocsInspector",
+            agent: "scout",
+            task: "List docs",
+          },
+        ],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const started = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event)
+      .find((event) => event.type === "item.started" && event.item.type === "subagentDelegation");
+    expect(started).toMatchObject({
+      item: {
+        type: "subagentDelegation",
+        operation: "spawn",
+        subagents: [
+          {
+            nativeSubagentId: "RepoInspector",
+            description: "RepoInspector",
+            role: "scout",
+            status: "running",
+          },
+          {
+            nativeSubagentId: "DocsInspector",
+            description: "DocsInspector",
+            role: "scout",
+            status: "running",
+          },
+        ],
+      },
+    });
+
+    transport.onEvent?.({
+      type: "tool.completed",
+      callId: "tool-task-batch",
+      toolName: "task",
+      result: {
+        details: {
+          progress: [
+            { id: "RepoInspector", status: "pending" },
+            { id: "DocsInspector", status: "pending" },
+          ],
+          async: { jobId: "RepoInspector" },
+        },
+      },
+      isError: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const updated = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event)
+      .findLast(
+        (event) => event.type === "item.updated" && event.update.type === "subagents.replace",
+      );
+    expect(updated).toMatchObject({
+      update: {
+        type: "subagents.replace",
+        subagents: [
+          { nativeSubagentId: "RepoInspector", status: "running" },
+          { nativeSubagentId: "DocsInspector", status: "running" },
+        ],
+      },
+    });
+
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("handles tool.started for task followed by subagent.started on the same callId idempotently", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const dependencies: OmpAdapterDependencies = {
+      createTransport: () => transport,
+    };
+    const adapter = new OmpAdapter({}, dependencies);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const observed = outputs(opened.value);
+    const turnId = "turn-subagent-idempotent" as HostTurnId;
+    await opened.value.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "spawn subagent" }],
+    });
+
+    // Model executes task tool
+    transport.onEvent?.({
+      type: "tool.started",
+      callId: "tool-task-dup",
+      toolName: "task",
+      arguments: { task: "First description" },
+    });
+
+    // Native subagent.started arrives for same callId
+    expect(() => {
+      transport.onEvent?.({
+        type: "subagent.started",
+        callId: "tool-task-dup",
+        nativeSubagentId: "subagent-native-1",
+        description: "Updated description",
+        background: false,
+      });
+    }).not.toThrow();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = observed
+      .filter(
+        (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
+      )
+      .map((output) => output.event);
+
+    const started = events.find(
+      (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+    );
+    expect(started).toBeDefined();
+
     await opened.value.close();
     await adapter.close();
   });

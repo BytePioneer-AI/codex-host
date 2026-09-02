@@ -22,15 +22,31 @@ import type {
   JsonValue,
 } from "@codexhost/shared-contracts";
 import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
-
 import {
-  projectCodexApprovalRequest,
   type CodexApprovalRequestProjection,
+  projectCodexApprovalRequest,
 } from "./codex-approval.js";
 import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+
+function prettyCollabReasoningEffort(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.toLowerCase() === "xhigh") return "xHigh";
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function formatCollabSpawnModel(
+  model: string | undefined,
+  reasoningEffort: string | undefined,
+): string | null {
+  const modelLabel = model?.trim() || undefined;
+  const effortLabel = prettyCollabReasoningEffort(reasoningEffort);
+  if (modelLabel && effortLabel) return `${modelLabel} · ${effortLabel}`;
+  return modelLabel || effortLabel || null;
+}
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
@@ -107,6 +123,13 @@ function nestedString(value: unknown, keys: readonly string[]): string | undefin
   for (const key of keys) {
     const field = value[key];
     if (typeof field === "string" && field.trim().length > 0) return field.trim();
+    if (Array.isArray(field)) {
+      const joined = field
+        .filter((entry): entry is string => typeof entry === "string")
+        .join(" ")
+        .trim();
+      if (joined.length > 0) return joined;
+    }
   }
   for (const wrapper of ["input", "arguments", "params"] as const) {
     const nested = nestedString(value[wrapper], keys);
@@ -127,20 +150,233 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
   return text.length > 0 ? text : null;
 }
 
+function extractEditPath(args: JsonValue): string | undefined {
+  const directPath = nestedString(args, ["path", "file_path", "filePath", "file", "target"]);
+  if (directPath) return directPath;
+  if (isRecord(args) && typeof args.input === "string") {
+    const match = args.input.match(/^\s*\[([^#\]\s]+)/);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+function formatHubCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "hub";
+  const op = typeof args.op === "string" ? args.op.trim().toLowerCase() : undefined;
+  const name = typeof args.name === "string" ? args.name.trim() : undefined;
+  const to = typeof args.to === "string" ? args.to.trim() : undefined;
+  const message =
+    typeof args.message === "string"
+      ? args.message.trim()
+      : typeof args.text === "string"
+        ? args.text.trim()
+        : undefined;
+  const application = typeof args.application === "string" ? args.application.trim() : undefined;
+  const appArgs = Array.isArray(args.args)
+    ? args.args.map(String).join(" ")
+    : typeof args.args === "string"
+      ? args.args.trim()
+      : "";
+  const ids = Array.isArray(args.ids)
+    ? args.ids.map(String).join(" ")
+    : typeof args.ids === "string"
+      ? args.ids.trim()
+      : undefined;
+  const status = typeof args.status === "string" ? args.status.trim() : undefined;
+  const from = typeof args.from === "string" ? args.from.trim() : undefined;
+  const intent = typeof args.i === "string" ? args.i.trim() : undefined;
+  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
+
+  if (command && /\bhub\s+(?:start|spawn|restart)\b/i.test(command)) return command;
+  if (op === "start" || op === "spawn") {
+    const target = name ? ` ${name}` : "";
+    const exec = application ? ` -- ${application}${appArgs ? ` ${appArgs}` : ""}` : "";
+    return `hub start${target}${exec}`;
+  }
+  if (op === "stop") {
+    return name ? `hub stop ${name}` : "hub stop";
+  }
+  if (op === "restart") {
+    return name ? `hub restart ${name}` : "hub restart";
+  }
+  if (op === "send") {
+    const target = to ?? name;
+    if (target && message) return `hub send ${target}: ${message}`;
+    if (target) return `hub send ${target}`;
+    if (message) return `hub send ${message}`;
+    return "hub send";
+  }
+  if (op === "logs") {
+    return name ? `hub logs ${name}` : "hub logs";
+  }
+  if (op === "wait") {
+    if (name) return `hub wait ${name}`;
+    if (from) return `hub wait --from ${from}`;
+    if (ids) return `hub wait ${ids}`;
+    return "hub wait";
+  }
+  if (op === "cancel") {
+    return ids ? `hub cancel ${ids}` : "hub cancel";
+  }
+  if (op === "describe") {
+    return name ? `hub describe ${name}` : "hub describe";
+  }
+  if (op === "list") {
+    return status ? `hub list --status ${status}` : "hub list";
+  }
+  if (op === "jobs" || op === "ps" || op === "inbox") {
+    return `hub ${op}`;
+  }
+  if (op) {
+    const rest = [name, to, ids, status].filter(Boolean).join(" ");
+    return rest ? `hub ${op} ${rest}` : `hub ${op}`;
+  }
+  if (to && message) return `hub send ${to}: ${message}`;
+  if (name && message) return `hub send ${name}: ${message}`;
+  if (intent) return `hub: ${intent}`;
+  return "hub";
+}
+
+function formatTaskCommandLine(toolName: string, args: JsonValue): string {
+  if (!isRecord(args)) return toolName;
+  if (typeof args.task === "string" && args.task.trim().length > 0) {
+    return `${toolName}: ${args.task.trim()}`;
+  }
+  if (Array.isArray(args.tasks) && args.tasks.length > 0) {
+    const first = args.tasks[0];
+    if (isRecord(first)) {
+      const desc =
+        typeof first.name === "string" && first.name.trim().length > 0
+          ? first.name.trim()
+          : typeof first.task === "string" && first.task.trim().length > 0
+            ? first.task.trim()
+            : undefined;
+      if (desc) {
+        return args.tasks.length > 1
+          ? `${toolName} (${args.tasks.length} tasks): ${desc}`
+          : `${toolName}: ${desc}`;
+      }
+    }
+  }
+  if (typeof args.name === "string" && args.name.trim().length > 0) {
+    return `${toolName} ${args.name.trim()}`;
+  }
+  if (typeof args.context === "string" && args.context.trim().length > 0) {
+    const firstLine = args.context.trim().split("\n")[0]?.trim();
+    if (firstLine) return `${toolName}: ${firstLine}`;
+  }
+  if (typeof args.i === "string" && args.i.trim().length > 0) {
+    return `${toolName}: ${args.i.trim()}`;
+  }
+  return toolName;
+}
+
+function formatEvalCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "eval";
+  const lang = typeof args.language === "string" ? args.language.trim() : undefined;
+  const title = typeof args.title === "string" ? args.title.trim() : undefined;
+  if (lang && title) return `eval ${lang}: ${title}`;
+  if (lang) return `eval ${lang}`;
+  if (title) return `eval: ${title}`;
+  return "eval";
+}
+
+function formatTodoCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "todo";
+  const op = typeof args.op === "string" ? args.op.trim() : undefined;
+  const task = typeof args.task === "string" ? args.task.trim() : undefined;
+  const phase = typeof args.phase === "string" ? args.phase.trim() : undefined;
+  if (op && task) return `todo ${op} "${task}"`;
+  if (op && phase) return `todo ${op} "${phase}"`;
+  if (op) return `todo ${op}`;
+  return "todo";
+}
+
+function formatSearchCommandLine(toolName: string, args: JsonValue): string {
+  if (!isRecord(args)) return toolName;
+  const query = typeof args.query === "string" ? args.query.trim() : undefined;
+  if (query) return `${toolName} "${query}"`;
+  return toolName;
+}
+
+function formatAstEditCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "ast_edit";
+  const paths = Array.isArray(args.paths) ? args.paths.map(String).join(" ") : undefined;
+  if (paths) return `ast_edit ${paths}`;
+  return "ast_edit";
+}
+
+function formatLspCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "lsp";
+  const action = typeof args.action === "string" ? args.action.trim() : undefined;
+  const file = typeof args.file === "string" ? args.file.trim() : undefined;
+  const symbol = typeof args.symbol === "string" ? args.symbol.trim() : undefined;
+  const query = typeof args.query === "string" ? args.query.trim() : undefined;
+  const target = symbol ?? query ?? file;
+  if (action && target) return `lsp ${action} ${target}`;
+  if (action) return `lsp ${action}`;
+  return "lsp";
+}
+
+function formatBrowserCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "browser";
+  const action = typeof args.action === "string" ? args.action.trim() : undefined;
+  const url = typeof args.url === "string" ? args.url.trim() : undefined;
+  if (action && url) return `browser ${action} ${url}`;
+  if (action) return `browser ${action}`;
+  return "browser";
+}
+
+function formatDebugCommandLine(args: JsonValue): string {
+  if (!isRecord(args)) return "debug";
+  const action = typeof args.action === "string" ? args.action.trim() : undefined;
+  const program = typeof args.program === "string" ? args.program.trim() : undefined;
+  if (action && program) return `debug ${action} ${program}`;
+  if (action) return `debug ${action}`;
+  return "debug";
+}
+
 /**
  * Codex Desktop only renders a detailed, expandable card for Command Execution.
  * Generic `dynamicToolCall` items show the tool name with no path, pattern, or
- * output. Lift Read/Glob/Grep/shell tools into that lane when a command line
- * can be reconstructed from the native arguments.
+ * output. Lift Read/Glob/Grep/Hub/Task/Eval/Todo/Edit/Write/shell tools into
+ * that lane when a command line can be reconstructed from the native arguments.
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
   const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
   const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "command", "sh"].includes(lower)
   ) {
     return command;
+  }
+  if (lower === "hub") {
+    return formatHubCommandLine(args);
+  }
+  if (["task", "agent", "delegate", "subagent"].includes(lower)) {
+    return formatTaskCommandLine(toolName, args);
+  }
+  if (lower === "eval") {
+    return formatEvalCommandLine(args);
+  }
+  if (["todo", "todolist", "tasklist"].includes(lower)) {
+    return formatTodoCommandLine(args);
+  }
+  if (["websearch", "websearchtool", "search"].includes(lower) || lower === "websearch") {
+    return formatSearchCommandLine(toolName, args);
+  }
+  if (lower === "astedit") {
+    return formatAstEditCommandLine(args);
+  }
+  if (lower === "lsp") {
+    return formatLspCommandLine(args);
+  }
+  if (lower === "browser") {
+    return formatBrowserCommandLine(args);
+  }
+  if (lower === "debug") {
+    return formatDebugCommandLine(args);
   }
   const filePath = nestedString(args, [
     "path",
@@ -153,15 +389,39 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   ]);
   const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
   if (["read", "readfile", "fileread", "view"].includes(lower)) {
-    return filePath ? `read ${filePath}` : undefined;
+    return filePath ? `read ${filePath}` : "read";
   }
   if (["glob", "find", "findfiles"].includes(lower)) {
     const target = pattern ?? filePath;
-    return target ? `glob ${target}` : undefined;
+    return target ? `glob ${target}` : "glob";
   }
   if (["grep", "grepsearch"].includes(lower)) {
-    if (!pattern) return undefined;
-    return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+    if (pattern) {
+      return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+    }
+    return filePath ? `grep ${filePath}` : "grep";
+  }
+  if (
+    [
+      "edit",
+      "editfile",
+      "fileedit",
+      "strreplace",
+      "searchreplace",
+      "applypatch",
+      "replace",
+      "patch",
+      "multiedit",
+    ].includes(lower)
+  ) {
+    const editPath = extractEditPath(args);
+    return editPath ? `edit ${editPath}` : "edit";
+  }
+  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) {
+    return filePath ? `write ${filePath}` : "write";
+  }
+  if (isRecord(args) && typeof args.i === "string" && args.i.trim().length > 0) {
+    return `${toolName}: ${args.i.trim()}`;
   }
   return undefined;
 }
@@ -440,6 +700,40 @@ function collabAgentStatus(
   }
 }
 
+function collabAgentModel(
+  subagent: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number] | undefined,
+): string | null {
+  return formatCollabSpawnModel(subagent?.model, subagent?.reasoningEffort);
+}
+
+function processIdFromCommand(command: string | undefined): string | null {
+  if (!command) return null;
+  return command.match(/\bhub\s+(?:start|spawn|restart)\s+([^\s]+)/i)?.[1] ?? null;
+}
+
+function commandLineOf(item: HostItem): string | undefined {
+  if (item.type === "commandExecution") return item.command;
+  if (item.type === "toolExecution") return toolCommandLine(item.toolName, item.arguments);
+  return undefined;
+}
+
+function wireProcessId(item: Extract<HostItem, { type: "commandExecution" }>): string | null {
+  return item.processId ?? processIdFromCommand(item.command);
+}
+
+/**
+ * Official Codex keeps a PTY card live while it still has a processId and no
+ * exit code. Hub start/spawn/restart command lines are the same shape even
+ * when the Adapter has not yet attached an explicit processId.
+ */
+function liveProcessId(item: HostItem): string | null {
+  if (item.type === "commandExecution") {
+    if (item.exitCode !== undefined && item.exitCode !== null) return null;
+    return wireProcessId(item);
+  }
+  return null;
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -465,30 +759,37 @@ function projectItem(
       };
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
-    case "commandExecution":
+    case "commandExecution": {
+      const processId = wireProcessId(item);
       return {
         id: item.itemId,
         type: "commandExecution",
+        pluginId: null,
+        scriptPath: null,
         command: item.command,
         cwd: item.cwd ?? defaultCwd,
-        processId: null,
-        source: "agent",
+        processId,
+        source: processId ? "unifiedExecStartup" : "agent",
         status: itemStatus(outcome),
         commandActions: [],
         aggregatedOutput: includeCommandOutput ? (item.output ?? null) : null,
         exitCode: item.exitCode ?? null,
         durationMs: item.durationMs ?? null,
       };
+    }
     case "toolExecution": {
       const command = toolCommandLine(item.toolName, item.arguments);
       if (command) {
+        const processId = processIdFromCommand(command);
         return {
           id: item.itemId,
           type: "commandExecution",
+          pluginId: null,
+          scriptPath: null,
           command,
           cwd: defaultCwd,
-          processId: null,
-          source: "agent",
+          processId,
+          source: processId ? "unifiedExecStartup" : "agent",
           status: itemStatus(outcome),
           commandActions: [],
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
@@ -516,7 +817,8 @@ function projectItem(
         changes: projectFileChanges(item.changes),
         status: itemStatus(outcome),
       };
-    case "subagentDelegation":
+    case "subagentDelegation": {
+      const primary = item.subagents[0];
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -525,8 +827,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: null,
-        reasoningEffort: null,
+        model: collabAgentModel(primary),
+        reasoningEffort: primary?.reasoningEffort ?? null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,
@@ -534,6 +836,7 @@ function projectItem(
           ]),
         ),
       };
+    }
   }
 }
 
@@ -606,6 +909,32 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const startedAt =
+    snapshot.startedAt !== undefined
+      ? snapshot.startedAt > 10_000_000_000
+        ? Math.floor(snapshot.startedAt / 1000)
+        : snapshot.startedAt
+      : null;
+  const completedAt =
+    snapshot.completedAt !== undefined
+      ? snapshot.completedAt > 10_000_000_000
+        ? Math.floor(snapshot.completedAt / 1000)
+        : snapshot.completedAt
+      : null;
+  const durationMs =
+    snapshot.durationMs !== undefined
+      ? snapshot.durationMs
+      : snapshot.startedAt !== undefined && snapshot.completedAt !== undefined
+        ? Math.max(
+            0,
+            (snapshot.completedAt > 10_000_000_000
+              ? snapshot.completedAt
+              : snapshot.completedAt * 1000) -
+              (snapshot.startedAt > 10_000_000_000
+                ? snapshot.startedAt
+                : snapshot.startedAt * 1000),
+          )
+        : null;
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -634,6 +963,14 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           }
           if (isFileMutatingTool(item.toolName)) return [];
         }
+        if (
+          item.type === "commandExecution" &&
+          item.processId &&
+          item.exitCode === undefined &&
+          outcome.status === "succeeded"
+        ) {
+          return [projectItem(item, null, cwd, true, "")];
+        }
         return item.type === "reasoning"
           ? [
               projectItem(item, outcome, cwd, true, ""),
@@ -643,9 +980,9 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
       }),
     ],
     error,
-    startedAt: null,
-    completedAt: null,
-    durationMs: null,
+    startedAt,
+    completedAt,
+    durationMs,
     itemsView: "full",
   };
 }
@@ -715,6 +1052,9 @@ export class CodexTurnProjector {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
           if (projected.item.type === "agentMessage") {
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+          }
+          if (liveProcessId(projected.item)) {
             return [projectItem(projected.item, projected.outcome, this.#cwd)];
           }
           const fileItem = wireFileChangeItem(projected);
@@ -885,11 +1225,7 @@ export class CodexTurnProjector {
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
-      messages.push(
-        this.#startReasoningTranscript(event.item, startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
-      );
+      messages.push(...this.#reasoningDelta(projected, event.item.text, startedAtMs));
     }
     if (event.item.type === "fileChange") {
       messages.push(...this.#fileChangeUpdates(event.item.itemId, event.item.changes));
@@ -921,15 +1257,9 @@ export class CodexTurnProjector {
         });
       } else if (next.type === "reasoning") {
         if (!projected.wireStarted) {
-          messages.push(
-            this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
-            this.#startReasoningTranscript({ ...next, text: "" }, emittedAtMs),
-          );
+          messages.push(this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs));
         }
-        messages.push(
-          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
-          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
-        );
+        messages.push(...this.#reasoningDelta(projected, event.update.text, emittedAtMs));
       }
     } else if (event.update.type === "output.append") {
       projected.streamedCommandOutput = true;
@@ -943,8 +1273,51 @@ export class CodexTurnProjector {
           delta: event.update.text,
         },
       });
+      const processId = liveProcessId(next);
+      if (processId) {
+        messages.push({
+          method: "process/outputDelta",
+          emittedAtMs,
+          params: {
+            processId,
+            stream: "stdout",
+            deltaBase64: Buffer.from(event.update.text, "utf8").toString("base64"),
+            capReached: false,
+          },
+        });
+      }
     } else if (event.update.type === "output.replace") {
-      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
+      if (next.type === "commandExecution") {
+        const text = next.output ?? "";
+        const previousText = previous.type === "commandExecution" ? (previous.output ?? "") : "";
+        const delta = text.startsWith(previousText) ? text.slice(previousText.length) : text;
+        if (delta.length > 0) {
+          projected.streamedCommandOutput = true;
+          messages.push({
+            method: "item/commandExecution/outputDelta",
+            emittedAtMs,
+            params: {
+              threadId: this.#threadId,
+              turnId: this.#turnId,
+              itemId: event.itemId,
+              delta,
+            },
+          });
+          const processId = wireProcessId(next);
+          if (processId) {
+            messages.push({
+              method: "process/outputDelta",
+              emittedAtMs,
+              params: {
+                processId,
+                stream: "stdout",
+                deltaBase64: Buffer.from(delta, "utf8").toString("base64"),
+                capReached: false,
+              },
+            });
+          }
+        }
+      } else if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
         const text = toolOutputText(next);
         if (text) {
           const previousText =
@@ -962,6 +1335,19 @@ export class CodexTurnProjector {
                 delta,
               },
             });
+            const processId = processIdFromCommand(toolCommandLine(next.toolName, next.arguments));
+            if (processId) {
+              messages.push({
+                method: "process/outputDelta",
+                emittedAtMs,
+                params: {
+                  processId,
+                  stream: "stdout",
+                  deltaBase64: Buffer.from(delta, "utf8").toString("base64"),
+                  capReached: false,
+                },
+              });
+            }
           }
         }
       }
@@ -1005,12 +1391,19 @@ export class CodexTurnProjector {
       }
     }
     projected.item = event.snapshot.item;
+    const keepRunning =
+      Boolean(liveProcessId(projected.item)) && event.snapshot.outcome.status === "succeeded";
+    if (keepRunning) {
+      projected.outcome = null;
+      return { messages: [] };
+    }
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
     const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
     projected.item = withResolvedDuration(projected.item, durationMs);
     projected.durationMs = durationMs;
+
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",
       emittedAtMs,
@@ -1062,14 +1455,7 @@ export class CodexTurnProjector {
         ),
       ),
     ];
-    if (projected.item.type === "reasoning") {
-      const reasoning = projected.item;
-      messages.push(
-        completedItem(
-          projectReasoningTranscriptItem(reasoning, projected.outcome, this.#cwd, durationMs),
-        ),
-      );
-    }
+
     return { messages };
   }
 
@@ -1100,7 +1486,9 @@ export class CodexTurnProjector {
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
+    const active = [...this.#items.values()].filter(
+      ({ item, outcome }) => outcome === null && !liveProcessId(item),
+    );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
@@ -1113,19 +1501,13 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
-          if (!projected.wireStarted) return [];
+          if (!projected?.wireStarted) return [];
+          if (!projected.outcome && liveProcessId(projected.item)) {
+            return [projectItem(projected.item, null, this.#cwd)];
+          }
+          if (!projected.outcome) throw new Error("Host Turn contains an incomplete Item");
           if (projected.item.type === "reasoning") {
-            const reasoning = projected.item;
-            return [
-              projectItem(reasoning, projected.outcome, this.#cwd),
-              projectReasoningTranscriptItem(
-                reasoning,
-                projected.outcome,
-                this.#cwd,
-                projected.durationMs ?? null,
-              ),
-            ];
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
           }
           if (projected.item.type === "agentMessage") {
             return [projectItem(projected.item, projected.outcome, this.#cwd)];
@@ -1191,35 +1573,6 @@ export class CodexTurnProjector {
         turnId: this.#turnId,
         startedAtMs,
         item: projectItem(item, null, this.#cwd, true, this.#threadId),
-      },
-    };
-  }
-
-  #startReasoningTranscript(
-    item: Extract<HostItem, { type: "reasoning" }>,
-    startedAtMs: number,
-  ): JsonObject {
-    return {
-      method: "item/started",
-      emittedAtMs: startedAtMs,
-      params: {
-        threadId: this.#threadId,
-        turnId: this.#turnId,
-        startedAtMs,
-        item: projectReasoningTranscriptItem({ ...item, text: "" }, null, this.#cwd),
-      },
-    };
-  }
-
-  #reasoningOutputDelta(itemId: HostItemId, delta: string, emittedAtMs: number): JsonObject {
-    return {
-      method: "item/commandExecution/outputDelta",
-      emittedAtMs,
-      params: {
-        threadId: this.#threadId,
-        turnId: this.#turnId,
-        itemId,
-        delta,
       },
     };
   }

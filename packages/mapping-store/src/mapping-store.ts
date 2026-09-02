@@ -400,8 +400,10 @@ export class MappingStore {
     } catch (error) {
       this.#delegations.delete(record.delegationId);
       this.#restoreIndexes(indexes);
-      await rm(this.#delegationPath(record.delegationId), { force: true }).catch(() => undefined);
-      throw error;
+      await this.#rethrowAfterCreatedRecordCleanup(
+        this.#delegationPath(record.delegationId),
+        error,
+      );
     }
     return cloneRecord(record);
   }
@@ -750,9 +752,20 @@ export class MappingStore {
     } catch (error) {
       this.#records.delete(record.hostThreadId);
       this.#restoreIndexes(indexes);
-      await rm(this.#recordPath(record.hostThreadId), { force: true }).catch(() => undefined);
-      throw error;
+      await this.#rethrowAfterCreatedRecordCleanup(this.#recordPath(record.hostThreadId), error);
     }
+  }
+
+  async #rethrowAfterCreatedRecordCleanup(target: string, error: unknown): Promise<never> {
+    try {
+      await rm(target, { force: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Mapping Store mutation failed and rollback was incomplete",
+      );
+    }
+    throw error;
   }
 
   #snapshotIndexes(): Map<string, Map<string, string>> {

@@ -1,3 +1,4 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,12 @@ async function temporaryStoreDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-mapping-store-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function replaceFileWithNonEmptyDirectory(file: string): void {
+  rmSync(file);
+  mkdirSync(file);
+  writeFileSync(path.join(file, "sentinel"), "sentinel");
 }
 
 const harnessId = harnessIdSchema.parse("pi");
@@ -123,6 +130,85 @@ describe("mapping-store package", () => {
     });
     await store.close();
   });
+
+  it("preserves a failed Delegation cleanup alongside the original failure", async () => {
+    const directory = await temporaryStoreDirectory();
+    const delegationId = hostThreadIdSchema.parse("rollback-delegation");
+    const store = new MappingStore({
+      directory,
+      beforeRebuild: () => {
+        replaceFileWithNonEmptyDirectory(
+          path.join(directory, "delegations", `${delegationId}.json`),
+        );
+        throw new Error("synthetic delegation rebuild failure");
+      },
+    });
+    await store.initialize();
+
+    let thrown: unknown;
+    try {
+      await store.createDelegation({
+        delegationId,
+        parentHostThreadId: hostThreadIdSchema.parse("rollback-parent"),
+        childHostThreadId: hostThreadIdSchema.parse("rollback-child"),
+        sourceHarnessId: harnessId,
+        targetHarnessId: harnessIdSchema.parse("claude-code"),
+        status: "running",
+        requestId: "rollback-delegation-request",
+        taskDigest: "c".repeat(64),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "synthetic delegation rebuild failure" }),
+      expect.objectContaining({ code: expect.stringMatching(/EISDIR|ENOTEMPTY/) }),
+    ]);
+    await expect(store.getDelegation(delegationId)).resolves.toBeNull();
+    await store.close();
+  });
+
+  it("preserves a failed Thread cleanup alongside the original failure", async () => {
+    const directory = await temporaryStoreDirectory();
+    const hostThreadId = hostThreadIdSchema.parse("rollback-thread-with-cleanup-failure");
+    const store = new MappingStore({
+      directory,
+      beforeRebuild: () => {
+        replaceFileWithNonEmptyDirectory(path.join(directory, "threads", `${hostThreadId}.json`));
+        throw new Error("synthetic thread rebuild failure");
+      },
+    });
+    await store.initialize();
+
+    let thrown: unknown;
+    try {
+      await store.createProvisional({
+        hostThreadId,
+        createRequestId: "rollback-thread-with-cleanup-failure-request",
+        harnessId,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "legacy",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "synthetic thread rebuild failure" }),
+      expect.objectContaining({ code: expect.stringMatching(/EISDIR|ENOTEMPTY/) }),
+    ]);
+    await expect(store.getThread(hostThreadId)).resolves.toBeNull();
+    await expect(
+      store.getThreadByCreateRequest("rollback-thread-with-cleanup-failure-request"),
+    ).resolves.toBeNull();
+    await store.close();
+  });
+
   it("participates in the shared contract", () => {
     expect(packageMetadata.name).toBe("@codexhost/mapping-store");
     expect(packageMetadata.contractVersion).toBe(1);

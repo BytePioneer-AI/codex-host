@@ -93,6 +93,7 @@ import {
   parseClaudeThinkingOptionId,
 } from "./thinking-options.js";
 import { ClaudeSubagentLifecycle } from "./subagent-lifecycle.js";
+import { ClaudeTaskTracker } from "./task-tracker.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import type {
@@ -503,6 +504,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #sessionId: string;
   readonly #toolOutputLimit: number;
   readonly #continuationQuiescenceMs: number;
+  readonly #taskTracker = new ClaudeTaskTracker();
   #acceptingTurn = false;
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
@@ -734,6 +736,7 @@ class ClaudeHarnessSession implements HarnessSession {
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
+        taskTracker: this.#taskTracker,
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
@@ -844,6 +847,7 @@ class ClaudeHarnessSession implements HarnessSession {
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
+        taskTracker: this.#taskTracker,
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
@@ -1707,6 +1711,7 @@ class ClaudeHarnessSession implements HarnessSession {
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
+        taskTracker: this.#taskTracker,
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
@@ -2355,18 +2360,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         : undefined;
       if (!snapshot.canSelectModel) {
         return {
-          status: "ready",
-          catalog: { models: [], thinkingOptions: [] },
-          ...(permissionModes ? { permissionModes } : {}),
-          capabilities: {
-            configuration: {
-              selectModel: false,
-              selectThinkingOption: false,
-              selectPermissionMode: snapshot.canSelectPermissionMode,
-              permissionModeScope: "live",
-            },
-            history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
-            subagents: { observe: true, readTranscript: true },
+          status: "unavailable",
+          error: {
+            code: "unavailable",
+            message: "Claude Code did not expose a selectable Model catalog",
+            retryable: false,
+            stage,
+            durationMs: Date.now() - startedAt,
+            ...(inspector.stderrTail ? { stderrTail: inspector.stderrTail } : {}),
           },
         };
       }

@@ -641,14 +641,12 @@ describe("Claude Code HarnessAdapter", () => {
       status: "error",
     });
     await expect(adapter.inspect({ cwd: "/failure" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     await expect(adapter.inspect({ cwd: "/unsupported" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     expect(dependencies.createInspector).toHaveBeenCalledTimes(4);
     expect(close).toHaveBeenCalledTimes(4);
@@ -1724,6 +1722,82 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    await session.close();
+  });
+
+  it("projects Claude Task tools as accumulated Todo snapshots", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("tasks"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "tool.started",
+      callId: "create-1",
+      toolName: "TaskCreate",
+      arguments: {
+        subject: "Run tests",
+        description: "Run focused tests",
+        activeForm: "Running tests",
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Todo", arguments: {} },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "create-1",
+      toolName: "TaskCreate",
+      structuredResult: { task: { id: "1", subject: "Run tests" } },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          toolName: "Todo",
+          arguments: { todos: [{ id: "1", content: "Run tests", status: "pending" }] },
+        },
+      },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      arguments: { taskId: "1", status: "in_progress" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Todo", arguments: {} },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          toolName: "Todo",
+          arguments: { todos: [{ id: "1", content: "Run tests", status: "in_progress" }] },
+        },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
     await session.close();
   });
 
@@ -4494,7 +4568,10 @@ describe("Claude Code HarnessAdapter", () => {
 
     const inspecting = adapter.inspect({ cwd: "/closing" });
     await expect(adapter.close()).resolves.toBeUndefined();
-    await expect(inspecting).resolves.toMatchObject({ status: "ready", catalog: { models: [] } });
+    await expect(inspecting).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
+    });
     expect(close).toHaveBeenCalled();
     await expect(adapter.inspect()).resolves.toMatchObject({
       status: "unavailable",

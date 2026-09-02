@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import net from "node:net";
+import net, { type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -104,6 +104,61 @@ describe("macOS Aqua Harness broker", () => {
     await opened.value.close();
     await adapter.close();
     await server.close();
+  });
+
+  it("isolates accepted socket errors without stopping the broker", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker-v1.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
+        : path.join(root, "broker.sock");
+    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const createServer = vi.spyOn(net, "createServer");
+    const broker = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const nativeServer = createServer.mock.results.at(-1)?.value as Server | undefined;
+    if (!nativeServer) throw new Error("fixture did not observe the native broker server");
+    let peer: Socket | undefined;
+    let firstAdapter: BrokeredHarnessAdapter | undefined;
+    let secondAdapter: BrokeredHarnessAdapter | undefined;
+
+    try {
+      const accepted = new Promise<Socket>((resolve) => nativeServer.once("connection", resolve));
+      firstAdapter = new BrokeredHarnessAdapter({ descriptorPath });
+      const opened = await firstAdapter.open({ kind: "create", cwd: root });
+      peer = await accepted;
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) throw new Error(opened.error.message);
+      const nativeSession = native.sessions[0];
+      const nativeRef = opened.value.initialState.nativeRef;
+      if (!nativeSession || !nativeRef) throw new Error("fixture failed to open a native Session");
+      const nativeClose = vi.spyOn(nativeSession, "close");
+      const peerClosed = new Promise<void>((resolve) => peer?.once("close", resolve));
+
+      expect(() =>
+        peer?.emit(
+          "error",
+          Object.assign(new Error("synthetic connection reset"), { code: "ECONNRESET" }),
+        ),
+      ).not.toThrow();
+      await peerClosed;
+      await vi.waitFor(() => expect(nativeClose).toHaveBeenCalledOnce());
+
+      secondAdapter = new BrokeredHarnessAdapter({ descriptorPath });
+      await expect(secondAdapter.inspect({ cwd: root })).resolves.toMatchObject({
+        status: "ready",
+      });
+      const resumed = await secondAdapter.open({ kind: "resume", cwd: root, nativeRef });
+      expect(resumed.ok).toBe(true);
+      if (resumed.ok) await resumed.value.close();
+    } finally {
+      await firstAdapter?.close();
+      await secondAdapter?.close();
+      peer?.destroy();
+      await broker.close();
+      createServer.mockRestore();
+    }
   });
 
   it.each([

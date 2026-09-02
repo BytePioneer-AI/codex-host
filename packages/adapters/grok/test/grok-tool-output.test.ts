@@ -47,7 +47,10 @@ describe("Grok tool output projection", () => {
     ).toMatchObject({
       type: "toolExecution",
       toolName: "read_file",
-      arguments: { target_file: "/workspace/a.txt" },
+      arguments: {
+        target_file: "/workspace/a.txt",
+        path: "/workspace/a.txt",
+      },
     });
   });
 

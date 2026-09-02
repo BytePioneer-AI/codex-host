@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
+import { defaultExclude } from "vitest/config";
+
 import { runInspectScenario } from "./inspect.mjs";
 import { runModelCatalogScenario } from "./models.mjs";
 import { runWarmScenario } from "./warm.mjs";
@@ -21,8 +23,9 @@ function hermetic() {
       "tools/gate-claude-code",
       "--config",
       "tests/vitest.config.js",
-      "--exclude",
-      "tools/gate-claude-code/run.test.mjs",
+      ...[...defaultExclude, "**/._*", "tools/gate-claude-code/run.test.mjs"].flatMap(
+        (exclude) => ["--exclude", exclude],
+      ),
       "--maxWorkers=1",
     ],
     { cwd: repositoryRoot, stdio: "inherit" },

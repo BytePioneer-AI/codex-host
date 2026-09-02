@@ -113,6 +113,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
   <tr>
     <td colspan="2" valign="top">
       <img src="imgs/grok-usage-limits.png" alt="Remaining allowance and reset times for the five-hour and seven-day windows">
+      <p>The macOS menu bar icon and Windows taskbar icon show the remaining allowance percentage, preferring the five-hour window and falling back to the seven-day window.</p>
     </td>
   </tr>
   <tr>
@@ -152,6 +153,8 @@ You can ask the current Agent to delegate an independent task to another Harness
 > Ask `@pi` to investigate why this test fails intermittently.
 >
 > Ask `@omp` to implement this feature while I continue working on the documentation.
+
+Typing `@` in the Codex Desktop composer shows completion candidates for currently available Harnesses. You can also type the complete `@<harness>` name directly.
 
 codexhost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
 

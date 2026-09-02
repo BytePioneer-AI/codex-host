@@ -1,4 +1,13 @@
 import {
+  codexAccountActivateParamsSchema,
+  codexAccountCreateParamsSchema,
+  codexAccountListResultSchema,
+  codexAccountLoginCancelParamsSchema,
+  codexAccountLoginCancelResultSchema,
+  codexAccountLoginCompletedSchema,
+  codexAccountLoginStartParamsSchema,
+  codexAccountLoginStartResultSchema,
+  codexAccountMutationResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
@@ -25,6 +34,15 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type CodexAccountActivateParams,
+  type CodexAccountCreateParams,
+  type CodexAccountListResult,
+  type CodexAccountLoginCancelParams,
+  type CodexAccountLoginCancelResult,
+  type CodexAccountLoginCompleted,
+  type CodexAccountLoginStartParams,
+  type CodexAccountLoginStartResult,
+  type CodexAccountMutationResult,
   type HarnessCommandCatalog,
   type HarnessConfigurationState,
   type HarnessInspection,
@@ -62,6 +80,13 @@ export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
+export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
+export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
+export const CODEX_ACCOUNT_CREATE_METHOD = "codexhost/account/create";
+export const CODEX_ACCOUNT_ACTIVATE_METHOD = "codexhost/account/activate";
+export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
+export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
+export const CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD = "codexhost/account/login/completed";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -115,6 +140,17 @@ export interface RendererModelClient {
   checkUpdate(): Promise<UpdateCheckResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  listCodexAccounts(): Promise<CodexAccountListResult>;
+  refreshCodexAccounts(): Promise<CodexAccountListResult>;
+  createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
+  activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
+  startCodexAccountLogin(
+    input: CodexAccountLoginStartParams,
+  ): Promise<CodexAccountLoginStartResult>;
+  cancelCodexAccountLogin(
+    input: CodexAccountLoginCancelParams,
+  ): Promise<CodexAccountLoginCancelResult>;
+  subscribeCodexAccountLogin(listener: (result: CodexAccountLoginCompleted) => void): () => void;
 }
 
 export function createThreadUsageSubscriptionRelay(): {
@@ -294,6 +330,67 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async listCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    async refreshCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_REFRESH_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    async createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_CREATE_METHOD,
+        codexAccountCreateParamsSchema.parse(input),
+      );
+      return codexAccountMutationResultSchema.parse(result);
+    },
+    async activateCodexAccount(
+      input: CodexAccountActivateParams,
+    ): Promise<CodexAccountMutationResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_ACTIVATE_METHOD,
+        codexAccountActivateParamsSchema.parse(input),
+      );
+      return codexAccountMutationResultSchema.parse(result);
+    },
+    async startCodexAccountLogin(
+      input: CodexAccountLoginStartParams,
+    ): Promise<CodexAccountLoginStartResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_LOGIN_START_METHOD,
+        codexAccountLoginStartParamsSchema.parse(input),
+      );
+      return codexAccountLoginStartResultSchema.parse(result);
+    },
+    async cancelCodexAccountLogin(
+      input: CodexAccountLoginCancelParams,
+    ): Promise<CodexAccountLoginCancelResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
+        codexAccountLoginCancelParamsSchema.parse(input),
+      );
+      return codexAccountLoginCancelResultSchema.parse(result);
+    },
+    subscribeCodexAccountLogin(listener: (result: CodexAccountLoginCompleted) => void): () => void {
+      const notifications = notificationTarget(manager);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer Account login notification callback is unavailable");
+      }
+      return notifications.addNotificationCallback(
+        CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+        (notification) => {
+          if (
+            !isRecord(notification) ||
+            notification.method !== CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD
+          ) {
+            return;
+          }
+          const result = codexAccountLoginCompletedSchema.safeParse(notification.params);
+          if (result.success) listener(result.data);
+        },
+      );
     },
   });
 }

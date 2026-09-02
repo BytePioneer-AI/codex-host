@@ -486,6 +486,33 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
+  it("routes a draft Codex Account without changing the default Account", async () => {
+    const sendRequest = vi.fn(async () => undefined);
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ sendRequest });
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      selectAccount(accountId: string | null): boolean;
+    };
+
+    expect(policy.selectAccount("reviewer")).toBe(true);
+    await bridge.sendRequest("thread/start", { cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.sendRequest("thread/start", { cwd: "/tmp/next", model: "gpt-5" });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, "thread/start", {
+      cwd: "/tmp/project",
+      model: "gpt-5",
+      __codexhostAccountId: "reviewer",
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, "thread/start", {
+      cwd: "/tmp/next",
+      model: "gpt-5",
+    });
+  });
+
   it("tunnels private Host requests through the stock Remote Control app-server", async () => {
     const manager = requestManagerFixture();
     const originalNotification = manager.onNotification as ReturnType<typeof vi.fn>;

@@ -10,6 +10,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CODEX_ACCOUNT_ACTIVATE_METHOD,
+  CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_LIST_METHOD,
+  CODEX_ACCOUNT_REFRESH_METHOD,
+  CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
+  CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+  CODEX_ACCOUNT_LOGIN_START_METHOD,
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
@@ -61,6 +68,77 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("validates Account controls and relays device-login completion", async () => {
+    let notify: ((notification: unknown) => void) | undefined;
+    const remove = vi.fn();
+    const addNotificationCallback = vi.fn(
+      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
+        notify = callback;
+        return remove;
+      },
+    );
+    const account = {
+      accountId: "work",
+      label: "Work",
+      codexHome: "/tmp/codex-work",
+      active: true,
+    };
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({
+        accountId: "work",
+        loginId: "login-1",
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      })
+      .mockResolvedValueOnce({ cancelled: true });
+    const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
+    if (!client) throw new Error("Synthetic Account client was not created");
+
+    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
+    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
+    await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
+      loginId: "login-1",
+      userCode: "ABCD-EFGH",
+    });
+    await expect(client.cancelCodexAccountLogin({ loginId: "login-1" })).resolves.toEqual({
+      cancelled: true,
+    });
+    expect(sendRequest.mock.calls).toEqual([
+      [CODEX_ACCOUNT_LIST_METHOD, {}],
+      [CODEX_ACCOUNT_REFRESH_METHOD, {}],
+      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
+      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
+    ]);
+
+    const listener = vi.fn();
+    const unsubscribe = client.subscribeCodexAccountLogin(listener);
+    expect(addNotificationCallback).toHaveBeenCalledWith(
+      CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      expect.any(Function),
+    );
+    notify?.({
+      method: CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      params: { accountId: "work", loginId: "login-1", success: true, error: null },
+    });
+    expect(listener).toHaveBeenCalledWith({
+      accountId: "work",
+      loginId: "login-1",
+      success: true,
+      error: null,
+    });
+    unsubscribe();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -136,19 +214,26 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
+      "activateCodexAccount",
+      "cancelCodexAccountLogin",
       "checkUpdate",
+      "createCodexAccount",
       "executeThreadCommand",
       "forkThread",
       "inspectHarness",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listCodexAccounts",
       "listThreadOwnership",
       "readUpdateStatus",
+      "refreshCodexAccounts",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "startCodexAccountLogin",
       "startUpdate",
+      "subscribeCodexAccountLogin",
       "subscribeThreadUsage",
     ]);
 

@@ -112,6 +112,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td colspan="2" valign="top">
       <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
+      <p>macOS 메뉴 막대 아이콘 및 Windows 작업 표시줄 아이콘에는 남은 한도 비율이 표시되며, 5시간 창을 우선 사용하고 없으면 7일 창으로 대체합니다.</p>
     </td>
   </tr>
   <tr>
@@ -151,6 +152,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 > `@pi`에게 이 테스트가 간헐적으로 실패하는 원인을 조사하도록 요청하세요.
 >
 > 제가 문서를 정리하는 동안 `@omp`에게 이 기능을 구현하도록 요청하세요.
+
+Codex Desktop 입력창에서 `@`를 입력하면 현재 사용 가능한 Harness 완성 후보가 표시됩니다. 전체 `@<harness>` 이름을 직접 입력할 수도 있습니다.
 
 codexhost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
 

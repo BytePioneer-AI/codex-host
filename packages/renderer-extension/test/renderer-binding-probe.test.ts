@@ -22,6 +22,7 @@ import {
   refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
+  shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
@@ -50,6 +51,12 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer connection diagnostics", () => {
+  it("retries the Codex Account list when the request adapter becomes ready", () => {
+    expect(shouldRefreshCodexAccountsForAdapterState("installing")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("unsupported")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("ready")).toBe(true);
+  });
+
   it("waits for every Host refresh before completing", async () => {
     let resolveLocal!: () => void;
     let resolveRemote!: () => void;

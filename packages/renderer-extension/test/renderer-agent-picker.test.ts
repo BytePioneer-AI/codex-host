@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
 import {
   rendererAgentMenuPlacement,
+  rendererAgentPickerTooltip,
   rendererAgentPickerView,
 } from "../src/renderer-agent-picker.js";
 
@@ -27,6 +28,24 @@ describe("Renderer Agent picker presentation", () => {
     ).toEqual({ left: 700, bottom: 86 });
   });
 
+  it("includes the active Codex Account in the locked hover detail", () => {
+    expect(
+      rendererAgentPickerTooltip(
+        { agent: "codex", phase: "locked" },
+        {
+          accountId: "reviewer",
+          label: "Reviewer",
+          email: "reviewer@example.com",
+          codexHome: "/tmp/reviewer",
+          active: true,
+        },
+      ),
+    ).toBe("Agent: Codex · reviewer@example.com (locked)");
+    expect(rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined)).toBe(
+      "Agent: Claude Code (locked)",
+    );
+  });
+
   it("keeps a Codex draft switchable while disabling unavailable external Agents", () => {
     expect(
       rendererAgentPickerView({ agent: "codex", phase: "draft" }, "unsupported", false, [
@@ -42,6 +61,16 @@ describe("Renderer Agent picker presentation", () => {
       optionDisabled: { codex: false, pi: true, "claude-code": true, grok: true },
       downloadVisible: { pi: false, "claude-code": false, grok: false },
       errorVisible: { pi: false, "claude-code": false, grok: false },
+    });
+  });
+
+  it("keeps the Provider picker enabled when Codex has multiple Accounts", () => {
+    expect(
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"], {}, 2),
+    ).toMatchObject({
+      label: "Codex",
+      triggerDisabled: false,
+      optionDisabled: { codex: false },
     });
   });
 

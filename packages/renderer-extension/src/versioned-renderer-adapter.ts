@@ -111,6 +111,7 @@ export interface RendererDraftPrewarmPolicy {
   hostId: string;
   readonly requestTarget?: () => unknown;
   select(model: string | null): boolean;
+  readonly selectAccount?: (accountId: string | null) => boolean;
   clear(): Promise<void>;
 }
 
@@ -943,6 +944,23 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => currentModelClient().checkUpdate(),
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    listCodexAccounts: () => currentModelClient().listCodexAccounts(),
+    refreshCodexAccounts: () => {
+      const client = currentModelClient();
+      return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
+    },
+    createCodexAccount: (input: Parameters<RendererModelClient["createCodexAccount"]>[0]) =>
+      currentModelClient().createCodexAccount(input),
+    activateCodexAccount: (input: Parameters<RendererModelClient["activateCodexAccount"]>[0]) =>
+      currentModelClient().activateCodexAccount(input),
+    startCodexAccountLogin: (input: Parameters<RendererModelClient["startCodexAccountLogin"]>[0]) =>
+      currentModelClient().startCodexAccountLogin(input),
+    cancelCodexAccountLogin: (
+      input: Parameters<RendererModelClient["cancelCodexAccountLogin"]>[0],
+    ) => currentModelClient().cancelCodexAccountLogin(input),
+    subscribeCodexAccountLogin: (
+      listener: Parameters<RendererModelClient["subscribeCodexAccountLogin"]>[0],
+    ) => currentModelClient().subscribeCodexAccountLogin(listener),
   });
   if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
     updateStatus("unsupported", "title-policy-unavailable", null);

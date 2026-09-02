@@ -1,18 +1,32 @@
 :host {
-  --settings-bg: #181818;
-  --settings-sidebar: #1c1c1c;
-  --settings-panel: transparent;
-  --settings-text: #f5f5f5;
-  --settings-muted: #a1a1a1;
-  --settings-border: rgb(255 255 255 / 10%);
-  --settings-divider: rgb(255 255 255 / 10%);
-  --settings-hover: rgb(255 255 255 / 6%);
-  --settings-active: rgb(51 156 255 / 12%);
-  --settings-focus: #339cff;
+  --settings-bg: light-dark(#ffffff, #202020);
+  --settings-sidebar: light-dark(#f7f7f8, #191919);
+  --settings-panel: light-dark(#ffffff, #232323);
+  --settings-surface: light-dark(#f6f6f6, #292929);
+  --settings-surface-hover: light-dark(#eeeeee, #303030);
+  --settings-inset: light-dark(#f3f3f3, #161616);
+  --settings-text: light-dark(#0d0d0d, #ececec);
+  --settings-muted: light-dark(#676767, #a3a3a3);
+  --settings-subtle: light-dark(#8a8a8a, #777777);
+  --settings-border: light-dark(rgb(13 13 13 / 9%), rgb(255 255 255 / 9%));
+  --settings-divider: light-dark(rgb(13 13 13 / 7%), rgb(255 255 255 / 7%));
+  --settings-hover: light-dark(rgb(13 13 13 / 5%), rgb(255 255 255 / 7%));
+  --settings-active: light-dark(rgb(13 13 13 / 7%), rgb(255 255 255 / 9%));
+  --settings-focus: light-dark(#0b75d1, #66aaf9);
+  --settings-primary: light-dark(#171717, #f4f4f4);
+  --settings-primary-hover: light-dark(#2f2f2f, #ffffff);
+  --settings-primary-text: light-dark(#ffffff, #171717);
+  --settings-warning: light-dark(#8a5500, #f5c96a);
+  --settings-warning-bg: light-dark(#fff8e6, rgb(245 201 106 / 8%));
+  --settings-warning-border: light-dark(#ead8a8, rgb(245 201 106 / 24%));
+  --settings-danger: light-dark(#b42318, #f87171);
+  --settings-danger-bg: light-dark(#fff1f0, rgb(239 68 68 / 8%));
+  --settings-danger-border: light-dark(#f3c7c3, rgb(239 68 68 / 22%));
+  --settings-success: light-dark(#16784a, #4ade80);
   color: var(--settings-text);
-  color-scheme: dark;
+  color-scheme: inherit;
   font:
-    14px/1.5 system-ui,
+    13px/1.5 system-ui,
     -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
@@ -42,8 +56,8 @@ button {
 }
 
 .codexhost-settings-dialog {
-  width: min(1120px, calc(100vw - 32px));
-  height: min(780px, calc(100vh - 32px));
+  width: min(840px, calc(100vw - 56px));
+  height: min(600px, calc(100vh - 56px));
   max-width: none;
   max-height: none;
   margin: auto;
@@ -52,12 +66,13 @@ button {
   color: var(--settings-text);
   background: var(--settings-bg);
   border: 1px solid var(--settings-border);
-  border-radius: 12px;
-  box-shadow: 0 24px 64px rgb(0 0 0 / 38%);
+  border-radius: 14px;
+  box-shadow: light-dark(0 16px 42px rgb(0 0 0 / 16%), 0 20px 54px rgb(0 0 0 / 42%));
 }
 
 .codexhost-settings-dialog::backdrop {
-  background: rgb(0 0 0 / 52%);
+  background: light-dark(rgb(0 0 0 / 24%), rgb(0 0 0 / 56%));
+  backdrop-filter: blur(1px);
 }
 
 .settings-frame,
@@ -76,7 +91,7 @@ button {
 .settings-layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 184px minmax(0, 1fr);
   background: var(--settings-bg);
 }
 
@@ -88,16 +103,16 @@ button {
   overflow: hidden;
   background: var(--settings-sidebar);
   border-right: 1px solid var(--settings-border);
-  padding-top: 28px;
+  padding-top: 14px;
 }
 
 .settings-header {
   display: flex;
   align-items: center;
   min-width: 0;
-  height: 64px;
+  height: 48px;
   flex: none;
-  padding: 0 16px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--settings-border);
 }
 
@@ -113,22 +128,22 @@ button {
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 8px;
+  gap: 7px;
 }
 
 .settings-brand__mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 26px;
+  height: 26px;
   flex: none;
   color: var(--settings-text);
 }
 
 .settings-brand__mark .codexhost-settings-icon {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
 }
 
@@ -143,17 +158,17 @@ button {
 .settings-brand__name {
   overflow: hidden;
   color: var(--settings-text);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .settings-brand__title {
-  margin-left: 14px;
-  padding-left: 14px;
+  margin-left: 8px;
+  padding-left: 8px;
   color: var(--settings-muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 400;
   border-left: 1px solid var(--settings-border);
 }
@@ -164,22 +179,22 @@ button {
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 12px 16px;
+  gap: 2px;
+  padding: 0 7px 10px;
   overflow-y: auto;
 }
 
 .settings-nav-section-label {
-  min-height: 28px;
-  padding: 7px 12px 3px;
-  color: #777;
-  font-size: 12px;
+  min-height: 24px;
+  padding: 4px 9px 2px;
+  color: var(--settings-subtle);
+  font-size: 11px;
   font-weight: 600;
   line-height: 18px;
 }
 
 .settings-nav-section-label:not(:first-child) {
-  margin-top: 14px;
+  margin-top: 8px;
 }
 
 .settings-nav-button {
@@ -188,23 +203,23 @@ button {
   align-items: center;
   width: 100%;
   position: relative;
-  min-height: 48px;
+  min-height: 34px;
   flex: none;
-  gap: 14px;
-  padding: 10px 14px;
+  gap: 9px;
+  padding: 6px 9px;
   color: var(--settings-text);
-  font-size: 14px;
-  line-height: 21px;
+  font-size: 13px;
+  line-height: 20px;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 12px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
 .settings-nav-button .codexhost-settings-icon {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   opacity: 0.9;
 }
 
@@ -214,17 +229,8 @@ button {
 
 .settings-nav-button[aria-current="page"] {
   background: var(--settings-active);
-  color: var(--settings-focus);
-}
-
-.settings-nav-button[aria-current="page"]::before {
-  position: absolute;
-  left: 0;
-  width: 3px;
-  height: 22px;
-  content: "";
-  background: var(--settings-focus);
-  border-radius: 0 3px 3px 0;
+  color: var(--settings-text);
+  font-weight: 500;
 }
 
 .settings-nav-button span {
@@ -241,12 +247,12 @@ button {
 }
 
 .settings-nav-star-link .codexhost-settings-icon {
-  color: #f5c542;
+  color: var(--settings-warning);
 }
 
 .settings-nav-star-link:hover {
-  color: #fff4bd;
-  background: rgb(245 197 66 / 8%);
+  color: var(--settings-warning);
+  background: var(--settings-warning-bg);
 }
 
 .settings-icon-button {
@@ -286,22 +292,22 @@ button {
 }
 
 .settings-page__content {
-  width: min(930px, calc(100% - 80px));
+  width: min(608px, calc(100% - 40px));
   margin-inline: auto;
 }
 
 .settings-page__content {
   min-width: 0;
-  padding: 44px 0 56px;
+  padding: 28px 0 36px;
 }
 
 .settings-section-label {
   min-height: auto;
-  padding: 0 0 28px;
+  padding: 0 0 18px;
   color: var(--settings-text);
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 600;
-  line-height: 30px;
+  line-height: 26px;
 }
 
 .settings-status-list,
@@ -315,9 +321,9 @@ button {
   grid-template-columns: minmax(170px, 1fr) auto minmax(280px, 1.45fr);
   position: relative;
   align-items: center;
-  min-height: 88px;
-  gap: 28px;
-  padding: 16px 0;
+  min-height: 72px;
+  gap: 20px;
+  padding: 12px 0;
 }
 
 .settings-status-row:not(:last-child)::after {
@@ -335,8 +341,8 @@ button {
   align-items: center;
   min-width: 0;
   color: var(--settings-text);
-  gap: 14px;
-  font-size: 15px;
+  gap: 10px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 22px;
 }
@@ -345,23 +351,23 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   flex: none;
   color: var(--settings-muted);
-  background: rgb(255 255 255 / 7%);
+  background: var(--settings-surface);
   border-radius: 50%;
 }
 
 .settings-status-badge {
   flex: none;
-  padding: 5px 12px;
+  padding: 3px 8px;
   color: var(--settings-muted);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 18px;
-  background: rgb(255 255 255 / 9%);
-  border: 1px solid rgb(255 255 255 / 6%);
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
   border-radius: 6px;
 }
 
@@ -374,10 +380,114 @@ button {
 
 .settings-page-description {
   max-width: 760px;
-  margin: -12px 0 24px;
+  margin: -10px 0 20px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-account-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.settings-account-header .settings-section-label {
+  padding-bottom: 0;
+}
+
+.settings-account-header .settings-page-description {
+  margin-top: 8px;
+}
+
+.settings-account-status {
+  min-height: 20px;
+  margin: 0 0 8px;
   color: var(--settings-muted);
   font-size: 13px;
-  line-height: 20px;
+}
+
+.settings-account-list {
+  overflow: hidden;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-account-device-code-note {
+  margin: 4px 0 16px;
+  padding: 10px 12px;
+  color: var(--settings-warning);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--settings-warning-bg);
+  border: 1px solid var(--settings-warning-border);
+  border-radius: 8px;
+}
+
+.settings-account-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-account-row__identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-account-row__identity > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-account-row__identity code {
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-active {
+  color: var(--settings-text);
+  background: var(--settings-active);
+}
+
+.settings-account-actions,
+.settings-account-verification {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-account-verification {
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  padding: 14px;
+  color: var(--settings-muted);
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+.settings-account-verification a {
+  color: var(--settings-focus);
+}
+
+.settings-account-verification code {
+  padding: 5px 8px;
+  color: var(--settings-text);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  background: var(--settings-inset);
+  border-radius: 6px;
 }
 
 .settings-preference-row {
@@ -422,7 +532,7 @@ button {
   padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: rgb(255 255 255 / 16%);
+  background: var(--settings-surface-hover);
   cursor: pointer;
   transition: background 120ms ease;
 }
@@ -441,16 +551,16 @@ button {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+  background: var(--settings-primary-text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
 }
 
 .settings-connection-page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
+  gap: 18px;
+  margin-bottom: 18px;
 }
 
 .settings-connection-page-header .settings-section-label {
@@ -458,7 +568,7 @@ button {
 }
 
 .settings-connection-page-header .settings-page-description {
-  margin: 8px 0 0;
+  margin: 5px 0 0;
 }
 
 .settings-connections-content,
@@ -470,17 +580,17 @@ button {
 
 .settings-connections-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.85fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(232px, 0.95fr);
   align-items: start;
-  gap: 18px;
+  gap: 14px;
 }
 
 .settings-connection-list,
 .settings-connection-inspector {
   overflow: hidden;
-  background: rgb(255 255 255 / 2%);
+  background: var(--settings-panel);
   border: 1px solid var(--settings-border);
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 .settings-connection-host-strip {
@@ -488,8 +598,8 @@ button {
   grid-template-columns: 30px minmax(0, 1fr) 30px;
   align-items: center;
   min-width: 0;
-  gap: 6px;
-  padding: 12px;
+  gap: 5px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--settings-divider);
 }
 
@@ -501,7 +611,7 @@ button {
   height: 34px;
   padding: 0;
   color: var(--settings-muted);
-  background: rgb(0 0 0 / 18%);
+  background: var(--settings-inset);
   border: 1px solid var(--settings-border);
   border-radius: 8px;
   cursor: pointer;
@@ -556,18 +666,18 @@ button {
 .settings-connection-host-tab {
   display: inline-flex;
   align-items: center;
-  height: 34px;
+  height: 30px;
   min-width: max-content;
   flex: none;
-  padding: 0 11px;
+  padding: 0 9px;
   color: var(--settings-muted);
   font: inherit;
   font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
-  background: rgb(0 0 0 / 18%);
+  background: var(--settings-inset);
   border: 1px solid var(--settings-border);
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   scroll-snap-align: start;
 }
@@ -578,10 +688,10 @@ button {
 }
 
 .settings-connection-host-tab[aria-selected="true"] {
-  color: #e8f3ff;
+  color: var(--settings-text);
   font-weight: 600;
   background: var(--settings-active);
-  border-color: rgb(51 156 255 / 50%);
+  border-color: var(--settings-border);
 }
 
 .settings-connection-table-header,
@@ -590,25 +700,25 @@ button {
   grid-template-columns: minmax(160px, 1fr) minmax(92px, auto) 108px;
   align-items: center;
   min-width: 0;
-  gap: 14px;
+  gap: 10px;
 }
 
 .settings-connection-table-header {
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 0 10px;
   color: var(--settings-muted);
   font-size: 10px;
   font-weight: 600;
   line-height: 16px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  background: rgb(255 255 255 / 2%);
+  background: transparent;
   border-bottom: 1px solid var(--settings-divider);
 }
 
 .settings-connection-row {
-  min-height: 64px;
-  padding: 10px 12px;
+  min-height: 52px;
+  padding: 8px 10px;
   cursor: pointer;
   border-bottom: 1px solid var(--settings-divider);
 }
@@ -622,7 +732,7 @@ button {
 }
 
 .settings-connection-row[data-connection-selected="true"] {
-  background: var(--settings-active);
+  background: var(--settings-surface);
 }
 
 .settings-connection-row__identity,
@@ -630,7 +740,7 @@ button {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  gap: 9px;
+  gap: 8px;
   color: var(--settings-text);
 }
 
@@ -638,23 +748,23 @@ button {
 .settings-connection-inspector__identity strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 19px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
 }
 
 .settings-connection-row__mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   flex: none;
-  color: #d4d8de;
+  color: var(--settings-muted);
   font-size: 10px;
   font-weight: 700;
-  background: rgb(255 255 255 / 6%);
-  border-radius: 7px;
+  background: var(--settings-surface);
+  border-radius: 6px;
 }
 
 .settings-connection-row__mark--logo {
@@ -665,24 +775,24 @@ button {
 .settings-connection-row__mark--logo > img,
 .settings-connection-row__mark--logo > svg {
   display: block;
-  max-width: 22px;
-  max-height: 22px;
+  max-width: 18px;
+  max-height: 18px;
 }
 
 .settings-connection-row__status {
   display: inline-flex;
   align-items: center;
   width: fit-content;
-  gap: 6px;
+  gap: 5px;
   color: var(--settings-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 18px;
 }
 
 .settings-connection-row__status::before {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: none;
   content: "";
   background: currentColor;
@@ -690,11 +800,11 @@ button {
 }
 
 .settings-connection-row__status[data-connection-tone="ready"] {
-  color: #4ade80;
+  color: var(--settings-success);
 }
 
 .settings-connection-row__status[data-connection-tone="checking"] {
-  color: #f5c542;
+  color: var(--settings-warning);
 }
 
 .settings-connection-row__status[data-connection-tone="setup"] {
@@ -707,7 +817,7 @@ button {
 }
 
 .settings-connection-row__status[data-connection-tone="failed"] {
-  color: #f87171;
+  color: var(--settings-danger);
 }
 
 .settings-connection-row__action {
@@ -837,24 +947,31 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   color: var(--settings-focus);
   text-decoration: none;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.settings-connection-row:hover .settings-connection-install-link,
+.settings-connection-install-link:focus-visible {
+  opacity: 1;
 }
 
 .settings-connection-install-link:hover {
-  color: #8cc5ff;
-  background: rgb(51 156 255 / 10%);
-  border-color: rgb(51 156 255 / 22%);
+  color: var(--settings-focus);
+  background: var(--settings-active);
+  border-color: var(--settings-border);
 }
 
 .settings-connection-view-error {
   padding: 4px 7px;
-  color: #f87171;
+  color: var(--settings-danger);
   font: inherit;
   font-size: 11px;
   line-height: 18px;
@@ -865,13 +982,13 @@ button {
 }
 
 .settings-connection-view-error:hover {
-  color: #fca5a5;
-  background: rgb(239 68 68 / 9%);
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
 }
 
 .settings-connection-inspector {
   position: sticky;
-  top: 24px;
+  top: 18px;
 }
 
 .settings-connection-inspector__header {
@@ -879,37 +996,37 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   min-width: 0;
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  padding: 12px;
   border-bottom: 1px solid var(--settings-divider);
 }
 
 .settings-connection-inspector__body {
   display: grid;
   min-width: 0;
-  gap: 14px;
-  padding: 16px;
+  gap: 12px;
+  padding: 12px;
 }
 
 .settings-connection-install-callout {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  gap: 10px;
-  padding: 14px;
-  background: linear-gradient(rgb(51 156 255 / 8%), rgb(51 156 255 / 4%));
-  border: 1px solid rgb(51 156 255 / 20%);
-  border-radius: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  padding: 11px;
+  background: var(--settings-surface);
+  border: 0;
+  border-radius: 8px;
 }
 
 .settings-connection-install-callout__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   color: var(--settings-focus);
   background: var(--settings-active);
-  border-radius: 8px;
+  border-radius: 7px;
 }
 
 .settings-connection-install-callout strong,
@@ -918,9 +1035,9 @@ button {
   display: block;
   margin: 0 0 4px;
   color: var(--settings-text);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 19px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
 }
 
 .settings-connection-install-callout p,
@@ -930,18 +1047,18 @@ button {
   margin: 0;
   color: var(--settings-muted);
   font-size: 11px;
-  line-height: 17px;
+  line-height: 16px;
 }
 
 .settings-connection-install-button {
-  width: 100%;
+  width: fit-content;
 }
 
 .settings-connection-error-summary {
   padding: 13px 14px;
-  color: #fecaca;
-  background: rgb(239 68 68 / 7%);
-  border: 1px solid rgb(239 68 68 / 20%);
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
+  border: 1px solid var(--settings-danger-border);
   border-radius: 10px;
 }
 
@@ -949,7 +1066,7 @@ button {
   display: grid;
   gap: 7px;
   padding: 12px;
-  background: rgb(0 0 0 / 18%);
+  background: var(--settings-inset);
   border: 1px solid var(--settings-border);
   border-radius: 9px;
 }
@@ -997,7 +1114,7 @@ button {
   margin: 0;
   padding: 11px;
   overflow: auto;
-  color: #e3e5e8;
+  color: var(--settings-text);
   font:
     10px/16px ui-monospace,
     "SFMono-Regular",
@@ -1006,7 +1123,7 @@ button {
     monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: rgb(0 0 0 / 28%);
+  background: var(--settings-inset);
   border: 1px solid var(--settings-border);
   border-radius: 9px;
 }
@@ -1027,7 +1144,7 @@ button {
 
 .settings-connection-state-summary {
   padding: 14px;
-  background: rgb(255 255 255 / 3%);
+  background: var(--settings-surface);
   border: 1px solid var(--settings-border);
   border-radius: 10px;
 }
@@ -1062,8 +1179,8 @@ button {
   display: grid;
   max-width: 720px;
   gap: 18px;
-  padding: 28px;
-  background: rgb(255 255 255 / 2%);
+  padding: 24px;
+  background: var(--settings-panel);
   border: 1px solid var(--settings-border);
   border-radius: 12px;
 }
@@ -1098,7 +1215,7 @@ button {
 
 .settings-about-star-callout {
   margin: 2px 0;
-  color: #f5c542;
+  color: var(--settings-warning);
   font-size: 14px;
   font-weight: 600;
   line-height: 22px;
@@ -1118,7 +1235,7 @@ button {
   min-width: 0;
   max-width: 100%;
   gap: 8px;
-  color: #7cb8ff;
+  color: var(--settings-focus);
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
@@ -1180,7 +1297,7 @@ button {
 
 /* The only emphasis on this screen: a latest version newer than the installed one. */
 .settings-update-metadata__value--newer {
-  color: #4aa3f0;
+  color: var(--settings-focus);
 }
 
 .settings-update-panel {
@@ -1208,16 +1325,16 @@ button {
 .settings-update-panel[data-update-state="downloading"] .codexhost-settings-icon,
 .settings-update-panel[data-update-state="installing"] .codexhost-settings-icon,
 .settings-update-panel[data-update-state="restarting"] .codexhost-settings-icon {
-  color: #4aa3f0;
+  color: var(--settings-focus);
 }
 
 .settings-update-panel[data-update-state="current"] .codexhost-settings-icon {
-  color: #4ade80;
+  color: var(--settings-success);
 }
 
 .settings-update-panel[data-update-state="failed"] .codexhost-settings-icon,
 .settings-update-panel[data-update-state="error"] .codexhost-settings-icon {
-  color: #ef4444;
+  color: var(--settings-danger);
 }
 
 .settings-update-panel__title {
@@ -1242,13 +1359,13 @@ button {
 }
 
 .settings-update-error {
-  color: #ef4444;
+  color: var(--settings-danger);
 }
 
 .settings-update-progress {
   width: 100%;
   height: 8px;
-  accent-color: #238be8;
+  accent-color: var(--settings-focus);
 }
 
 .settings-update-progress-detail {
@@ -1354,7 +1471,7 @@ button {
   padding: 8px 12px;
   color: var(--settings-muted);
   border-left: 3px solid var(--settings-focus);
-  background: rgb(255 255 255 / 4%);
+  background: var(--settings-surface);
 }
 
 .settings-update-notes hr {
@@ -1370,7 +1487,7 @@ button {
 }
 
 .settings-update-notes a {
-  color: #7cb8ff;
+  color: var(--settings-focus);
   text-decoration: none;
 }
 
@@ -1385,7 +1502,7 @@ button {
 
 .settings-update-notes :not(pre) > code {
   padding: 1px 5px;
-  background: rgb(255 255 255 / 8%);
+  background: var(--settings-surface);
   border-radius: 4px;
 }
 
@@ -1395,7 +1512,7 @@ button {
   padding: 10px 12px;
   overflow-x: auto;
   overflow-y: hidden;
-  background: rgb(0 0 0 / 28%);
+  background: var(--settings-inset);
   border-radius: 6px;
 }
 
@@ -1438,7 +1555,7 @@ button {
 }
 
 .settings-update-manual-description.is-fallback {
-  color: #ef4444;
+  color: var(--settings-danger);
 }
 
 .settings-update-command {
@@ -1500,29 +1617,40 @@ button {
   align-items: center;
   justify-content: center;
   width: fit-content;
-  min-height: 36px;
-  gap: 8px;
-  padding: 8px 12px;
-  color: white;
+  min-height: 30px;
+  gap: 6px;
+  padding: 5px 10px;
+  color: var(--settings-primary-text);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   text-decoration: none;
-  background: #1677d2;
-  border: 1px solid #238be8;
-  border-radius: 6px;
+  background: var(--settings-primary);
+  border: 1px solid var(--settings-primary);
+  border-radius: 7px;
   cursor: pointer;
 }
 
 .settings-command-button--secondary,
 .settings-update-link {
   color: var(--settings-text);
-  background: transparent;
+  background: var(--settings-panel);
   border-color: var(--settings-border);
 }
 
-.settings-command-button:hover,
+.settings-command-button:hover:not(:disabled) {
+  background: var(--settings-primary-hover);
+  border-color: var(--settings-primary-hover);
+}
+
+.settings-command-button--secondary:hover:not(:disabled),
 .settings-update-link:hover {
-  filter: brightness(1.08);
+  background: var(--settings-hover);
+  border-color: var(--settings-border);
+}
+
+.settings-command-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .settings-command-button:focus-visible,
@@ -1636,18 +1764,31 @@ button {
 }
 
 @media (forced-colors: active) {
-  :host,
-  :host([data-theme="dark"]) {
+  :host {
     --settings-bg: Canvas;
     --settings-sidebar: Canvas;
     --settings-panel: Canvas;
+    --settings-surface: Canvas;
+    --settings-surface-hover: Highlight;
+    --settings-inset: Canvas;
     --settings-text: CanvasText;
     --settings-muted: GrayText;
+    --settings-subtle: GrayText;
     --settings-border: ButtonBorder;
     --settings-divider: ButtonBorder;
     --settings-hover: Highlight;
     --settings-active: Highlight;
     --settings-focus: Highlight;
+    --settings-primary: ButtonFace;
+    --settings-primary-hover: Highlight;
+    --settings-primary-text: ButtonText;
+    --settings-warning: CanvasText;
+    --settings-warning-bg: Canvas;
+    --settings-warning-border: ButtonBorder;
+    --settings-danger: CanvasText;
+    --settings-danger-bg: Canvas;
+    --settings-danger-border: ButtonBorder;
+    --settings-success: CanvasText;
   }
 }
 
@@ -1656,5 +1797,6 @@ button {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    transition-duration: 0s !important;
   }
 }

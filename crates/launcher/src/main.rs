@@ -1463,6 +1463,12 @@ mod tests {
             !control
                 .inspector_argument
                 .to_string_lossy()
+                .contains("inspect-brk")
+        );
+        assert!(
+            !control
+                .inspector_argument
+                .to_string_lossy()
                 .contains("remote-debugging")
         );
         let environment = desktop_environment(

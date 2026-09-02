@@ -65,6 +65,22 @@ export type { RendererHarnessMessages } from "./renderer-harness-localization.js
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
+  harnessMentionCandidates,
+  harnessMentionMatch,
+  harnessMentionLabel,
+  insertHarnessMention,
+  injectNativeHarnessCommands,
+  isNativeComposerCommandRegistry,
+  matchingHarnessMentions,
+  mountRendererHarnessMentionControl,
+  textWithHarnessMention,
+} from "./renderer-harness-mention-control.js";
+export type {
+  HarnessMentionCandidate,
+  HarnessMentionMatch,
+  RendererHarnessMentionControl,
+} from "./renderer-harness-mention-control.js";
+export {
   creditsPeriodLabel,
   formatRendererCreditsReset,
   rendererCreditsTone,
@@ -92,6 +108,7 @@ export {
   isOwnershipSubmissionBlocked,
   permissionModeSelectionLocked,
   restoredThreadOwnership,
+  shouldRefreshCodexAccountsForAdapterState,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";
 export type {
@@ -203,6 +220,7 @@ export type {
   RendererConnectionDiagnostics,
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
+  RendererCodexAccountClient,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {

@@ -2,10 +2,12 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -391,5 +393,365 @@ describe("Antigravity Adapter", () => {
     expect(error.diagnostic).toContain("[redacted]");
     expect(error.message).toContain("'request-review'");
     expect(error.retryable).toBe(false);
+  });
+
+  describe("Session Lifecycle & Tool Streaming", () => {
+    async function fakeStreamingAgy(streamLines: readonly string[]): Promise<{
+      command: string;
+      cwd: string;
+      cleanup(): Promise<void>;
+    }> {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-stream-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-stream-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const scriptContent = `
+const lines = ${JSON.stringify(streamLines)};
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      if (process.platform === "win32") {
+        const command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+        return { command, cwd, cleanup };
+      }
+      const command = path.join(directory, "agy");
+      await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+      await chmod(command, 0o755);
+      return { command, cwd, cleanup };
+    }
+
+    async function nextEvent(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent> {
+      const result = await iterator.next();
+      if (result.done) throw new Error("Output stream ended unexpectedly");
+      if (result.value.kind !== "event") throw new Error("Expected an event output");
+      return result.value.event;
+    }
+
+    it("executes a turn projecting write_to_file, run_command, and agentMessage", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-123",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-123",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "write_to_file",
+            tool_info: {
+              parameters: {
+                TargetFile: "test.ts",
+                CodeContent: "export const x = 42;\n",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-123",
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            duration_seconds: 0.2,
+            tool_info: { output: "File written" },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-123",
+            step_index: 2,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: {
+              parameters: {
+                CommandLine: "npm test",
+                Cwd: "/workspace",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-123",
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            duration_seconds: 1.5,
+            tool_info: { output: "PASS test.ts\n" },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-123",
+            step_index: 3,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "All tests passed!",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-123",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "All tests passed!",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-1");
+
+        const executed = await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Please create test.ts and run it" }],
+        });
+        expect(executed.ok).toBe(true);
+
+        // Event 1: turn.started
+        const turnStarted = await nextEvent(iterator);
+        expect(turnStarted).toEqual({ type: "turn.started", turnId });
+
+        // Event 2: session.state.changed (from init)
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        // Event 3: item.started for write_to_file (toolExecution)
+        const fileStarted = await nextEvent(iterator);
+        expect(fileStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            toolName: "write_to_file",
+          },
+        });
+
+        // Event 4: item.completed for write_to_file
+        const fileCompleted = await nextEvent(iterator);
+        expect(fileCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "toolExecution", toolName: "write_to_file" },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        // Event 5: item.started for run_command (commandExecution)
+        const cmdStarted = await nextEvent(iterator);
+        expect(cmdStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "commandExecution",
+            command: "npm test",
+            cwd: "/workspace",
+          },
+        });
+
+        // Event 6: item.completed for run_command
+        const cmdCompleted = await nextEvent(iterator);
+        expect(cmdCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "commandExecution",
+              command: "npm test",
+              output: "PASS test.ts\n",
+              exitCode: 0,
+              durationMs: 1500,
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        // Event 7: item.started for agent response
+        const agentStarted = await nextEvent(iterator);
+        expect(agentStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "All tests passed!",
+          },
+        });
+
+        // Event 8: item.completed for agent response
+        const agentCompleted = await nextEvent(iterator);
+        expect(agentCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "All tests passed!",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        // Event 9: turn.completed with succeeded
+        const turnCompleted = await nextEvent(iterator);
+        expect(turnCompleted).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("emits turn.completed with failed outcome on CLI error", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-err",
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-err",
+            status: "ERROR",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-err");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "trigger error" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "failed" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("emits turn.completed with cancelled outcome on session close while active", async () => {
+      // Stream that does not emit result immediately (simulates long turn)
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-close",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-close",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "Working on it...",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-close");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "long running" }],
+        });
+
+        expect((await nextEvent(iterator)).type).toBe("turn.started");
+        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+        expect((await nextEvent(iterator)).type).toBe("item.started");
+
+        // Close session while active
+        await session.close();
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: { outcome: { status: "cancelled", reason: "Session closed" } },
+        });
+
+        const turnCompleted = await nextEvent(iterator);
+        expect(turnCompleted).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "cancelled", reason: "Session closed" },
+        });
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
   });
 });

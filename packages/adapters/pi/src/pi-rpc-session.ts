@@ -321,14 +321,21 @@ function assistantMessageId(value: unknown): string | null {
   return nonBlankString(value.responseId) ? value.responseId : null;
 }
 
+function extractReasoningText(content: unknown): string | null {
+  if (!isRecord(content)) return null;
+  const type = String(content.type ?? "");
+  if (type === "thinking" || type === "reasoning" || type === "thought") {
+    const text = content.thinking ?? content.reasoning ?? content.text ?? content.delta;
+    return typeof text === "string" ? text : null;
+  }
+  return null;
+}
+
 function assistantReasoning(value: unknown): string | null {
   if (!isRecord(value) || value.role !== "assistant" || !Array.isArray(value.content)) return null;
   return value.content
-    .filter(
-      (content): content is Record<string, unknown> =>
-        isRecord(content) && content.type === "thinking" && typeof content.thinking === "string",
-    )
-    .map((content) => content.thinking as string)
+    .map(extractReasoningText)
+    .filter((text): text is string => typeof text === "string")
     .join("");
 }
 
@@ -938,18 +945,41 @@ export class PiRpcSession {
     }
     if (value.type === "message_update" && isRecord(value.assistantMessageEvent)) {
       const event = value.assistantMessageEvent;
-      if (event.type === "text_delta" && typeof event.delta === "string") {
+      const eventType = String(event.type ?? "");
+      const isThinking =
+        eventType === "thinking_delta" ||
+        eventType === "reasoning_delta" ||
+        eventType === "thought_delta" ||
+        eventType === "thinking" ||
+        eventType === "reasoning";
+      const isText =
+        eventType === "text_delta" || eventType === "text" || eventType === "content_block_delta";
+
+      const delta =
+        typeof event.delta === "string"
+          ? event.delta
+          : typeof event.thinking === "string"
+            ? event.thinking
+            : typeof event.reasoning === "string"
+              ? event.reasoning
+              : typeof event.text === "string"
+                ? event.text
+                : isRecord(event.delta) && typeof event.delta.thinking === "string"
+                  ? event.delta.thinking
+                  : isRecord(event.delta) && typeof event.delta.text === "string"
+                    ? event.delta.text
+                    : null;
+
+      if (isThinking && delta !== null && delta.length > 0) {
         const messageId = this.#ensureAssistantMessage(active, value.message);
-        active.text += event.delta;
-        if (event.delta.length > 0) active.sawStreamedMessageText = true;
-        active.onEvent({ type: "text.delta", messageId, delta: event.delta });
-      } else if (event.type === "thinking_delta" && typeof event.delta === "string") {
+        active.reasoningMessageOpen = true;
+        active.sawStreamedMessageReasoning = true;
+        active.onEvent({ type: "reasoning.delta", messageId, delta });
+      } else if (isText && delta !== null && delta.length > 0) {
         const messageId = this.#ensureAssistantMessage(active, value.message);
-        if (event.delta.length > 0) {
-          active.reasoningMessageOpen = true;
-          active.sawStreamedMessageReasoning = true;
-          active.onEvent({ type: "reasoning.delta", messageId, delta: event.delta });
-        }
+        active.text += delta;
+        active.sawStreamedMessageText = true;
+        active.onEvent({ type: "text.delta", messageId, delta });
       } else if (event.type === "error") {
         this.#ensureAssistantMessage(active, value.message);
         active.failure =

@@ -33,4 +33,19 @@ describe("Protocol Core strict JSONL", () => {
     expect(() => parseJsonFrame(Buffer.from([0xff]))).toThrow("invalid JSONL");
     expect(() => parseJsonFrame(Buffer.from("no-json"))).toThrow("invalid JSONL");
   });
+
+  it("rejects a backpressured write when the stream closes before draining", async () => {
+    const output = new PassThrough({ highWaterMark: 1 });
+    const write = writeFrame(output, Buffer.from("{}"));
+
+    output.destroy();
+
+    const outcome = await Promise.race([
+      write.catch((error: unknown) => error),
+      new Promise<"timed-out">((resolve) => {
+        setTimeout(() => resolve("timed-out"), 100);
+      }),
+    ]);
+    expect(outcome).toBeInstanceOf(Error);
+  });
 });

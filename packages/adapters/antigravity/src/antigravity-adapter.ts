@@ -28,7 +28,6 @@ import {
   type HostItemOutcome,
   type HostItemSnapshot,
   type HostThreadSnapshot,
-  type HostToolExecutionItem,
   type HostUsage,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -57,7 +56,6 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostItemId,
-  type JsonValue,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -84,6 +82,10 @@ import {
   type AntigravityStreamEvent,
   type AntigravityUsage,
 } from "./stream-events.js";
+import {
+  completeAntigravityToolItem,
+  startAntigravityToolItem,
+} from "./tool-projection.js";
 
 export interface AntigravityAdapterOptions {
   command?: string;
@@ -99,7 +101,7 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
-  tools: Map<number, HostToolExecutionItem>;
+  tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
   stderr: string;
   cancellationRequested: boolean;
@@ -128,6 +130,7 @@ const CAPABILITIES: HarnessSessionCapabilities = {
     selectModel: true,
     selectThinkingOption: true,
     selectPermissionMode: true,
+    permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
   subagents: { observe: false, readTranscript: false },
@@ -162,18 +165,6 @@ export function permissionDeniedTurnError(nativeMode: string | null, denial: str
     retryable: false,
     diagnostic: sanitizeDiagnosticTail(denial),
   };
-}
-
-function jsonValue(value: unknown): JsonValue {
-  if (value === undefined) return null;
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
-
-function boundedText(value: unknown, limit: number): { text: string; truncated: boolean } | null {
-  if (value === undefined) return null;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (!text) return null;
-  return { text: text.slice(0, limit), truncated: text.length > limit };
 }
 
 function safeToken(value: unknown): number | undefined {
@@ -280,6 +271,7 @@ async function pollAntigravityContextUsage(
   logPath: string,
   conversationId: string,
   modelId?: string,
+  isDone?: () => boolean,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
   const deadline = Date.now() + CONTEXT_USAGE_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -293,6 +285,7 @@ async function pollAntigravityContextUsage(
       );
       if (usage) return usage;
     }
+    if (isDone?.()) break;
     await new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_USAGE_RETRY_MS));
   }
   return null;
@@ -725,6 +718,10 @@ class AntigravitySession implements HarnessSession {
       active.logPath,
       conversationId,
       this.#model?.id,
+      () =>
+        active.receivedResult ||
+        active.cancellationRequested ||
+        active.process.exitCode !== null,
     );
   }
 
@@ -736,12 +733,7 @@ class AntigravitySession implements HarnessSession {
     if (step.step_type !== "tool") return;
     let item = active.tools.get(step.step_index);
     if (!item) {
-      item = {
-        type: "toolExecution",
-        itemId: this.#newItemId(),
-        toolName: step.tool_name ?? step.tool_info?.name ?? "antigravity.tool",
-        arguments: jsonValue(step.tool_info?.parameters),
-      };
+      item = startAntigravityToolItem(this.#newItemId(), step);
       active.tools.set(step.step_index, item);
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
@@ -750,22 +742,12 @@ class AntigravitySession implements HarnessSession {
     if (toolError !== null && active.permissionDenial === null) {
       if (isAntigravityPermissionDenial(toolError)) active.permissionDenial = toolError;
     }
-    const output = boundedText(
-      step.tool_info?.output ?? step.tool_info?.error,
-      this.#toolOutputLimit,
-    );
-    const completed: HostToolExecutionItem = {
-      ...item,
-      ...(output
-        ? {
-            output: { content: [{ type: "text", text: output.text }], truncated: output.truncated },
-          }
-        : {}),
-      ...(typeof step.duration_seconds === "number"
-        ? { durationMs: Math.max(0, Math.round(step.duration_seconds * 1_000)) }
-        : {}),
-    };
+    const completed = completeAntigravityToolItem(item, step, this.#toolOutputLimit, this.#cwd);
     active.tools.delete(step.step_index);
+    const toolName =
+      step.tool_name ??
+      step.tool_info?.name ??
+      (item.type === "toolExecution" ? item.toolName : item.type);
     this.#completeItem(
       active,
       completed,
@@ -775,8 +757,8 @@ class AntigravitySession implements HarnessSession {
             error: {
               code: "nativeFailure",
               message: toolError
-                ? `Antigravity tool '${completed.toolName}' failed: ${toolError}`
-                : `Antigravity tool '${completed.toolName}' failed`,
+                ? `Antigravity tool '${toolName}' failed: ${toolError}`
+                : `Antigravity tool '${toolName}' failed`,
               retryable: false,
             },
           }

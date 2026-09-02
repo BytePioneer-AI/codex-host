@@ -43,6 +43,7 @@ async function writeBytes(stream: Writable, bytes: Buffer<ArrayBufferLike>): Pro
     const cleanup = (): void => {
       stream.off("drain", onDrain);
       stream.off("error", onError);
+      stream.off("close", onClose);
     };
     const onDrain = (): void => {
       cleanup();
@@ -52,8 +53,13 @@ async function writeBytes(stream: Writable, bytes: Buffer<ArrayBufferLike>): Pro
       cleanup();
       reject(error);
     };
+    const onClose = (): void => {
+      cleanup();
+      reject(new Error("Protocol stream closed before pending write drained"));
+    };
     stream.once("drain", onDrain);
     stream.once("error", onError);
+    stream.once("close", onClose);
   });
 }
 

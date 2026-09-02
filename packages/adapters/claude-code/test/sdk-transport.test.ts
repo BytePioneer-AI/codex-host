@@ -1025,6 +1025,57 @@ describe("ClaudeSdkTransport Model control", () => {
   });
 });
 
+describe("ClaudeSdkTransport abort", () => {
+  it("interrupts the active Query without closing the transport", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000030",
+      () => undefined,
+    );
+    await value.transport.abort();
+    expect(value.fakeQuery.interrupt).toHaveBeenCalledOnce();
+    value.fakeQuery.push({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_streaming",
+    } as unknown as SDKMessage);
+    await expect(turn).resolves.toEqual({ status: "cancelled", reason: "aborted_streaming" });
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+
+  it("closes the transport when interrupt does not settle", async () => {
+    const value = fixture();
+    value.fakeQuery.interrupt.mockImplementation(async () => new Promise(() => undefined));
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 20,
+      abortTimeoutMs: 20,
+      onPermissionModeChanged: value.onPermissionModeChanged,
+      onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
+      queryFactory: value.queryFactory,
+    });
+    await transport.start();
+    const turn = transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000031",
+      () => undefined,
+    );
+    await expect(transport.abort()).rejects.toThrow("Claude SDK interrupt timed out");
+    await expect(turn).rejects.toThrow("Claude SDK transport closed");
+    expect(value.onFault).not.toHaveBeenCalled();
+  });
+});
+
 describe("ClaudeSdkTransport Question callbacks", () => {
   it("uses caller identity for create and the same Native Session for resume", async () => {
     const created = fixture();

@@ -239,14 +239,44 @@ export function textDeltaFromOmpNotification(
   notification: Extract<OmpNotification, { type: "message_update" }>,
 ): { messageId: string; delta: string } | null {
   const event = notification.assistantMessageEvent;
-  if (event.type !== "text_delta" || typeof event.delta !== "string") return null;
-  return { messageId: assistantMessageId(notification.message), delta: event.delta };
+  const eventType = String(event.type ?? "");
+  const isText =
+    eventType === "text_delta" || eventType === "text" || eventType === "content_block_delta";
+  if (!isText) return null;
+  const delta =
+    typeof event.delta === "string"
+      ? event.delta
+      : typeof event.text === "string"
+        ? event.text
+        : isObject(event.delta) && typeof event.delta.text === "string"
+          ? event.delta.text
+          : null;
+  if (!delta || delta.length === 0) return null;
+  return { messageId: assistantMessageId(notification.message), delta };
 }
 
 export function thinkingDeltaFromOmpNotification(
   notification: Extract<OmpNotification, { type: "message_update" }>,
 ): { messageId: string; delta: string } | null {
   const event = notification.assistantMessageEvent;
-  if (event.type !== "thinking_delta" || typeof event.delta !== "string") return null;
-  return { messageId: assistantMessageId(notification.message), delta: event.delta };
+  const eventType = String(event.type ?? "");
+  const isThinking =
+    eventType === "thinking_delta" ||
+    eventType === "reasoning_delta" ||
+    eventType === "thought_delta" ||
+    eventType === "thinking" ||
+    eventType === "reasoning";
+  if (!isThinking) return null;
+  const delta =
+    typeof event.delta === "string"
+      ? event.delta
+      : typeof event.thinking === "string"
+        ? event.thinking
+        : typeof event.reasoning === "string"
+          ? event.reasoning
+          : isObject(event.delta) && typeof event.delta.thinking === "string"
+            ? event.delta.thinking
+            : null;
+  if (!delta || delta.length === 0) return null;
+  return { messageId: assistantMessageId(notification.message), delta };
 }

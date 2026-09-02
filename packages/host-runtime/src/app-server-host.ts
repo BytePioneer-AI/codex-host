@@ -41,6 +41,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -113,6 +114,8 @@ const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
+const OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS = 250;
+const NEVER_SETTLES = new Promise<never>(() => undefined);
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -472,6 +475,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #closeRequested = false;
+  #desktopInputEnded = false;
 
   constructor(options: AppServerHostOptions) {
     this.#options = {
@@ -575,9 +579,26 @@ export class AppServerHost {
     this.#official = official;
     const exited = official.closed;
     if (this.#closeRequested) this.#terminateOfficial();
+    const forwardDesktop = this.#forwardDesktop();
+    const forwardOfficial = this.#forwardOfficial();
+    const officialOutput = forwardOfficial.then(() => {
+      if (!this.#closeRequested && !this.#desktopInputEnded) {
+        throw new Error("official app-server output closed before Desktop input ended");
+      }
+    });
+    const officialExit = exited.then((result) => {
+      if (!this.#closeRequested && !this.#desktopInputEnded) {
+        const status = result.error
+          ? result.error.message
+          : result.signal
+            ? `signal ${result.signal}`
+            : `code ${String(result.code ?? "unknown")}`;
+        throw new Error(`official app-server exited before Desktop input ended (${status})`);
+      }
+      return result;
+    });
     try {
-      await Promise.all([this.#forwardDesktop(), this.#forwardOfficial()]);
-      const result = await exited;
+      const [, , result] = await Promise.all([forwardDesktop, officialOutput, officialExit]);
       if (result.error) throw result.error;
       if (result.signal) {
         if (this.#closeRequested) return 0;
@@ -586,8 +607,24 @@ export class AppServerHost {
       return result.code ?? 1;
     } catch (error) {
       if (!this.#closeRequested) this.#diagnose(error);
+      this.#options.desktopInput.destroy();
       this.#terminateOfficial();
-      await exited.catch(() => undefined);
+      let forwardingSettled = false;
+      const forwarding = Promise.allSettled([forwardDesktop, forwardOfficial]).then(() => {
+        forwardingSettled = true;
+      });
+      let drainTimer: NodeJS.Timeout | null = null;
+      const drainTimeout = new Promise<void>((resolve) => {
+        drainTimer = setTimeout(resolve, OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS);
+      });
+      await Promise.race([forwarding, drainTimeout]);
+      if (drainTimer) clearTimeout(drainTimer);
+      if (!forwardingSettled) {
+        official.stdin.destroy();
+        official.stdout.destroy();
+        this.#options.desktopOutput.destroy();
+      }
+      void exited.catch(() => undefined);
       return this.#closeRequested ? 0 : 1;
     } finally {
       const threads = this.#externalRuntime.values();
@@ -999,6 +1036,7 @@ export class AppServerHost {
       }
       await writeFrame(official.stdin, frame);
     }
+    this.#desktopInputEnded = true;
     official.stdin.end();
   }
 
@@ -1006,11 +1044,18 @@ export class AppServerHost {
     const official = this.#official;
     if (!official) throw new Error("official app-server is unavailable");
     try {
-      for await (const frame of readLfFrames(official.stdout)) {
+      const frames = readLfFrames(official.stdout)[Symbol.asyncIterator]();
+      let current = await frames.next();
+      while (!current.done) {
+        const frame = current.value;
+        const following = frames.next();
         const parsed = parseJsonFrame(frame);
         if (isRecord(parsed) && parsed.method === "account/updated")
           this.#resetOfficialUsageState();
-        if (this.#officialRequestBroker.handle(parsed)) continue;
+        if (this.#officialRequestBroker.handle(parsed)) {
+          current = await following;
+          continue;
+        }
         const tokenUsage = observeCodexTokenUsage(parsed);
         if (tokenUsage) {
           const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
@@ -1031,7 +1076,12 @@ export class AppServerHost {
           this.#diagnose(error);
         }
         this.#routeObservationTracker.bindOfficialResponse(parsed);
-        await this.#writer.frame(frame);
+        const prematureOutputEnd = following.then((result) => {
+          if (!result.done || this.#closeRequested || this.#desktopInputEnded) return NEVER_SETTLES;
+          throw new Error("official app-server output closed before Desktop input ended");
+        });
+        await Promise.race([this.#writer.frame(frame), prematureOutputEnd]);
+        current = await following;
       }
     } finally {
       this.#officialRequestBroker.failAll(new Error("official app-server output closed"));
@@ -1161,6 +1211,7 @@ export class AppServerHost {
             selectModel: models.length > 0,
             selectThinkingOption: thinkingById.size > 0,
             selectPermissionMode: false,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },
@@ -2223,6 +2274,12 @@ export class AppServerHost {
       );
       return;
     }
+    if (permissionModeFixedAtCreate(thread.session.capabilities.configuration)) {
+      await this.#writer.json(
+        rpcError(request, -32078, "Permission Mode is fixed at Session creation"),
+      );
+      return;
+    }
     const beforeRevision = thread.stateObserver.revision;
     const result = await thread.session.execute({
       type: "permissionMode.select",
@@ -2827,6 +2884,9 @@ export class AppServerHost {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
+    // Live/pending projection gets the user message from projector.initialInput.
+    // Keep projection.input empty so turn.completed persistence does not prepend a
+    // second identical `${turnId}-user` via addProjectedTurnInput.
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
@@ -2835,7 +2895,7 @@ export class AppServerHost {
         startedAtMs: Date.now(),
         initialInput: [{ type: "text", text }],
       }),
-      input: [{ type: "text", text }],
+      input: [],
     };
     thread.running = true;
     thread.activeTurnId = turnId;

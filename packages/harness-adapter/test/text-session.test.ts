@@ -554,6 +554,7 @@ describe("minimal Harness text Session", () => {
           selectModel: true,
           selectThinkingOption: true,
           selectPermissionMode: false,
+          permissionModeScope: "live",
         },
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         subagents: { observe: false, readTranscript: false },

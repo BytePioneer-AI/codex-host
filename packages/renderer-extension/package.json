@@ -13,7 +13,8 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=browser --format=esm --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/index.js && esbuild src/production-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/production.js && esbuild src/probe-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/renderer-binding-probe.js && esbuild src/audit-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/contract-audit.js"
+    "build": "esbuild src/index.ts --bundle --platform=browser --format=esm --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/index.js && esbuild src/production-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/production.js && esbuild src/probe-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/renderer-binding-probe.js && esbuild src/audit-entry.ts --bundle --platform=browser --format=iife --target=es2024 --loader:.png=dataurl --loader:.svg=dataurl --loader:.css=text --outfile=dist/contract-audit.js",
+    "test": "vitest run test"
   },
   "dependencies": {
     "@codexhost/shared-contracts": "0.0.0",

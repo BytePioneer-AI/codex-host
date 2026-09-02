@@ -741,6 +741,7 @@ describe("OpenCode HarnessAdapter", () => {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     });
@@ -768,6 +769,11 @@ describe("OpenCode HarnessAdapter", () => {
     ]);
     expect(created.value.initialState.effectivePermissionModeId).toBe("ask");
     const iterator = created.value.outputs[Symbol.asyncIterator]();
+
+    await expect(
+      created.value.execute({ type: "permissionMode.select", permissionModeId: "ask" as never }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transport.permissionUpdates).toHaveLength(0);
 
     await expect(
       created.value.execute({ type: "permissionMode.select", permissionModeId: "allow" as never }),

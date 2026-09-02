@@ -25,6 +25,14 @@ export {
   parseAntigravityStreamLine,
 } from "./stream-events.js";
 export type { AntigravityStreamEvent } from "./stream-events.js";
+export {
+  compactToolName,
+  completeAntigravityToolItem,
+  displayPath,
+  startAntigravityToolItem,
+  synthesizeAntigravityCommand,
+  synthesizeAntigravityFileChange,
+} from "./tool-projection.js";
 
 export const packageMetadata = {
   name: "@codexhost/adapter-antigravity",

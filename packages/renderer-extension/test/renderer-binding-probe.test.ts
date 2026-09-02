@@ -15,7 +15,9 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
+  permissionModeSelectionLocked,
   lateConversationTargetResolution,
+  harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
   refreshConnectionHosts,
   restoredThreadOwnership,
@@ -234,6 +236,15 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toEqual(["deepseek-harness"]);
+  });
+
+  it("keeps a failed Harness availability visible while inspect retries", () => {
+    expect(harnessAvailabilityDuringInspect(undefined)).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("checking")).toBe("checking");
+    expect(harnessAvailabilityDuringInspect("error")).toBe("error");
+    expect(harnessAvailabilityDuringInspect("unavailable")).toBe("unavailable");
+    expect(harnessAvailabilityDuringInspect("notInstalled")).toBe("notInstalled");
+    expect(harnessAvailabilityDuringInspect("ready")).toBe("ready");
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {
@@ -1097,6 +1108,19 @@ describe("Renderer Composer DOM behavior", () => {
     expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
       "absent from the current Catalog",
     );
+  });
+
+  it("locks Permission Mode selection only for an existing atCreate Session", () => {
+    expect(permissionModeSelectionLocked({ phase: "draft", permissionModeScope: "atCreate" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "live" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked" })).toBe(false);
+    expect(
+      permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "atCreate" }),
+    ).toBe(true);
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

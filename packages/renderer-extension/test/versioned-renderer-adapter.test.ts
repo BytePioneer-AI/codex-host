@@ -33,6 +33,7 @@ import {
   modelSelectionForAgent,
   deepSeekHarnessTransportModelId,
   grokTransportModelId,
+  installCurrentRendererAdapter,
   openCodeTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
@@ -591,5 +592,86 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(threadIdFromComposerModelTarget(["conversation", "thread-1"])).toBe("thread-1");
     expect(threadIdFromComposerModelTarget(["default", "thread-1"])).toBeNull();
     expect(threadIdFromComposerModelTarget(["conversation", ""])).toBeNull();
+  });
+
+  it("installs and cleanly disposes the transcript status injector upon adapter lifecycle", () => {
+    const originalWindow = (globalThis as unknown as { window?: unknown }).window;
+    const originalDocument = (globalThis as unknown as { document?: unknown }).document;
+    const globalListeners: { type: string; callback: (e: unknown) => void }[] = [];
+
+    const mockDoc = {
+      createElement: (tag: string) => {
+        const el = {
+          tagName: tag.toUpperCase(),
+          attributes: new Map<string, string>(),
+          children: [] as unknown[],
+          style: {},
+          className: "",
+          setAttribute: (name: string, val: string) => el.attributes.set(name, val),
+          getAttribute: (name: string) => el.attributes.get(name) ?? null,
+          hasAttribute: (name: string) => el.attributes.has(name),
+          append: (...nodes: unknown[]) => el.children.push(...nodes),
+          remove: () => {},
+          querySelectorAll: () => [],
+          querySelector: () => null,
+          matches: () => false,
+        };
+        return el;
+      },
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      body: {
+        append: () => {},
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      },
+      documentElement: {
+        append: () => {},
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      },
+    };
+
+    const mockWin = {
+      __codexhostMainProcessTitlePolicyV1: { state: "ready" as const },
+      __codexhostDraftPrewarmPolicyV1: undefined,
+      addEventListener: (type: string, callback: (e: unknown) => void) => {
+        globalListeners.push({ type, callback });
+      },
+      removeEventListener: (type: string, callback: (e: unknown) => void) => {
+        const idx = globalListeners.findIndex((l) => l.type === type && l.callback === callback);
+        if (idx !== -1) globalListeners.splice(idx, 1);
+      },
+      dispatchEvent: vi.fn(),
+      navigator: { languages: ["zh-CN", "en"] },
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+    };
+
+    try {
+      (globalThis as unknown as { window: unknown }).window = mockWin;
+      (globalThis as unknown as { document: unknown }).document = mockDoc;
+
+      const adapter = installCurrentRendererAdapter();
+      expect(adapter).toBeDefined();
+
+      // Verify that transcript status events were registered by status injector
+      expect(
+        globalListeners.some((l) => l.type === "codexhost:transcript-status"),
+      ).toBe(true);
+
+      // Dispose adapter and verify clean unregistration
+      adapter.dispose();
+      expect(
+        globalListeners.some((l) => l.type === "codexhost:transcript-status"),
+      ).toBe(false);
+    } finally {
+      (globalThis as unknown as { window: unknown }).window = originalWindow;
+      (globalThis as unknown as { document: unknown }).document = originalDocument;
+    }
   });
 });

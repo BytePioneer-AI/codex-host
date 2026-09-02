@@ -17,6 +17,7 @@ import {
 
 import type { GrokTransportEvent } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
+import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import {
   applyGrokToolProjection,
   DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
@@ -93,6 +94,7 @@ export function mapGrokReplay(
   cwd: string,
   knownTurnRefs: readonly NativeTurnRef[] = [],
   toolOutputLimit = DEFAULT_GROK_TOOL_OUTPUT_LIMIT,
+  sessionDirectory?: string,
 ): HostThreadSnapshot {
   const knownByNativeKey = new Map(
     knownTurnRefs
@@ -110,10 +112,14 @@ export function mapGrokReplay(
   let agent: HostAgentMessageItem | null = null;
   let reasoning: HostReasoningItem | null = null;
   const tools = new Map<string, GrokProjectedToolItem>();
+  const mediaRoots = grokMediaResolveRoots(cwd, sessionDirectory);
 
   const completeAgent = (): void => {
     if (!agent || agent.text.length === 0) return;
-    items.push({ item: agent, outcome: { status: "succeeded" } });
+    items.push({
+      item: { ...agent, text: rewriteLocalMediaMarkdown(agent.text, mediaRoots) },
+      outcome: { status: "succeeded" },
+    });
     agent = null;
   };
   const completeReasoning = (): void => {

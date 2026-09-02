@@ -58,9 +58,13 @@ npm automatically installs the matching macOS, Windows, or Linux platform packag
 \`\`\`bash
 codexhost --version
 codexhost
+codexhost remote install
+codexhost remote status
 \`\`\`
 
 The \`codexhost\` command starts Codex Desktop. On macOS and Linux it returns immediately while the packaged Launcher keeps supervising in the background. On Windows, the command remains attached until Codex Desktop exits so shells that clean up process trees of completed commands cannot discard the supervisor. Re-running \`codexhost\` attaches to the same controlled instance.
+
+On macOS, \`remote install\` installs a current-user Aqua Harness broker so Background SSH Hosts can use native Claude Code login without reading, copying, or unlocking Keychain credentials.
 
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
 `;

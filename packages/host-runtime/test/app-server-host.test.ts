@@ -16,6 +16,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   encodeClaudeTransportModel,
+  encodeGrokTransportModel,
   encodePiTransportModel,
   type ExternalHarnessId,
   type JsonObject,
@@ -206,6 +207,7 @@ function createFixture(
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
+    desktopOutput?: PassThrough;
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
@@ -219,7 +221,7 @@ function createFixture(
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
-  const desktopOutput = new PassThrough();
+  const desktopOutput = options.desktopOutput ?? new PassThrough();
   const diagnosticOutput = new PassThrough();
   const official = new FakeOfficialProcess();
   const collector = new JsonLineCollector(desktopOutput);
@@ -722,6 +724,109 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("fails when official app-server output closes before Desktop input", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 100);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when official output closes while Desktop output is backpressured", async () => {
+    const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopOutput.pause();
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
+      );
+      await vi.waitFor(() =>
+        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.stdout.end();
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      fixture.desktopOutput.resume();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the official app-server exits while its output stays open", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      expect(
+        fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
+      ).toBe(false);
+      writeRequest(fixture.desktopInput, { id: 90, method: "model/list", params: {} });
+      await vi.waitFor(() =>
+        expect(fixture.official.stdin.listenerCount("drain")).toBeGreaterThan(0),
+      );
+      fixture.official.emit("exit", 0, null);
+
+      const outcome = await Promise.race([
+        fixture.running,
+        new Promise<"timed-out">((resolve) => {
+          setTimeout(() => resolve("timed-out"), 1_000);
+        }),
+      ]);
+
+      expect(outcome).toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.official.stdout.destroyed).toBe(true);
+      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Desktop-first official app-server shutdown successful", async () => {
+    const fixture = createFixture();
+
+    try {
+      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      fixture.desktopInput.end();
+
+      await expect(fixture.running).resolves.toBe(0);
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("can share one initialized Mapping Store across concurrent remote sessions", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-shared-"));
     const mappingStore = new MappingStore({ directory });
@@ -994,13 +1099,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/completed") &&
-          (message.params as JsonObject).threadId === started.threadId,
-      ),
-    ).resolves.toMatchObject({
+    const completed = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/completed") &&
+        (message.params as JsonObject).threadId === started.threadId,
+    );
+    expect(completed).toMatchObject({
       params: {
         turn: {
           items: [
@@ -1013,6 +1117,41 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    const completedItems = (
+      (completed.params as JsonObject).turn as { items: Array<{ id?: string; type?: string }> }
+    ).items;
+    expect(completedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(completedItems.map((item) => item.id)).size).toBe(completedItems.length);
+
+    // Delegated external Threads use paginated history; read via turns/list.
+    writeRequest(fixture.desktopInput, {
+      id: 1057,
+      method: "thread/turns/list",
+      params: { threadId: started.threadId, limit: 20, itemsView: "full" },
+    });
+    const listed = await fixture.collector.waitFor((message) => requestId(message, 1057));
+    expect(listed).toMatchObject({
+      result: {
+        data: [
+          {
+            items: [
+              {
+                type: "userMessage",
+                content: [{ type: "text", text: "review auth" }],
+              },
+              { type: "agentMessage", text: "Checking auth." },
+            ],
+          },
+        ],
+      },
+    });
+    const storedItems = (
+      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } }).result
+        .data[0]?.items ?? []
+    );
+    expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
+
     await stopFixture(fixture);
   });
 
@@ -2554,6 +2693,56 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: -32078, message: "Policy rejected bypass" },
     });
     expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
+    await stopFixture(fixture);
+  });
+
+  it("rejects live Grok Permission Mode changes without rewriting mapping", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "always-approve", label: "Always approve", dangerous: true },
+      ],
+      defaultModeId: "default",
+    });
+    const grok = new FakeHarnessAdapter(
+      harnessIdSchema.parse("grok"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+      false,
+      "atCreate",
+    );
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["grok", grok]]),
+    });
+    const model = grok.catalog.defaultModel;
+    if (!model) throw new Error("Fake Grok catalog has no default Model");
+    const defaultMode = harnessPermissionModeIdSchema.parse("default");
+    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
+    const transportModelId = encodeGrokTransportModel(model, defaultMode);
+    const threadId = await startExternalThread(fixture, transportModelId, 50);
+    const session = grok.sessions[0];
+    if (!session) throw new Error("Fake Grok Session was not opened");
+    const execute = vi.spyOn(session, "execute");
+
+    writeRequest(fixture.desktopInput, {
+      id: 51,
+      method: "codexhost/thread/permission-mode/select",
+      params: { threadId, permissionModeId: alwaysApprove },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 51)),
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: "Permission Mode is fixed at Session creation" },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.state.effectivePermissionModeId).toBe(defaultMode);
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ transportModelId });
+
     await stopFixture(fixture);
   });
 
@@ -4734,7 +4923,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: {
         turn: {
           status: "completed",
-          items: [{ type: "agentMessage" }],
+          items: [{ type: "fileChange" }, { type: "agentMessage" }],
         },
       },
     });

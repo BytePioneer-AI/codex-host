@@ -13,7 +13,7 @@ sha2 = "0.10.9"
 path = "src/lib.rs"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-nix = { version = "0.31.3", features = ["feature", "fs", "process", "signal"] }
+nix = { version = "0.31.3", features = ["feature", "fs", "process", "signal", "user"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.4", features = ["process"] }

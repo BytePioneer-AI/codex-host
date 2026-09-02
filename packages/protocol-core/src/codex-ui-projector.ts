@@ -66,6 +66,28 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
+  wireFileChanges: HostFileChange[] | null;
+  startedAtMs?: number;
+  durationMs?: number;
+}
+
+function resolvedItemDurationMs(
+  item: HostItem,
+  startedAtMs: number,
+  completedAtMs: number,
+): number {
+  if (
+    (item.type === "commandExecution" || item.type === "toolExecution") &&
+    item.durationMs !== undefined
+  ) {
+    return item.durationMs;
+  }
+  return Math.max(0, completedAtMs - startedAtMs);
+}
+
+function withResolvedDuration(item: HostItem, durationMs: number): HostItem {
+  if (item.type !== "commandExecution" && item.type !== "toolExecution") return item;
+  return { ...item, durationMs };
 }
 
 type ProjectedInteraction =
@@ -74,6 +96,376 @@ type ProjectedInteraction =
 function itemStatus(outcome: HostItemOutcome | null): "inProgress" | "completed" | "failed" {
   if (!outcome) return "inProgress";
   return outcome.status === "succeeded" ? "completed" : "failed";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nestedString(value: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string" && field.trim().length > 0) return field.trim();
+  }
+  for (const wrapper of ["input", "arguments", "params"] as const) {
+    const nested = nestedString(value[wrapper], keys);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
+  if (!item.output) return null;
+  const text = item.output.content
+    .filter(
+      (content): content is Extract<(typeof item.output.content)[number], { type: "text" }> =>
+        content.type === "text",
+    )
+    .map(({ text }) => text)
+    .join("");
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Codex Desktop only renders a detailed, expandable card for Command Execution.
+ * Generic `dynamicToolCall` items show the tool name with no path, pattern, or
+ * output. Lift Read/Glob/Grep/shell tools into that lane when a command line
+ * can be reconstructed from the native arguments.
+ */
+export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
+  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const command = nestedString(args, [
+    "command",
+    "cmd",
+    "script",
+    "commandLine",
+    "command_line",
+    "CommandLine",
+  ]);
+  if (
+    command &&
+    [
+      "bash",
+      "exec",
+      "terminal",
+      "run",
+      "shell",
+      "powershell",
+      "command",
+      "runcommand",
+    ].includes(lower)
+  ) {
+    return command;
+  }
+  const filePath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "filename",
+    "target",
+    "uri",
+    "TargetFile",
+    "targetFile",
+    "target_file",
+  ]);
+  const pattern = nestedString(args, [
+    "pattern",
+    "glob",
+    "glob_pattern",
+    "query",
+    "regex",
+    "Pattern",
+    "Query",
+  ]);
+  if (["read", "readfile", "fileread", "view", "viewfile", "readurlcontent"].includes(lower)) {
+    return filePath ? `read ${filePath}` : undefined;
+  }
+  if (["glob", "find", "findfiles", "findbyname"].includes(lower)) {
+    const target = pattern ?? filePath;
+    return target ? `glob ${target}` : undefined;
+  }
+  if (["grep", "grepsearch"].includes(lower)) {
+    if (!pattern) return undefined;
+    return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+  }
+  return undefined;
+}
+
+function compactToolName(toolName: string): string {
+  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
+}
+
+function isFileMutatingTool(toolName: string): boolean {
+  return [
+    "edit",
+    "editfile",
+    "fileedit",
+    "strreplace",
+    "searchreplace",
+    "applypatch",
+    "replace",
+    "multiedit",
+    "write",
+    "writefile",
+    "filewrite",
+    "create",
+    "createfile",
+    "writetofile",
+    "replacefilecontent",
+  ].includes(compactToolName(toolName));
+}
+
+function isWriteTool(toolName: string): boolean {
+  return [
+    "write",
+    "writefile",
+    "filewrite",
+    "create",
+    "createfile",
+    "writetofile",
+  ].includes(compactToolName(toolName));
+}
+
+function simpleUnifiedDiff(
+  displayedPath: string,
+  oldText: string,
+  newText: string,
+  kind: "add" | "update",
+): string {
+  const oldLines = oldText === "" ? [] : oldText.split("\n");
+  const newLines = newText === "" ? [] : newText.split("\n");
+  if (oldLines.at(-1) === "") oldLines.pop();
+  if (newLines.at(-1) === "") newLines.pop();
+  const oldHeader = kind === "add" ? "/dev/null" : `a/${displayedPath}`;
+  const newHeader = `b/${displayedPath}`;
+  const oldRange = kind === "add" ? "0,0" : `1,${oldLines.length}`;
+  const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
+  return [
+    `--- ${oldHeader}`,
+    `+++ ${newHeader}`,
+    `@@ -${oldRange} +${newRange} @@`,
+    ...oldLines.map((line) => `-${line}`),
+    ...newLines.map((line) => `+${line}`),
+    "",
+  ].join("\n");
+}
+
+export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
+  if (!isFileMutatingTool(toolName)) return null;
+  const displayedPath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "TargetFile",
+    "targetFile",
+    "target_file",
+  ]);
+  if (!displayedPath) return null;
+  if (isWriteTool(toolName)) {
+    const content = nestedString(args, [
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "file_text",
+      "text",
+      "new",
+      "CodeContent",
+      "codeContent",
+      "code_content",
+    ]);
+    if (content === undefined) return null;
+    return [
+      {
+        path: displayedPath,
+        kind: "add",
+        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, "add"),
+      },
+    ];
+  }
+  const oldText = nestedString(args, [
+    "old_string",
+    "oldString",
+    "oldText",
+    "old_text",
+    "old",
+    "TargetContent",
+    "targetContent",
+    "target_content",
+  ]);
+  const newText = nestedString(args, [
+    "new_string",
+    "newString",
+    "newText",
+    "new_text",
+    "content",
+    "new",
+    "ReplacementContent",
+    "replacementContent",
+    "replacement_content",
+  ]);
+  if (oldText === undefined || newText === undefined) return null;
+  return [
+    {
+      path: displayedPath,
+      kind: "update",
+      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+    },
+  ];
+}
+
+function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
+  if (kind === "update") return { type: "update", move_path: null };
+  return { type: kind };
+}
+
+function projectFileChanges(changes: HostFileChange[]): JsonValue[] {
+  return changes.map(({ path, kind, unifiedDiff }) => ({
+    path,
+    kind: projectFileChangeKind(kind),
+    diff: unifiedDiff,
+  }));
+}
+
+function wireFileChangeItem(
+  projected: ProjectedItem,
+): Extract<HostItem, { type: "fileChange" }> | null {
+  if (projected.item.type === "fileChange") return projected.item;
+  if (!projected.wireFileChanges) return null;
+  return {
+    type: "fileChange",
+    itemId: projected.item.itemId,
+    changes: projected.wireFileChanges,
+  };
+}
+
+type CodexPlanStepStatus = "pending" | "inProgress" | "completed";
+
+function isTodoTool(toolName: string): boolean {
+  const compact = compactToolName(toolName);
+  return compact.includes("todo") || ["updateplan", "updatetodolist"].includes(compact);
+}
+
+export function todoPlanFromTool(
+  toolName: string,
+  args: JsonValue,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  return isTodoTool(toolName) ? planFromTodoValue(args) : null;
+}
+
+function planFromTodoValue(
+  value: unknown,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  if (
+    value &&
+    typeof value === "object" &&
+    "content" in value &&
+    Array.isArray((value as { content: unknown }).content)
+  ) {
+    const output = value as Extract<HostItem, { type: "toolExecution" }>["output"];
+    if (output) {
+      const text = output.content
+        .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+        .join("\n");
+      const fromText = planFromChecklistText(text);
+      if (fromText) return fromText;
+    }
+  }
+  const record = unwrapToolRecord(value);
+  if (!record) return planFromChecklistText(typeof value === "string" ? value : null);
+  if (isRecord(record.TodosUpdated)) {
+    const nested = planFromTodoValue(record.TodosUpdated);
+    if (nested) return nested;
+  }
+  const explanation = nestedString(record, ["explanation", "message", "summary"]) ?? null;
+  const list = coerceTodoList(
+    record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
+  );
+  if (!list || list.length === 0) return planFromChecklistText(explanation);
+  const plan: { step: string; status: CodexPlanStepStatus }[] = [];
+  for (const entry of list) {
+    if (typeof entry === "string" && entry.trim().length > 0) {
+      plan.push({ step: entry.trim(), status: "pending" });
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const step = nestedString(entry, ["content", "step", "text", "title", "description", "task"]);
+    if (!step) continue;
+    plan.push({ step, status: planStatus(entry.status) });
+  }
+  return plan.length > 0 ? { explanation, plan } : planFromChecklistText(explanation);
+}
+
+function coerceTodoList(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    const record = unwrapToolRecord(parsed);
+    return record
+      ? coerceTodoList(
+          record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
+        )
+      : null;
+  } catch {
+    return (
+      planFromChecklistText(trimmed)?.plan.map(({ step, status }) => ({ content: step, status })) ??
+      null
+    );
+  }
+}
+
+function planFromChecklistText(
+  value: string | null | undefined,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  if (!value) return null;
+  const plan: { step: string; status: CodexPlanStepStatus }[] = [];
+  for (const line of value.split(/\r?\n/u)) {
+    const match = line.match(/^\s*[-*]\s*\[([^\]]+)\]\s*(?:\d+:\s*)?(.+?)\s*$/u);
+    if (!match?.[1] || !match[2]) continue;
+    const step = match[2].trim();
+    if (step.length === 0) continue;
+    plan.push({ step, status: planStatus(match[1]) });
+  }
+  return plan.length > 0 ? { explanation: null, plan } : null;
+}
+
+function unwrapToolRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return null;
+    try {
+      return unwrapToolRecord(JSON.parse(trimmed) as unknown);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(value)) return { todos: value };
+  if (!isRecord(value)) return null;
+  for (const wrapper of ["input", "arguments", "params"] as const) {
+    if (value[wrapper] === undefined) continue;
+    const nested = unwrapToolRecord(value[wrapper]);
+    if (nested) return nested;
+  }
+  return value;
+}
+
+function planStatus(value: unknown): CodexPlanStepStatus {
+  if (typeof value !== "string") return "pending";
+  const lower = value.toLowerCase().replaceAll(/[_-]/g, "");
+  if (["inprogress", "doing", "current", "active", "started", "working"].includes(lower)) {
+    return "inProgress";
+  }
+  if (["completed", "complete", "done", "finished", "x", "yes", "checked"].includes(lower)) {
+    return "completed";
+  }
+  return "pending";
 }
 
 function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): JsonValue[] | null {
@@ -145,6 +537,22 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
+      const command = toolCommandLine(item.toolName, item.arguments);
+      if (command) {
+        return {
+          id: item.itemId,
+          type: "commandExecution",
+          command,
+          cwd: defaultCwd,
+          processId: null,
+          source: "agent",
+          status: itemStatus(outcome),
+          commandActions: [],
+          aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
+          exitCode: outcome ? (outcome.status === "succeeded" ? 0 : 1) : null,
+          durationMs: item.durationMs ?? null,
+        };
+      }
       const status = itemStatus(outcome);
       return {
         id: item.itemId,
@@ -162,11 +570,7 @@ function projectItem(
       return {
         id: item.itemId,
         type: "fileChange",
-        changes: item.changes.map(({ path, kind, unifiedDiff }) => ({
-          path,
-          kind,
-          diff: unifiedDiff,
-        })),
+        changes: projectFileChanges(item.changes),
         status: itemStatus(outcome),
       };
     case "subagentDelegation":
@@ -208,6 +612,7 @@ function projectReasoningTranscriptItem(
   item: Extract<HostItem, { type: "reasoning" }>,
   outcome: HostItemOutcome | null,
   defaultCwd: string,
+  durationMs: number | null = null,
 ): JsonObject {
   return {
     id: item.itemId,
@@ -220,7 +625,7 @@ function projectReasoningTranscriptItem(
     commandActions: [],
     aggregatedOutput: item.text.length > 0 ? item.text : null,
     exitCode: outcome ? 0 : null,
-    durationMs: null,
+    durationMs,
   };
 }
 
@@ -268,14 +673,31 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         clientId: null,
         content: snapshot.input.map(({ text }) => ({ type: "text", text })),
       },
-      ...snapshot.items.flatMap(({ item, outcome }) =>
-        item.type === "reasoning"
+      ...snapshot.items.flatMap(({ item, outcome }) => {
+        if (item.type === "toolExecution") {
+          if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
+            return [];
+          const changes = fileChangeFromTool(item.toolName, item.arguments);
+          if (changes) {
+            return [
+              projectItem(
+                { type: "fileChange", itemId: item.itemId, changes },
+                outcome,
+                cwd,
+                true,
+                "",
+              ),
+            ];
+          }
+          if (isFileMutatingTool(item.toolName)) return [];
+        }
+        return item.type === "reasoning"
           ? [
               projectItem(item, outcome, cwd, true, ""),
               projectReasoningTranscriptItem(item, outcome, cwd),
             ]
-          : [projectItem(item, outcome, cwd, true, "")],
-      ),
+          : [projectItem(item, outcome, cwd, true, "")];
+      }),
     ],
     error,
     startedAt: null,
@@ -348,9 +770,12 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          return projected?.wireStarted && projected.item.type === "agentMessage"
-            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
-            : [];
+          if (!projected?.wireStarted) return [];
+          if (projected.item.type === "agentMessage") {
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+          }
+          const fileItem = wireFileChangeItem(projected);
+          return fileItem ? [projectItem(fileItem, projected.outcome, this.#cwd)] : [];
         }),
       ],
       error: null,
@@ -370,7 +795,7 @@ export class CodexTurnProjector {
       case "turn.started":
         return this.#startTurn();
       case "item.started":
-        return this.#startItem(event);
+        return this.#startItem(event, emittedAtMs);
       case "item.updated":
         return this.#updateItem(event, emittedAtMs);
       case "item.completed":
@@ -441,7 +866,8 @@ export class CodexTurnProjector {
         arguments: {},
       };
       messages.push(
-        ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }).messages,
+        ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }, emittedAtMs)
+          .messages,
       );
     }
     this.#interactions.set(interaction.interactionId, {
@@ -469,7 +895,7 @@ export class CodexTurnProjector {
     };
   }
 
-  #startItem(event: ItemStartedEvent): CodexTurnProjection {
+  #startItem(event: ItemStartedEvent, startedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
     if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
     const projected: ProjectedItem = {
@@ -478,6 +904,8 @@ export class CodexTurnProjector {
       reasoningPartStarted: false,
       streamedCommandOutput: false,
       wireStarted: false,
+      wireFileChanges: null,
+      startedAtMs,
     };
     this.#items.set(event.item.itemId, projected);
     this.#itemOrder.push(event.item.itemId);
@@ -489,13 +917,35 @@ export class CodexTurnProjector {
       // content, so defer the wire Item until real summary text arrives.
       return { messages: [] };
     }
+    if (event.item.type === "toolExecution") {
+      if (isTodoTool(event.item.toolName)) {
+        const plan = planFromTodoValue(event.item.arguments);
+        return { messages: plan ? [this.#planUpdated(plan)] : [] };
+      }
+      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
+      if (changes) {
+        projected.wireFileChanges = changes;
+        const fileItem = {
+          type: "fileChange" as const,
+          itemId: event.item.itemId,
+          changes,
+        };
+        return {
+          messages: [
+            this.#startWireItem(projected, fileItem, startedAtMs),
+            ...this.#fileChangeUpdates(event.item.itemId, changes),
+          ],
+        };
+      }
+      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
+    }
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
-    const messages = [this.#startWireItem(projected, startedItem)];
+    const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
       messages.push(
-        this.#startReasoningTranscript(event.item, this.#startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, this.#startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, this.#startedAtMs),
+        this.#startReasoningTranscript(event.item, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
+        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
       );
     }
     if (event.item.type === "fileChange") {
@@ -513,7 +963,9 @@ export class CodexTurnProjector {
     if (event.update.type === "text.append") {
       if (event.update.text.length === 0) return { messages };
       if (next.type === "agentMessage") {
-        if (!projected.wireStarted) messages.push(this.#startWireItem(projected, previous));
+        if (!projected.wireStarted) {
+          messages.push(this.#startWireItem(projected, previous, emittedAtMs));
+        }
         messages.push({
           method: "item/agentMessage/delta",
           emittedAtMs,
@@ -527,7 +979,7 @@ export class CodexTurnProjector {
       } else if (next.type === "reasoning") {
         if (!projected.wireStarted) {
           messages.push(
-            this.#startWireItem(projected, { ...next, text: "" }),
+            this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
             this.#startReasoningTranscript({ ...next, text: "" }, emittedAtMs),
           );
         }
@@ -548,6 +1000,28 @@ export class CodexTurnProjector {
           delta: event.update.text,
         },
       });
+    } else if (event.update.type === "output.replace") {
+      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
+        const text = toolOutputText(next);
+        if (text) {
+          const previousText =
+            previous.type === "toolExecution" ? (toolOutputText(previous) ?? "") : "";
+          const delta = text.startsWith(previousText) ? text.slice(previousText.length) : text;
+          if (delta.length > 0) {
+            projected.streamedCommandOutput = true;
+            messages.push({
+              method: "item/commandExecution/outputDelta",
+              emittedAtMs,
+              params: {
+                threadId: this.#threadId,
+                turnId: this.#turnId,
+                itemId: event.itemId,
+                delta,
+              },
+            });
+          }
+        }
+      }
     } else if (event.update.type === "fileChanges.replace") {
       messages.push(...this.#fileChangeUpdates(event.itemId, event.update.changes));
     } else if (event.update.type === "subagents.replace") {
@@ -557,7 +1031,7 @@ export class CodexTurnProjector {
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          startedAtMs: this.#startedAtMs,
+          startedAtMs: projected.startedAtMs ?? emittedAtMs,
           item: projectItem(next, null, this.#cwd, true, this.#threadId),
         },
       });
@@ -589,21 +1063,55 @@ export class CodexTurnProjector {
     }
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
-    if (!projected.wireStarted) return { messages: [] };
+    const startedAtMs = projected.startedAtMs;
+    if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
+    const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
+    projected.item = withResolvedDuration(projected.item, durationMs);
+    projected.durationMs = durationMs;
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",
       emittedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
+        startedAtMs,
         completedAtMs: emittedAtMs,
         item,
       },
     });
+    if (!projected.wireStarted) {
+      if (projected.item.type === "toolExecution") {
+        if (isTodoTool(projected.item.toolName)) {
+          const plan =
+            planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
+          return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
+        }
+        const changes = fileChangeFromTool(projected.item.toolName, projected.item.arguments);
+        if (changes) {
+          projected.wireFileChanges = changes;
+          const fileItem = {
+            type: "fileChange" as const,
+            itemId: projected.item.itemId,
+            changes,
+          };
+          return {
+            messages: [
+              this.#startWireItem(projected, fileItem, startedAtMs),
+              ...this.#fileChangeUpdates(projected.item.itemId, changes),
+              completedItem(
+                projectItem(fileItem, projected.outcome, this.#cwd, true, this.#threadId),
+              ),
+            ],
+          };
+        }
+      }
+      return { messages: [] };
+    }
+    const fileItem = wireFileChangeItem(projected);
     const messages = [
       completedItem(
         projectItem(
-          projected.item,
+          fileItem ?? projected.item,
           projected.outcome,
           this.#cwd,
           !projected.streamedCommandOutput,
@@ -612,8 +1120,11 @@ export class CodexTurnProjector {
       ),
     ];
     if (projected.item.type === "reasoning") {
+      const reasoning = projected.item;
       messages.push(
-        completedItem(projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd)),
+        completedItem(
+          projectReasoningTranscriptItem(reasoning, projected.outcome, this.#cwd, durationMs),
+        ),
       );
     }
     return { messages };
@@ -662,14 +1173,22 @@ export class CodexTurnProjector {
           if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
+            const reasoning = projected.item;
             return [
-              projectItem(projected.item, projected.outcome, this.#cwd),
-              projectReasoningTranscriptItem(projected.item, projected.outcome, this.#cwd),
+              projectItem(reasoning, projected.outcome, this.#cwd),
+              projectReasoningTranscriptItem(
+                reasoning,
+                projected.outcome,
+                this.#cwd,
+                projected.durationMs ?? null,
+              ),
             ];
           }
-          return projected.item.type === "agentMessage"
-            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
-            : [];
+          if (projected.item.type === "agentMessage") {
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+          }
+          const fileItem = wireFileChangeItem(projected);
+          return fileItem ? [projectItem(fileItem, projected.outcome, this.#cwd)] : [];
         }),
       ],
       error,
@@ -716,17 +1235,18 @@ export class CodexTurnProjector {
         ];
   }
 
-  #startWireItem(projected: ProjectedItem, item: HostItem): JsonObject {
+  #startWireItem(projected: ProjectedItem, item: HostItem, startedAtMs: number): JsonObject {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
+    projected.startedAtMs = startedAtMs;
     this.#wireItemOrder.push(item.itemId);
     return {
       method: "item/started",
-      emittedAtMs: this.#startedAtMs,
+      emittedAtMs: startedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
-        startedAtMs: this.#startedAtMs,
+        startedAtMs,
         item: projectItem(item, null, this.#cwd, true, this.#threadId),
       },
     };
@@ -734,15 +1254,15 @@ export class CodexTurnProjector {
 
   #startReasoningTranscript(
     item: Extract<HostItem, { type: "reasoning" }>,
-    emittedAtMs: number,
+    startedAtMs: number,
   ): JsonObject {
     return {
       method: "item/started",
-      emittedAtMs,
+      emittedAtMs: startedAtMs,
       params: {
         threadId: this.#threadId,
         turnId: this.#turnId,
-        startedAtMs: this.#startedAtMs,
+        startedAtMs,
         item: projectReasoningTranscriptItem({ ...item, text: "" }, null, this.#cwd),
       },
     };
@@ -793,12 +1313,27 @@ export class CodexTurnProjector {
     return messages;
   }
 
+  #planUpdated(
+    plan: {
+      explanation: string | null;
+      plan: { step: string; status: "pending" | "inProgress" | "completed" }[];
+    },
+    emittedAtMs = this.#startedAtMs,
+  ): JsonObject {
+    return {
+      method: "turn/plan/updated",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        explanation: plan.explanation,
+        plan: plan.plan,
+      },
+    };
+  }
+
   #fileChangeUpdates(itemId: HostItemId, changes: HostFileChange[]): JsonObject[] {
-    const projectedChanges = changes.map(({ path, kind, unifiedDiff }) => ({
-      path,
-      kind,
-      diff: unifiedDiff,
-    }));
+    const projectedChanges = projectFileChanges(changes);
     return [
       {
         method: "item/fileChange/patchUpdated",
@@ -822,8 +1357,10 @@ export class CodexTurnProjector {
 
   #allFileChanges(): HostFileChange[] {
     return this.#itemOrder.flatMap((itemId) => {
-      const item = this.#items.get(itemId)?.item;
-      return item?.type === "fileChange" ? item.changes : [];
+      const projected = this.#items.get(itemId);
+      if (!projected) return [];
+      if (projected.item.type === "fileChange") return projected.item.changes;
+      return projected.wireFileChanges ?? [];
     });
   }
 

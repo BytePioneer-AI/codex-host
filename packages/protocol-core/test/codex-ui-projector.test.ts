@@ -16,6 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { fileChangeFromTool, toolCommandLine } from "../src/codex-ui-projector.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -127,9 +128,10 @@ describe("Codex UI projector", () => {
         },
         expect.objectContaining({
           id: "historical-tool",
-          type: "dynamicToolCall",
+          type: "commandExecution",
+          command: "read a.txt",
+          aggregatedOutput: "contents",
           status: "completed",
-          success: true,
         }),
         expect.objectContaining({
           id: "historical-subagent",
@@ -224,6 +226,7 @@ describe("Codex UI projector", () => {
             status: "completed",
             aggregatedOutput: null,
             exitCode: 0,
+            durationMs: 25,
           },
         },
       },
@@ -238,6 +241,201 @@ describe("Codex UI projector", () => {
       durationMs: 1_500,
       items: [{ type: "agentMessage", text: "done" }],
     });
+  });
+
+  it("fills completed Command, Tool, and Reasoning duration from Item start time", () => {
+    const value = projector();
+    const commandId = itemId("timed-command");
+    const toolId = itemId("timed-tool");
+    const reasoningId = itemId("timed-reasoning");
+    const providedId = itemId("provided-duration");
+    value.project({ type: "turn.started", turnId });
+
+    expect(
+      value.project(
+        {
+          type: "item.started",
+          turnId,
+          item: { type: "commandExecution", itemId: commandId, command: "sleep 1" },
+        },
+        2_000,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          startedAtMs: 2_000,
+          item: { type: "commandExecution", durationMs: null, status: "inProgress" },
+        },
+      },
+    ]);
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "commandExecution",
+              itemId: commandId,
+              command: "sleep 1",
+              output: "ok",
+              exitCode: 0,
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        4_500,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 2_000,
+          completedAtMs: 4_500,
+          item: { type: "commandExecution", durationMs: 2_500, exitCode: 0 },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: providedId,
+          command: "printf done",
+        },
+      },
+      5_000,
+    );
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "commandExecution",
+              itemId: providedId,
+              command: "printf done",
+              exitCode: 0,
+              durationMs: 25,
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        8_000,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 5_000,
+          completedAtMs: 8_000,
+          item: { type: "commandExecution", durationMs: 25 },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: toolId,
+          toolName: "Read",
+          arguments: { path: "a.ts" },
+        },
+      },
+      9_000,
+    );
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "toolExecution",
+              itemId: toolId,
+              toolName: "Read",
+              arguments: { path: "a.ts" },
+              output: { content: [{ type: "text", text: "contents" }] },
+            },
+            outcome: { status: "succeeded" },
+          },
+        },
+        10_250,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 9_000,
+          completedAtMs: 10_250,
+          item: {
+            type: "commandExecution",
+            command: "read a.ts",
+            durationMs: 1_250,
+          },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "" },
+      },
+      11_000,
+    );
+    value.project(
+      {
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "thinking" },
+      },
+      11_500,
+    );
+    const reasoningCompleted = value.project(
+      {
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "reasoning", itemId: reasoningId, text: "thinking" },
+          outcome: { status: "succeeded" },
+        },
+      },
+      13_000,
+    );
+    expect(reasoningCompleted.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 11_500,
+          completedAtMs: 13_000,
+          item: { id: `${reasoningId}-summary`, type: "reasoning" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 11_500,
+          completedAtMs: 13_000,
+          item: {
+            id: reasoningId,
+            type: "commandExecution",
+            command: "thinking",
+            durationMs: 1_500,
+          },
+        },
+      },
+    ]);
   });
 
   it("projects Subagent delegation through native collaboration Items", () => {
@@ -676,6 +874,321 @@ describe("Codex UI projector", () => {
     expect(JSON.stringify(completed)).not.toContain("mcpToolCall");
   });
 
+  it("lifts Read/Glob/Grep Generic Tools into Command Execution cards with paths", () => {
+    const value = projector();
+    const readId = itemId("read-1");
+    const globId = itemId("glob-1");
+    const grepId = itemId("grep-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: readId,
+          toolName: "read",
+          arguments: { path: "src/app.ts" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { id: readId, type: "commandExecution", command: "read src/app.ts" },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: globId,
+          toolName: "Glob",
+          arguments: { pattern: "**/*.mjs" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { type: "commandExecution", command: "glob **/*.mjs" } },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: grepId,
+          toolName: "grep",
+          arguments: { pattern: "toolCommandLine", path: "packages" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { type: "commandExecution", command: "grep toolCommandLine packages" },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: readId,
+        update: {
+          type: "output.replace",
+          output: { content: [{ type: "text", text: "export const app = 1;\n" }] },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/commandExecution/outputDelta",
+        params: { itemId: readId, delta: "export const app = 1;\n" },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: readId,
+            toolName: "read",
+            arguments: { path: "src/app.ts" },
+            output: { content: [{ type: "text", text: "export const app = 1;\n" }] },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "read src/app.ts",
+            status: "completed",
+            aggregatedOutput: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
+    const value = projector();
+    const todoId = itemId("todo-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: todoId,
+          toolName: "Todo",
+          arguments: {
+            todos: [
+              { content: "Fix edit cards", status: "in_progress" },
+              { content: "Show the plan", status: "pending" },
+            ],
+          },
+        },
+      }).messages,
+    ).toEqual([
+      {
+        method: "turn/plan/updated",
+        emittedAtMs: 1_000,
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          explanation: null,
+          plan: [
+            { step: "Fix edit cards", status: "inProgress" },
+            { step: "Show the plan", status: "pending" },
+          ],
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: todoId,
+            toolName: "Todo",
+            arguments: {
+              todos: [
+                { content: "Fix edit cards", status: "completed" },
+                { content: "Show the plan", status: "in_progress" },
+              ],
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: {
+          plan: [
+            { step: "Fix edit cards", status: "completed" },
+            { step: "Show the plan", status: "inProgress" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("hides Todo name cards even before arguments arrive and parses Grok todo_write shapes", () => {
+    const value = projector();
+    const emptyId = itemId("todo-empty");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId: emptyId, toolName: "Todo", arguments: {} },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: emptyId,
+            toolName: "todo_write",
+            arguments: {
+              merge: false,
+              todos: JSON.stringify([
+                { id: "1", content: "Fix the dock", status: "in_progress" },
+                { id: "2", content: "Keep statuses live", status: "pending" },
+              ]),
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: {
+          plan: [
+            { step: "Fix the dock", status: "inProgress" },
+            { step: "Keep statuses live", status: "pending" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("renders Claude Task snapshots after the adapter normalizes them to Todo", () => {
+    const value = projector();
+    const taskId = itemId("claude-task-1");
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId: taskId, toolName: "Todo", arguments: {} },
+      }).messages,
+    ).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: taskId,
+            toolName: "Todo",
+            arguments: {
+              todos: [{ id: "1", content: "Run tests", status: "in_progress" }],
+            },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "turn/plan/updated",
+        params: { plan: [{ step: "Run tests", status: "inProgress" }] },
+      },
+    ]);
+  });
+
+  it("projects Edit/Write tools as File Change cards with a native kind object", () => {
+    const value = projector();
+    const editId = itemId("edit-1");
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: editId,
+        toolName: "Edit",
+        arguments: { path: "src/app.ts", old_string: "a", new_string: "b" },
+      },
+    });
+    expect(started.messages.map(({ method }) => method)).toEqual([
+      "item/started",
+      "item/fileChange/patchUpdated",
+      "turn/diff/updated",
+    ]);
+    expect(started.messages[0]).toMatchObject({
+      params: {
+        item: {
+          id: "edit-1",
+          type: "fileChange",
+          changes: [
+            {
+              path: "src/app.ts",
+              kind: { type: "update", move_path: null },
+              diff: expect.stringContaining("-a"),
+            },
+          ],
+          status: "inProgress",
+        },
+      },
+    });
+    expect(started.messages[1]).toMatchObject({
+      params: {
+        changes: [{ path: "src/app.ts", kind: { type: "update", move_path: null } }],
+      },
+    });
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: editId,
+            toolName: "Edit",
+            arguments: { path: "src/app.ts", old_string: "a", new_string: "b" },
+          },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: { item: { type: "fileChange", status: "completed" } },
+      },
+    ]);
+  });
+
   it("projects reliable File Changes and the current Turn Diff", () => {
     const value = projector();
     const fileId = itemId("file-1");
@@ -732,7 +1245,12 @@ describe("Codex UI projector", () => {
       turnId,
       outcome: { status: "succeeded" },
     });
-    expect(completed.completedTurn).toMatchObject({ items: [] });
+    expect(completed.completedTurn).toMatchObject({
+      items: [
+        { type: "fileChange", id: "file-1", status: "completed" },
+        { type: "fileChange", id: "file-2", status: "completed" },
+      ],
+    });
   });
 
   it("projects standalone Questions through a synthetic Generic Tool lifecycle", () => {
@@ -941,5 +1459,105 @@ describe("Codex UI projector", () => {
     expect(() =>
       value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
     ).toThrow("follows the Turn terminal");
+  });
+
+  describe("Antigravity tool support", () => {
+    it("projects write_to_file with PascalCase parameters via fileChangeFromTool", () => {
+      const changes = fileChangeFromTool("write_to_file", {
+        TargetFile: "src/server.ts",
+        CodeContent: "export const port = 3000;\n",
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/server.ts",
+          kind: "add",
+          unifiedDiff:
+            "--- /dev/null\n+++ b/src/server.ts\n@@ -0,0 +1,1 @@\n+export const port = 3000;\n",
+        },
+      ]);
+    });
+
+    it("projects replace_file_content with PascalCase parameters via fileChangeFromTool", () => {
+      const changes = fileChangeFromTool("replace_file_content", {
+        TargetFile: "src/server.ts",
+        TargetContent: "export const port = 3000;\n",
+        ReplacementContent: "export const port = 8080;\n",
+      });
+      expect(changes).toEqual([
+        {
+          path: "src/server.ts",
+          kind: "update",
+          unifiedDiff:
+            "--- a/src/server.ts\n+++ b/src/server.ts\n@@ -1,1 +1,1 @@\n-export const port = 3000;\n+export const port = 8080;\n",
+        },
+      ]);
+    });
+
+    it("reconstructs command line from run_command with CommandLine parameter", () => {
+      expect(
+        toolCommandLine("run_command", { CommandLine: "vitest run" }),
+      ).toBe("vitest run");
+      expect(
+        toolCommandLine("runCommand", { commandLine: "pytest -v" }),
+      ).toBe("pytest -v");
+    });
+
+    it("reconstructs command line for view_file, read_url_content, and find_by_name", () => {
+      expect(
+        toolCommandLine("view_file", { TargetFile: "src/main.rs" }),
+      ).toBe("read src/main.rs");
+      expect(
+        toolCommandLine("read_url_content", { path: "https://example.com" }),
+      ).toBe("read https://example.com");
+      expect(
+        toolCommandLine("find_by_name", { Pattern: "*.ts" }),
+      ).toBe("glob *.ts");
+    });
+
+    it("projects successful write_to_file toolExecution lifecycle into fileChange messages without type mismatch", () => {
+      const p = projector();
+      p.project({
+        type: "turn.started",
+        turnId,
+      });
+      p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: itemId("item-write-1"),
+          toolName: "write_to_file",
+          arguments: {
+            TargetFile: "src/hello.ts",
+            CodeContent: "console.log('hello');\n",
+          },
+        },
+      });
+      const completed = p.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: itemId("item-write-1"),
+            toolName: "write_to_file",
+            arguments: {
+              TargetFile: "src/hello.ts",
+              CodeContent: "console.log('hello');\n",
+            },
+            output: { content: [{ type: "text", text: "File written successfully." }] },
+            durationMs: 120,
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(completed.messages.length).toBeGreaterThanOrEqual(1);
+      const fileCompleted = completed.messages.find((m) => {
+        if (m.method !== "item/completed") return false;
+        const item = (m.params as { item?: { type?: string } } | undefined)?.item;
+        return item?.type === "fileChange";
+      });
+      expect(fileCompleted).toBeDefined();
+    });
   });
 });

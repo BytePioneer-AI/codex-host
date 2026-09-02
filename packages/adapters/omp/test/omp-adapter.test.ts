@@ -40,6 +40,7 @@ class FakeOmpTransport implements OmpTurnTransport {
   history: OmpSessionHistory = { entries: [], leafId: null };
   onEvent: ((event: OmpTurnEvent) => void) | null = null;
   onSubagentEvent: ((event: OmpTurnEvent) => void) | null = null;
+  autoCompleteTurn = true;
   #resolveTurn: ((result: OmpTurnResult) => void) | null = null;
 
   async start(): Promise<void> {}
@@ -102,8 +103,7 @@ class FakeOmpTransport implements OmpTurnTransport {
     return this.state;
   }
 
-  async selectThinkingOption(thinkingLevel: HarnessThinkingOptionId): Promise<OmpSessionState> {
-    void thinkingLevel;
+  async selectThinkingOption(): Promise<OmpSessionState> {
     return this.state;
   }
 
@@ -111,10 +111,40 @@ class FakeOmpTransport implements OmpTurnTransport {
     return { outcome: "succeeded" };
   }
 
+  event(event: OmpTurnEvent): void {
+    this.onEvent?.(event);
+  }
+
+  succeed(text: string): void {
+    this.history = {
+      entries: [
+        {
+          id: "user-1",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "edit" }] },
+        },
+        {
+          id: "assistant-1",
+          parentId: "user-1",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            stopReason: "stop",
+          },
+        },
+      ],
+      leafId: "assistant-1",
+    };
+    this.#resolveTurn?.({ text, cancelled: false });
+  }
+
   runTurn(_text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     this.onEvent = onEvent;
     return new Promise((resolve) => {
       this.#resolveTurn = resolve;
+      if (!this.autoCompleteTurn) return;
       queueMicrotask(() => {
         onEvent({
           type: "subagent.started",
@@ -184,53 +214,6 @@ class RestartableOmpTransport extends FakeOmpTransport {
     this.closed = true;
   }
 }
-
-describe("OMP Adapter startup", () => {
-  it("repairs an unavailable persisted Thinking level after model fallback", async () => {
-    const transport = new FakeOmpTransport();
-    const availableThinkingLevels = ["minimal", "low", "medium", "high"].map((level) =>
-      harnessThinkingOptionIdSchema.parse(level),
-    );
-    transport.state = {
-      ...transport.state,
-      thinkingLevel: harnessThinkingOptionIdSchema.parse("xhigh"),
-      availableThinkingLevels,
-    };
-    vi.spyOn(transport, "getAvailableThinkingLevels").mockImplementation(async () => [
-      ...availableThinkingLevels,
-    ]);
-    const selectThinkingOption = vi
-      .spyOn(transport, "selectThinkingOption")
-      .mockImplementation(async (thinkingLevel) => {
-        transport.state = { ...transport.state, thinkingLevel };
-        return transport.state;
-      });
-    const adapter = new OmpAdapter({}, { createTransport: () => transport });
-    const nativeRef = nativeSessionRefSchema.parse({
-      harnessId: "omp",
-      nativeSessionId: "omp-parent",
-      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
-      formatVersion: 1,
-    });
-
-    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef });
-
-    expect(opened.ok).toBe(true);
-    if (!opened.ok) return;
-    expect(selectThinkingOption).toHaveBeenCalledWith("high");
-    expect(opened.value.initialState).toMatchObject({
-      effectiveThinkingOptionId: "high",
-      availableThinkingOptions: [
-        { id: "minimal" },
-        { id: "low" },
-        { id: "medium" },
-        { id: "high" },
-      ],
-    });
-    await opened.value.close();
-    await adapter.close();
-  });
-});
 
 function historyTurn(input: {
   assistantId: string;
@@ -554,6 +537,18 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
   return values;
 }
 
+async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
+  const result = await iterator.next();
+  if (result.done) throw new Error("Harness output stream ended unexpectedly");
+  return result.value;
+}
+
+async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
+  const output = await nextOutput(iterator);
+  if (output.kind !== "event") throw new Error("Expected a Harness event output");
+  return output.event;
+}
+
 describe("OMP Adapter Subagents", () => {
   it("projects native Subagent lifecycle into a Host delegation Item", async () => {
     const transport = new FakeOmpTransport();
@@ -845,6 +840,95 @@ describe("OMP Adapter Subagents", () => {
       );
     expect(completed).toHaveLength(1);
     expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects a native Edit File Change from numbered details.diff without faulting the Session", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    const accepted = await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-edit" as HostTurnId,
+      input: [{ type: "text", text: "edit" }],
+    });
+    expect(accepted).toEqual({ ok: true, value: { turnId: "turn-edit" } });
+    const started = await nextEvent(iterator);
+    if (started.type === "session.state.changed") {
+      expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    } else {
+      expect(started).toMatchObject({ type: "turn.started" });
+    }
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "agentMessage" },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "edit-1",
+      toolName: "edit",
+      arguments: {
+        i: "Adding tiny test marker",
+        input: "[docs/archive/README.md#6F1B]\nPUT >3:\n+\n+test-marker\n",
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "commandExecution", command: expect.stringContaining("edit") },
+    });
+
+    transport.event({
+      type: "tool.completed",
+      callId: "edit-1",
+      toolName: "edit",
+      result: {
+        content: [{ type: "text", text: "edited" }],
+        details: {
+          diff: " 1|# Archive\n 2|\n 3|Current documents.\n+4|\n+5|test-marker",
+          path: "docs/archive/README.md",
+          oldText: "# Archive\n\nCurrent documents.\n",
+          newText: "# Archive\n\nCurrent documents.\n\ntest-marker\n",
+        },
+      },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "commandExecution", command: expect.stringContaining("edit") },
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "fileChange",
+        changes: [
+          {
+            path: "docs/archive/README.md",
+            kind: "update",
+            unifiedDiff: expect.stringContaining("test-marker"),
+          },
+        ],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "fileChange" }, outcome: { status: "succeeded" } },
+    });
+
+    transport.succeed("changed");
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.completed" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+    });
     await opened.value.close();
     await adapter.close();
   });

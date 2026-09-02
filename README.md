@@ -147,7 +147,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
 
-> **AGY 当前状态：**基于 `agy --input-format stream-json --output-format stream-json` 接入。工具状态目前只覆盖基础开始/完成事件；“Agent 间任务协作”表示可以接收 codexhost 的跨 Harness 委派并继续多轮会话，但尚未投影 AGY 原生 Subagent 的生命周期和 Transcript。AGY 的 Headless 权限请求不能转为 Desktop 工具审批；配置权限模式下被拒绝的工具会显示为失败。
+> **Antigravity 当前状态：**接入仍在完善中，工作目录目前固定为 `~/.gemini/antigravity-cli/scratch`。
 
 ## 跨 Agent 协作
 

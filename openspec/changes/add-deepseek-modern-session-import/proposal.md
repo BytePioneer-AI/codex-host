@@ -32,6 +32,7 @@ codexhost 当前只会把自身已经写入 Mapping Store 的 DeepSeek Harness N
 - `packages/adapters/deepseek-harness`: Modern `session/list` parser/reader 和公共 Facade 的 Modern-only 转发。
 - `packages/shared-contracts`: DSH Modern 候选 list/import 的固定 Params/Result Schema。
 - `packages/host-runtime`: 候选排除、新鲜复查、mapping 事务、固定方法和 `thread/started` 通知。
+- `packages/mapping-store`: 将依赖全局 Native Session/Turn 唯一索引的写入放进同一 Store 队列，封闭跨 Host Thread 的提交竞争；不改变 Schema。
 - `packages/renderer-extension`: method-specific client、设置页 Tab、本地 Host 路由及复用的 Host-qualified Thread opener。
 - OpenSpec、聚焦单元/集成测试和 exact rc.1 compiled artifact Gate。
 - 不修改 DSH 源码、通用 `HarnessAdapter`、Mapping Store V1 Schema、其他 Harness、Rust/native 平台层、依赖或 lockfile。

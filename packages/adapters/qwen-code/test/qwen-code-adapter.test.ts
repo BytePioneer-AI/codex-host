@@ -177,13 +177,12 @@ describe("QwenCodeAdapter", () => {
     await opened.value.close();
   });
 
-  it("gives explicit mode priority over yolo and forwards it to SDK open", async () => {
+  it("gives an explicit mode priority over the normal Qwen default", async () => {
     const transport = new FakeTransport();
     const { adapter } = adapterFor(transport);
     const opened = await adapter.open({
       kind: "create",
       cwd: "/tmp",
-      executionPolicy: "unattended-full-access",
       permissionModeId: "plan" as HarnessPermissionModeId,
     });
     expect(opened.ok).toBe(true);
@@ -192,6 +191,28 @@ describe("QwenCodeAdapter", () => {
     ]);
     if (opened.ok) await opened.value.close();
   });
+
+  it.each(["plan", "default", "auto-edit", "auto"] as const)(
+    "rejects the %s Permission Mode for unattended creation",
+    async (permissionModeId) => {
+      const transport = new FakeTransport();
+      const { adapter } = adapterFor(transport);
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/tmp",
+        executionPolicy: "unattended-full-access",
+        permissionModeId: permissionModeId as HarnessPermissionModeId,
+      });
+      expect(opened).toMatchObject({
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Qwen Code unattended execution requires the yolo Permission Mode",
+        },
+      });
+      expect(transport.openCalls).toEqual([]);
+    },
+  );
 
   it("uses yolo for unattended creation", async () => {
     const transport = new FakeTransport();

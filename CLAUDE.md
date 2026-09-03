@@ -92,8 +92,8 @@ shared-contracts (browser-safe types + zod schemas, no Node-only APIs)
 
 packages/adapters/{claude-code,pi,grok,omp,deepseek-harness,qwen-code}
   — each depends on harness-adapter + shared-contracts, plus its own native SDK/CLI
-    (Claude Code: @anthropic-ai/claude-agent-sdk + MCP SDK; Grok, Qwen Code: @agentclientprotocol/sdk;
-    DeepSeek: @deepseek-ai/dsh-*). Harness-specific protocol details MUST stay inside the
+    (Claude Code: @anthropic-ai/claude-agent-sdk + MCP SDK; Grok: @agentclientprotocol/sdk;
+    Qwen Code: @qwen-code/sdk; DeepSeek: @deepseek-ai/dsh-*). Harness-specific protocol details MUST stay inside the
     owning Adapter — never leak into protocol-core or shared-contracts.
 
 host-runtime — top-level composition root; depends on every adapter, desktop-control,

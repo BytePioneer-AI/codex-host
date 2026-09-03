@@ -1014,7 +1014,17 @@ export class QwenCodeAdapter implements HarnessAdapter {
           ? qwenCodeUnattendedPermissionModeId
           : QWEN_CODE_DEFAULT_PERMISSION_MODE_ID);
       try {
-        decodeQwenCodePermissionModeId(requested);
+        const permissionMode = decodeQwenCodePermissionModeId(requested);
+        if (input.executionPolicy === "unattended-full-access" && permissionMode !== "yolo") {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "Qwen Code unattended execution requires the yolo Permission Mode",
+              retryable: false,
+            },
+          };
+        }
       } catch {
         return {
           ok: false,

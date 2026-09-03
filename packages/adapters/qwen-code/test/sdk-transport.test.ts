@@ -410,6 +410,59 @@ describe("QwenCodeSdkTransport", () => {
     await transport.close();
   });
 
+  it("classifies authentication result messages emitted during inspection", async () => {
+    const query = new FakeQuery();
+    query.getAvailableModels.mockImplementationOnce(async () => {
+      query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        uuid: "result-inspect-auth",
+        session_id: "550e8400-e29b-41d4-a716-446655440000",
+        is_error: true,
+        duration_ms: 1,
+        duration_api_ms: 1,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        permission_denials: [],
+        error: { message: "No auth type is selected. Please configure an auth type." },
+      } as SDKMessage);
+      await Promise.resolve();
+      return {
+        subtype: "get_available_models" as const,
+        models: [{ id: "qwen-max", label: "Qwen Max", contextWindowSize: 1_000_000 }],
+      };
+    });
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+
+    await expect(transport.inspect()).rejects.toMatchObject({
+      kind: "authenticationRequired",
+      message: "Qwen Code CLI authentication is required",
+      diagnostic: "No auth type is selected. Please configure an auth type.",
+    });
+  });
+
+  it("classifies authentication errors thrown by SDK inspection controls", async () => {
+    const query = new FakeQuery();
+    query.getAvailableModels.mockRejectedValueOnce(
+      new Error("No auth type is selected. Please configure an auth type."),
+    );
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+
+    await expect(transport.inspect()).rejects.toMatchObject({
+      kind: "authenticationRequired",
+      message: "Qwen Code CLI authentication is required",
+      diagnostic: "No auth type is selected. Please configure an auth type.",
+    });
+  });
+
   it("reports an unresolved Qwen command as not installed", async () => {
     const transport = new QwenCodeSdkTransport({
       cwd: process.cwd(),

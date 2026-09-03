@@ -112,6 +112,30 @@ describe("QwenCodeAdapter", () => {
     expect(transport.closed).toBe(true);
   });
 
+  it("reports authentication required during SDK inspection", async () => {
+    const transport = new FakeTransport();
+    transport.inspect = async () => {
+      throw new QwenCodeTransportError(
+        "authenticationRequired",
+        "Qwen Code CLI authentication is required",
+        { diagnostic: "No auth type is selected. Please configure an auth type." },
+      );
+    };
+    const { adapter } = adapterFor(transport);
+
+    const inspection = await adapter.inspect();
+
+    expect(inspection).toMatchObject({
+      status: "error",
+      error: {
+        code: "authenticationRequired",
+        message: "Qwen Code CLI authentication is required",
+        diagnostic: "No auth type is selected. Please configure an auth type.",
+      },
+    });
+    expect(transport.closed).toBe(true);
+  });
+
   it("fails open when the SDK faults before the Session owns the Transport", async () => {
     const transport = new FakeTransport();
     const open = transport.open.bind(transport);

@@ -158,6 +158,7 @@ function classifyError(error: unknown): QwenCodeTransportError {
   }
   if (
     lower.includes("auth_required") ||
+    lower.includes("auth type") ||
     lower.includes("authentication") ||
     lower.includes("not logged in") ||
     lower.includes("sign in")
@@ -165,7 +166,7 @@ function classifyError(error: unknown): QwenCodeTransportError {
     return new QwenCodeTransportError(
       "authenticationRequired",
       "Qwen Code CLI authentication is required",
-      { cause: error },
+      { cause: error, diagnostic: text },
     );
   }
   return new QwenCodeTransportError("unavailable", text, {
@@ -379,7 +380,10 @@ export class QwenCodeSdkTransport {
     const session = this.#query;
     if (!session)
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
-    const response = await session.getAvailableModels();
+    const response = await session.getAvailableModels().catch((error: unknown) => {
+      throw classifyError(error);
+    });
+    if (this.#failure) throw this.#failure;
     const context = await session.getContextUsage().catch(() => null);
     if (!isRecord(response) || !Array.isArray(response.models)) {
       throw new QwenCodeTransportError(
@@ -445,6 +449,30 @@ export class QwenCodeSdkTransport {
       if (message.model) this.#modelId = message.model;
       return;
     }
+    if (isSDKResultMessage(message)) {
+      const active = this.#active;
+      const errorMessage =
+        typeof message.error === "string"
+          ? message.error
+          : typeof message.error === "object" &&
+              message.error !== null &&
+              "message" in message.error &&
+              typeof message.error.message === "string"
+            ? message.error.message
+            : `Qwen Code SDK returned ${message.subtype}`;
+      const error = message.is_error ? classifyError(errorMessage) : undefined;
+      if (!active) {
+        if (error) this.#fault(error);
+        return;
+      }
+      active.onEvent({ type: "usage", metadata: { usage: message.usage } });
+      this.#active = null;
+      active.resolve({
+        status: message.is_error ? "failed" : "succeeded",
+        ...(error ? { error } : {}),
+      });
+      return;
+    }
     const active = this.#active;
     if (!active) return;
     if (isSDKPartialAssistantMessage(message)) {
@@ -487,25 +515,6 @@ export class QwenCodeSdkTransport {
           ...(rawToolOutput(block.content) ? { rawOutput: rawToolOutput(block.content) } : {}),
         });
       }
-      return;
-    }
-    if (isSDKResultMessage(message)) {
-      active.onEvent({ type: "usage", metadata: { usage: message.usage } });
-      this.#active = null;
-      const errorMessage =
-        typeof message.error === "string"
-          ? message.error
-          : typeof message.error === "object" &&
-              message.error !== null &&
-              "message" in message.error &&
-              typeof message.error.message === "string"
-            ? message.error.message
-            : `Qwen Code SDK returned ${message.subtype}`;
-      const error = message.is_error ? classifyError(errorMessage) : undefined;
-      active.resolve({
-        status: message.is_error ? "failed" : "succeeded",
-        ...(error ? { error } : {}),
-      });
     }
   }
 

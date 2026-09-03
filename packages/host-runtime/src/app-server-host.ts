@@ -469,6 +469,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
+  #notifiedDeepSeekSessionImports = new Set<string>();
   #closeRequested = false;
   #desktopInputEnded = false;
 
@@ -1805,9 +1806,11 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
       return;
     }
+    const notify = !this.#notifiedDeepSeekSessionImports.has(outcome.threadId);
+    if (notify) this.#notifiedDeepSeekSessionImports.add(outcome.threadId);
     const result = deepSeekModernSessionImportResultSchema.parse({ threadId: outcome.threadId });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-    if (outcome.newlyCreated) await this.#notifyExternalThreadStarted(outcome.thread);
+    if (notify) await this.#notifyExternalThreadStarted(outcome.thread);
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

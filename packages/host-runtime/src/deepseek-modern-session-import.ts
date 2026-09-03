@@ -30,7 +30,7 @@ export type DeepSeekModernSessionListOutcome =
   | { ok: false; error: ExternalThreadRpcError };
 
 export type DeepSeekModernSessionImportOutcome =
-  | { ok: true; threadId: HostThreadId; thread: JsonObject; newlyCreated: boolean }
+  | { ok: true; threadId: HostThreadId; thread: JsonObject }
   | { ok: false; error: ExternalThreadRpcError };
 
 function modernAdapter(adapter: HarnessAdapter | undefined): DeepSeekModernSessionAdapter | null {
@@ -60,12 +60,10 @@ function mappedRecord(
 
 function importedThread(
   record: StoredThreadRecordV1,
-  newlyCreated: boolean,
 ): Extract<DeepSeekModernSessionImportOutcome, { ok: true }> {
   return {
     ok: true,
     threadId: record.hostThreadId,
-    newlyCreated,
     thread: externalThreadValue({
       record,
       turns: [],
@@ -114,11 +112,7 @@ export class DeepSeekModernSessionImporter {
 
   import(nativeSessionId: string): Promise<DeepSeekModernSessionImportOutcome> {
     const pending = this.#imports.get(nativeSessionId);
-    if (pending) {
-      return pending.then((outcome) =>
-        outcome.ok ? { ...outcome, newlyCreated: false } : outcome,
-      );
-    }
+    if (pending) return pending;
     const operation = this.#import(nativeSessionId).finally(() => {
       if (this.#imports.get(nativeSessionId) === operation) this.#imports.delete(nativeSessionId);
     });
@@ -160,7 +154,7 @@ export class DeepSeekModernSessionImporter {
       };
     }
     const existing = mappedRecord(records, nativeSessionId);
-    if (existing) return importedThread(existing, false);
+    if (existing) return importedThread(existing);
 
     const listed = await this.#readCandidates();
     if (!listed.ok) return listed;
@@ -173,7 +167,7 @@ export class DeepSeekModernSessionImporter {
       };
     }
     const winner = mappedRecord(records, nativeSessionId);
-    if (winner) return importedThread(winner, false);
+    if (winner) return importedThread(winner);
     const candidate = listed.candidates.find(
       (session) => session.nativeSessionId === nativeSessionId,
     );
@@ -219,7 +213,7 @@ export class DeepSeekModernSessionImporter {
         }),
         [],
       );
-      return importedThread(record, true);
+      return importedThread(record);
     } catch (error) {
       await this.#repository
         .removeProvisional(provisional.hostThreadId)
@@ -227,7 +221,7 @@ export class DeepSeekModernSessionImporter {
       if (error instanceof MappingStoreError && error.code === "DUPLICATE_NATIVE_SESSION") {
         try {
           const winner = mappedRecord(await this.#repository.list(), nativeSessionId);
-          if (winner) return importedThread(winner, false);
+          if (winner) return importedThread(winner);
         } catch (readError) {
           this.#diagnose(readError);
         }
